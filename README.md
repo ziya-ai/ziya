@@ -1,5 +1,9 @@
 # Ziya
 
+## Documentation
+See the [GitHub Repository](https://github.com/ziya-ai/ziya)
+
+## Overview
 Ziya is a code assist tool for AWS Bedrock models. It can read your entire codebase and answer questions.
 
 The current version only performs read operations. However, future versions will be able to:
@@ -50,6 +54,8 @@ ziya
 ### Options
 
 `--exclude`: Comma-separated list of files or directories to exclude from the codebase.
+
+`--include-dirs`: Comma-separated list of directories to include. By default, it only searches for current directory for code files, but you can specify a list of subset directories under current folder to search instead of the entire folder. Eg: `--include-dirs='app,src/mappers'`
 
 `--profile`: AWS profile to use for the Bedrock LLM.
 
