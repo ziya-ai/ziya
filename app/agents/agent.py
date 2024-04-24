@@ -47,7 +47,8 @@ def get_combined_document_contents() -> str:
 
     combined_contents: str = ""
     ignored_patterns: List[str] = get_ignored_patterns(user_codebase_dir)
-    all_files: List[str] = get_complete_file_list(user_codebase_dir, ignored_patterns)
+    included_relative_dirs = [pattern.strip() for pattern in os.environ.get("ZIYA_ADDITIONAL_INCLUDE_DIRS", "").split(',')]
+    all_files: List[str] = get_complete_file_list(user_codebase_dir, ignored_patterns, included_relative_dirs)
 
     print_file_tree(all_files)
 
@@ -59,7 +60,6 @@ def get_combined_document_contents() -> str:
                 combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
             dir_path = os.path.dirname(file_path)
             if dir_path not in seen_dirs:
-                # print_file_tree(dir_path, ignored_patterns)
                 seen_dirs.add(dir_path)
         except Exception as e:
             print(f"Skipping file {file_path} due to error: {e}")
@@ -73,7 +73,6 @@ def get_combined_document_contents() -> str:
     print(f"Max Claude Token limit: 200,000")
     print("--------------------------------------------------------")
     return combined_contents
-
 
 def get_child_paths(directory: str) -> Generator[str, None, None]:
     for entry in os.listdir(directory):

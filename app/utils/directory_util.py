@@ -41,17 +41,17 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     return ignored_patterns
 
 
-def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str]) -> List[str]:
+def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], included_relative_dirs: List[str]) -> List[str]:
     should_ignore = parse_gitignore_patterns(ignored_patterns, base_dir=user_codebase_dir)
     file_set: Set[str] = set()
+    for pattern in included_relative_dirs:
+        for root, dirs, files in os.walk(os.path.normpath(os.path.join(user_codebase_dir, pattern))):
+            # Filter out ignored directories
+            dirs[:] = [d for d in dirs if not should_ignore(os.path.join(root, d))]
 
-    for root, dirs, files in os.walk(user_codebase_dir):
-        # Filter out ignored directories
-        dirs[:] = [d for d in dirs if not should_ignore(os.path.join(root, d))]
-
-        for file in files:
-            file_path = os.path.join(root, file)
-            if not should_ignore(file_path):
-                file_set.add(file_path)
+            for file in files:
+                file_path = os.path.join(root, file)
+                if not should_ignore(file_path):
+                    file_set.add(file_path)
 
     return list(file_set)
