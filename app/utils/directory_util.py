@@ -51,7 +51,11 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], 
 
             for file in files:
                 file_path = os.path.join(root, file)
-                if not should_ignore(file_path):
+                if not should_ignore(file_path) and not is_image_file(file_path):
                     file_set.add(file_path)
 
     return list(file_set)
+
+def is_image_file(file_path: str) -> bool:
+    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.ico']
+    return any(file_path.lower().endswith(ext) for ext in image_extensions)

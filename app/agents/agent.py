@@ -1,4 +1,6 @@
 import os
+import botocore
+
 from typing import Generator, List, Tuple, Set, Union
 
 import tiktoken
@@ -38,6 +40,9 @@ model = ChatBedrock(
     model_id=model_id,
     model_kwargs={"max_tokens": 4096},
     credentials_profile_name=aws_profile if aws_profile else None,
+    config=botocore.config.Config(
+        read_timeout=900
+    )
 )
 
 
