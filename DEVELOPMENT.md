@@ -20,8 +20,7 @@ pip install --index-url https://test.pypi.org/simple/ ziya
 ```
 #### To publish to PyPi:
 ```bash
-poetry build
-poetry publish
+poetry build && poetry publish
 pip install ziya --upgrade
 ```
 

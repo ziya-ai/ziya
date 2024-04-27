@@ -38,7 +38,7 @@ logger.info(f"Using Claude Model: {model_id}")
 
 model = ChatBedrock(
     model_id=model_id,
-    model_kwargs={"max_tokens": 4096},
+    model_kwargs={"max_tokens": 4096, "temperature": 0.3, "top_k": 15},
     credentials_profile_name=aws_profile if aws_profile else None,
     config=botocore.config.Config(
         read_timeout=900
