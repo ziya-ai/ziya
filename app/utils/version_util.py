@@ -14,8 +14,8 @@ def get_latest_version() -> Optional[str]:
         return None
 
 
-def update_package(package_name: str) -> None:
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', package_name])
+def update_package() -> None:
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'ziya'])
 
 
 def get_current_version() -> str:
