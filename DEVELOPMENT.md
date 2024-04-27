@@ -4,6 +4,13 @@
 poetry build
 ```
 ### To Publish
+#### To install a whl file
+```bash
+poetry build
+pip uninstall ziya -y
+pip install dist/<ziya-whl-file>
+```
+
 #### To publish and test in the testpypi repository:
 ```bash
 poetry build
@@ -16,4 +23,10 @@ pip install --index-url https://test.pypi.org/simple/ ziya
 poetry build
 poetry publish
 pip install ziya --upgrade
+```
+
+### FAQ
+#### To install a specific version of a package
+```bash
+pip install ziya==0.1.3
 ```

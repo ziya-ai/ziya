@@ -1,6 +1,24 @@
 import os
+import subprocess
+import sys
+from typing import Optional
+
 from langchain_cli.cli import serve
 import argparse
+
+from app.utils.logging_utils import logger
+from app.utils.version_util import get_current_version, get_latest_version
+
+
+def update_package(current_version: str, latest_version: Optional[str]) -> None:
+    try:
+        logger.info(f"Updating ziya from {current_version} to {latest_version}")
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'ziya'])
+        logger.info("Update completed. Next time you run ziya it will be with the latest version.")
+
+    except Exception as e:
+        logger.info(f"Unexpected error upgrading ziya: {e}")
+
 
 def main():
     os.environ["ZIYA_USER_CODEBASE_DIR"] = os.getcwd()
@@ -20,10 +38,17 @@ def main():
                         help="Prints the version of Ziya")
     args = parser.parse_args()
 
+    current_version = get_current_version()
+    latest_version = get_latest_version()
+
     if args.version:
-        from importlib.metadata import version
-        print(f"Ziya version {version('ziya')}")
+        print(f"Ziya version {current_version}")
         return
+
+    if latest_version and current_version != latest_version:
+        update_package(current_version, latest_version)
+    else:
+        logger.info(f"Ziya version {current_version} is up to date.")
 
     additional_excluded_dirs = ','.join([item for item in args.exclude])
     os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] = additional_excluded_dirs
