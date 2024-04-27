@@ -15,6 +15,5 @@ pip install --index-url https://test.pypi.org/simple/ ziya
 ```bash
 poetry build
 poetry publish
-pip uninstall ziya -y
-pip install ziya
+pip install ziya --upgrade
 ```
