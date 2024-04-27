@@ -16,7 +16,14 @@ def main():
                         help="AWS Bedrock Model to use  (e.g., --model sonnet)")
     parser.add_argument("--port", type=int, default=6969,
                         help="Port number to run Ziya frontend on (e.g., --port 8080)")
+    parser.add_argument("--version", action="store_true",
+                        help="Prints the version of Ziya")
     args = parser.parse_args()
+
+    if args.version:
+        from importlib.metadata import version
+        print(f"Ziya version {version('ziya')}")
+        return
 
     additional_excluded_dirs = ','.join([item for item in args.exclude])
     os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] = additional_excluded_dirs
