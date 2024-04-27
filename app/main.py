@@ -12,7 +12,7 @@ def main():
                         help="List of directories to include (e.g., --include 'src,static'). Only directories for now")
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
-    parser.add_argument("--model", type=str, choices=["sonnet", "haiku", "opus"], default="haiku",
+    parser.add_argument("--model", type=str, choices=["sonnet", "haiku", "opus"], default="sonnet",
                         help="AWS Bedrock Model to use  (e.g., --model sonnet)")
     parser.add_argument("--port", type=int, default=6969,
                         help="Port number to run Ziya frontend on (e.g., --port 8080)")
