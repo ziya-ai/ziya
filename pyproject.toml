@@ -1,10 +1,10 @@
 [tool.poetry]
 name = "ziya"
-version = "0.1.8"
+version = "0.1.9"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>"]
 readme = "README.md"
-include = ["static/**/*", "templates/**/*", "pyproject.toml"]
+include = ["templates/**/*", "pyproject.toml" ,"scripts.py"]
 packages = [
     { include = "app" },
 ]
@@ -21,8 +21,6 @@ langchain = "^0.1"
 langchainhub = ">=0.1.15"
 langchain-anthropic = "^0.1.4"
 langchain-cli = ">=0.0.15"
-
-[tool.poetry.group.dev.dependencies]
 pydevd-pycharm = "^241.15989.57"
 
 [build-system]
@@ -30,4 +28,8 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-ziya = 'app.main:main'
+ziya = 'scripts:ziya'
+dev = 'scripts:dev'
+finstall = "scripts:frontend_install"
+fstart = "scripts:frontend_start"
+fbuild = "scripts:frontend_build"

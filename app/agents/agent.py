@@ -1,8 +1,7 @@
 import os
+from typing import List, Tuple, Set, Union
+
 import botocore
-
-from typing import Generator, List, Tuple, Set, Union
-
 import tiktoken
 from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
@@ -12,12 +11,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.pydantic_v1 import BaseModel, Field
 
 from app.agents.prompts import conversational_prompt, parse_output
-from app.utils.directory_util import get_ignored_patterns, get_complete_file_list
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 
 
 def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[HumanMessage, AIMessage]]:
+    logger.info("Formatting chat history")
     buffer = []
     for human, ai in chat_history:
         buffer.append(HumanMessage(content=human))
@@ -46,32 +45,20 @@ model = ChatBedrock(
 )
 
 
-def get_combined_document_contents() -> str:
-    user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
-    print(f"Reading user's current codebase: {user_codebase_dir}")
-
+def get_combined_docs_from_files(files) -> str:
     combined_contents: str = ""
-    ignored_patterns: List[str] = get_ignored_patterns(user_codebase_dir)
-    included_relative_dirs = [pattern.strip() for pattern in os.environ.get("ZIYA_ADDITIONAL_INCLUDE_DIRS", "").split(',')]
-    all_files: List[str] = get_complete_file_list(user_codebase_dir, ignored_patterns, included_relative_dirs)
-
-    print_file_tree(all_files)
-
-    seen_dirs: Set[str] = set()
-    for file_path in all_files:
+    print_file_tree(files)
+    user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
+    for file_path in files:
         try:
-            docs = TextLoader(file_path).load()
+            full_file_path = os.path.join(user_codebase_dir, file_path)
+            docs = TextLoader(full_file_path).load()
             for doc in docs:
                 combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
-            dir_path = os.path.dirname(file_path)
-            if dir_path not in seen_dirs:
-                seen_dirs.add(dir_path)
-        except Exception as e:
-            print(f"Skipping file {file_path} due to error: {e}")
 
-    print("--------------------------------------------------------")
-    print(f"Ignoring following paths based on gitIgnore and other defaults: {ignored_patterns}")
-    print("--------------------------------------------------------")
+        except Exception as e:
+            print(f"Skipping file {full_file_path} due to error: {e}")
+
     print(f"Codebase word count: {len(combined_contents.split()):,}")
     token_count = len(tiktoken.get_encoding("cl100k_base").encode(combined_contents))
     print(f"Codebase token count: {token_count:,}")
@@ -79,24 +66,57 @@ def get_combined_document_contents() -> str:
     print("--------------------------------------------------------")
     return combined_contents
 
-def get_child_paths(directory: str) -> Generator[str, None, None]:
-    for entry in os.listdir(directory):
-        child_path = os.path.join(directory, entry)
-        yield child_path
+# def get_combined_document_contents_from_included_dirs(included_relative_dirs) -> str:
+#     user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
+#     print(f"Reading user's current codebase: {user_codebase_dir}")
+#
+#     combined_contents: str = ""
+#     ignored_patterns: List[str] = get_ignored_patterns(user_codebase_dir)
+#     all_files: List[str] = get_complete_file_list(user_codebase_dir, ignored_patterns, included_relative_dirs)
+#     print("all_files")
+#     print(all_files)
+#
+#     print_file_tree(all_files)
+#
+#     seen_dirs: Set[str] = set()
+#     for file_path in all_files:
+#         try:
+#             docs = TextLoader(file_path).load()
+#             for doc in docs:
+#                 combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
+#             dir_path = os.path.dirname(file_path)
+#             if dir_path not in seen_dirs:
+#                 seen_dirs.add(dir_path)
+#         except Exception as e:
+#             print(f"Skipping file {file_path} due to error: {e}")
+#
+#     print("--------------------------------------------------------")
+#     print(f"Ignoring following paths based on gitIgnore and other defaults: {ignored_patterns}")
+#     print("--------------------------------------------------------")
+#     print(f"Codebase word count: {len(combined_contents.split()):,}")
+#     token_count = len(tiktoken.get_encoding("cl100k_base").encode(combined_contents))
+#     print(f"Codebase token count: {token_count:,}")
+#     print(f"Max Claude Token limit: 200,000")
+#     print("--------------------------------------------------------")
+#     return combined_contents
 
-
-prompt = conversational_prompt.partial(
-    codebase=get_combined_document_contents,
-)
+# prompt = conversational_prompt.partial(
+#     # codebase=get_combined_document_contents()
+# )
 llm_with_stop = model.bind(stop=["</tool_input>"])
+
+def extract_codebase(x):
+    # return get_combined_docs_from_files(x["config"].get("include_dirs", ['./']))
+    return get_combined_docs_from_files(x["config"].get("files", []))
 
 agent = (
         {
+            "codebase": lambda x: extract_codebase(x),
             "question": lambda x: x["question"],
             "agent_scratchpad": lambda x: format_xml(x["intermediate_steps"]),
             "chat_history": lambda x: _format_chat_history(x["chat_history"]),
         }
-        | prompt
+        | conversational_prompt
         | llm_with_stop
         | parse_output
 )
@@ -104,6 +124,7 @@ agent = (
 
 class AgentInput(BaseModel):
     question: str
+    config: dict = Field({})
     chat_history: List[Tuple[str, str]] = Field(..., extra={"widget": {"type": "chat"}})
 
 
