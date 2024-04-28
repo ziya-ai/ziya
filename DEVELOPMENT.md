@@ -1,4 +1,9 @@
-### To Build 
+### To Run locally 
+```bash
+poetry run fbuild && poetry run python app/main.py
+```
+
+### To Build
 
 ```bash
 poetry build
@@ -6,21 +11,21 @@ poetry build
 ### To Publish
 #### To install a whl file
 ```bash
-poetry build
+poetry run fbuild && poetry build
 pip uninstall ziya -y
 pip install dist/<ziya-whl-file>
 ```
 
 #### To publish and test in the testpypi repository:
 ```bash
-poetry build
+poetry run fbuild && poetry build
 poetry publish --repository testpypi
 pip uninstall ziya -y
 pip install --index-url https://test.pypi.org/simple/ ziya
 ```
 #### To publish to PyPi:
 ```bash
-poetry build && poetry publish
+poetry run fbuild && poetry build && poetry publish
 pip install ziya --upgrade
 ```
 

@@ -14,9 +14,7 @@ def handle_negation(file_path, rules: Reversible["IgnoreRule"]):
     return False
 
 
-def parse_gitignore_patterns(patterns: List[Tuple[str, str]], base_dir=None):
-    if base_dir is None:
-        base_dir = os.getcwd()
+def parse_gitignore_patterns(patterns: List[Tuple[str, str]]):
     rules = []
     for counter, (pattern, directory) in enumerate(patterns, start=1):
         rule = rule_from_pattern(pattern, base_path=_normalize_path(directory),

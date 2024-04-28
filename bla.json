@@ -1,0 +1,223 @@
+{
+  "app": {
+    "token_count": 6130,
+    "children": {
+      "server.py": {
+        "token_count": 765
+      },
+      "__init__.py": {
+        "token_count": 0
+      },
+      "agents": {
+        "token_count": 1720,
+        "children": {
+          "__init__.py": {
+            "token_count": 0
+          },
+          "prompts.py": {
+            "token_count": 438
+          },
+          "agent.py": {
+            "token_count": 1282
+          }
+        }
+      },
+      "utils": {
+        "token_count": 3027,
+        "children": {
+          "langchain_validation_util.py": {
+            "token_count": 110
+          },
+          "directory_util.py": {
+            "token_count": 620
+          },
+          "__init__.py": {
+            "token_count": 0
+          },
+          "print_tree_util.py": {
+            "token_count": 310
+          },
+          "version_util.py": {
+            "token_count": 134
+          },
+          "gitignore_parser.py": {
+            "token_count": 1793
+          },
+          "logging_utils.py": {
+            "token_count": 60
+          }
+        }
+      },
+      "main.py": {
+        "token_count": 618
+      }
+    }
+  },
+  "frontend": {
+    "token_count": 4329,
+    "children": {
+      "webpack.config.js": {
+        "token_count": 134
+      },
+      "public": {
+        "token_count": 107,
+        "children": {
+          "favicon.ico": {
+            "token_count": 0
+          },
+          "index.html": {
+            "token_count": 107
+          }
+        }
+      },
+      "package.json": {
+        "token_count": 461
+      },
+      "tsconfig.json": {
+        "token_count": 170
+      },
+      "FRONTEND.md": {
+        "token_count": 103
+      },
+      "src": {
+        "token_count": 3354,
+        "children": {
+          "index.tsx": {
+            "token_count": 73
+          },
+          "index.css": {
+            "token_count": 707
+          },
+          "components": {
+            "token_count": 2075,
+            "children": {
+              "MainChatContainer.tsx": {
+                "token_count": 200
+              },
+              "App.tsx": {
+                "token_count": 668
+              },
+              "EditSection.tsx": {
+                "token_count": 265
+              },
+              "types.ts": {
+                "token_count": 55
+              },
+              "MarkdownRenderer.tsx": {
+                "token_count": 59
+              },
+              "FolderTree.tsx": {
+                "token_count": 621
+              },
+              "ChatHistory.tsx": {
+                "token_count": 207
+              }
+            }
+          },
+          "api": {
+            "token_count": 499,
+            "children": {
+              "chatApi.ts": {
+                "token_count": 455
+              },
+              "folderApi.ts": {
+                "token_count": 44
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "LICENSE": {
+    "token_count": 221
+  },
+  "pyproject.toml": {
+    "token_count": 296
+  },
+  "bla.json": {
+    "token_count": 1359
+  },
+  "README.md": {
+    "token_count": 531
+  },
+  "templates": {
+    "token_count": 397872,
+    "children": {
+      "favicon.ico": {
+        "token_count": 0
+      },
+      "index.html": {
+        "token_count": 129
+      },
+      "asset-manifest.json": {
+        "token_count": 413
+      },
+      "static": {
+        "token_count": 397330,
+        "children": {
+          "css": {
+            "token_count": 94719,
+            "children": {
+              "main.85c755f1.css": {
+                "token_count": 34936
+              },
+              "main.85c755f1.css.map": {
+                "token_count": 59783
+              }
+            }
+          },
+          "js": {
+            "token_count": 302611,
+            "children": {
+              "main.3465a263.js.map": {
+                "token_count": 236944
+              },
+              "main.3465a263.js.LICENSE.txt": {
+                "token_count": 220
+              },
+              "main.3465a263.js": {
+                "token_count": 65447
+              }
+            }
+          },
+          "media": {
+            "token_count": 0,
+            "children": {
+              "fa-brands-400.60127e352b7a11f7f1bc.ttf": {
+                "token_count": 0
+              },
+              "fa-solid-900.bacd5de623fb563b961a.ttf": {
+                "token_count": 0
+              },
+              "fa-regular-400.eb91f7b948a42799f678.ttf": {
+                "token_count": 0
+              },
+              "fa-solid-900.4d986b00ff9ca3828fbd.woff2": {
+                "token_count": 0
+              },
+              "fa-v4compatibility.cf7f5903d06b79ad60f1.woff2": {
+                "token_count": 0
+              },
+              "fa-brands-400.455ea818179b4def0c43.woff2": {
+                "token_count": 0
+              },
+              "fa-regular-400.21cb8f55d8e0c5b89751.woff2": {
+                "token_count": 0
+              },
+              "fa-v4compatibility.c8e090db312b0bea2aa2.ttf": {
+                "token_count": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "scripts.py": {
+    "token_count": 170
+  },
+  "DEVELOPMENT.md": {
+    "token_count": 196
+  }
+}

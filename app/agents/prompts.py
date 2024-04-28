@@ -2,7 +2,8 @@ from langchain_core.agents import AgentFinish
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 # import pydevd_pycharm
 
-template = """You are an excellent coder. Help the user with their coding tasks. You are given the entire codebase
+template = """
+You are an excellent coder. Help the user with their coding tasks. You are given the entire codebase
  of the user in your context. It is in the format like below where first line has the File path and then the content follows. 
 
 File: <filepath>
@@ -16,6 +17,7 @@ Now below is the current codebase of the user:
 conversational_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", template),
+        # ("system", "You are a helpful AI bot. Your name is {name}."),
         MessagesPlaceholder(variable_name="chat_history"),
         ("user", "{question}"),
         ("ai", "{agent_scratchpad}"),
