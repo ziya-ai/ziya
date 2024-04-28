@@ -13,12 +13,12 @@ const App = () => {
         }
     }, []);
 
-    const handleSendPayload = async () => {
+    const handleSendPayload = async (msgs, msg) => {
         setQuestion('');
         setIsStreaming(true);
-        setMessages((messages) => [...messages, {content: question, role: 'human'}]);
+        setMessages((messages) => [...msgs, {content: msg, role: 'human'}]);
         setStreamedContent('');
-        await window.sendPayload(messages, question, setStreamedContent, setIsStreaming);
+        await window.sendPayload(messages, msg, setStreamedContent, setIsStreaming);
         setStreamedContent((cont) => {
             setMessages((messages) => [...messages, {content: cont, role: 'assistant'}]);
             return ""
@@ -37,24 +37,78 @@ const App = () => {
                     inputTextareaRef={inputTextareaRef}
                     question={question}
                     handleChange={handleChange}
-                    sendPayload={handleSendPayload}
+                    sendPayload={() => handleSendPayload(messages, question)}
                     isStreaming={isStreaming}
                 />
                 {streamedContent || messages.length > 0 ? <div className="chat-container">
                     {streamedContent && <StreamedContent streamedContent={streamedContent}/>}
-                    {messages.length > 0 && <ChatContainer messages={messages}/>}
+                    {messages.length > 0 &&
+                        <ChatContainer messages={messages} setMessages={setMessages}
+                                       handleSendPayload={handleSendPayload}/>}
                 </div> : null}
+
             </div>
         </div>
     );
 };
 
-const ChatContainer = ({messages}) => (
+const EditButton = ({message, index, setMessages, handleSendPayload}) => {
+    const [isEditing, setIsEditing] = useState(false);
+    const [editedMessage, setEditedMessage] = useState(message.content);
+
+    const handleEdit = () => {
+        setIsEditing(true);
+    };
+
+    const handleCancel = () => {
+        setIsEditing(false);
+        setEditedMessage(message.content);
+    };
+
+    const handleSubmit = () => {
+        setIsEditing(false);
+        setMessages((prevMessages) => {
+            const updatedMessages = [...prevMessages];
+            updatedMessages.splice(index);
+            handleSendPayload(updatedMessages, editedMessage);
+            return updatedMessages;
+        });
+    };
+
+    return (
+        <div>
+            {isEditing ? (
+                <>
+                    <textarea
+                        value={editedMessage}
+                        onChange={(e) => setEditedMessage(e.target.value)}
+                    />
+                    <button onClick={handleSubmit}>Submit</button>
+                    <button onClick={handleCancel}>Cancel</button>
+                </>
+            ) : (
+                <button className="edit-button" onClick={handleEdit}>Edit</button>
+            )}
+        </div>
+    );
+};
+const ChatContainer = ({messages, setMessages, handleSendPayload}) => (
     <div>
         {messages.slice().reverse().map((msg, index) => (
             <div key={index} className={`message ${msg.role}`}>
-                {msg.role === 'human' ? <div className="message-sender">You:</div> :
-                    <div className="message-sender">AI:</div>}
+                {msg.role === 'human' ? (
+                    <div style={{display: 'flex', justifyContent: 'space-between'}}>
+                        <div className="message-sender">You:</div>
+                        <EditButton
+                            message={msg}
+                            index={messages.length - 1 - index}
+                            setMessages={setMessages}
+                            handleSendPayload={handleSendPayload}
+                        />
+                    </div>
+                ) : (
+                    <div className="message-sender">AI:</div>
+                )}
                 <MarkdownRenderer markdown={msg.content}/>
             </div>
         ))}
