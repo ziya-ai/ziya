@@ -14,7 +14,7 @@ export const sendPayload = async (messages, question, setStreamedContent, setIsS
             const lines = buffer.split('\n');
 
             for (const line of lines) {
-                if (line.startsWith('data: ')) {
+                if (line.startsWith('data: {"ops":[{"op":"add","path":"/logs/ChatBedrock/streamed_output_str/-')) {
                     processLine(line, setStreamedContent);
                 }
             }
