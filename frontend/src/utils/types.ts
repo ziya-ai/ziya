@@ -8,6 +8,5 @@ export interface Folders {
 export interface CheckboxTreeNodes {
   label: string;
   value: string;
-  showCheckbox: boolean;
   children?: CheckboxTreeNodes[];
 }
