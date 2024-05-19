@@ -8,8 +8,6 @@ export const convertToNodes = (folder: Folders, parentPath = '') :  CheckboxTree
             label: `${key} (${value.token_count.toLocaleString("en-US")} tokens)`,
             value: path,
             // @ts-ignore
-            showCheckbox: !!value.children,
-            // @ts-ignore
             children: value.children ? convertToNodes(value.children, path) : undefined,
         };
     });
