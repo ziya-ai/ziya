@@ -55,8 +55,6 @@ ziya
 
 `--exclude`: Comma-separated list of files or directories or file suffix patterns to exclude from the codebase. Eg: `--exclude 'tst,build,*.py'`
 
-`--include`: Comma-separated list of directories to include. By default, it only searches for current directory for code files, but you can specify a list of subset directories under current folder to search instead of the entire folder. Eg: `--include='app,src/mappers'`
-
 `--profile`: AWS profile to use for the Bedrock LLM.
 
 `--model`: The AWS Bedrock Model to use, one of `haiku`(default), `sonnet` or `opus`.
