@@ -53,7 +53,7 @@ ziya
 
 ### Options
 
-`--exclude`: Comma-separated list of files or directories or file suffix patterns to exclude from the codebase. Eg: `--exclude 'tst,build,*.py'`
+`--exclude`: Comma-separated list of files or directories or file suffix patterns to exclude from the codebase. Eg: "--exclude 'tst,build,*.py'"
 
 `--profile`: AWS profile to use for the Bedrock LLM.
 
