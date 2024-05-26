@@ -3,6 +3,7 @@ from typing import Dict, Any, List, Tuple
 
 import tiktoken
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
@@ -16,6 +17,15 @@ from app.utils.directory_util import get_ignored_patterns
 from app.utils.gitignore_parser import parse_gitignore_patterns
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="../templates/static"), name="static")
 templates = Jinja2Templates(directory="../templates")
 
