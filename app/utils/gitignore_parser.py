@@ -119,9 +119,10 @@ class IgnoreRule(collections.namedtuple('IgnoreRule_', IGNORE_RULE_FIELDS)):
     def match(self, abs_path: Union[str, Path]):
         matched = False
         if self.base_path:
-            if str(abs_path).startswith(str(self.base_path)):
+            try:
                 rel_path = str(_normalize_path(abs_path).relative_to(self.base_path))
-            else:
+            except ValueError:
+                # If the path is not a subpath of the base path, treat it as a separate path
                 rel_path = str(_normalize_path(abs_path))
         else:
             rel_path = str(_normalize_path(abs_path))
