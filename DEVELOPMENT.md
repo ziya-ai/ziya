@@ -1,6 +1,9 @@
 ### To Run locally 
 ```bash
-poetry run fbuild && poetry run python app/main.py
+poetry run fbuild && poetry run python app/main.py --profile <aws-profile-name>
+
+Example: 
+poetry run fbuild && poetry run python app/main.py --profile ziya
 ```
 
 ### To Build
