@@ -48,12 +48,38 @@ def check_version_and_upgrade():
         logger.info(f"Ziya version {current_version} is up to date.")
 
 
+def is_package_installed_with_pip(package_name: str) -> bool:
+    try:
+        subprocess.check_call([sys.executable, '-m', 'pip', 'show', package_name], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def is_package_installed_with_pipx(package_name: str) -> bool:
+    try:
+        subprocess.check_call(['pipx', 'list'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(['pipx', 'list'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return package_name in result.stdout.decode()
+    except subprocess.CalledProcessError:
+        return False
+
+
 def update_package(current_version: str, latest_version: Optional[str]) -> None:
     try:
         logger.info(f"Updating ziya from {current_version} to {latest_version}")
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'ziya'])
-        logger.info("Update completed. Next time you run ziya it will be with the latest version.")
 
+        if is_package_installed_with_pip('ziya'):
+            logger.info("Package installed via pip")
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'ziya'])
+        elif is_package_installed_with_pipx('ziya'):
+            logger.info("Package installed via pipx")
+            subprocess.check_call(['pipx', 'upgrade', 'ziya'])
+        else:
+            logger.info("ziya is not installed with pip or pipx.")
+
+        logger.info("Update completed. Next time you run ziya it will be with the latest version.")
     except Exception as e:
         logger.info(f"Unexpected error upgrading ziya: {e}")
 
