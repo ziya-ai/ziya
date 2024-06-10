@@ -1,13 +1,16 @@
-### To Run locally 
+### To Run locally
+First install packages
+```bash
+poetry install
+```
+Then run
 ```bash
 poetry run fbuild && poetry run python app/main.py
+
+Run with aws profile: 
+poetry run fbuild && poetry run python app/main.py --profile ziya
 ```
 
-### To Build
-
-```bash
-poetry build
-```
 ### To Publish
 #### To install a whl file
 ```bash
