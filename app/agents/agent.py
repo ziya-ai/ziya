@@ -111,7 +111,6 @@ def extract_codebase(x):
 
 agent = (
         {
-            "codebase": lambda x: extract_codebase(x),
             "question": lambda x: x["question"],
             "agent_scratchpad": lambda x: format_xml(x["intermediate_steps"]),
             "chat_history": lambda x: _format_chat_history(x["chat_history"]),
@@ -132,7 +131,7 @@ agent_executor = AgentExecutor(
     agent=agent, tools=[], verbose=True, handle_parsing_errors=True
 ).with_types(input_type=AgentInput)
 
-agent_executor = agent_executor | (lambda x: x["output"])
+agent_executor = agent_executor | (lambda x: {"codebase": extract_codebase(x), **x}) | (lambda x: x["output"])
 
 if __name__ == "__main__":
     question = "How are you ?"
