@@ -43,7 +43,7 @@ async def favicon():
     return FileResponse('../templates/favicon.ico')
 
 
-def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int = 99) -> Dict[str, Any]:
+def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int = 12) -> Dict[str, Any]:
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
 
     def count_tokens(file_path: str) -> int:
@@ -64,6 +64,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             if entry.startswith('.'):  # Skip hidden files/folders
                 continue
             entry_path = os.path.join(current_dir, entry)
+            if os.path.islink(entry_path):  # Skip symbolic links
+                continue
             if os.path.isdir(entry_path):
                 if not should_ignore_fn(entry_path):
                     sub_structure = get_structure(entry_path, current_depth + 1)
