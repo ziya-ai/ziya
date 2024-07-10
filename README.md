@@ -57,7 +57,7 @@ ziya
 
 `--profile`: AWS profile to use for the Bedrock LLM.
 
-`--model`: The AWS Bedrock Model to use, one of `haiku`(default), `sonnet` or `opus`.
+`--model`: The AWS Bedrock Model to use, one of `sonnet`(default), `sonnet3.5`, `haiku` or `opus`.
 
 `--port`: The port number for frontend app. Default is `6969`.
 
