@@ -5,7 +5,7 @@ poetry install
 ```
 Then run
 ```bash
-poetry run fbuild && poetry run python app/main.py
+poetry run fbuild && poetry run python app/main.py --port 6868
 
 Run with aws profile: 
 poetry run fbuild && poetry run python app/main.py --profile ziya
