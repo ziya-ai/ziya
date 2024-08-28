@@ -1,127 +1,140 @@
 import React, {useEffect, useState} from 'react';
-import CheckboxTree from 'react-checkbox-tree';
-import 'react-checkbox-tree/lib/react-checkbox-tree.css';
-import {convertToNodes} from "../utils/folderUtil";
-import {Folders, CheckboxTreeNodes} from "../utils/types";
+import {Input, Tree, TreeDataNode} from 'antd';
+import {useFolderContext} from '../context/FolderContext';
+import {TokenCountDisplay} from "./TokenCountDisplay";
+import cloneDeep from 'lodash/cloneDeep';
+import union from 'lodash/union';
 
-export const FolderTree = ({setCheckedItems}) => {
-    const [checked, setChecked] = useState<string[]>([]);
-    const [expanded, setExpanded] = useState<string[]>([]);
-    const [totalTokenCount, setTotalTokenCount] = useState(0);
-    const [folders, setFolders] = useState<Folders>();
-    const [nodes, setNodes] = useState<CheckboxTreeNodes[]>([]);
-    const [searchTerm, setSearchTerm] = useState('');
-    const [filteredNodes, setFilteredNodes] = useState<CheckboxTreeNodes[]>([]);
+const {Search} = Input;
 
-    useEffect(() => {
-        const fetchFolders = async () => {
-            try {
-                const response = await fetch('/api/folders');
-                const data = await response.json();
-                setFolders(data);
-                const convertedNodes = convertToNodes(data);
-                setNodes(convertedNodes);
-                setFilteredNodes(convertedNodes);
-            } catch (error) {
-                console.error('Error fetching folders:', error);
-            }
-        };
-        fetchFolders();
-    }, []);
+export const FolderTree: React.FC = () => {
+    const {
+        treeData,
+        checkedKeys,
+        setCheckedKeys
+    } = useFolderContext();
+
+    const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
+    const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
+    const [searchValue, setSearchValue] = useState('');
+    const [autoExpandParent, setAutoExpandParent] = useState(true);
 
     useEffect(() => {
-        if (searchTerm) {
-            const filtered = filterNodes(nodes, searchTerm.toLowerCase());
-            setFilteredNodes(filtered);
-            setExpanded(getExpandedNodes(filtered));
+        if (searchValue) {
+            const {filteredData, expandedKeys} = filterTreeData(treeData, searchValue);
+            setFilteredTreeData(filteredData);
+            setExpandedKeys(expandedKeys);
         } else {
-            setFilteredNodes(nodes);
-            setExpanded([]);
+            setFilteredTreeData(treeData);
+            setExpandedKeys([]);
         }
-    }, [searchTerm, nodes]);
+    }, [searchValue, treeData]);
 
-    const getFolderTokenCount = (filePath: string, folders: Folders) => {
-        let segments = filePath.split('/');
-        let lastNode;
-        for (const segment of segments) {
-            if (folders[segment] && folders[segment].children) {
-                folders = folders[segment].children!;
-            } else {
-                lastNode = folders[segment];
+    const filterTreeData = (data: TreeDataNode[], searchValue: string): {
+        filteredData: TreeDataNode[],
+        expandedKeys: React.Key[]
+    } => {
+        const expandedKeys: React.Key[] = [];
+
+        const filter = (node: TreeDataNode): TreeDataNode | null => {
+            const nodeTitle = node.title as string;
+            if (nodeTitle.toLowerCase().includes(searchValue.toLowerCase())) {
+                expandedKeys.push(node.key);
+                return node;
             }
-        }
-        return lastNode.token_count;
-    };
 
-    const calculateTotalTokenCount = (checked: string[]) => {
-        let totalTokenCount = 0;
-        checked.forEach(item => {
-            const folderTokenCount = getFolderTokenCount(item, folders!);
-            totalTokenCount += folderTokenCount;
-        });
-        setTotalTokenCount(totalTokenCount);
-    };
+            if (node.children) {
+                const filteredChildren = node.children
+                    .map(child => filter(child))
+                    .filter((child): child is TreeDataNode => child !== null);
 
-    const getTokenCountClass = () => {
-        if (totalTokenCount > 180000) {
-            return 'red';
-        } else if (totalTokenCount > 150000) {
-            return 'orange';
-        }
-        return 'green';
-    }
-
-    const filterNodes = (nodes: CheckboxTreeNodes[], term: string): CheckboxTreeNodes[] => {
-        return nodes.reduce((acc: CheckboxTreeNodes[], node) => {
-            if (node.label.toLowerCase().includes(term) || node.value.toLowerCase().includes(term)) {
-                acc.push(node);
-            } else if (node.children) {
-                const filteredChildren = filterNodes(node.children, term);
                 if (filteredChildren.length > 0) {
-                    acc.push({...node, children: filteredChildren});
+                    expandedKeys.push(node.key);
+                    return {...node, children: filteredChildren};
                 }
             }
-            return acc;
-        }, []);
+            return null;
+        };
+
+        const filteredData = data.map(node => filter(node)).filter((node): node is TreeDataNode => node !== null);
+
+        return {filteredData, expandedKeys};
     };
 
-    const getExpandedNodes = (nodes: CheckboxTreeNodes[]): string[] => {
-        return nodes.reduce((acc: string[], node) => {
-            if (node.children) {
-                acc.push(node.value);
-                acc.push(...getExpandedNodes(node.children));
+    const onExpand = (newExpandedKeys: React.Key[]) => {
+        setExpandedKeys(newExpandedKeys);
+        setAutoExpandParent(false);
+    };
+
+    const onCheck = React.useCallback(
+        (checkedKeysValue, e) => {
+            if (e.checked) {
+                if (e.node?.children?.length) {
+                    setCheckedKeys(
+                        union(
+                            checkedKeys,
+                            cloneDeep([...e.node.children.map((child) => child.key)])
+                        )
+                    );
+                } else {
+                    setCheckedKeys(union(checkedKeys, [e.node.key]));
+                }
+            } else {
+                if (e.node?.children?.length) {
+                    setCheckedKeys(
+                        union(
+                            checkedKeys.filter((item) => {
+                                return (
+                                    item !== e.node.key &&
+                                    !e.node.children.filter((child) => child.key === item).length
+                                );
+                            })
+                        )
+                    );
+                } else {
+                    setCheckedKeys(
+                        cloneDeep(checkedKeys.filter((item) => item !== e.node.key))
+                    );
+                }
             }
-            return acc;
-        }, []);
+        },
+        [searchValue, checkedKeys, setCheckedKeys]
+    );
+
+    const getParentKey = (key: React.Key, tree: TreeDataNode[]): React.Key => {
+        let parentKey: React.Key;
+        for (let i = 0; i < tree.length; i++) {
+            const node = tree[i];
+            if (node.children) {
+                if (node.children.some((item) => item.key === key)) {
+                    parentKey = node.key;
+                } else if (getParentKey(key, node.children)) {
+                    parentKey = getParentKey(key, node.children);
+                }
+            }
+        }
+        return parentKey!;
+    };
+
+    const onSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const value = e.target.value;
+        setSearchValue(value);
+        setAutoExpandParent(true);
     };
 
     return (
         <div className="folder-tree-panel">
-            <h3 className={`token-count ${getTokenCountClass()}`}>
-                Tokens: {totalTokenCount.toLocaleString()} / 160,000
-            </h3>
-            <input
-                type="text"
-                placeholder="Search folders and files..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="search-input"
+            <TokenCountDisplay/>
+            <Search style={{marginBottom: 8}} placeholder="Search folders" onChange={onSearch}/>
+            <Tree
+                checkable
+                onExpand={onExpand}
+                expandedKeys={expandedKeys}
+                autoExpandParent={autoExpandParent}
+                onCheck={onCheck}
+                checkedKeys={checkedKeys}
+                treeData={filteredTreeData}
             />
-            {folders ? (
-                <CheckboxTree
-                    nodes={filteredNodes}
-                    checked={checked}
-                    expanded={expanded}
-                    onCheck={checked => {
-                        setChecked(checked);
-                        setCheckedItems(checked);
-                        calculateTotalTokenCount(checked);
-                    }}
-                    onExpand={expanded => setExpanded(expanded)}
-                />
-            ) : (
-                <div>Loading Folders...</div>
-            )}
         </div>
     );
 };

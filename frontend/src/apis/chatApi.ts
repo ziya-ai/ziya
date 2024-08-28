@@ -1,4 +1,4 @@
-export const sendPayload = async (messages, question, setStreamedContent, setIsStreaming, checkedItems) => {
+export const sendPayload = async (messages, question, setStreamedContent, checkedItems) => {
     try {
         const response = await getApiResponse(messages, question, checkedItems);
         // @ts-ignore
@@ -6,7 +6,6 @@ export const sendPayload = async (messages, question, setStreamedContent, setIsS
 
         const processData = async ({done, value}) => {
             if (done) {
-                setIsStreaming(false);
                 return;
             }
             let buffer = '';
@@ -25,7 +24,6 @@ export const sendPayload = async (messages, question, setStreamedContent, setIsS
         await reader.read().then(processData);
     } catch (error) {
         console.error(error);
-        setIsStreaming(false);
     }
 };
 
