@@ -1,14 +1,28 @@
-import {CheckboxTreeNodes, Folders} from "./types";
+import {Folders} from "./types";
+import {TreeDataNode} from "antd";
 
-export const convertToNodes = (folder: Folders, parentPath = '') :  CheckboxTreeNodes[] => {
-    return Object.entries(folder).map(([key, value]) => {
-        const path = parentPath ? `${parentPath}/${key}` : key;
-        return {
-            // @ts-ignore
-            label: `${key} (${value.token_count.toLocaleString("en-US")} tokens)`,
-            value: path,
-            // @ts-ignore
-            children: value.children ? convertToNodes(value.children, path) : undefined,
+export const convertToTreeData = (folders: Folders, parentKey = ''): TreeDataNode[] => {
+    return Object.entries(folders).map(([key, value]) => {
+        const currentKey = parentKey ? `${parentKey}/${key}` : key;
+        const title = `${key} (${value.token_count.toLocaleString()} tokens)`;
+        const node: TreeDataNode = {
+            title,
+            key: currentKey,
         };
+
+        if (value.children) {
+            node.children = convertToTreeData(value.children, currentKey);
+        }
+        return node;
     });
 };
+
+const hasSearchTerm = (n, searchTerm) =>
+    n.toLowerCase().indexOf(searchTerm.toLowerCase()) !== -1;
+
+const filterData = (arr, searchTerm) =>
+    arr?.filter(
+        (n) =>
+            hasSearchTerm(n.title, searchTerm) ||
+            filterData(n.children, searchTerm)?.length > 0
+    );

@@ -2,7 +2,9 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import '@fortawesome/fontawesome-free/css/all.min.css';
-import App from "./components/App";
+import {App} from "./components/App";
+import {ChatProvider} from "./context/ChatContext";
+import {FolderProvider} from "./context/FolderContext";
 
 
 const root = ReactDOM.createRoot(
@@ -10,6 +12,10 @@ const root = ReactDOM.createRoot(
 );
 root.render(
     <React.StrictMode>
-        <App/>
+        <ChatProvider>
+            <FolderProvider>
+                <App/>
+            </FolderProvider>
+        </ChatProvider>
     </React.StrictMode>
 );
