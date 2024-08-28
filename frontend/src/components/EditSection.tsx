@@ -1,37 +1,49 @@
 import React, {useState} from "react";
+import {useChatContext} from '../context/ChatContext';
+import {sendPayload} from "../apis/chatApi";
+import {useFolderContext} from "../context/FolderContext";
 
-export const EditSection = ({message, index, setMessages, checkedItems, handleSendPayload}) => {
+interface EditSectionProps {
+    index: number;
+}
+
+export const EditSection: React.FC<EditSectionProps> = ({index}) => {
+    const {messages, setMessages, setStreamedContent, setIsStreaming} = useChatContext();
     const [isEditing, setIsEditing] = useState(false);
-    const [editedMessage, setEditedMessage] = useState(message.content);
-
+    const [editedMessage, setEditedMessage] = useState(messages[index].content);
+    const {checkedKeys} = useFolderContext()
     const handleEdit = () => {
         setIsEditing(true);
     };
 
     const handleCancel = () => {
         setIsEditing(false);
-        setEditedMessage(message.content);
+        setEditedMessage(messages[index].content);
     };
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
         setIsEditing(false);
-        setMessages((prevMessages) => {
-            const updatedMessages = [...prevMessages];
-            updatedMessages.splice(index);
-            handleSendPayload(updatedMessages, editedMessage, checkedItems);
-            return updatedMessages;
+        const updatedMessages = [...messages.slice(0, index), {content: editedMessage, role: 'human'}];
+        setMessages(updatedMessages);
+        setIsStreaming(true);
+        await sendPayload(updatedMessages, editedMessage, setStreamedContent, checkedKeys);
+        setIsStreaming(false);
+        setStreamedContent((content) => {
+            setMessages((prevMessages) => [...prevMessages, {content, role: 'assistant'}]);
+            return "";
         });
     };
+
 
     return (
         <div>
             {isEditing ? (
                 <>
-                    <textarea
-                        style={{width: '40vw', height: '100px'}}
-                        value={editedMessage}
-                        onChange={(e) => setEditedMessage(e.target.value)}
-                    />
+          <textarea
+              style={{width: '40vw', height: '100px'}}
+              value={editedMessage}
+              onChange={(e) => setEditedMessage(e.target.value)}
+          />
                     <button onClick={handleSubmit}>Submit</button>
                     <button onClick={handleCancel}>Cancel</button>
                 </>
