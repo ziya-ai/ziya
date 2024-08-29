@@ -1,0 +1,37 @@
+body.dark-mode {
+    background-color: #1a1a1a;
+    color: #f0f0f0;
+  }
+  
+  .dark-mode .container {
+    background-color: #2b2b2b;
+    color: #f0f0f0;
+  }
+  
+  .dark-mode .message.human {
+    background-color: #333333;
+  }
+  
+  .dark-mode .message.ai {
+    background-color: #444444;
+  }
+  
+  .dark-mode .input-textarea {
+    background-color: #333333;
+    color: #f0f0f0;
+  }
+  
+  .dark-mode .send-button {
+    background-color: #007bff;
+    color: #f0f0f0;
+  }
+  
+  .dark-mode .folder-tree-panel {
+    background-color: #1a1a1a;
+    color: #f0f0f0;
+  }
+  
+  .dark-mode .search-input {
+    background-color: #333333;
+    color: #f0f0f0;
+  }

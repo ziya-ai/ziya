@@ -154,3 +154,10 @@ body {
   border-radius: 4px;
   font-size: 14px;
 }
+
+.dark-mode-toggle {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 1000;
+}
