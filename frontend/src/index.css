@@ -15,68 +15,71 @@ body {
   border-radius: 8px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
   margin-left: 30vw;
+  width: calc(70vw - 40px);
+  box-sizing: border-box;
 }
 
 /* Chat Container */
-.chat-container {
+.chat-container-wrapper {
   height: fit-content;
-  overflow-y: scroll;
+  position: relative;
+  margin-bottom: 20px;
   padding: 10px;
   border: 1px solid #ccc;
   border-radius: 4px;
-  margin: 20px 0;
-}
-
-.message {
-  padding: 10px;
-  border-radius: 8px;
-}
-
-.message.human {
-  background-color: #efefef;
-  align-self: flex-start;
-  margin-right: auto;
-}
-
-.message.ai {
-  background-color: #f0f0f0;
-  align-self: flex-end;
-  margin-left: auto;
-}
-
-.message-sender {
-  font-weight: bold;
-  margin-bottom: 5px;
-}
-
-/* Input Container */
-.input-container {
-  display: flex;
-  align-items: center;
+  overflow: visible;
 }
 
 .input-textarea {
-  flex-grow: 1;
-  padding: 10px;
+  width: 100%;
+  height: 100%;
+  resize: none;
   border: 1px solid #ccc;
   border-radius: 4px;
-  resize: none;
-  font-size: 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.react-resizable {
+  position: relative;
+}
+
+.react-resizable-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  bottom: -10px;
+  right: -10px;
+  background: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2IDYiIHN0eWxlPSJiYWNrZ3JvdW5kLWNvbG9yOiNmZmZmZmYwMCIgeD0iMHB4IiB5PSIwcHgiIHdpZHRoPSI2cHgiIGhlaWdodD0iNnB4Ij48ZyBvcGFjaXR5PSIwLjMwMiI+PHBhdGggZD0iTSA2IDYgTCAwIDYgTCAwIDQuMiBMIDQgNC4yIEwgNC4yIDQuMiBMIDQuMiAwIEwgNiAwIEwgNiA2IEwgNiA2IFoiIGZpbGw9IiMwMDAwMDAiLz48L2c+PC9zdmc+');
+  background-position: bottom right;
+  padding: 0 3px 3px 0;
+  background-repeat: no-repeat;
+  background-origin: content-box;
+  box-sizing: border-box;
+  cursor: se-resize;
+  z-index: 1;
 }
 
 .send-button {
-  margin-left: 10px;
-  padding: 10px 20px;
+  display: block;
+  margin-top: 10px;
+  padding: 8px 16px;
   background-color: #007bff;
-  color: #fff;
+  color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 16px;
+  transition: background-color 0.2s;
+}
+
+.send-button:hover {
+  background-color: #0056b3;
 }
 
 .send-button:disabled {
-  background-color: #ccc;
+  background-color: #cccccc;
   cursor: not-allowed;
 }
 
@@ -95,7 +98,7 @@ body {
   position: fixed;
   left: 0;
   top: 0;
-  width: 30vw; /* Increase the width to 30vw */
+  width: 30vw;
   height: 100vh;
   background-color: #f5f5f5;
   padding: 20px;
@@ -129,20 +132,20 @@ body {
 
 /*Token count*/
 .token-count {
-    margin-top: 10px;
-    font-weight: bold;
+  margin-top: 10px;
+  font-weight: bold;
 }
 
 .token-count.green {
-    color: green;
+  color: green;
 }
 
 .token-count.orange {
-    color: orange;
+  color: orange;
 }
 
 .token-count.red {
-    color: red;
+  color: red;
 }
 
 /* Search box */
