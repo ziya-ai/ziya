@@ -1,7 +1,10 @@
 import React, { useEffect, useRef } from "react";
 import { useChatContext } from '../context/ChatContext';
 import { sendPayload } from "../apis/chatApi";
-import {useFolderContext} from "../context/FolderContext";
+import { useFolderContext } from "../context/FolderContext";
+import { Input, Button } from 'antd'; // Import Ant Design components
+
+const { TextArea } = Input; // Destructure TextArea from Input
 
 const isQuestionEmpty = (input: string) => input.trim().length === 0;
 
@@ -16,13 +19,12 @@ export const SendChatContainer: React.FC = () => {
         setStreamedContent
     } = useChatContext();
 
-    const {checkedKeys} = useFolderContext();
+    const { checkedKeys } = useFolderContext();
 
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const textareaRef = useRef<any>(null);
 
     useEffect(() => {
-        console.log("checkedKeys")
-        console.log(checkedKeys)
+        console.log("checkedKeys", checkedKeys);
     }, [checkedKeys]);
 
     useEffect(() => {
@@ -50,27 +52,27 @@ export const SendChatContainer: React.FC = () => {
 
     return (
         <div className="input-container">
-            <textarea
+            <TextArea
                 ref={textareaRef}
                 value={question}
                 onChange={handleChange}
                 placeholder="Enter your question.."
-                rows={3}
                 className="input-textarea"
-                onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey && !isQuestionEmpty(question)) {
+                onPressEnter={(event) => {
+                    if (!event.shiftKey && !isQuestionEmpty(question)) {
                         event.preventDefault();
                         handleSendPayload();
                     }
                 }}
             />
-            <button
+            <Button
                 onClick={handleSendPayload}
                 disabled={isStreaming || isQuestionEmpty(question)}
                 className="send-button"
+                type="primary"
             >
                 {isStreaming ? `Sending..` : `Send`}
-            </button>
+            </Button>
         </div>
     );
 };
