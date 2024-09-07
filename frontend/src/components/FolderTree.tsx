@@ -2,13 +2,13 @@ import React, {useEffect, useState} from 'react';
 import {Input, Tree, TreeDataNode} from 'antd';
 import {useFolderContext} from '../context/FolderContext';
 import {TokenCountDisplay} from "./TokenCountDisplay";
-import cloneDeep from 'lodash/cloneDeep';
 import union from 'lodash/union';
 
 const {Search} = Input;
 
 export const FolderTree: React.FC = () => {
     const {
+        folders,
         treeData,
         checkedKeys,
         setCheckedKeys
@@ -130,15 +130,16 @@ export const FolderTree: React.FC = () => {
         <div className="folder-tree-panel">
             <TokenCountDisplay/>
             <Search style={{marginBottom: 8}} placeholder="Search folders" onChange={onSearch}/>
-            <Tree
-                checkable
-                onExpand={onExpand}
-                expandedKeys={expandedKeys}
-                autoExpandParent={autoExpandParent}
-                onCheck={onCheck}
-                checkedKeys={checkedKeys}
-                treeData={filteredTreeData}
-            />
+            {folders ? (<Tree
+                    checkable
+                    onExpand={onExpand}
+                    expandedKeys={expandedKeys}
+                    autoExpandParent={autoExpandParent}
+                    onCheck={onCheck}
+                    checkedKeys={checkedKeys}
+                    treeData={filteredTreeData}
+                />
+            ) : (<div>Loading Folders...</div>)}
         </div>
     );
 };
