@@ -68,37 +68,41 @@ export const FolderTree: React.FC = () => {
 
     const onCheck = React.useCallback(
         (checkedKeysValue, e) => {
+            const getAllChildKeys = (node: TreeDataNode): string[] => {
+                let keys: string[] = [node.key as string];
+                if (node.children) {
+                    node.children.forEach(child => {
+                        keys = keys.concat(getAllChildKeys(child));
+                    });
+                }
+                return keys;
+            };
+
             if (e.checked) {
-                if (e.node?.children?.length) {
-                    setCheckedKeys(
-                        union(
-                            checkedKeys,
-                            cloneDeep([...e.node.children.map((child) => child.key)])
-                        )
+                if (e.node.children?.length) {
+                    const keysToAdd = getAllChildKeys(e.node);
+                    setCheckedKeys(prevKeys =>
+                        union(prevKeys as string[], keysToAdd)
                     );
                 } else {
-                    setCheckedKeys(union(checkedKeys, [e.node.key]));
+                    setCheckedKeys(prevKeys =>
+                        union(prevKeys as string[], [e.node.key as string])
+                    );
                 }
             } else {
-                if (e.node?.children?.length) {
-                    setCheckedKeys(
-                        union(
-                            checkedKeys.filter((item) => {
-                                return (
-                                    item !== e.node.key &&
-                                    !e.node.children.filter((child) => child.key === item).length
-                                );
-                            })
-                        )
+                if (e.node.children?.length) {
+                    const keysToRemove = getAllChildKeys(e.node);
+                    setCheckedKeys(prevKeys =>
+                        (prevKeys as string[]).filter(key => !keysToRemove.includes(key))
                     );
                 } else {
-                    setCheckedKeys(
-                        cloneDeep(checkedKeys.filter((item) => item !== e.node.key))
+                    setCheckedKeys(prevKeys =>
+                        (prevKeys as string[]).filter(key => key !== e.node.key)
                     );
                 }
             }
         },
-        [searchValue, checkedKeys, setCheckedKeys]
+        [searchValue]
     );
 
     const getParentKey = (key: React.Key, tree: TreeDataNode[]): React.Key => {
