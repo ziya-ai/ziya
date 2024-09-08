@@ -1,5 +1,3 @@
-import exp from "node:constants";
-
 export interface Folders {
     [key: string]: {
         token_count: number;
@@ -9,7 +7,11 @@ export interface Folders {
 
 export type Message = {
     content: string;
-    role: string;
+    role: 'human' | 'assistant';
 };
 
-export type FolderKeyTitle = { key: string; title: string; };
+export interface Conversation {
+    id: string;
+    title: string;
+    messages: Message[];
+}

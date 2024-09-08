@@ -1,10 +1,10 @@
-import React, { useEffect, useRef } from "react";
-import { useChatContext } from '../context/ChatContext';
-import { sendPayload } from "../apis/chatApi";
-import { useFolderContext } from "../context/FolderContext";
-import { Input, Button } from 'antd'; // Import Ant Design components
+import React, {useEffect, useRef} from "react";
+import {useChatContext} from '../context/ChatContext';
+import {sendPayload} from "../apis/chatApi";
+import {useFolderContext} from "../context/FolderContext";
+import {Button, Input} from 'antd'; // Import Ant Design components
 
-const { TextArea } = Input; // Destructure TextArea from Input
+const {TextArea} = Input; // Destructure TextArea from Input
 
 const isQuestionEmpty = (input: string) => input.trim().length === 0;
 
@@ -15,11 +15,11 @@ export const SendChatContainer: React.FC = () => {
         isStreaming,
         setIsStreaming,
         messages,
-        setMessages,
+        addMessageToCurrentConversation,
         setStreamedContent
     } = useChatContext();
 
-    const { checkedKeys } = useFolderContext();
+    const {checkedKeys} = useFolderContext();
 
     const textareaRef = useRef<any>(null);
 
@@ -40,14 +40,17 @@ export const SendChatContainer: React.FC = () => {
     const handleSendPayload = async () => {
         setQuestion('');
         setIsStreaming(true);
-        setMessages((prevMessages) => [...prevMessages, {content: question, role: 'human'}]);
+        const newHumanMessage = {content: question, role: 'human' as 'human'};
+        addMessageToCurrentConversation(newHumanMessage);
+
         setStreamedContent('');
-        await sendPayload(messages, question, setStreamedContent, checkedKeys);
+        await sendPayload([...messages, newHumanMessage], question, setStreamedContent, checkedKeys);
         setStreamedContent((cont) => {
-            setMessages((prevMessages) => [...prevMessages, {content: cont, role: 'assistant'}]);
+            const newAIMessage = {content: cont, role: 'assistant' as 'assistant'};
+            addMessageToCurrentConversation(newAIMessage);
             return "";
         });
-        setIsStreaming(false)
+        setIsStreaming(false);
     };
 
     return (
