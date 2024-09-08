@@ -1,93 +1,42 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React from 'react';
+import {ConfigProvider, theme} from 'antd';
 import {FolderTree} from "./FolderTree";
-import {MarkdownRenderer} from "./MarkdownRenderer";
 import {ChatHistory} from "./ChatHistory";
-import {MainChatContainer} from "./MainChatContainer";
-import {sendPayload} from "../apis/chatApi";
+import {SendChatContainer} from "./SendChatContainer";
+import {useChatContext} from '../context/ChatContext';
+import {StreamedContent} from './StreamedContent';
+import {ThemeProvider, useTheme} from '../context/ThemeContext';
+import {ThemeToggleButton} from './ThemeToggleButton'
 
-const App = () => {
-    const [messages, setMessages] = useState([]);
-    const [question, setQuestion] = useState('');
-    const [streamedContent, setStreamedContent] = useState('');
-    const [isStreaming, setIsStreaming] = useState(false);
-    const [checkedItems, setCheckedItems] = useState<string[]>([]);
-    const [isDarkMode, setIsDarkMode] = useState(false);
-
-    const inputTextareaRef = useRef(null);
-
-    useEffect(() => {
-        if (inputTextareaRef.current) {
-            // @ts-ignore
-            inputTextareaRef.current.focus();
-        }
-        const body = document.body;
-        if (isDarkMode) {
-            body.classList.add('dark-mode');
-        } else {
-            body.classList.remove('dark-mode');
-        }
-        localStorage.setItem('isDarkMode', isDarkMode.toString());
-    }, [isDarkMode]);
-
-    const toggleDarkMode = () => {
-        setIsDarkMode(!isDarkMode);
-    };;
-
-    const handleSendPayload = async (msgs, msg, folders) => {
-        setQuestion('');
-        setIsStreaming(true);
-        // @ts-ignore
-        setMessages((messages) => [...msgs, {content: msg, role: 'human'}]);
-        setStreamedContent('');
-        await sendPayload(messages, msg, setStreamedContent, setIsStreaming, Array.from(folders));
-        setStreamedContent((cont) => {
-            // @ts-ignore
-            setMessages((messages) => [...messages, {content: cont, role: 'assistant'}]);
-            return ""
-        });
-        // @ts-ignore
-        inputTextareaRef.current.focus();
-    };
-
-    const handleChange = (event) => {
-        setQuestion(event.target.value);
-    };
+const AppContent = () => {
+    const { streamedContent, messages } = useChatContext();
+    const { isDarkMode } = useTheme();
 
     return (
-        <div><h2 style={{textAlign: "center"}}>Ziya: Code Assist</h2>
-            <button className="dark-mode-toggle" onClick={toggleDarkMode}>
-                {isDarkMode ? "Light Mode" : "Dark Mode"}
-            </button>
+        <ConfigProvider
+            theme={{
+                algorithm: isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm,
+            }}
+        >
+            <h2 style={{textAlign: "center", marginBlock: '0.5em'}}>Ziya: Code Assist</h2>
+            <ThemeToggleButton />
             <div className="container">
-                <FolderTree
-                    setCheckedItems={setCheckedItems}
-                />
-                <MainChatContainer
-                    inputTextareaRef={inputTextareaRef}
-                    question={question}
-                    handleChange={handleChange}
-                    sendPayload={() => {
-                        handleSendPayload(messages, question, checkedItems)
-                    }}
-                    isStreaming={isStreaming}
-                />
-                {streamedContent || messages.length > 0 ? <div className="chat-container">
-                    {streamedContent && <StreamedContent streamedContent={streamedContent}/>}
-                    {messages.length > 0 &&
-                        <ChatHistory messages={messages} setMessages={setMessages} checkedItems={checkedItems}
-                                     handleSendPayload={handleSendPayload}/>}
-                </div> : null}
-
+                <FolderTree/>
+                <SendChatContainer/>
+                {(messages.length > 0 || streamedContent) && (
+                    <div className="chat-container">
+                        <StreamedContent/>
+                        <ChatHistory/>
+                    </div>)}
             </div>
-        </div>
+        </ConfigProvider>
     );
 };
 
-const StreamedContent = ({streamedContent}) => (
-    <div className="message assistant">
-        <div className="message-sender">AI:</div>
-        <MarkdownRenderer markdown={streamedContent}/>
-    </div>
-);
-
-export default App;
+export const App = () => {
+    return (
+        <ThemeProvider>
+            <AppContent />
+        </ThemeProvider>
+    );
+};

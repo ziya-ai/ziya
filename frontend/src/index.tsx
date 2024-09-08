@@ -1,7 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
-import "./dark-mode.css";
 import '@fortawesome/fontawesome-free/css/all.min.css';
 import {App} from "./components/App";
 import {ChatProvider} from "./context/ChatContext";
