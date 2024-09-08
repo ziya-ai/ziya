@@ -98,7 +98,7 @@ body {
   width: 30vw; /* Increase the width to 30vw */
   height: 100vh;
   background-color: #f5f5f5;
-  padding: 20px;
+  padding-inline: 20px;
   box-sizing: border-box;
   overflow-y: auto;
 }
