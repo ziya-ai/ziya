@@ -1,12 +1,13 @@
 import React from 'react';
 import {FolderTree} from "./FolderTree";
-import {ChatHistory} from "./ChatHistory";
 import {SendChatContainer} from "./SendChatContainer";
 import {useChatContext} from '../context/ChatContext';
 import {StreamedContent} from './StreamedContent';
+import {Conversation} from "./Conversation";
 
 export const App = () => {
-    const {streamedContent, messages} = useChatContext();
+    const { streamedContent, messages} = useChatContext();
+
     return (
         <>
             <h2 style={{textAlign: "center", marginBlock: '0.5em'}}>Ziya: Code Assist</h2>
@@ -16,7 +17,7 @@ export const App = () => {
                 {(messages.length > 0 || streamedContent) && (
                     <div className="chat-container">
                         <StreamedContent/>
-                        <ChatHistory/>
+                        <Conversation/>
                     </div>)}
             </div>
         </>

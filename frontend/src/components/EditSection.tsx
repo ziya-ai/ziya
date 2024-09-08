@@ -2,6 +2,7 @@ import React, {useState} from "react";
 import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {useFolderContext} from "../context/FolderContext";
+import {Message} from "../utils/types";
 
 interface EditSectionProps {
     index: number;
@@ -23,7 +24,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
 
     const handleSubmit = async () => {
         setIsEditing(false);
-        const updatedMessages = [...messages.slice(0, index), {content: editedMessage, role: 'human'}];
+        const updatedMessages : Message[] = [...messages.slice(0, index), {content: editedMessage, role: 'human'}];
         setMessages(updatedMessages);
         setIsStreaming(true);
         await sendPayload(updatedMessages, editedMessage, setStreamedContent, checkedKeys);

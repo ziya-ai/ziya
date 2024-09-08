@@ -1,8 +1,11 @@
 import React, {useEffect, useState} from 'react';
-import {Input, Tree, TreeDataNode} from 'antd';
+import {Input, Tabs, Tree, TreeDataNode} from 'antd';
 import {useFolderContext} from '../context/FolderContext';
 import {TokenCountDisplay} from "./TokenCountDisplay";
 import union from 'lodash/union';
+import {ChatHistory} from "./ChatHistory";
+
+const {TabPane} = Tabs;
 
 const {Search} = Input;
 
@@ -128,18 +131,28 @@ export const FolderTree: React.FC = () => {
 
     return (
         <div className="folder-tree-panel">
-            <TokenCountDisplay/>
-            <Search style={{marginBottom: 8}} placeholder="Search folders" onChange={onSearch}/>
-            {folders ? (<Tree
-                    checkable
-                    onExpand={onExpand}
-                    expandedKeys={expandedKeys}
-                    autoExpandParent={autoExpandParent}
-                    onCheck={onCheck}
-                    checkedKeys={checkedKeys}
-                    treeData={filteredTreeData}
-                />
-            ) : (<div>Loading Folders...</div>)}
+            <Tabs defaultActiveKey="1">
+                <TabPane tab="File Explorer" key="1">
+                    <TokenCountDisplay/>
+                    <Search style={{marginBottom: 8}} placeholder="Search folders" onChange={onSearch}/>
+                    {folders ? (
+                        <Tree
+                            checkable
+                            onExpand={onExpand}
+                            expandedKeys={expandedKeys}
+                            autoExpandParent={autoExpandParent}
+                            onCheck={onCheck}
+                            checkedKeys={checkedKeys}
+                            treeData={filteredTreeData}
+                        />
+                    ) : (
+                        <div>Loading Folders...</div>
+                    )}
+                </TabPane>
+                <TabPane tab="Chat History" key="2">
+                     <ChatHistory />
+                </TabPane>
+            </Tabs>
         </div>
     );
 };
