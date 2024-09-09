@@ -14,8 +14,8 @@ poetry run fbuild && poetry run python app/main.py --profile ziya
 ### To Publish
 #### To install a whl file
 ```bash
-poetry run fbuild && poetry build
 pip uninstall ziya -y
+poetry run fbuild && poetry build
 pip install dist/<ziya-whl-file>
 ```
 
