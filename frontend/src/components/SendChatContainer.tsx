@@ -24,10 +24,6 @@ export const SendChatContainer: React.FC = () => {
     const textareaRef = useRef<any>(null);
 
     useEffect(() => {
-        console.log("checkedKeys", checkedKeys);
-    }, [checkedKeys]);
-
-    useEffect(() => {
         if (question === '' && textareaRef.current) {
             textareaRef.current.focus();
         }
