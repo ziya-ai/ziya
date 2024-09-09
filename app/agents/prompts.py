@@ -3,15 +3,22 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 # import pydevd_pycharm
 
 template = """
-You are an excellent coder. Help the user with their coding tasks. You are given the entire codebase
- of the user in your context. It is in the format like below where first line has the File path and then the content follows. 
+You are an excellent coder. Help the user with their coding tasks. You are given the codebase
+of the user in your context. 
+
+IMPORTANT: When recommending code changes, always format your response as a git diff unless the user specifies otherwise.
+
+The codebase is provided at the end of this prompt in a specific format. 
+The code that the user has given to you for context is in the format like below where first line has the File path and then the content follows.
+Each file starts with "File: <filepath>" followed by its content on subsequent lines. 
 
 File: <filepath>
 <Content of the file>. 
 
-Now below is the current codebase of the user: 
- 
+Below is the current codebase of the user: 
+
 {codebase}
+
 """
 
 conversational_prompt = ChatPromptTemplate.from_messages(
@@ -27,23 +34,4 @@ conversational_prompt = ChatPromptTemplate.from_messages(
 
 def parse_output(message):
     text = message.content
-    # pydevd_pycharm.settrace('localhost', port=61565, stdoutToServer=True, stderrToServer=True)
-    # print('----TEXT START----')
-    # print(text)
-    # print('----TEXT END----')
-    # if "</tool>" in text:
-    #     tool, tool_input = text.split("</tool>")
-    #     _tool = tool.split("<tool>")[1]
-    #     _tool_input = tool_input.split("<tool_input>")[1]
-    #
-    #     if _tool == "write_file":
-    #         _tool_input = json.loads(_tool_input)
-    #         # newline_index = _tool_input.find('\n')
-    #         # file_path = _tool_input[:newline_index]
-    #         # text = _tool_input[newline_index + 1:]
-    #     if "</tool_input>" in _tool_input:
-    #         _tool_input = _tool_input.split("</tool_input>")[0]
-    #
-    #     return AgentAction(tool=_tool, tool_input=_tool_input, log=text)
-    # else:
     return AgentFinish(return_values={"output": text}, log=text)
