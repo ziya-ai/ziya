@@ -154,3 +154,17 @@ body {
   border-radius: 4px;
   font-size: 14px;
 }
+
+/* Git diff view */
+.smaller-diff-view {
+    margin-top: 0.5em;
+    font-size: 12px;
+}
+
+.smaller-diff-view .diff-gutter {
+    font-size: 12px;
+}
+
+.smaller-diff-view .diff-code {
+    font-size: 12px;
+}

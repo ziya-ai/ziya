@@ -32,13 +32,16 @@ const renderTokens = (tokens) => {
 
                 return (
                     <>
-                     <h4>{renderFileHeader(file)}</h4>
-                     <Diff key={`${index}-${fileIndex}`} viewType="unified" gutterType="none" diffType={file.type}
-                          hunks={file.hunks}>
-                        {hunks => hunks.map((hunk, hunkIndex) => (
-                            <Hunk key={`${index}-${hunkIndex}`} hunk={hunk}/>
-                        ))}
-                    </Diff>
+                        <b>{renderFileHeader(file)}</b>
+                        {file.type !== 'delete' &&
+                            <Diff key={`${index}-${fileIndex}`} viewType="unified" gutterType="none"
+                                  diffType={file.type}
+                                  className="smaller-diff-view"
+                                  hunks={file.hunks}>
+                                {hunks => hunks.map((hunk, hunkIndex) => (
+                                    <Hunk key={`${index}-${hunkIndex}`} hunk={hunk}/>
+                                ))}
+                            </Diff>}
                     </>
                 );
             });
