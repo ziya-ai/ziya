@@ -123,7 +123,7 @@ export const FolderTree: React.FC = () => {
                 );
             }
         },
-        [searchValue]
+        [searchValue, treeData]
     );
 
     const getParentKey = (key: React.Key, tree: TreeDataNode[]): React.Key => {
