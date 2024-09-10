@@ -81,6 +81,29 @@ export const FolderTree: React.FC = () => {
                 return keys;
             };
 
+            const getAllParentKeys = (key: React.Key, tree: TreeDataNode[]): string[] => {
+                let parentKeys: string[] = [];
+                const findParent = (currentKey: React.Key, nodes: TreeDataNode[]): React.Key | null => {
+                    for (let i = 0; i < nodes.length; i++) {
+                        const node = nodes[i];
+                        if (node.children && node.children.some(child => child.key === currentKey)) {
+                            parentKeys.push(node.key as string);
+                            return node.key;
+                        } else if (node.children) {
+                            const foundParent = findParent(currentKey, node.children);
+                            if (foundParent) {
+                                parentKeys.push(node.key as string);
+                                return foundParent;
+                            }
+                        }
+                    }
+                    return null;
+                };
+
+                findParent(key, tree);
+                return parentKeys;
+            };
+
             if (e.checked) {
                 if (e.node.children?.length) {
                     const keysToAdd = getAllChildKeys(e.node);
@@ -93,16 +116,11 @@ export const FolderTree: React.FC = () => {
                     );
                 }
             } else {
-                if (e.node.children?.length) {
-                    const keysToRemove = getAllChildKeys(e.node);
-                    setCheckedKeys(prevKeys =>
-                        (prevKeys as string[]).filter(key => !keysToRemove.includes(key))
-                    );
-                } else {
-                    setCheckedKeys(prevKeys =>
-                        (prevKeys as string[]).filter(key => key !== e.node.key)
-                    );
-                }
+                const keysToRemove = e.node.children?.length ? getAllChildKeys(e.node) : [e.node.key as string];
+                const parentKeys = getAllParentKeys(e.node.key, treeData);
+                setCheckedKeys(prevKeys =>
+                    (prevKeys as string[]).filter(key => !keysToRemove.includes(key) && !parentKeys.includes(key))
+                );
             }
         },
         [searchValue]
@@ -150,7 +168,7 @@ export const FolderTree: React.FC = () => {
                     )}
                 </TabPane>
                 <TabPane tab="Chat History" key="2">
-                     <ChatHistory />
+                    <ChatHistory/>
                 </TabPane>
             </Tabs>
         </div>
