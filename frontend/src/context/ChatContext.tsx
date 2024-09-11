@@ -16,6 +16,7 @@ interface ChatContext {
     currentConversationId: string;
     setCurrentConversationId: Dispatch<SetStateAction<string>>;
     addMessageToCurrentConversation: (message: Message) => void;
+    startNewChat: () => void;
 }
 
 const chatContext = createContext<ChatContext | undefined>(undefined);
@@ -50,11 +51,16 @@ export function ChatProvider({children}: ChatProviderProps) {
                 // Create new conversation
                 return [...prevConversations, {
                     id: currentConversationId,
-                    title: message.content.slice(0, 45) + '...',
+                    title: message.content.slice(0, 45),
                     messages: [message],
                 }];
             }
         });
+    };
+
+    const startNewChat = () => {
+        setCurrentConversationId(uuidv4());
+        setMessages([]);
     };
 
     useEffect(() => {
@@ -81,7 +87,8 @@ export function ChatProvider({children}: ChatProviderProps) {
         setConversations,
         currentConversationId,
         setCurrentConversationId,
-        addMessageToCurrentConversation
+        addMessageToCurrentConversation,
+        startNewChat
     };
     return <chatContext.Provider value={value}>{children}</chatContext.Provider>;
 }
