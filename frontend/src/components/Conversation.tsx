@@ -1,5 +1,6 @@
 import React from "react";
 import {EditSection} from "./EditSection";
+import {RetrySection} from "./RetrySection";
 import {MarkdownRenderer} from "./MarkdownRenderer";
 import {useChatContext} from '../context/ChatContext';
 
@@ -18,7 +19,12 @@ export const Conversation: React.FC = () => {
                                     <EditSection index={messages.length - 1 - index}/>
                                 </div>
                             ) : (
-                                <div className="message-sender">AI:</div>
+                                <div style={{display: 'flex', justifyContent: 'space-between'}}>
+                                    <div className="message-sender">AI:</div>
+                                    <div style={{alignSelf: 'flex-end'}}>
+                                        <RetrySection index={messages.length - 1 - index}/>
+                                    </div>
+                                </div>
                             )}
                             <MarkdownRenderer markdown={msg.content}/>
                         </div>

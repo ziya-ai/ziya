@@ -3,6 +3,8 @@ import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {useFolderContext} from "../context/FolderContext";
 import {Message} from "../utils/types";
+import {Button, Tooltip, Input} from "antd";
+import {EditOutlined, CheckOutlined, CloseOutlined} from "@ant-design/icons";
 
 interface EditSectionProps {
     index: number;
@@ -13,6 +15,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
     const [isEditing, setIsEditing] = useState(false);
     const [editedMessage, setEditedMessage] = useState(messages[index].content);
     const {checkedKeys} = useFolderContext()
+    const {TextArea} = Input;
     const handleEdit = () => {
         setIsEditing(true);
     };
@@ -24,7 +27,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
 
     const handleSubmit = async () => {
         setIsEditing(false);
-        const updatedMessages : Message[] = [...messages.slice(0, index), {content: editedMessage, role: 'human'}];
+        const updatedMessages: Message[] = [...messages.slice(0, index), {content: editedMessage, role: 'human'}];
         setMessages(updatedMessages);
         setIsStreaming(true);
         await sendPayload(updatedMessages, editedMessage, setStreamedContent, checkedKeys);
@@ -40,16 +43,18 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
         <div>
             {isEditing ? (
                 <>
-          <textarea
-              style={{width: '40vw', height: '100px'}}
-              value={editedMessage}
-              onChange={(e) => setEditedMessage(e.target.value)}
-          />
-                    <button onClick={handleSubmit}>Submit</button>
-                    <button onClick={handleCancel}>Cancel</button>
+                    <TextArea
+                        style={{width: '38vw', height: '100px'}}
+                        value={editedMessage}
+                        onChange={(e) => setEditedMessage(e.target.value)}
+                    />
+                    <Button icon={<CloseOutlined />} onClick={handleCancel} size={"small"} style={{marginInline: '3px'}}>Cancel</Button>
+                    <Button icon={<CheckOutlined />} onClick={handleSubmit} size={"small"} type={"primary"}>Submit</Button>
                 </>
             ) : (
-                <button className="edit-button" onClick={handleEdit}>Edit</button>
+                <Tooltip title="Edit">
+                    <Button icon={<EditOutlined/>} onClick={handleEdit}/>
+                </Tooltip>
             )}
         </div>
     );

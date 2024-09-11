@@ -2,9 +2,10 @@ import React, {useEffect, useRef} from "react";
 import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {useFolderContext} from "../context/FolderContext";
-import {Button, Input} from 'antd'; // Import Ant Design components
+import {Button, Input} from 'antd';
+import {SendOutlined} from "@ant-design/icons";
 
-const {TextArea} = Input; // Destructure TextArea from Input
+const {TextArea} = Input;
 
 const isQuestionEmpty = (input: string) => input.trim().length === 0;
 
@@ -58,7 +59,7 @@ export const SendChatContainer: React.FC = () => {
                 placeholder="Enter your question.."
                 className="input-textarea"
                 onPressEnter={(event) => {
-                    if (!event.shiftKey && !isQuestionEmpty(question)) {
+                    if (!isStreaming && !event.shiftKey && !isQuestionEmpty(question)) {
                         event.preventDefault();
                         handleSendPayload();
                     }
@@ -67,10 +68,11 @@ export const SendChatContainer: React.FC = () => {
             <Button
                 onClick={handleSendPayload}
                 disabled={isStreaming || isQuestionEmpty(question)}
-                className="send-button"
                 type="primary"
+                icon={<SendOutlined/>}
+                style={{marginLeft: '10px'}}
             >
-                {isStreaming ? `Sending..` : `Send`}
+                {isStreaming ? 'Sending...' : 'Send'}
             </Button>
         </div>
     );
