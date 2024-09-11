@@ -104,7 +104,7 @@ export const FolderTree: React.FC = () => {
                 return parentKeys;
             };
 
-            if (e.checked) {
+            if (e.checked || e.selected) {
                 if (e.node.children?.length) {
                     const keysToAdd = getAllChildKeys(e.node);
                     setCheckedKeys(prevKeys =>
@@ -147,12 +147,18 @@ export const FolderTree: React.FC = () => {
         setAutoExpandParent(true);
     };
 
+    const titleRender = (nodeData) => (
+        <span style={{userSelect: 'text', cursor: 'text'}}>{nodeData.title}</span>
+    );
+
     return (
         <div className="folder-tree-panel">
             <Tabs defaultActiveKey="1">
                 <TabPane tab="File Explorer" key="1">
                     <TokenCountDisplay/>
-                    <Search style={{marginBottom: 8}} placeholder="Search folders" onChange={onSearch}/>
+                    <Search style={{marginBottom: 8}} placeholder="Search folders" onChange={onSearch}
+                             allowClear
+                    />
                     {folders ? (
                         <Tree
                             checkable
@@ -162,6 +168,7 @@ export const FolderTree: React.FC = () => {
                             onCheck={onCheck}
                             checkedKeys={checkedKeys}
                             treeData={filteredTreeData}
+                            titleRender={titleRender}
                         />
                     ) : (
                         <div>Loading Folders...</div>

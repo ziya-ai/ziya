@@ -1,6 +1,6 @@
-import React from 'react';
-import {List, Button} from 'antd';
-import {DeleteOutlined} from '@ant-design/icons';
+import React, {useState} from 'react';
+import {List, Button, Input} from 'antd';
+import {DeleteOutlined, EditOutlined} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
 
 export const ChatHistory: React.FC = () => {
@@ -11,6 +11,7 @@ export const ChatHistory: React.FC = () => {
         currentConversationId,
         setConversations,
     } = useChatContext();
+    const [editingId, setEditingId] = useState<string | null>(null);
 
     const handleConversationClick = (conversationId: string) => {
         const selectedConversation = conversations.find(conv => conv.id === conversationId);
@@ -19,6 +20,22 @@ export const ChatHistory: React.FC = () => {
             setMessages(selectedConversation.messages);
         }
     };
+
+    const handleEditClick = (e: React.MouseEvent, conversationId: string) => {
+        e.stopPropagation();
+        setEditingId(conversationId);
+    };
+
+    const handleTitleChange = (conversationId: string, newTitle: string) => {
+        setConversations(prevConversations =>
+            prevConversations.map(conv =>
+                conv.id === conversationId ? {...conv, title: newTitle} : conv
+            )
+        );
+        setEditingId(null);
+    };
+
+    const handleTitleBlur = (conversationId: string, newTitle: string) => handleTitleChange(conversationId, newTitle);
 
     const handleDeleteConversation = (e: React.MouseEvent, conversationId: string) => {
         e.stopPropagation(); // Prevent the click from bubbling up to the List.Item
@@ -45,15 +62,41 @@ export const ChatHistory: React.FC = () => {
                         borderRadius: '4px',
                         display: 'flex',
                         justifyContent: 'space-between',
-                        alignItems: 'center',
+                        alignItems: 'flex-start',
+                        flexWrap: 'nowrap',
                     }}
                 >
-                    <div>{conversation.title}</div>
-                    <Button
-                        type="text"
-                        icon={<DeleteOutlined/>}
-                        onClick={(e) => handleDeleteConversation(e, conversation.id)}
-                    />
+                    {editingId === conversation.id ? (
+                        <Input
+                            defaultValue={conversation.title}
+                            onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
+                            onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
+                            onClick={(e) => e.stopPropagation()}
+                        />
+                    ) : (
+                        <div style={{
+                            flex: 1,
+                            marginRight: '8px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                        }}>
+                            {conversation.title}
+                        </div>
+                    )}
+                    <div style={{display: 'flex', alignItems: 'center', flexShrink: 0}}>
+                        <Button
+                            type="text"
+                            icon={<EditOutlined/>}
+                            onClick={(e) => handleEditClick(e, conversation.id)}
+                            style={{marginRight: '4px'}}
+                        />
+                        <Button
+                            type="text"
+                            icon={<DeleteOutlined/>}
+                            onClick={(e) => handleDeleteConversation(e, conversation.id)}
+                        />
+                    </div>
                 </List.Item>
             )}
         />
