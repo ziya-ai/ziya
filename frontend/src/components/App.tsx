@@ -5,7 +5,7 @@ import {useChatContext} from '../context/ChatContext';
 import {StreamedContent} from './StreamedContent';
 import {Conversation} from "./Conversation";
 import {Button, Tooltip} from "antd";
-import {FileAddOutlined} from "@ant-design/icons";
+import {PlusOutlined} from "@ant-design/icons";
 
 export const App = () => {
     const {streamedContent, messages, startNewChat} = useChatContext();
@@ -24,7 +24,7 @@ export const App = () => {
             </div>
             <div style={{position: 'fixed', right: '10px', top: '10px'}}>
                 <Tooltip title="New Chat">
-                    <Button icon={<FileAddOutlined />} onClick={startNewChat}/>
+                    <Button icon={<PlusOutlined />} onClick={startNewChat} size={"large"}/>
                 </Tooltip>
             </div>
         </>
