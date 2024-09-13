@@ -1,27 +1,53 @@
+import { createParser } from 'eventsource-parser';
+
 export const sendPayload = async (messages, question, setStreamedContent, checkedItems) => {
     try {
         const response = await getApiResponse(messages, question, checkedItems);
-        // @ts-ignore
+
+        if (!response.body) {
+            throw new Error('No body in response');
+        }
+
         const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        const parser = createParser(onParse);
+        const contentChunks = [];
 
-        const processData = async ({done, value}) => {
-            if (done) {
-                return;
-            }
-            let buffer = '';
-            buffer += new TextDecoder('utf-8').decode(value);
-            const lines = buffer.split('\n');
-
-            for (const line of lines) {
-                if (line.startsWith('data: {"ops":[{"op":"add","path":"/logs/ChatBedrock/streamed_output_str/-')) {
-                    processLine(line, setStreamedContent);
+        function onParse(event) {
+            if (event.type === 'event') {
+                try {
+                    const data = JSON.parse(event.data);
+                    processOps(data.ops);
+                } catch (e) {
+                    console.error('Error parsing JSON:', e);
                 }
             }
-            // @ts-ignore
-            await reader.read().then(processData);
-        };
-        // @ts-ignore
-        await reader.read().then(processData);
+        }
+
+        function processOps(ops) {
+            for (const op of ops) {
+                if (
+                    op.op === 'add' &&
+                    op.path === '/logs/ChatBedrock/streamed_output_str/-'
+                ) {
+                    // @ts-ignore
+                    contentChunks.push(op.value);
+                    setStreamedContent(contentChunks.join(''));
+                }
+            }
+        }
+
+        async function readStream() {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value);
+                parser.feed(chunk);
+            }
+        }
+
+        await readStream();
+
     } catch (error) {
         console.error(error);
     }
@@ -40,25 +66,15 @@ async function getApiResponse(messages, question, checkedItems) {
         }
     }
     const response = await fetch('/ziya/stream_log', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             input: {
                 chat_history: messageTuples,
                 question: question,
-                config: {files: checkedItems},
+                config: { files: checkedItems },
             },
         }),
     });
     return response;
 }
-
-const processLine = (line, setStreamedContent) => {
-    const data = JSON.parse(line.slice(6));
-    const streamedOutputOp = data.ops.find(
-        (op) => op.op === 'add' && op.path === '/logs/ChatBedrock/streamed_output_str/-'
-    );
-
-    if (streamedOutputOp) {
-        setStreamedContent((prevContent) => prevContent + streamedOutputOp.value);
-    }
-};
