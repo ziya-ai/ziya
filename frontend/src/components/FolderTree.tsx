@@ -1,5 +1,5 @@
 import React, {useEffect, useState} from 'react';
-import {Input, Tabs, Tree, TreeDataNode} from 'antd';
+import {Input, Tabs, Tree, TreeDataNode, Button} from 'antd';
 import {useFolderContext} from '../context/FolderContext';
 import {TokenCountDisplay} from "./TokenCountDisplay";
 import union from 'lodash/union';
@@ -21,17 +21,37 @@ export const FolderTree: React.FC = () => {
     const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
+    const [allKeys, setAllKeys] = useState<React.Key[]>([]);
+    const [matchedKeys, setMatchedKeys] = useState<React.Key[]>([]);
 
     useEffect(() => {
         if (searchValue) {
             const {filteredData, expandedKeys} = filterTreeData(treeData, searchValue);
             setFilteredTreeData(filteredData);
             setExpandedKeys(expandedKeys);
+            
+            // Update matchedKeys
+            const getMatchedKeys = (nodes: TreeDataNode[]): React.Key[] => {
+                return nodes.reduce((keys, node) => {
+                    return [...keys, node.key, ...(node.children ? getMatchedKeys(node.children) : [])];
+                }, [] as React.Key[]);
+            };
+            setMatchedKeys(getMatchedKeys(filteredData));
         } else {
             setFilteredTreeData(treeData);
             setExpandedKeys([]);
+            setMatchedKeys([]);
         }
     }, [searchValue, treeData]);
+
+    useEffect(() => {
+        const getAllKeys = (nodes: TreeDataNode[]): React.Key[] => {
+            return nodes.reduce((keys, node) => {
+                return [...keys, node.key, ...(node.children ? getAllKeys(node.children) : [])];
+            }, [] as React.Key[]);
+        };
+        setAllKeys(getAllKeys(treeData));
+    }, [treeData]);
 
     const filterTreeData = (data: TreeDataNode[], searchValue: string): {
         filteredData: TreeDataNode[],
@@ -63,6 +83,32 @@ export const FolderTree: React.FC = () => {
 
         return {filteredData, expandedKeys};
     };
+
+    const handleToggleAll = () => {
+        if (searchValue) {
+            // If there's a search term, toggle only matched results
+            if (matchedKeys.every(key => checkedKeys.includes(key as string))) {
+                // Unselect all matched
+                setCheckedKeys(prevKeys => prevKeys.filter(key => !matchedKeys.includes(key)));
+            } else {
+                // Select all matched
+                setCheckedKeys(prevKeys => [...new Set([...prevKeys, ...matchedKeys])]);
+            }
+        } else {
+            // If no search term, toggle all
+            if (checkedKeys.length === allKeys.length) {
+                // Unselect all
+                setCheckedKeys([]);
+            } else {
+                // Select all
+                setCheckedKeys(allKeys);
+            }
+        }
+    };
+ 
+    const toggleButtonText = searchValue
+    ? (matchedKeys.every(key => checkedKeys.includes(key as string)) ? "Unselect Filtered" : "Select Filtered")
+    : (checkedKeys.length === allKeys.length ? "Unselect All" : "Select All");
 
     const onExpand = (newExpandedKeys: React.Key[]) => {
         setExpandedKeys(newExpandedKeys);
@@ -159,6 +205,10 @@ export const FolderTree: React.FC = () => {
                     <Search style={{marginBottom: 8}} placeholder="Search folders" onChange={onSearch}
                              allowClear
                     />
+                    <Button 
+                        onClick={handleToggleAll} 
+                        style={{marginBottom: 8, width: '100%'}}
+                    >{toggleButtonText}</Button>
                     {folders ? (
                         <Tree
                             checkable
