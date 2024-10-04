@@ -62,5 +62,5 @@ ziya
 `--port`: The port number for frontend app. Default is `6969`.
 
 ```bash
-ziya --exclude='tst,build,*.py' --profile=ziya --model=sonnet --port=8080
+ziya --exclude='tst,build,*.py' --profile=ziya --model=sonnet3.5 --port=8080
 ```
