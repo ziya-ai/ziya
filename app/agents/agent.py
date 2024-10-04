@@ -33,7 +33,7 @@ model_id = {
     "sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
     "haiku": "anthropic.claude-3-haiku-20240307-v1:0",
     "opus": "anthropic.claude-3-opus-20240229-v1:0",
-}[os.environ.get("ZIYA_AWS_MODEL", "sonnet")]
+}[os.environ.get("ZIYA_AWS_MODEL", "sonnet3.5")]
 logger.info(f"Using Claude Model: {model_id}")
 
 model = ChatBedrock(
