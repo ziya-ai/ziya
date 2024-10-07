@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.1.32"
+version = "0.1.39"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>"]
 readme = "README.md"
@@ -12,16 +12,16 @@ packages = [
 [tool.poetry.dependencies]
 python = ">=3.9,<4.0"
 uvicorn = "^0.23.2"
-pydantic = "<2"
+pydantic = "^2.9.2"
 jinja2 = "^3.1.3"
-tiktoken = "^0.6.0"
+tiktoken = "^0.8.0"
 boto3 = "^1.34.88"
-langchain-aws = "^0.1.0"
-langchain = "^0.1"
+langchain-aws = ">=0.2,<0.3"
+langchain = ">=0.3,<0.4"
 langchainhub = ">=0.1.15"
-langchain-anthropic = "^0.1.4"
+langchain-anthropic = ">=0.2,<0.3"
 langchain-cli = ">=0.0.15"
-pydevd-pycharm = "^241.15989.57"
+pydevd-pycharm = "^243.18137.19"
 
 [build-system]
 requires = ["poetry-core"]
