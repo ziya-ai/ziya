@@ -30,6 +30,8 @@ pip install --index-url https://test.pypi.org/simple/ ziya
 ```bash
 poetry run fbuild && poetry build && poetry publish
 pip install ziya --upgrade
+OR 
+pipx upgrade ziya
 ```
 
 ### FAQ
