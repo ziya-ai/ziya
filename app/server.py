@@ -43,7 +43,7 @@ async def favicon():
     return FileResponse('../templates/favicon.ico')
 
 
-def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int = 12) -> Dict[str, Any]:
+def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
 
     def count_tokens(file_path: str) -> int:
@@ -87,8 +87,9 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 async def get_folders():
     # pydevd_pycharm.settrace('localhost', port=59939, stdoutToServer=True, stderrToServer=True)
     user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
+    max_depth = int(os.environ.get("ZIYA_MAX_DEPTH"))
     ignored_patterns: List[Tuple[str, str]] = get_ignored_patterns(user_codebase_dir)
-    return get_folder_structure(user_codebase_dir, ignored_patterns)
+    return get_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
 
 
 @app.get('/api/default-included-folders')
