@@ -17,12 +17,14 @@ def parse_arguments():
                         help="List of files or directories to exclude (e.g., --exclude 'tst,build,*.py')")
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
-    parser.add_argument("--model", type=str, choices=["sonnet", "sonnet3.5", "haiku", "opus"], default="sonnet3.5",
+    parser.add_argument("--model", type=str, choices=["sonnet", "sonnet3.5", "sonnet3.5-v2", "haiku", "opus"], default="sonnet3.5",
                         help="AWS Bedrock Model to use (e.g., --model sonnet)")
     parser.add_argument("--port", type=int, default=6969,
                         help="Port number to run Ziya frontend on (e.g., --port 8080)")
     parser.add_argument("--version", action="store_true",
                         help="Prints the version of Ziya")
+    parser.add_argument("--max-depth", type=int, default=15,
+                        help="Maximum depth for folder structure traversal (e.g., --max-depth 20)")
     return parser.parse_args()
 
 
@@ -36,6 +38,8 @@ def setup_environment(args):
         os.environ["ZIYA_AWS_PROFILE"] = args.profile
     if args.model:
         os.environ["ZIYA_AWS_MODEL"] = args.model
+
+    os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
 
 
 def check_version_and_upgrade():
