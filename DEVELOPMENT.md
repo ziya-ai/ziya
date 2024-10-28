@@ -3,22 +3,21 @@ First install packages
 ```bash
 poetry install
 ```
-Then run
+To just test FrontEnd changes run
 ```bash
 poetry run fbuild && poetry run python app/main.py --port 6868
 
 Run with aws profile: 
 poetry run fbuild && poetry run python app/main.py --profile ziya --port 6868
 ```
-
-### To Publish
-#### To install a whl file
+#### To test Backend and FrontEnd changes via locally installed pip file run
 ```bash
 pip uninstall ziya -y
 poetry run fbuild && poetry build
 pip install dist/
 ```
 
+### To Publish
 #### To publish to PyPi:
 ```bash
 poetry run fbuild && poetry build && poetry publish
