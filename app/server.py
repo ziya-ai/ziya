@@ -2,18 +2,21 @@ import os
 from typing import Dict, Any, List, Tuple
 
 import tiktoken
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
 from app.agents.agent import agent_executor
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 # import pydevd_pycharm
 import uvicorn
 
+from app.utils.code_util import us_git_to_apply_code_diff, correct_git_diff
 from app.utils.directory_util import get_ignored_patterns
+from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
 
 app = FastAPI()
@@ -35,7 +38,13 @@ add_routes(app, agent_executor, disabled_endpoints=["playground"], path="/ziya")
 
 @app.get("/")
 async def root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    enable_code_apply = os.environ.get("ZIYA_ENABLE_CODE_APPLY", "false")
+    enable_code_apply_bool = enable_code_apply.lower() == "true"
+    logger.info(f"enable_code_apply_bool: {enable_code_apply_bool}")
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "enable_code_apply": str(enable_code_apply_bool).lower()
+    })
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -95,6 +104,28 @@ async def get_folders():
 @app.get('/api/default-included-folders')
 def get_default_included_folders():
     return {'defaultIncludedFolders': []}
+
+
+class ApplyChangesRequest(BaseModel):
+    diff: str
+    filePath: str
+
+@app.post('/api/apply-changes')
+async def apply_changes(request: ApplyChangesRequest):
+    try:
+        logger.info(f"Received request to apply changes to file: {request.filePath}")
+        logger.info(f"Diff content: \n{request.diff}")
+
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        if not user_codebase_dir:
+            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
+
+        corrected_diff = correct_git_diff(request.diff)
+        us_git_to_apply_code_diff(corrected_diff)
+        return {'message': 'Changes applied successfully'}
+    except Exception as e:
+        logger.error(f"Error applying changes: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
