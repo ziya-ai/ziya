@@ -1,13 +1,13 @@
-import React, {useEffect, useState} from 'react';
-import {Input, Tabs, Tree, TreeDataNode} from 'antd';
-import {useFolderContext} from '../context/FolderContext';
-import {TokenCountDisplay} from "./TokenCountDisplay";
+import React, { useEffect, useState } from 'react';
+import { Input, Tabs, Tree, TreeDataNode, Button } from 'antd';
+import { useFolderContext } from '../context/FolderContext';
+import { TokenCountDisplay } from "./TokenCountDisplay";
 import union from 'lodash/union';
-import {ChatHistory} from "./ChatHistory";
+import { ChatHistory } from "./ChatHistory";
 
-const {TabPane} = Tabs;
+const { TabPane } = Tabs;
 
-const {Search} = Input;
+const { Search } = Input;
 
 export const FolderTree: React.FC = () => {
     const {
@@ -21,28 +21,58 @@ export const FolderTree: React.FC = () => {
     const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
+    const [allKeys, setAllKeys] = useState<React.Key[]>([]);
+    const [visibleKeys, setVisibleKeys] = useState<React.Key[]>([]);
 
     useEffect(() => {
         if (searchValue) {
-            const {filteredData, expandedKeys} = filterTreeData(treeData, searchValue);
+            const { filteredData, expandedKeys, visibleKeys } = filterTreeData(treeData, searchValue);
             setFilteredTreeData(filteredData);
             setExpandedKeys(expandedKeys);
+            setVisibleKeys(visibleKeys);
         } else {
             setFilteredTreeData(treeData);
             setExpandedKeys([]);
+            setVisibleKeys(getAllKeys(treeData));
         }
     }, [searchValue, treeData]);
 
+    const getAllKeys = (nodes: TreeDataNode[]): React.Key[] => {
+        let keys: React.Key[] = [];
+        const traverse = (nodes: TreeDataNode[]) => {
+            for (const node of nodes) {
+                keys.push(node.key);
+                if (node.children) {
+                    traverse(node.children);
+                }
+            }
+        };
+        traverse(nodes);
+        return keys;
+    };
+
+    useEffect(() => {
+        const getAllKeys = (nodes: TreeDataNode[]): React.Key[] => {
+            return nodes.reduce((keys, node) => {
+                return [...keys, node.key, ...(node.children ? getAllKeys(node.children) : [])];
+            }, [] as React.Key[]);
+        };
+        setAllKeys(getAllKeys(treeData));
+    }, [treeData]);
+
     const filterTreeData = (data: TreeDataNode[], searchValue: string): {
         filteredData: TreeDataNode[],
-        expandedKeys: React.Key[]
+        expandedKeys: React.Key[],
+        visibleKeys: React.Key[]
     } => {
         const expandedKeys: React.Key[] = [];
+        const visibleKeys: React.Key[] = [];
 
         const filter = (node: TreeDataNode): TreeDataNode | null => {
             const nodeTitle = node.title as string;
             if (nodeTitle.toLowerCase().includes(searchValue.toLowerCase())) {
                 expandedKeys.push(node.key);
+                visibleKeys.push(node.key);
                 return node;
             }
 
@@ -53,7 +83,8 @@ export const FolderTree: React.FC = () => {
 
                 if (filteredChildren.length > 0) {
                     expandedKeys.push(node.key);
-                    return {...node, children: filteredChildren};
+                    visibleKeys.push(node.key);
+                    return { ...node, children: filteredChildren };
                 }
             }
             return null;
@@ -61,8 +92,27 @@ export const FolderTree: React.FC = () => {
 
         const filteredData = data.map(node => filter(node)).filter((node): node is TreeDataNode => node !== null);
 
-        return {filteredData, expandedKeys};
+        return { filteredData, expandedKeys, visibleKeys };
     };
+
+    const handleToggleAll = () => {
+        const allVisibleSelected = visibleKeys.every(key => checkedKeys.includes(key as string));
+
+        if (allVisibleSelected) {
+            // Unselect all visible
+            setCheckedKeys(prevKeys => prevKeys.filter(key => !visibleKeys.includes(key as string)));
+        } else {
+            // Select all visible
+            setCheckedKeys(prevKeys => [...new Set([...prevKeys, ...visibleKeys])]);
+        }
+    };
+
+    // Update the toggle button text logic
+    const toggleButtonText = searchValue
+        ? (visibleKeys.every(key => checkedKeys.includes(key as string))
+            ? "Unselect Filtered"
+            : "Select Filtered")
+        : (checkedKeys.length === allKeys.length ? "Unselect All" : "Select All");
 
     const onExpand = (newExpandedKeys: React.Key[]) => {
         setExpandedKeys(newExpandedKeys);
@@ -148,17 +198,21 @@ export const FolderTree: React.FC = () => {
     };
 
     const titleRender = (nodeData) => (
-        <span style={{userSelect: 'text', cursor: 'text'}}>{nodeData.title}</span>
+        <span style={{ userSelect: 'text', cursor: 'text' }}>{nodeData.title}</span>
     );
 
     return (
         <div className="folder-tree-panel">
             <Tabs defaultActiveKey="1">
                 <TabPane tab="File Explorer" key="1">
-                    <TokenCountDisplay/>
-                    <Search style={{marginBottom: 8}} placeholder="Search folders" onChange={onSearch}
-                             allowClear
+                    <TokenCountDisplay />
+                    <Search style={{ marginBottom: 8 }} placeholder="Search folders" onChange={onSearch}
+                        allowClear
                     />
+                    <Button
+                        onClick={handleToggleAll}
+                        style={{ marginBottom: 8, width: '100%' }}
+                    >{toggleButtonText}</Button>
                     {folders ? (
                         <Tree
                             checkable
@@ -175,7 +229,7 @@ export const FolderTree: React.FC = () => {
                     )}
                 </TabPane>
                 <TabPane tab="Chat History" key="2">
-                    <ChatHistory/>
+                    <ChatHistory />
                 </TabPane>
             </Tabs>
         </div>
