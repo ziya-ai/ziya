@@ -16,7 +16,7 @@ poetry run fbuild && poetry run python app/main.py --profile ziya --port 6868
 ```bash
 pip uninstall ziya -y
 poetry run fbuild && poetry build
-pip install dist/<ziya-whl-file>
+pip install dist/
 ```
 
 #### To publish and test in the testpypi repository:
