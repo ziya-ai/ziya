@@ -23,6 +23,8 @@ def parse_arguments():
                         help="Port number to run Ziya frontend on (e.g., --port 8080)")
     parser.add_argument("--version", action="store_true",
                         help="Prints the version of Ziya")
+    parser.add_argument("--enable-code-apply", action="store_true",
+                        help="Enable the feature to show the button to apply code diffs (unstable)")
     parser.add_argument("--max-depth", type=int, default=15,
                         help="Maximum depth for folder structure traversal (e.g., --max-depth 20)")
     return parser.parse_args()
@@ -38,6 +40,8 @@ def setup_environment(args):
         os.environ["ZIYA_AWS_PROFILE"] = args.profile
     if args.model:
         os.environ["ZIYA_AWS_MODEL"] = args.model
+    if args.enable_code_apply:
+        os.environ["ZIYA_ENABLE_CODE_APPLY"] = "true"
 
     os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
 

@@ -1,10 +1,18 @@
-import React from 'react';
-import {parseDiff, Diff, Hunk} from 'react-diff-view';
+import React, { useState } from 'react';
+import { parseDiff, Diff, Hunk } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
-import {marked} from 'marked';
+import { marked, Token } from 'marked';
+import { Button, message } from 'antd';
+import { CheckOutlined } from '@ant-design/icons';
 
-const renderFileHeader = (file) => {
-    if (file.type === 'rename') {
+interface ApplyChangesButtonProps {
+    diff: string;
+    filePath: string;
+    enabled: boolean;
+}
+
+const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string => {
+    if (file.type === 'rename' && file.oldPath && file.newPath) {
         return `Rename: ${file.oldPath} → ${file.newPath}`;
     } else if (file.type === 'delete') {
         return `Delete: ${file.oldPath}`;
@@ -15,7 +23,31 @@ const renderFileHeader = (file) => {
     }
 };
 
-const renderTokens = (tokens) => {
+const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, enabled }) => {
+    const [isApplied, setIsApplied] = useState(false);
+
+    const handleApplyChanges = async () => {
+        try {
+            const response = await fetch('/api/apply-changes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ diff, filePath }),
+            });
+            if (response.ok) {
+                setIsApplied(true);
+                message.success(`Changes applied to ${filePath}`);
+            } else {
+                message.error('Failed to apply changes');
+            }
+        } catch (error) {
+            console.error('Error applying changes:', error);
+            message.error('Error applying changes');
+        }
+    };
+    return enabled ? <Button onClick={handleApplyChanges} disabled={isApplied} icon={<CheckOutlined />}>Apply Changes (beta)</Button> : null;
+};
+
+const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNode[] => {
     return tokens.map((token, index) => {
         if (token.type === 'code' && token.lang === 'diff') {
             let files;
@@ -32,7 +64,10 @@ const renderTokens = (tokens) => {
 
                 return (
                     <>
-                        <b>{renderFileHeader(file)}</b>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                            <b>{renderFileHeader(file)}</b>
+                            <ApplyChangesButton diff={token.text} filePath={file.newPath || file.oldPath} enabled={enableCodeApply} />
+                        </div>
                         {file.type !== 'delete' &&
                             <Diff key={`${index}-${fileIndex}`} viewType="unified" gutterType="none"
                                   diffType={file.type}
@@ -56,7 +91,12 @@ const renderTokens = (tokens) => {
     });
 };
 
-export const MarkdownRenderer = ({markdown}) => {
+interface MarkdownRendererProps {
+    markdown: string;
+    enableCodeApply: boolean;
+}
+
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
     const tokens = marked.lexer(markdown);
-    return <div>{renderTokens(tokens)}</div>;
+    return <div>{renderTokens(tokens, enableCodeApply)}</div>;
 };

@@ -4,7 +4,11 @@ import {RetrySection} from "./RetrySection";
 import {MarkdownRenderer} from "./MarkdownRenderer";
 import {useChatContext} from '../context/ChatContext';
 
-export const Conversation: React.FC = () => {
+interface ConversationProps {
+    enableCodeApply: boolean;
+}
+
+export const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
     const {messages} = useChatContext();
 
     return (
@@ -26,7 +30,7 @@ export const Conversation: React.FC = () => {
                                     </div>
                                 </div>
                             )}
-                            <MarkdownRenderer markdown={msg.content}/>
+                            <MarkdownRenderer markdown={msg.content} enableCodeApply={enableCodeApply}/>
                         </div>
                     ))}
                 </div>
