@@ -4,11 +4,12 @@ import {SendChatContainer} from "./SendChatContainer";
 import {useChatContext} from '../context/ChatContext';
 import {StreamedContent} from './StreamedContent';
 import {Conversation} from "./Conversation";
-import {Button, Tooltip} from "antd";
+import {Button, Tooltip } from "antd";
 import {PlusOutlined} from "@ant-design/icons";
 
 export const App = () => {
     const {streamedContent, messages, startNewChat} = useChatContext();
+    const enableCodeApply = window.enableCodeApply === 'true';
 
     return (
         <>
@@ -19,7 +20,7 @@ export const App = () => {
                 {(messages.length > 0 || streamedContent) && (
                     <div className="chat-container">
                         <StreamedContent/>
-                        <Conversation/>
+                        <Conversation enableCodeApply={enableCodeApply}/>
                     </div>)}
             </div>
             <div style={{position: 'fixed', right: '10px', top: '10px'}}>
