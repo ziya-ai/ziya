@@ -6,7 +6,7 @@ import re
 
 HUNK_HEADER_REGEX = re.compile(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
 
-def us_git_to_apply_code_diff(git_diff: str):
+def use_git_to_apply_code_diff(git_diff: str):
     """
     Apply a git diff to the user's codebase.
 
@@ -53,7 +53,7 @@ def us_git_to_apply_code_diff(git_diff: str):
     finally:
         os.remove(temp_file)
 
-def correct_git_diff(git_diff: str) -> str:
+def correct_git_diff(git_diff: str, original_file_path: str) -> str:
     """
     Corrects the hunk headers in a git diff string by recalculating the line counts and
     adjusting the starting line numbers in the new file, considering the cumulative effect of
@@ -64,6 +64,7 @@ def correct_git_diff(git_diff: str) -> str:
 
     Parameters:
         git_diff (str): The git diff string to be corrected. It may contain multiple hunks
+        original_file_path (str): Path to the original file to calculate correct start_line_old
                         and incorrect hunk headers.
 
     Returns:
@@ -83,6 +84,20 @@ def correct_git_diff(git_diff: str) -> str:
     # Split the diff into lines
     lines = git_diff.split('\n')
 
+    # Check if this is a new file creation by looking for "new file mode" in the diff
+    is_new_file = any('new file mode 100644' in line for line in lines[:5])
+    original_content = []
+
+    if not is_new_file:
+        try:
+            with open(original_file_path, 'r') as f:
+                original_content = f.read().splitlines()
+        except FileNotFoundError:
+            error_msg = (
+                f"File {original_file_path} not found and diff does not indicate new file creation. "
+            )
+            raise FileNotFoundError(error_msg)
+
     corrected_lines = []
     line_index = 0
 
@@ -96,8 +111,8 @@ def correct_git_diff(git_diff: str) -> str:
 
         if hunk_match:
             # Process the hunk
-            corrected_hunk_header, hunk_lines, line_index, line_offset = _process_hunk(
-                lines, line_index, cumulative_line_offset
+            corrected_hunk_header, hunk_lines, line_index, line_offset = _process_hunk_with_original_content(
+                lines, line_index, cumulative_line_offset, original_content
             )
 
             # Update cumulative_line_offset
@@ -115,7 +130,72 @@ def correct_git_diff(git_diff: str) -> str:
     corrected_diff = '\n'.join(corrected_lines)
     return corrected_diff
 
-def _process_hunk(lines: list, start_index: int, cumulative_line_offset: int):
+def _find_correct_start_line(original_content: list, hunk_lines: list) -> int:
+    """
+    Finds the correct starting line number in the original file by matching context and deleted lines.
+
+    Parameters:
+        original_content (list): List of lines from the original file
+        hunk_lines (list): List of lines in the current hunk
+
+    Returns:
+        int: The correct 1-based line number where the hunk should start in the original file
+
+    The function works by:
+    1. Extracting context and deleted lines from the hunk (ignoring added lines)
+    2. Creating a pattern from these lines
+    3. Finding where this pattern matches in the original file
+    4. Converting the matching position to a 1-based line number
+    """
+    # Extract context and deleted lines from the hunk
+    if not original_content:
+        # Creating a new file.
+        return 1
+
+    if len(hunk_lines) < 3:
+        error_msg = (
+            f"Invalid git diff format: Expected at least 2 lines in the hunk, but got {len(hunk_lines)} lines.\n"
+            f"Hunk content:\n{'\n'.join(hunk_lines)}")
+        logger.error(error_msg)
+        raise RuntimeError("git diff file is not valid.")
+
+    context_and_deleted = []
+    for line in hunk_lines:
+        if line.startswith(' ') or line.startswith('-'):
+            # Remove the prefix character
+            context_and_deleted.append(line[1:])
+
+    if not context_and_deleted:
+        error_msg = (
+            "Invalid git diff format: No context or deleted lines found in the hunk.\n"
+            "Each hunk must contain at least one context line (starting with space) "
+            "or deleted line (starting with '-').\n"
+            f"Hunk content:\n{'\n'.join(hunk_lines)}")
+        raise RuntimeError(error_msg)
+
+    # Search for the pattern in the original file
+    pattern_length = len(context_and_deleted)
+    for i in range(len(original_content) - pattern_length + 1):
+        matches = True
+        for j in range(pattern_length):
+            if j >= len(context_and_deleted):
+                break
+            if i + j >= len(original_content) or original_content[i + j] != context_and_deleted[j]:
+                matches = False
+                break
+        if matches:
+            # Found the correct position git diff start with 1.
+            return i + 1
+
+    error_msg = (
+        "Failed to locate the hunk position in the original file.\n"
+        "This usually happens when the context lines in the diff don't match the original file content.\n"
+        f"Context and deleted lines being searched:\n{'\n'.join(context_and_deleted)}\n"
+        "Please ensure the diff is generated against the correct version of the file.")
+    logger.error(error_msg)
+    raise RuntimeError(error_msg)
+
+def _process_hunk_with_original_content(lines: list, start_index: int, cumulative_line_offset: int, original_content: list):
     """
     Processes a single hunk starting at start_index in lines, recalculates the line counts,
     and returns the corrected hunk header, hunk lines, and the updated index after the hunk.
@@ -124,6 +204,7 @@ def _process_hunk(lines: list, start_index: int, cumulative_line_offset: int):
         lines (list): The list of lines from the diff.
         start_index (int): The index in lines where the hunk header is located.
         cumulative_line_offset (int): The cumulative line offset from previous hunks.
+        original_content (list): List of lines from the original file.
 
     Returns:
         tuple:
@@ -137,11 +218,6 @@ def _process_hunk(lines: list, start_index: int, cumulative_line_offset: int):
     """
 
     line_index = start_index
-    hunk_header_line = lines[line_index]
-    hunk_match = HUNK_HEADER_REGEX.match(hunk_header_line)
-
-    # Extract the starting line numbers from the hunk header
-    start_line_old = int(hunk_match.group(1))
 
     # Initialize counts for recalculation
     actual_count_old = 0
@@ -160,6 +236,9 @@ def _process_hunk(lines: list, start_index: int, cumulative_line_offset: int):
         else:
             hunk_lines.append(hunk_line)
             line_index += 1
+
+    # Find the correct start_line_old by matching context and deleted lines
+    start_line_old = _find_correct_start_line(original_content, hunk_lines)
 
     # Now process hunk_lines to calculate counts
     for hunk_line in hunk_lines:
@@ -231,4 +310,4 @@ index e69de29..4b825dc 100644
  Line ten
 -Line eleven
 +Line eleven modified"""
-    print(correct_git_diff(diff))
+    print(correct_git_diff(diff,""))
