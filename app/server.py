@@ -14,7 +14,7 @@ from pydantic import BaseModel
 # import pydevd_pycharm
 import uvicorn
 
-from app.utils.code_util import us_git_to_apply_code_diff, correct_git_diff
+from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff
 from app.utils.directory_util import get_ignored_patterns
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
@@ -120,8 +120,10 @@ async def apply_changes(request: ApplyChangesRequest):
         if not user_codebase_dir:
             raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
 
-        corrected_diff = correct_git_diff(request.diff)
-        us_git_to_apply_code_diff(corrected_diff)
+        file_path = os.path.join(user_codebase_dir, request.filePath)
+        corrected_diff = correct_git_diff(request.diff, file_path)
+        logger.info(f"corrected diff content: \n{corrected_diff}")
+        use_git_to_apply_code_diff(corrected_diff)
         return {'message': 'Changes applied successfully'}
     except Exception as e:
         logger.error(f"Error applying changes: {str(e)}", exc_info=True)
