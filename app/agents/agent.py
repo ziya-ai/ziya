@@ -55,16 +55,8 @@ def get_combined_docs_from_files(files) -> str:
         try:
             full_file_path = os.path.join(user_codebase_dir, file_path)
             docs = TextLoader(full_file_path).load()
-            for doc_index, doc in enumerate(docs):
-                # Add line numbers to the content
-                lines = doc.page_content.split('\n')
-                numbered_lines = [f"{i + 1:4d} | {line}" for i, line in enumerate(lines)]
-                numbered_content = '\n'.join(numbered_lines)
-                
-                # Use the numbered content instead of the original
-                doc.page_content = numbered_content
+            for doc in docs:
                 combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
-
         except Exception as e:
             print(f"Skipping file {full_file_path} due to error: {e}")
 
