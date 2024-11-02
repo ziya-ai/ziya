@@ -38,12 +38,8 @@ add_routes(app, agent_executor, disabled_endpoints=["playground"], path="/ziya")
 
 @app.get("/")
 async def root(request: Request):
-    enable_code_apply = os.environ.get("ZIYA_ENABLE_CODE_APPLY", "false")
-    enable_code_apply_bool = enable_code_apply.lower() == "true"
-    logger.info(f"enable_code_apply_bool: {enable_code_apply_bool}")
     return templates.TemplateResponse("index.html", {
-        "request": request,
-        "enable_code_apply": str(enable_code_apply_bool).lower()
+        "request": request
     })
 
 
