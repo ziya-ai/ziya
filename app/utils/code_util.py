@@ -155,7 +155,7 @@ def _find_correct_start_line(original_content: list, hunk_lines: list) -> int:
     if len(hunk_lines) < 3:
         error_msg = (
             f"Invalid git diff format: Expected at least 2 lines in the hunk, but got {len(hunk_lines)} lines.\n"
-            f"Hunk content:\n{'\n'.join(hunk_lines)}")
+            "Hunk content:\n{}".format('\n'.join(hunk_lines)))
         logger.error(error_msg)
         raise RuntimeError("git diff file is not valid.")
 
@@ -170,7 +170,7 @@ def _find_correct_start_line(original_content: list, hunk_lines: list) -> int:
             "Invalid git diff format: No context or deleted lines found in the hunk.\n"
             "Each hunk must contain at least one context line (starting with space) "
             "or deleted line (starting with '-').\n"
-            f"Hunk content:\n{'\n'.join(hunk_lines)}")
+            "Hunk content:\n{}".format('\n'.join(hunk_lines)))
         raise RuntimeError(error_msg)
 
     # Search for the pattern in the original file
@@ -187,11 +187,13 @@ def _find_correct_start_line(original_content: list, hunk_lines: list) -> int:
             # Found the correct position git diff start with 1.
             return i + 1
 
+    joined_context_and_deleted = '\n'.join(context_and_deleted)
     error_msg = (
         "Failed to locate the hunk position in the original file.\n"
         "This usually happens when the context lines in the diff don't match the original file content.\n"
-        f"Context and deleted lines being searched:\n{'\n'.join(context_and_deleted)}\n"
-        "Please ensure the diff is generated against the correct version of the file.")
+        f"Context and deleted lines being searched:\n{joined_context_and_deleted}\n"
+        "Please ensure the diff is generated against the correct version of the file."
+    )
     logger.error(error_msg)
     raise RuntimeError(error_msg)
 
