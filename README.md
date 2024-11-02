@@ -61,8 +61,6 @@ ziya
 
 `--port`: The port number for frontend app. Default is `6969`.
 
-`--enable-code-apply`: Enable the beta feature to show the `Apply Changes` button to apply code diffs directly to your codebase.
-
 `--max-depth`: Maximum depth for folder structure traversal. Default is `15`.
 
 ```bash
