@@ -235,3 +235,40 @@ def test_correct_git_diff_file_not_found():
 
     with pytest.raises(FileNotFoundError):
         correct_git_diff(diff, "nonexistent.txt")
+
+
+@pytest.mark.parametrize("test_case, input_diff", [
+    (
+        "new file without mode",
+        """diff --git a/dev/null b/new_file.txt
+--- /dev/null
++++ b/new_file.txt
+@@ -0,0 +1,3 @@
++Line 1
++Line 2
++Line 3""",
+    ),
+    (
+        "new file with mode",
+        """diff --git a/dev/null b/new_file.txt
+new file mode 100644
+--- /dev/null
++++ b/new_file.txt
+@@ -0,0 +1,3 @@
++Line 1
++Line 2
++Line 3""",
+    )
+])
+def test_correct_git_diff_new_file(test_case, input_diff):
+    """Test handling of new file diffs with and without mode line."""
+    expected_diff = """diff --git a/dev/null b/new_file.txt
+new file mode 100644
+--- /dev/null
++++ b/new_file.txt
+@@ -0,0 +1,3 @@
++Line 1
++Line 2
++Line 3"""
+    corrected_diff = correct_git_diff(input_diff, "new_file.txt")
+    assert corrected_diff == expected_diff
