@@ -17,6 +17,11 @@ poetry run fbuild && poetry build
 pip install dist/
 ```
 
+#### To run unit tests for backend
+```bash
+poetry run pytest
+```
+
 ### To Publish
 #### To publish to PyPi:
 ```bash
