@@ -83,9 +83,18 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
     """
     # Split the diff into lines
     lines = git_diff.split('\n')
+    is_new_file = False
+    # Check if this is a new file creation
+    if lines and lines[0].startswith('diff --git a/dev/null'):
+        is_new_file = True
+        # Check if 'new file mode 100644' is present in the first few lines
+        has_file_mode = any('new file mode 100' in line for line in lines[:3])
+        if not has_file_mode:
+            # Insert the missing line after the first line
+            mode_line = 'new file mode 100644'
+            lines.insert(1, mode_line)
+            logger.info(f"Added missing '{mode_line}' to new file diff")
 
-    # Check if this is a new file creation by looking for "new file mode" in the diff
-    is_new_file = any('new file mode 100644' in line for line in lines[:5])
     original_content = []
 
     if not is_new_file:
