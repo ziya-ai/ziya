@@ -130,7 +130,7 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
     corrected_diff = '\n'.join(corrected_lines)
     return corrected_diff
 
-def _find_correct_start_line(original_content: list, hunk_lines: list) -> int:
+def _find_correct_old_start_line(original_content: list, hunk_lines: list) -> int:
     """
     Finds the correct starting line number in the original file by matching context and deleted lines.
 
@@ -149,15 +149,15 @@ def _find_correct_start_line(original_content: list, hunk_lines: list) -> int:
     """
     # Extract context and deleted lines from the hunk
     if not original_content:
-        # Creating a new file.
-        return 1
+        # Creating a new file, should start with @@ -0,0 +1,N @@
+        return 0
 
     if len(hunk_lines) < 3:
         error_msg = (
             f"Invalid git diff format: Expected at least 2 lines in the hunk, but got {len(hunk_lines)} lines.\n"
-            "Hunk content:\n{}".format('\n'.join(hunk_lines)))
+            + "Hunk content:\n{}".format('\n'.join(hunk_lines)))
         logger.error(error_msg)
-        raise RuntimeError("git diff file is not valid.")
+        raise RuntimeError("Invalid git diff format.")
 
     context_and_deleted = []
     for line in hunk_lines:
@@ -240,9 +240,9 @@ def _process_hunk_with_original_content(lines: list, start_index: int, cumulativ
             line_index += 1
 
     # Find the correct start_line_old by matching context and deleted lines
-    start_line_old = _find_correct_start_line(original_content, hunk_lines)
+    start_line_old = _find_correct_old_start_line(original_content, hunk_lines)
 
-    # Now process hunk_lines to calculate counts
+    # Calculate counts for the hunk lines
     for hunk_line in hunk_lines:
         if hunk_line.startswith('+') and not hunk_line.startswith('+++'):
             actual_count_new += 1
@@ -253,8 +253,15 @@ def _process_hunk_with_original_content(lines: list, start_index: int, cumulativ
             actual_count_old += 1
             actual_count_new += 1
 
-    # Adjust start_line_new considering previous line offsets
-    corrected_start_line_new = start_line_old + cumulative_line_offset
+    # Special handling for new file creation
+    if start_line_old == 0:
+        # For new files:
+        # count_old should be 0
+        actual_count_old = 0
+        corrected_start_line_new = 1
+    else:
+        # For existing files, adjust start_line_new considering previous line offsets
+        corrected_start_line_new = start_line_old + cumulative_line_offset
 
     # Calculate line offset for subsequent hunks
     line_offset = actual_count_new - actual_count_old
@@ -292,24 +299,3 @@ def _format_hunk_header(start_old: int, count_old: int, start_new: int, count_ne
     if count_new != 1:
         new_part += f',{count_new}'
     return f'@@ {old_part} {new_part} @@'
-
-
-
-if __name__ == '__main__':
-    # TODO: Create unit test and move these code to unit test
-    diff = """\
-diff --git a/file.txt b/file.txt
-index e69de29..4b825dc 100644
---- a/file.txt
-+++ b/file.txt
-@@ -1,5 +1,5 @@
- Line one
-+Line two
- Line three
- Line four
- Line five
-@@ -10,2 +10,2 @@
- Line ten
--Line eleven
-+Line eleven modified"""
-    print(correct_git_diff(diff,""))
