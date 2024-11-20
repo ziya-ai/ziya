@@ -2,9 +2,8 @@ import argparse
 import os
 import subprocess
 import sys
+import uvicorn
 from typing import Optional
-
-from langchain_cli.cli import serve
 
 from app.utils.logging_utils import logger
 from app.utils.langchain_validation_util import validate_langchain_vars
@@ -96,8 +95,7 @@ def start_server(args):
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     # Override the default server location from 127.0.0.1 to 0.0.0.0
     # This allows the server to be accessible from other machines on the network
-    serve(host="0.0.0.0", port=args.port)
-
+    uvicorn.run("app.server:app", host="0.0.0.0", port=args.port, reload=True, reload_dirs=[os.environ["ZIYA_USER_CODEBASE_DIR"]])
 
 def main():
     args = parse_arguments()
