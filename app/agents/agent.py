@@ -34,6 +34,7 @@ model_id = {
     "opus": "us.anthropic.claude-3-opus-20240229-v1:0",
     "sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0",
     "haiku": "us.anthropic.claude-3-haiku-20240307-v1:0",
+    "haiku3.5": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
 }[os.environ.get("ZIYA_AWS_MODEL", "sonnet3.5-v2")]
 logger.info(f"Using Claude Model: {model_id}")
 
