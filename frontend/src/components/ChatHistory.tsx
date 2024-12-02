@@ -2,6 +2,7 @@ import React, {useState} from 'react';
 import {List, Button, Input} from 'antd';
 import {DeleteOutlined, EditOutlined} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
+import {useTheme} from '../context/ThemeContext';
 
 export const ChatHistory: React.FC = () => {
     const {
@@ -12,6 +13,7 @@ export const ChatHistory: React.FC = () => {
         setConversations,
     } = useChatContext();
     const [editingId, setEditingId] = useState<string | null>(null);
+    const { isDarkMode } = useTheme();
 
     const handleConversationClick = (conversationId: string) => {
         const selectedConversation = conversations.find(conv => conv.id === conversationId);
@@ -57,7 +59,7 @@ export const ChatHistory: React.FC = () => {
                     onClick={() => handleConversationClick(conversation.id)}
                     style={{
                         cursor: 'pointer',
-                        backgroundColor: conversation.id === currentConversationId ? '#e6f7ff' : 'transparent',
+                        backgroundColor: conversation.id === currentConversationId ? (isDarkMode ? '#177ddc' : '#e6f7ff') : 'transparent',
                         padding: '8px',
                         borderRadius: '4px',
                         display: 'flex',
