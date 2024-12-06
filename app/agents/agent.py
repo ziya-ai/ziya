@@ -6,11 +6,11 @@ import tiktoken
 from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
 from langchain_aws import ChatBedrock
-from langchain_community.document_loaders import TextLoader
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from app.agents.prompts import conversational_prompt, parse_output
+from app.utils.document_loader import DocumentLoader
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 
@@ -52,13 +52,10 @@ def get_combined_docs_from_files(files) -> str:
     print_file_tree(files)
     user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
     for file_path in files:
-        try:
-            full_file_path = os.path.join(user_codebase_dir, file_path)
-            docs = TextLoader(full_file_path).load()
-            for doc in docs:
-                combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
-        except Exception as e:
-            print(f"Skipping file {full_file_path} due to error: {e}")
+        full_file_path = os.path.join(user_codebase_dir, file_path)
+        docs = DocumentLoader.load_document(full_file_path)
+        for doc in docs:
+            combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
 
     print(f"Codebase word count: {len(combined_contents.split()):,}")
     token_count = len(tiktoken.get_encoding("cl100k_base").encode(combined_contents))

@@ -62,5 +62,5 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], 
     return file_dict
 
 def is_image_file(file_path: str) -> bool:
-    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.ico']
+    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.ico', '.tiff', '.webp', '.ttf', '.woff2']
     return any(file_path.lower().endswith(ext) for ext in image_extensions)
