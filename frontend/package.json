@@ -27,7 +27,7 @@
   "proxy": "http://localhost:6969",
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build && npm run copy-to-templates",
+    "build": "export SET NODE_OPTIONS=--openssl-legacy-provider && react-scripts build && npm run copy-to-templates",
     "copy-to-templates": "rm -rf ../templates/* && cp -r build/* ../templates",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
@@ -59,5 +59,8 @@
   "devDependencies": {
     "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
     "@babel/plugin-transform-private-property-in-object": "^7.24.5"
+  },
+  "resolutions": {
+    "typescript": "3.4.5"
   }
 }
