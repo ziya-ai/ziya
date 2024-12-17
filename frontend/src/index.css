@@ -135,16 +135,39 @@ body {
     font-weight: bold;
 }
 
-.token-count.green {
-    color: green;
+.token-display {
+  display: flex;
+  gap: 20px;
+  padding-right: 20px;
+  align-items: center;
+  font-size: 14px;
 }
 
-.token-count.orange {
-    color: orange;
+.token-count-item {
+  color: #666;
+  font-weight: 500;
 }
 
-.token-count.red {
-    color: red;
+.token-count-total {
+  font-weight: bold;
+  padding-left: 8px;
+}
+
+span.token-count-total.green {
+  color: #52c41a;
+}
+
+span.token-count-total.orange {
+  color: #faad14;
+}
+
+span.token-count-total.red {
+  color: #f5222d;
+}
+
+.token-count-total .token-label {
+  color: inherit;
+  opacity: 0.8;
 }
 
 /* Search box */
@@ -163,6 +186,11 @@ body {
   font-size: 12px;
   max-width: 100%;
   overflow-x: auto;
+}
+
+.token-label {
+  color: #888;
+  font-size: 12px;
 }
 
 /* Toggle button styles */
@@ -241,4 +269,17 @@ body {
   display: flex;
   justify-content: space-between;
   width: 100%;
+}
+
+.model-id-display {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 8px;
+  background-color: #f5f5f5;
+  border-top: 1px solid #e8e8e8;
+  color: #666;
+  font-size: 12px;
+  text-align: center;
 }
