@@ -1,8 +1,9 @@
 import React, { useState, useEffect, memo } from 'react';
-import { parseDiff, Diff, Hunk, tokenize } from 'react-diff-view';
+import { parseDiff, Diff, Hunk, tokenize, RenderToken } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { marked, Token, Tokens } from 'marked';
 import { Button, message, Radio, Space } from 'antd';
+import { useTheme } from '../context/ThemeContext';
 import { CheckOutlined, CodeOutlined } from '@ant-design/icons';
 
 interface ApplyChangesButtonProps {
@@ -36,10 +37,15 @@ const DiffControls = memo(({
     onLineNumbersChange
 }: DiffControlsProps) => {
     return (
-        <div className="diff-view-controls">
-            <Space>
+        <div className="diff-view-controls" style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '10px'
+        }}>
+            <div>
                 {displayMode === 'pretty' && (
-                    <>
+                    <Space>
                         <Radio.Group
                             value={viewType}
                             buttonStyle="solid"
@@ -57,8 +63,10 @@ const DiffControls = memo(({
                             <Radio.Button value={true}>Show Line Numbers</Radio.Button>
                             <Radio.Button value={false}>Hide Line Numbers</Radio.Button>
                         </Radio.Group>
-                    </>
+                    </Space>
                 )}
+            </div>
+            <div>
                 <Radio.Group
                     value={displayMode}
                     buttonStyle="solid"
@@ -67,7 +75,7 @@ const DiffControls = memo(({
                     <Radio.Button value="pretty">Pretty</Radio.Button>
                     <Radio.Button value="raw">Raw</Radio.Button>
                 </Radio.Group>
-            </Space>
+            </div>
         </div>
     );
 });
@@ -84,10 +92,39 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string =>
     }
 };
 
+// Helper function to check if this is a deletion diff
+	const isDeletionDiff = (content: string) => {
+        return content.includes('diff --git') &&
+               content.includes('/dev/null') &&
+               content.includes('deleted file mode') &&
+               content.includes('--- a/') &&
+               content.includes('+++ /dev/null');
+};
+
 const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLineNumbers }) => {
+    const { isDarkMode } = useTheme();
     let files;
     try {
         files = parseDiff(diff);
+	// Special handling for deletion diffs that might not be parsed correctly
+        if (files.length === 0 && isDeletionDiff(diff)) {
+            // Force parse as a deletion
+            const match = diff.match(/--- a\/(.*)\n/);
+            if (match) {
+                const filePath = match[1];
+                files = [{
+                    type: 'delete',
+                    oldPath: filePath,
+                    hunks: [{
+                        content: diff,
+                        oldStart: 1,
+                        oldLines: diff.split('\n').length - 1,
+                        newStart: 0,
+                        newLines: 0
+                    }]
+                }];
+            }
+        }
     } catch (error) {
         return <pre><code>{diff}</code></pre>;
     } 
@@ -109,26 +146,114 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
     // If raw mode is selected, return the raw diff
     if (displayMode === 'raw') {
         return (
-            <pre style={{ backgroundColor: '#f6f8fa', padding: '10px', borderRadius: '4px' }}><code>{diff}</code></pre>
+            <pre style={{
+                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                color: isDarkMode ? '#e6e6e6' : 'inherit',
+                padding: '10px',
+                borderRadius: '4px'
+            }}><code>{diff}</code></pre>
         );
     }
 
-    return files.map((file, fileIndex) => (
-            <div key={fileIndex} style={{ width: '100%', overflowX: 'auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <b>{renderFileHeader(file)}</b>
-                <ApplyChangesButton diff={diff} filePath={file.newPath || file.oldPath} enabled={window.enableCodeApply === 'true'} />
+    // Define theme-specific styles
+    const darkModeStyles = {
+        addition: {
+            background: '#1a4d1a',
+            color: '#c6e6c6'
+        },
+        deletion: {
+            background: '#4d1a1a',
+            color: '#e6c6c6'
+        },
+        gutter: {
+            background: '#161b22',
+            color: '#8b949e'
+        },
+        content: {
+            background: '#1f1f1f',
+            color: '#e6e6e6'
+        }
+    };
+
+    const lightModeStyles = {
+        addition: {
+            background: '#e6ffec',
+            color: '#24292e'
+        },
+        deletion: {
+            background: '#ffebe9',
+            color: '#24292e'
+        },
+        gutter: {
+            background: '#f6f8fa',
+            color: '#57606a'
+        },
+        content: {
+            background: '#ffffff',
+            color: '#24292e'
+        }
+    };
+
+    const currentTheme = isDarkMode ? darkModeStyles : lightModeStyles;
+
+
+    return files.map((file, fileIndex) => {  
+      return (  
+        <div
+            key={fileIndex}
+            className="diff-view smaller-diff-view"
+            style={{
+		width: 'auto',
+                backgroundColor: currentTheme.content.background,
+                color: currentTheme.content.color
+            }}
+        >
+            <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '10px',
+                padding: '8px'
+            }}>
+                <b>{
+                    file.type === 'delete'
+                        ? `Delete: ${file.oldPath}`
+                        : file.type === 'add'
+                        ? `Create: ${file.newPath}`
+                        : `File: ${file.oldPath || file.newPath}`
+                }</b>
+                {!['delete', 'rename'].includes(file.type) &&
+                    <ApplyChangesButton
+                        diff={diff}
+                        filePath={file.newPath || file.oldPath}
+                        enabled={window.enableCodeApply === 'true'}
+                    />
+                }
             </div>
-            {file.type !== 'delete' && <Diff 
-		    viewType={viewType} 
-		    diffType={file.type} 
-		    hunks={file.hunks}
-		    gutterType={showLineNumbers ? 'default' : 'none'}
-	        >
-		{hunks => renderHunks(hunks)}
-            </Diff>}
+	        {file.type === 'delete' ? (
+                <Diff
+		    viewType={file.type === 'delete' ? 'unified' : viewType}
+                    diffType={file.type === 'delete' ? 'modify' : file.type}
+                    hunks={file.hunks}
+                    gutterType={showLineNumbers ? 'default' : 'none'}
+                    className="diff-view"
+                >
+                    {hunks => renderHunks(hunks)}
+                </Diff>
+            ) : (
+                <Diff
+                    viewType={viewType}
+                    diffType={file.type}
+                    hunks={file.hunks}
+                    gutterType={showLineNumbers ? 'default' : 'none'}
+                    className="diff-view"
+                >
+                    {hunks => renderHunks(hunks)}
+                </Diff>
+            )}
         </div>
-    ));
+        );
+    });
 };
 
 const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, enabled }) => {
@@ -155,12 +280,10 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     return enabled ? <Button onClick={handleApplyChanges} disabled={isApplied} icon={<CheckOutlined />}>Apply Changes (beta)</Button> : null;
 };
 
-// Type guard to check if token has text property
 const hasText = (token: Token): token is Token & { text: string } => {
     return 'text' in token;
 };
 
-// Type guard to check if token is a Code token
 const isCodeToken = (token: Token): token is Tokens.Code => {
     return token.type === 'code' && 'text' in token;
 };
@@ -227,18 +350,23 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNod
             }
         }
 
-        if (token.type === 'code' && isCodeToken(token)) {
-            return <pre key={index}><code>{token.text}</code></pre>;
-        }
 
-        return <div key={index} dangerouslySetInnerHTML={{__html: marked.parser([token])}}/>;
-    });
-};
+        return <div key={index} dangerouslySetInnerHTML={{__html: marked.parser([token])}} />;
+
+
+    }); };
 
 interface MarkdownRendererProps {
     markdown: string;
     enableCodeApply: boolean;
 }
+
+// Configure marked options
+marked.setOptions({
+    renderer: new marked.Renderer(),
+    gfm: true,
+    breaks: true
+});
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
     const tokens = marked.lexer(markdown);

@@ -5,6 +5,7 @@ import '@fortawesome/fontawesome-free/css/all.min.css';
 import {App} from "./components/App";
 import {ChatProvider} from "./context/ChatContext";
 import {FolderProvider} from "./context/FolderContext";
+import {ThemeProvider} from "./context/ThemeContext";
 
 
 const root = ReactDOM.createRoot(
@@ -12,10 +13,12 @@ const root = ReactDOM.createRoot(
 );
 root.render(
     <React.StrictMode>
-        <ChatProvider>
-            <FolderProvider>
-                <App/>
-            </FolderProvider>
-        </ChatProvider>
+        <ThemeProvider>
+            <ChatProvider>
+                <FolderProvider>
+                    <App/>
+                </FolderProvider>
+            </ChatProvider>
+        </ThemeProvider>
     </React.StrictMode>
 );

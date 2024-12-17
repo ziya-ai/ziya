@@ -15,6 +15,7 @@ export interface Conversation {
     title: string;
     messages: Message[];
 }
+
 declare global {
     interface Window { 
         enableCodeApply?: string;
