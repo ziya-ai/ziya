@@ -9,7 +9,11 @@ const {TabPane} = Tabs;
 
 const {Search} = Input;
 
-export const FolderTree: React.FC = () => {
+interface FolderTreeProps {
+    isPanelCollapsed: boolean;
+}
+
+export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const {
         folders,
         treeData,
@@ -152,7 +156,7 @@ export const FolderTree: React.FC = () => {
     );
 
     return (
-        <div className="folder-tree-panel">
+            <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
             <Tabs defaultActiveKey="1">
                 <TabPane tab="File Explorer" key="1">
                     <TokenCountDisplay/>

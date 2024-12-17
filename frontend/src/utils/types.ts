@@ -16,5 +16,9 @@ export interface Conversation {
     messages: Message[];
 }
 declare global {
-    interface Window { enableCodeApply?: string; }
+    interface Window { 
+        enableCodeApply?: string;
+        diffDisplayMode?: 'raw' | 'pretty';
+        diffViewType?: 'unified' | 'split';
+    }
 }
