@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo } from 'react';
 import { parseDiff, Diff, Hunk, tokenize, RenderToken } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
-import { marked, Token, Tokens } from 'marked';
+import { marked, Marked } from 'marked';
 import { Button, message, Radio, Space } from 'antd';
 import { useTheme } from '../context/ThemeContext';
 import { CheckOutlined, CodeOutlined } from '@ant-design/icons';
@@ -280,16 +280,33 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     return enabled ? <Button onClick={handleApplyChanges} disabled={isApplied} icon={<CheckOutlined />}>Apply Changes (beta)</Button> : null;
 };
 
-const hasText = (token: Token): token is Token & { text: string } => {
+interface TokenWithText {
+    type: string;
+    text: string;
+    start?: number;
+    header?: TokenWithText[];
+    rows?: TokenWithText[][];
+    items?: any[];
+    ordered?: boolean;
+    lang?: string;
+    tokens?: TokenWithText[];
+    task?: boolean;
+    checked?: boolean;
+    raw?: string;
+}
+
+// Type guard to check if token has text property
+const hasText = (token: any): token is TokenWithText => {
     return 'text' in token;
 };
 
-const isCodeToken = (token: Token): token is Tokens.Code => {
-    return token.type === 'code' && 'text' in token;
+// Type guard to check if token is a Code token
+const isCodeToken = (token: any): token is TokenWithText => {
+    return token.type === 'code' && hasText(token);
 };
 
 interface DiffViewWrapperProps {
-    token: Token;
+    token: TokenWithText;
     enableCodeApply: boolean;
     index?: number;
 }
@@ -329,7 +346,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     );
 };
 
-const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNode[] => {
+const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean): React.ReactNode[] => {
     return tokens.map((token, index) => {
         if (token.type === 'code' && isCodeToken(token) && token.lang === 'diff') {
             try {
@@ -351,10 +368,167 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNod
         }
 
 
-        return <div key={index} dangerouslySetInnerHTML={{__html: marked.parser([token])}} />;
+	// Handle tables
+        if (token.type === 'table' && token.header && token.rows) {
+            return (
+                <table key={index} style={{
+                    borderCollapse: 'collapse',
+                    width: '100%',
+                    marginBottom: '1em'
+                }}>
+                    <thead>
+                        <tr>
+                            {token.header.map((cell, cellIndex) => (
+                                <th
+                                    key={cellIndex}
+                                    style={{
+                                        borderBottom: '2px solid #ddd',
+                                        padding: '8px',
+                                        textAlign: 'left'
+                                    }}
+                                >
+                                    {cell.text}
+                                </th>
+                            ))}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {token.rows.map((row, rowIndex) => (
+                            <tr key={rowIndex}>
+                                {row.map((cell, cellIndex) => (
+                                    <td
+                                        key={cellIndex}
+                                        style={{
+                                            border: '1px solid #ddd',
+                                            padding: '8px'
+                                        }}
+                                    >
+                                        {cell.text}
+                                    </td>
+                                ))}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            );
+        }
 
+        // Decode HTML entities
+        const decodeHTML = (html: string) => {
+            const txt = document.createElement('textarea');
+            txt.innerHTML = html;
+            return txt.value;
+        };
 
-    }); };
+	// Handle list items that might be tasks
+        if (token.type === 'list_item') {
+            // Check if this is a task list item by looking at the text content
+            const taskMatch = token.text?.match(/^\[([ xX])\] (.*)/);
+            if (taskMatch) {
+                const isChecked = taskMatch[1].toLowerCase()=== 'x';
+                const textContent = taskMatch[2];
+                return (
+                    <li key={index} style={{ listStyle: 'none' }}>
+                        <input
+                            type="checkbox"
+                            checked={isChecked}
+                            readOnly
+                            style={{
+                                marginRight: '0.5em',
+                                verticalAlign: 'middle'
+                            }}
+                        />
+                        <span>{textContent}</span>
+                    </li>
+                );
+            }
+            // Regular list item
+            return <li key={index}>{token.text}</li>;
+        }
+
+        if (token.type === 'code' && isCodeToken(token)) {
+            return <pre key={index}><code>{token.text}</code></pre>;
+        }
+
+        // Handle ordered and unordered lists
+        if (token.type === 'list' && token.items) {
+            const ListTag = token.ordered ? 'ol' : 'ul';
+	    return (
+                <ListTag
+                    key={index}
+                    style={{
+                        marginTop: '0.5em',
+                        marginBottom: '0.5em',
+                        paddingLeft: '2em'
+                    }}
+                    start={token.ordered ? (token.start || 1) : undefined}
+                >
+                    {token.items.map((item, itemIndex) => {
+                        // For list items that contain nested content
+                        if (item.tokens && item.tokens.length > 0) {
+                            return (
+                                <li key={itemIndex}>
+                                    {renderTokens(item.tokens, enableCodeApply)}
+                                </li>
+                            );
+                        }
+                        return <li key={itemIndex}>{item.text}</li>;
+                    })}
+                </ListTag>
+            );
+        }
+
+        // Handle list items that might contain nested tokens
+        if (token.type === 'list_item' && token.tokens) {
+            return renderTokens(token.tokens, enableCodeApply);
+        }
+
+        // Handle paragraphs that might contain other inline tokens
+        if (token.type === 'paragraph' && token.tokens && token.tokens.length > 0) {
+            return <p key={index}>
+                {renderTokens(token.tokens, enableCodeApply)}
+            </p>;
+        }
+
+        // Handle tables specially
+        if (token.type === 'table' && token.header && token.rows) {
+            return (
+                <table key={index}>
+                    <thead>
+                        <tr>
+                            {token.header.map((cell, cellIndex) => (
+                                <th key={cellIndex}>{decodeHTML(cell.text)}</th>
+                            ))}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {token.rows.map((row, rowIndex) => (
+                            <tr key={rowIndex}>
+                                {row.map((cell, cellIndex) => (
+                                    <td key={cellIndex}>{decodeHTML(cell.text)}</td>
+                                ))}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            );
+        }
+
+        // Handle regular HTML content
+        if (token.type === 'html') {
+            return <div key={index} dangerouslySetInnerHTML={{ __html: decodeHTML(token.text) }} />;
+        }
+
+	// Handle regular text, only if it has content
+        const text = token.text || '';
+        return text.trim() ? <div key={index}>{decodeHTML(text)}</div> : null;
+
+    });
+
+    const elements = tokens.map((token, index) => renderTokens([token], enableCodeApply));
+    // Filter out null/undefined values and flatten the array
+    return elements.flat().filter(Boolean);
+};
 
 interface MarkdownRendererProps {
     markdown: string;
@@ -369,6 +543,6 @@ marked.setOptions({
 });
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
-    const tokens = marked.lexer(markdown);
+    const tokens = (typeof markdown === 'string' ? marked.lexer(markdown) : []) as TokenWithText[];
     return <div>{renderTokens(tokens, enableCodeApply)}</div>;
 };

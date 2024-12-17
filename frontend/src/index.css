@@ -5,6 +5,7 @@ body {
   margin: 0;
   padding: 0;
   background-color: #f5f5f5;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 :root {
@@ -21,37 +22,70 @@ body {
   width: calc(100% - var(--folder-panel-width, 30vw));
   transition: left 0.3s ease, width 0.3s ease;
   padding: 40px 20px 20px;
-  background-color: #fff;
+  transition: background-color 0.3s ease;
   z-index: 1;
   overflow-y: auto;
   box-sizing: border-box;
 }
 
+/* Dark theme overrides */
+body.dark {
+  background-color: #141414;
+  color: #ffffff;
+}
+
 /* Chat Container */
 .chat-container {
   height: fit-content;
-  overflow-y: scroll;
-  padding: 10px;
+  padding: 010px;
   border: 1px solid #ccc;
   border-radius: 4px;
   margin: 20px 0;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+/* Dark theme chat container */
+.dark .chat-container {
+  background-color: #141414;
+  border-color: #303030;
+  color: #ffffff;
 }
 
 .message {
-  padding: 10px;
+  padding: 10px 0;
   border-radius: 8px;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+  overflow: visible;
 }
 
 .message.human {
   background-color: #efefef;
   align-self: flex-start;
+  width: 100%;
   margin-right: auto;
+  color: #000;
 }
 
 .message.ai {
   background-color: #f0f0f0;
   align-self: flex-end;
+  width: 100%;
   margin-left: auto;
+  color: #000;
+}
+
+/* Dark theme message styles */
+.dark .message.human {
+  background-color: #1f1f1f;
+  color: #e6e6e6;
+  border: 1px solid #303030;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.dark .message.ai {
+  background-color: #262626;
+  color: #ffffff;
+  border: 1px solid #303030;
 }
 
 .message-sender {
@@ -65,6 +99,16 @@ body {
   align-items: center;
 }
 
+/* Dark theme input styles */
+.dark .ant-input {
+  background-color: #1f1f1f;
+  border-color: #303030;
+  color: #ffffff;
+}
+.dark .ant-input::placeholder {
+  color: #808080;
+}
+
 /* Streamed Content */
 .streamed-content {
   margin-top: 20px;
@@ -72,6 +116,12 @@ body {
   border: 1px solid #ccc;
   border-radius: 4px;
   background-color: #f0f0f0;
+}
+
+/* Dark theme streamed content */
+.dark .streamed-content {
+  background-color: #1f1f1f;
+  border-color: #303030;
 }
 
 /*FOLDER STYLES*/
@@ -93,7 +143,79 @@ body {
   border-right: 2px solid #e8e8e8;
   background-color: #f5f5f5;
   padding-inline: 20px;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
   overflow: hidden;
+}
+
+/* Dark theme for folder panel */
+.dark .folder-tree-panel {
+  background-color: #141414;
+  border-right-color: #303030;
+}
+
+/* Dark theme for tree items */
+.dark .ant-tree {
+  color: #ffffff;
+}
+
+.dark .ant-tree .ant-tree-node-content-wrapper:hover {
+  background-color: #1f1f1f;
+  color: #1890ff;
+}
+
+.diff-view.smaller-diff-view {
+  overflow: hidden;  /* Change from overflow-x: auto */
+}
+
+/* List styling */
+.message ol, .message ul {
+    margin: 0.5em 0;
+    padding-left: 2em;
+}
+
+.message li {
+    margin: 0.25em 0;
+    padding: 0;
+    display: list-item;
+}
+
+.message ol {
+    list-style-type: decimal;
+}
+
+.message ul {
+    list-style-type: disc;
+}
+
+/* Override diff view CSS variables for dark mode */
+body.dark .diff-view {
+    --diff-background-color: #4e3e7e;
+    --diff-text-color: #d4d4d4;
+    
+    /* Addition styles */
+    --diff-code-insert-background-color: #133214;
+    --diff-code-insert-text-color: #4afa4a;
+    --diff-gutter-insert-background-color: #133214;
+    --diff-gutter-insert-text-color: #4afa4a;
+    
+    /* Deletion styles */
+    --diff-code-delete-background-color: #341414;
+    --diff-code-delete-text-color: #ff6b6b;
+    --diff-gutter-delete-background-color: #341414;
+    --diff-gutter-delete-text-color: #ff6b6b;
+    
+    /* Selection styles */
+    --diff-selection-background-color: #264f78;
+    --diff-selection-text-color: #d4d4d4;
+    
+    /* Edit styles */
+    --diff-code-insert-edit-background-color: #133214;
+    --diff-code-insert-edit-text-color: #4afa4a;
+    --diff-code-delete-edit-background-color: #341414;
+    --diff-code-delete-edit-text-color: #ff6b6b;
+
+    /* Remove any additional borders */
+    --diff-border-color: transparent;
 }
 
 .folder-tree-panel.collapsed {
@@ -180,12 +302,42 @@ span.token-count-total.red {
   font-size: 14px;
 }
 
+/* Dark theme model display */
+.dark .model-id-display {
+  background-color: #1f1f1f;
+  border-top-color: #303030;
+  color: #e6e6e6;
+}
+
 /* Git diff view */
-.smaller-diff-view {
+.diff-view {
   margin-top: 0.5em;
   font-size: 12px;
-  max-width: 100%;
+  width: 100%;
   overflow-x: auto;
+}
+
+/* Ensure diff text remains visible in both modes */
+.diff-view .diff-code {
+  color: inherit;
+}
+
+.diff-view .diff-gutter-del {
+  background-color: var(--diff-del-background-color) !important;
+  color: var(--diff-del-text-color) !important;
+}
+ 
+.diff-view .diff-code {
+  color: var(--diff-text-color) !important;
+}
+
+.diff-view .diff-code-edit {
+  color: var(--diff-text-color) !important;
+}
+
+.diff-view .diff-widget {
+  background-color: var(--diff-background-color) !important;
+  color: var(--diff-text-color) !important;
 }
 
 .token-label {
@@ -216,6 +368,22 @@ span.token-count-total.red {
     padding: 5px 0;
 }
 
+/* Ensure diff text remains dark in both modes for readability */
+.diff-view .diff-line-content {
+  color: #24292e;
+}
+
+/* Additional specificity for diff markers */
+.diff-view .diff-marker {
+  color: #24292e;
+}
+
+/* Dark theme diff controls */
+.dark .diff-view-controls {
+    background-color: #1f1f1f;
+    border-color: #303030;
+}
+
 .diff-ellipsis {
     display: flex;
     align-items: center;
@@ -226,6 +394,68 @@ span.token-count-total.red {
     background-color: #f0f0f0;
     border-top: 1px solid #e0e0e0;
     border-bottom: 1px solid #e0e0e0;
+}
+
+/* Dark theme diff ellipsis */
+.dark .diff-ellipsis {
+    background-color: #1f1f1f;
+    color: #808080;
+    border-color: #303030;
+}
+
+/* Task list styling */
+.message li input[type="checkbox"] {
+    margin: 0 0.5em 0.25em 0;
+    vertical-align: middle;
+    width: 1.2em;
+    height: 1.2em;
+}
+
+/* Dark mode checkbox styling */
+body.dark .message li input[type="checkbox"] {
+    filter: invert(100%) hue-rotate(180deg) brightness(180%) contrast(110%);
+    border: 1px solid #666;
+    border-color: #666;
+    background-color: #333;
+    cursor: default;
+}
+
+/* Table styles */
+/* High contrast table styles for dark mode */
+body.dark table {
+    border: 2px solid #666 !important;
+    background-color: #242424 !important;
+}
+
+body.dark table th {
+    border: 2px solid #666 !important;
+    background-color: #333 !important;
+    color: #e6e6e6 !important;
+    padding: 12px 8px !important;
+}
+
+body.dark table td {
+    border: 1px solid #303030 !important;
+    border: 2px solid #444 !important;
+    color: #d4d4d4 !important;
+    padding: 8px !important;
+}
+
+body.dark table tr:nth-child(even) {
+    background-color: #2a2a2a !important;
+}
+
+body.dark table tr:hover {
+    background-color: #3a3a3a !important;
+    transition: background-color 0.2s ease;
+}
+
+/* Remove borders from diff lines */
+body.dark .diff-view td {
+    border: none !important;
+    border-collapse: collapse !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
 }
 
 /* Adjust container when panel is collapsed */
@@ -256,6 +486,12 @@ span.token-count-total.red {
   justify-content: center;
   align-items: center;
   border-bottom: 1px solid #e8e8e8;
+}
+
+/* Dark theme for header */
+.dark .app-header {
+  background-color: #141414;
+  border-bottom-color: #303030;
 }
 
 .app-header h2 {
