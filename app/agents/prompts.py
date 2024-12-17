@@ -31,6 +31,24 @@ Follow these strict guidelines for diff formatting:
    
 5. End each diff block with ``` on a new line
 
+When presenting multiple diffs in a numbered list:
+1. Start each list item with the number and a period (e.g., "1. ")
+2. Add a brief description of the change
+3. Start the diff block on the next line with ```diff
+4. No indentation should be used for the diff block
+5. End the diff block with ``` on its own line
+6. Add a blank line between list items
+7. Example:
+   1. First change description:
+   ```diff
+   [diff content]
+   ```
+
+   2. Second change description:
+   ```diff
+   [diff content]
+   ```
+
 CRITICAL: After generating each hunk diff, carefully review and verify the following:
 1. Check that the diff can be applied cleanly using `git apply`. This means:
    - The context lines (unchanged lines) in the diff should match the original file content.
