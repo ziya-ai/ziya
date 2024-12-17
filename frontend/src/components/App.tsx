@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import {FolderTree} from "./FolderTree";
 import {SendChatContainer} from "./SendChatContainer";
-import {useChatContext} from '../context/ChatContext';
 import {StreamedContent} from './StreamedContent';
 import {Conversation} from "./Conversation";
-import {Button, Tooltip } from "antd";
-import {MenuFoldOutlined, MenuUnfoldOutlined, PlusOutlined} from "@ant-design/icons";
+import {Button, Tooltip, ConfigProvider, theme } from "antd";
+import {MenuFoldOutlined, MenuUnfoldOutlined, PlusOutlined, BulbOutlined} from "@ant-design/icons";
+import { useTheme } from '../context/ThemeContext';
+import { useChatContext } from '../context/ChatContext';
 
 export const App = () => {
     const {streamedContent, messages, startNewChat} = useChatContext();
@@ -16,8 +17,19 @@ export const App = () => {
         setIsPanelCollapsed(!isPanelCollapsed);
     };
 
+    const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
+
     return (
-        <>
+        <ConfigProvider
+            theme={{
+                algorithm: themeAlgorithm,
+                token: {
+                    borderRadius: 6,
+                    colorBgContainer: isDarkMode ? '#141414' : '#ffffff',
+                    colorText: isDarkMode ? '#ffffff' : '#000000',
+                },
+            }}
+        >
 	    <Button
                 className={`panel-toggle ${isPanelCollapsed ? 'collapsed' : ''}`}
                 type="primary"
@@ -25,7 +37,20 @@ export const App = () => {
                 icon={isPanelCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
             />
 	    <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
-                <h2>Ziya: Code Assist</h2>
+	        <h2 style={{
+                    color: isDarkMode ? '#fff' : '#000',
+                    transition: 'color 0.3s ease'
+                }}>
+                    Ziya: Code Assist
+                </h2>
+                <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '10px' }}>
+                    <Tooltip title="Toggle theme">
+                    <Button icon={<BulbOutlined />} onClick={toggleTheme} />
+                    </Tooltip>
+                    <Tooltip title="New Chat">
+                    <Button icon={<PlusOutlined />} onClick={startNewChat} />
+                    </Tooltip>
+	        </div>
             </div>
             <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
                 <FolderTree isPanelCollapsed={isPanelCollapsed}/>
@@ -36,11 +61,6 @@ export const App = () => {
                         <Conversation enableCodeApply={enableCodeApply}/>
                     </div>)}
             </div>
-            <div style={{position: 'fixed', right: '10px', top: '10px'}}>
-                <Tooltip title="New Chat">
-                    <Button icon={<PlusOutlined />} onClick={startNewChat} size={"large"}/>
-                </Tooltip>
-            </div>
-        </>
+        </ConfigProvider>
     );
 };
