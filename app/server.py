@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 import tiktoken
 from fastapi import FastAPI, Request, HTTPException
@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
+from app.agents.agent import model
 from app.agents.agent import agent_executor
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -39,7 +40,8 @@ add_routes(app, agent_executor, disabled_endpoints=["playground"], path="/ziya")
 @app.get("/")
 async def root(request: Request):
     return templates.TemplateResponse("index.html", {
-        "request": request
+        "request": request,
+        "diff_view_type": os.environ.get("ZIYA_DIFF_VIEW_TYPE", "unified")
     })
 
 
@@ -101,10 +103,29 @@ async def get_folders():
 def get_default_included_folders():
     return {'defaultIncludedFolders': []}
 
+@app.get('/api/model-id')
+def get_model_id():
+    # Get the model ID from the configured Bedrock client
+    return {'model_id': model.model_id.split(':')[0].split('/')[-1]}
 
 class ApplyChangesRequest(BaseModel):
     diff: str
     filePath: str
+
+class TokenCountRequest(BaseModel):
+    text: str
+
+@app.post('/api/token-count')
+async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
+    try:
+        # Use the existing model instance to count tokens
+        token_count = model.get_num_tokens(request.text)
+        logger.info(f"Counted {token_count} tokens for text length {len(request.text)}")
+        return {"token_count": token_count}
+    except Exception as e:
+        logger.error(f"Error counting tokens: {str(e)}", exc_info=True)
+        # Return 0 in case of error to avoid breaking the frontend
+        return {"token_count": 0}
 
 @app.post('/api/apply-changes')
 async def apply_changes(request: ApplyChangesRequest):

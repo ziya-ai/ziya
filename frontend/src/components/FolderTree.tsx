@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useState, useCallback} from 'react';
 import {Input, Tabs, Tree, TreeDataNode} from 'antd';
 import {useFolderContext} from '../context/FolderContext';
 import {TokenCountDisplay} from "./TokenCountDisplay";
@@ -20,6 +20,8 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         checkedKeys,
         setCheckedKeys
     } = useFolderContext();
+    const [modelId, setModelId] = useState<string>('');
+
 
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
@@ -36,6 +38,20 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
             setExpandedKeys([]);
         }
     }, [searchValue, treeData]);
+
+        const fetchModelId = useCallback(async () => {
+        try {
+            const response = await fetch('/api/model-id');
+            const data = await response.json();
+            setModelId(data.model_id);
+        } catch (error) {
+            console.error('Error fetching model ID:', error);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchModelId();
+    }, [fetchModelId]);
 
     const filterTreeData = (data: TreeDataNode[], searchValue: string): {
         filteredData: TreeDataNode[],
@@ -182,6 +198,9 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                     <ChatHistory/>
                 </TabPane>
             </Tabs>
+            <div className="model-id-display">
+                {modelId && <span>Model: {modelId}</span>}
+            </div>
         </div>
     );
 };
