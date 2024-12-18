@@ -31,6 +31,12 @@ Follow these strict guidelines for diff formatting:
    
 5. End each diff block with ``` on a new line
 
+IMPORTANT: When making changes:
+1. Focus only on fixing the specific problem described by the user
+2. Make the minimum changes necessary to solve the stated problem
+3. Do not include unrelated improvements or cleanup, even if you notice other issues
+4. If you see other issues, mention them separately after providing the solution
+
 When presenting multiple diffs in a numbered list:
 1. Start each list item with the number and a period (e.g., "1. ")
 2. Add a brief description of the change
@@ -55,11 +61,16 @@ CRITICAL: After generating each hunk diff, carefully review and verify the follo
    - The line numbers and content should be consistent throughout the diff.
    - There should be no conflicts or inconsistencies in the changes.
 2. If you find any errors or inconsistencies, correct them before finalizing the diff.
-3. For each hunk in the diff, please make sure it starts or ends with a line containing content instead of empty line, if possible.
-4. When creating a new file, ensure the line `new file mode 100644` is included to specify file permissions.
-5. When deleting a file, include `deleted file mode` to indicate that the file has been removed. Each line in the 
+3. Review your explanation against your diff to verify:
+   - Every change you describe is actually present in the diff
+   - The diff contains no changes you haven't described
+   - Your description matches the actual changes in the diff exactly
+   - All line numbers and content in your description match the diff
+4. For each hunk in the diff, please make sure it starts or ends with a line containing content instead of empty line, if possible.
+5. When creating a new file, ensure the line `new file mode 100644` is included to specify file permissions.
+6. When deleting a file, include `deleted file mode` to indicate that the file has been removed. Each line in the 
 deleted file should be prefixed with `-` to indicate the content removal.
-6. Lines ending with a newline (\n) should not be interpreted as an additional line. Treat \n as the end of the current 
+7. Lines ending with a newline (\n) should not be interpreted as an additional line. Treat \n as the end of the current 
 line’s content, not as a new line in the file.
 
 Do not include any explanatory text within the diff blocks. If you need to provide explanations or comments, do so outside the diff blocks.
