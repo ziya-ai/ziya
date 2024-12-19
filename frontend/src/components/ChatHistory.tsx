@@ -2,6 +2,8 @@ import React, {useState} from 'react';
 import {List, Button, Input} from 'antd';
 import {DeleteOutlined, EditOutlined} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
+import {useTheme} from '../context/ThemeContext';
+
 
 export const ChatHistory: React.FC = () => {
     const {
@@ -11,6 +13,7 @@ export const ChatHistory: React.FC = () => {
         currentConversationId,
         setConversations,
     } = useChatContext();
+    const {isDarkMode} = useTheme();
     const [editingId, setEditingId] = useState<string | null>(null);
 
     const handleConversationClick = (conversationId: string) => {
@@ -50,6 +53,13 @@ export const ChatHistory: React.FC = () => {
 
     return (
         <List
+	    style={{
+                height: 'calc(100% - var(--model-display-height))',
+                overflow: 'auto',
+                position: 'relative',
+                zIndex: 1,
+		width: '100%'
+            }}
             dataSource={conversations.slice().reverse()}
             renderItem={(conversation) => (
                 <List.Item
@@ -57,13 +67,17 @@ export const ChatHistory: React.FC = () => {
                     onClick={() => handleConversationClick(conversation.id)}
                     style={{
                         cursor: 'pointer',
-                        backgroundColor: conversation.id === currentConversationId ? '#e6f7ff' : 'transparent',
+                        backgroundColor: conversation.id === currentConversationId
+                            ? (isDarkMode ? '#177ddc' : '#e6f7ff')
+                            : 'transparent',
+                        color: conversation.id === currentConversationId && isDarkMode ? '#ffffff' : undefined,
                         padding: '8px',
                         borderRadius: '4px',
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'flex-start',
-                        flexWrap: 'nowrap',
+			width: '100%',
+			boxSizing: 'border-box'
                     }}
                 >
                     {editingId === conversation.id ? (
@@ -71,6 +85,7 @@ export const ChatHistory: React.FC = () => {
                             defaultValue={conversation.title}
                             onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
                             onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
+			    style={{ width: '100%' }}
                             onClick={(e) => e.stopPropagation()}
                         />
                     ) : (
