@@ -40,8 +40,7 @@ const DiffControls = memo(({
         <div className="diff-view-controls" style={{
             display: 'flex',
             justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: '10px'
+            alignItems: 'center'
         }}>
             <div>
                 {displayMode === 'pretty' && (
@@ -308,7 +307,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     }
 
     return (
-        <div>
+	<div className="diff-container">
             <DiffControls
                 displayMode={displayMode}
                 viewType={viewType}
@@ -333,28 +332,139 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNod
     return tokens.map((token, index) => {
         if (token.type === 'code' && isCodeToken(token) && token.lang === 'diff') {
             try {
-                const files = parseDiff(token.text);
-                if (!files || files.length === 0) {
-                    return <pre key={index}><code>{token.text}</code></pre>;
+                // Only attempt to parse as diff if it starts with 'diff --git'
+                if (token.text.trim().startsWith('diff --git')) {
+                    const files = parseDiff(token.text);
+                    if (files && files.length > 0) {
+                        return (
+                            <DiffViewWrapper
+                                key={index}
+                                token={token}
+                                index={index}
+                                enableCodeApply={enableCodeApply}
+                            />
+                        );
+                    }
                 }
+                // If not a valid diff or doesn't start with diff marker, render as regular code
                 return (
-                    <DiffViewWrapper
-                        key={index}
-                        token={token}
-                        index={index}
-                        enableCodeApply={enableCodeApply}
-                    />
+                    <pre key={index} style={{
+                        backgroundColor: '#f6f8fa',
+                        padding: '16px',
+                        borderRadius: '6px',
+                        overflow: 'auto'
+                    }}>
+                        <code>{token.text}</code>
+                    </pre>
                 );
             } catch (error) {
-                return <pre key={index}><code>{token.text}</code></pre>;
+                // If parsing fails, render as regular code
+                return (
+                    <pre key={index} style={{
+                        backgroundColor: '#f6f8fa',
+                        padding: '16px',
+                        borderRadius: '6px',
+                        overflow: 'auto'
+                    }}>
+                        <code>{token.text}</code>
+                    </pre>
+                );
             }
         }
 
+        if (token.type === 'code' && isCodeToken(token)) {
+            // Regular code blocks (non-diff)
+            return (
+                <pre key={index} style={{
+                    backgroundColor: '#f6f8fa',
+                    padding: '16px',
+                    borderRadius: '6px',
+                    overflow: 'auto'
+                }}>
+                    <code>{token.text}</code>
+                </pre>
+            );
+        }
 
-        return <div key={index} dangerouslySetInnerHTML={{__html: marked.parser([token])}} />;
+        // Handle tables specially
+        if (token.type === 'table' && 'header' in token && 'rows' in token) {
+            const tableToken = token as Tokens.Table;
+            return (
+                <table key={index} style={{
+                    borderCollapse: 'collapse',
+                    width: '100%',
+                    marginBottom: '1em'
+                }}>
+                    <thead>
+                        <tr>
+                            {tableToken.header.map((cell, cellIndex) => (
+                                <th key={cellIndex} style={{
+                                    borderBottom: '2px solid #ddd',
+                                    padding: '8px',
+                                    textAlign: 'left'
+                                }}>
+                                    {typeof cell === 'string' ? cell : cell.text}
+                                </th>
+                            ))}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {tableToken.rows.map((row, rowIndex) => (
+                            <tr key={rowIndex}>
+                                {row.map((cell, cellIndex) => (
+                                    <td key={cellIndex} style={{
+                                        border: '1px solid #ddd',
+                                        padding: '8px'
+                                    }}>
+                                        {typeof cell === 'string' ? cell : cell.text}
+                                    </td>
+                                ))}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            );
+        }
 
+        // Handle regular HTML content
+        if (token.type === 'html' && 'text' in token) {
+            return <div key={index} dangerouslySetInnerHTML={{ __html: token.text }} />;
+        }
 
-    }); };
+        // Handle ordered and unordered lists
+        if (token.type === 'list' && 'items' in token) {
+            const listToken = token as Tokens.List;
+            const ListTag = listToken.ordered ? 'ol' : 'ul';
+            return (
+                <ListTag key={index} 
+                    start={listToken.ordered ? (listToken.start || 1) : undefined}>
+                    {listToken.items.map((item, itemIndex) => {
+                        if ('tokens' in item && item.tokens) {
+                            // Handle nested content in list items
+                            return (
+                                <li key={itemIndex}>
+                                    {renderTokens(item.tokens, enableCodeApply)}
+                                </li>
+                            );
+                        }
+                        // Handle simple text list items
+                        return <li key={itemIndex}>{item.text}</li>;
+                    })}
+                </ListTag>
+            );
+        }
+
+        // Handle regular text, only if it has content - wrap with pre tags for safety
+        if ('text' in token) {
+            const text = token.text || '';
+	    const escapedText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return text.trim() ?
+                <div key={index} dangerouslySetInnerHTML={{ __html: escapedText }} /> : null;
+        }
+
+        return null;
+    });
+};
 
 interface MarkdownRendererProps {
     markdown: string;
@@ -370,5 +480,6 @@ marked.setOptions({
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
     const tokens = marked.lexer(markdown);
+    console.log('Marked tokens:', JSON.stringify(tokens, null, 2));
     return <div>{renderTokens(tokens, enableCodeApply)}</div>;
 };
