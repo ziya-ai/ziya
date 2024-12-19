@@ -1,6 +1,7 @@
 import os
 from typing import List, Tuple, Set, Union
 
+import json
 import botocore
 import tiktoken
 from langchain.agents import AgentExecutor
@@ -14,11 +15,22 @@ from app.agents.prompts import conversational_prompt, parse_output
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 
+def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """Clean chat history by removing invalid messages and normalizing content."""
+    cleaned = []
+    for human, ai in chat_history:
+        # Skip pairs with empty messages
+        if not human or not human.strip() or not ai or not ai.strip():
+            logger.warning(f"Skipping invalid message pair: human='{human}', ai='{ai}'")
+            continue
+        cleaned.append((human.strip(), ai.strip()))
+    return cleaned
 
 def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[HumanMessage, AIMessage]]:
-    logger.info("Formatting chat history")
+    logger.info(f"Formatting chat history: {json.dumps(chat_history, indent=2)}")
+    cleaned_history = clean_chat_history(chat_history)
     buffer = []
-    for human, ai in chat_history:
+    for human, ai in cleaned_history:
         buffer.append(HumanMessage(content=human))
         buffer.append(AIMessage(content=ai))
     return buffer
