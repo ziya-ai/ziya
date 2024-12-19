@@ -36,12 +36,16 @@ export function ChatProvider({children}: ChatProviderProps) {
     const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
 
     const cleanMessage = (message: Message): Message | null => {
-        if (!message.content) {
+        if (!message || !message.content) {
             return null;
         }
 
         // Remove null characters and normalize whitespace
         const cleaned = message.content
+            // Escape HTML tags
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            // Normalize whitespace
             .replace(/\0/g, '')
             .replace(/\r\n/g, '\n')
             .replace(/[\s\uFEFF\xA0]+/g, ' ') // Handle all types of whitespace
