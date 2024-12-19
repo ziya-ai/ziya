@@ -35,7 +35,31 @@ export function ChatProvider({children}: ChatProviderProps) {
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
 
+    const cleanMessage = (message: Message): Message | null => {
+        if (!message.content) {
+            return null;
+        }
+
+        // Remove null characters and normalize whitespace
+        const cleaned = message.content
+            .replace(/\0/g, '')
+            .replace(/\r\n/g, '\n')
+            .replace(/[\s\uFEFF\xA0]+/g, ' ') // Handle all types of whitespace
+            .trim();
+
+	if (!cleaned) {
+	    return null;
+	}
+
+        return { ...message, content: cleaned };
+    };
+
     const addMessageToCurrentConversation = (message: Message) => {
+        const cleanedMessage = cleanMessage(message);
+        if (!cleanedMessage) {
+            console.warn('Attempted to add invalid message:', message);
+            return;
+        }
         setMessages(prevMessages => [...prevMessages, message]);
         setConversations(prevConversations => {
             const existingConversationIndex = prevConversations.findIndex(conv => conv.id === currentConversationId);
