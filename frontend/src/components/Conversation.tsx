@@ -9,13 +9,16 @@ interface ConversationProps {
 }
 
 export const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
-    const {messages} = useChatContext();
+    const {messages, isTopToBottom} = useChatContext();
+    // In top-to-bottom mode, show messages in chronological order
+    // In bottom-to-top mode, show messages in reverse chronological order
+    const displayMessages = isTopToBottom ? messages : messages.slice().reverse();
 
     return (
         <>
             {messages.length > 0 && (
                 <div>
-                    {messages.slice().reverse().map((msg, index) => (
+		    {displayMessages.map((msg, index) => (
                         <div key={index} className={`message ${msg.role}`}>
                             {msg.role === 'human' ? (
                                 <div style={{display: 'flex', justifyContent: 'space-between'}}>

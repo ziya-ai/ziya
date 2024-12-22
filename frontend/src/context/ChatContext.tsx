@@ -16,6 +16,9 @@ interface ChatContext {
     currentConversationId: string;
     setCurrentConversationId: Dispatch<SetStateAction<string>>;
     addMessageToCurrentConversation: (message: Message) => void;
+    isTopToBottom: boolean;
+    setIsTopToBottom: Dispatch<SetStateAction<boolean>>;
+    scrollToBottom: () => void;
     startNewChat: () => void;
 }
 
@@ -34,6 +37,25 @@ export function ChatProvider({children}: ChatProviderProps) {
     const [isStreaming, setIsStreaming] = useState(false);
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
+    const [isTopToBottom, setIsTopToBottom] = useState<boolean>(false);
+
+    const scrollToTop = () => {
+        const bottomUpContent = document.querySelector('.bottom-up-content');
+        if (bottomUpContent) {
+            bottomUpContent.scrollTop = 0;
+        }
+    };
+
+    const scrollToBottom = () => {
+        const chatContainer = document.querySelector('.chat-container');
+        if (chatContainer && isTopToBottom) {
+	    requestAnimationFrame(() => {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            });
+        } else if (!isTopToBottom) {
+            scrollToTop();
+	}
+    };
 
     const cleanMessage = (message: Message): Message | null => {
         if (!message || !message.content) {
@@ -84,6 +106,7 @@ export function ChatProvider({children}: ChatProviderProps) {
                 }];
             }
         });
+	scrollToBottom();
     };
 
     const startNewChat = () => {
@@ -114,6 +137,9 @@ export function ChatProvider({children}: ChatProviderProps) {
         conversations,
         setConversations,
         currentConversationId,
+	isTopToBottom,
+        setIsTopToBottom,
+	scrollToBottom,
         setCurrentConversationId,
         addMessageToCurrentConversation,
         startNewChat

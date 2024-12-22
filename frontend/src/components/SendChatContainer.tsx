@@ -1,4 +1,4 @@
-import React, {useEffect, useRef} from "react";
+import React, {useEffect, useRef, useLayoutEffect} from "react";
 import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {useFolderContext} from "../context/FolderContext";
@@ -9,7 +9,12 @@ const {TextArea} = Input;
 
 const isQuestionEmpty = (input: string) => input.trim().length === 0;
 
-export const SendChatContainer: React.FC = () => {
+interface SendChatContainerProps {
+    fixed?: boolean;
+    empty?: boolean;
+}
+
+export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed = false, empty = false }) => {
     const {
         question,
         setQuestion,
@@ -17,7 +22,9 @@ export const SendChatContainer: React.FC = () => {
         setIsStreaming,
         messages,
         addMessageToCurrentConversation,
-        setStreamedContent
+        setStreamedContent,
+	scrollToBottom,
+	isTopToBottom
     } = useChatContext();
 
     const {checkedKeys} = useFolderContext();
@@ -40,6 +47,16 @@ export const SendChatContainer: React.FC = () => {
         const newHumanMessage = {content: question, role: 'human' as 'human'};
         addMessageToCurrentConversation(newHumanMessage);
 
+        if (!isTopToBottom) {
+            // In bottom-up mode, scroll to the input
+            const bottomUpContent = document.querySelector('.bottom-up-content');
+            if (bottomUpContent) {
+                bottomUpContent.scrollTop = 0;
+                // Add a small delay to ensure proper positioning
+                setTimeout(() => bottomUpContent.scrollTop = 0, 50);
+            }
+        }
+
         setStreamedContent('');
         await sendPayload([...messages, newHumanMessage], question, setStreamedContent, checkedKeys);
         setStreamedContent((cont) => {
@@ -51,7 +68,7 @@ export const SendChatContainer: React.FC = () => {
     };
 
     return (
-        <div className="input-container">
+         <div className={`input-container ${empty ? 'empty-state' : ''}`}>
             <TextArea
                 ref={textareaRef}
                 value={question}

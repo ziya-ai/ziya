@@ -25,31 +25,35 @@ body.dark {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 20px;
+  margin: 0;
   overflow: hidden;
   transition: left 0.3s ease;
+  border: none;
   background-color: inherit;
   will-change: transform;
 }
 
 .container.panel-collapsed {
   left: 0; 
-  padding: 20px;
 }
 
 /* Chat Container */
 .chat-container {
-  height: calc(100vh - var(--header-height) - 140px); 
+  height: calc(100vh - var(--header-height) - 30px); 
   overflow-y: auto;
   position: relative;
   left: var(--folder-panel-width);
   width: calc(100% - var(--folder-panel-width) - 40px);
-  padding: 10px;
-  border: 1px solid #ccc;
-  border-radius: 6px;
+  padding: 0;
+  border: none;
   margin: 20px 0;
   margin-left: 20px;
   transition: background-color 0.3s ease, border-color 0.3s ease, left 0.3s ease, width 0.3s ease;
+}
+
+.chat-context-with-fixed-input {
+  border: none;
+  outline: none;
 }
 
 .dark .chat-container {
@@ -107,19 +111,33 @@ body.dark {
 
 /* Input Container */
 .input-container {
-  display: flex;
   position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: row;
   align-items: center;
-  left: var(--folder-panel-width);
-  width: calc(100% - var(--folder-panel-width) - 40px);
-  margin-right: 20px;
+  /* left: var(--folder-panel-width); */
+  left: 0;
+  width: calc(100% - 40px);
   margin-left: 20px;
+  margin-right: 20px;
+  box-sizing: border-box;
   transition: left 0.3s ease, width 0.3s ease;
+  column-gap: 10px;
 }
 
 .panel-collapsed .input-container {
   left: 0;
-  width: calc(100% - 40px);
+  width: calc(100% - 10px);
+  padding-right: 20px;
+}
+
+.input-container .ant-input {
+  flex: 1;
+}
+
+.input-container textarea {
+  width: 100%;
 }
 
 .dark .ant-input {
@@ -136,12 +154,11 @@ body.dark {
 .folder-tree-panel {
   position: fixed;
   left: 0;
-  top: var(--header-height);
+  top: 0;
   bottom: 0;
   width: var(--folder-panel-width);
   box-sizing: border-box;
   height: calc(100vh - var(--header-height));
-  border-right: 1px solid #e8e8e8;
   overflow: hidden;
   padding: 20px;
   flex-direction: column;
@@ -161,11 +178,11 @@ body.dark {
 
 /* Tabs Styling */
 .folder-tree-panel .ant-tabs {
+  position: relative;
   flex: 1;
   display: flex;
-  position: absolute;
-  top: 0;
   flex-direction: column;
+  margin-top: 0;
   height: 100%;
 }
 
@@ -177,7 +194,7 @@ body.dark {
 }
 
 .folder-tree-panel .ant-tabs-nav {
-  position: sticky;
+  margin-top: -8px;
   top: 0;
 }
 
@@ -378,7 +395,6 @@ body.dark .diff-view td {
   padding: 8px;
   background-color: #f5f5f5;
   border-top: 1px solid #e8e8e8;
-  border-right: 1px solid #e8e8e8;
   box-sizing: border-box;
   margin: 0;
   z-index: 2;
