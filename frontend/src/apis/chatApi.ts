@@ -1,5 +1,11 @@
 import { createParser } from 'eventsource-parser';
 
+interface Operation {
+    op: string;
+    path: string;
+    value?: string;
+}
+
 const isValidMessage = (message: any) => {
     if (!message || typeof message !== 'object') return false;
     if (!message.content || typeof message.content !== 'string') return false;
@@ -28,9 +34,9 @@ export const sendPayload = async (messages, question, setStreamedContent, checke
         }
 
         const reader = response.body.getReader();
+        const contentChunks: string[] = [];
         const decoder = new TextDecoder('utf-8');
         const parser = createParser(onParse);
-        const contentChunks = [];
 
         function onParse(event) {
             if (event.type === 'event') {
@@ -43,15 +49,15 @@ export const sendPayload = async (messages, question, setStreamedContent, checke
             }
         }
 
-        function processOps(ops) {
+        function processOps(ops: Operation[]) {
             for (const op of ops) {
                 if (
                     op.op === 'add' &&
                     op.path === '/logs/ChatBedrock/streamed_output_str/-'
                 ) {
-                    // @ts-ignore
-                    contentChunks.push(op.value);
-                    setStreamedContent(contentChunks.join(''));
+                    contentChunks.push(op.value || '');
+		    const newContent = op.value || '';
+		    setStreamedContent(prev => prev + newContent);
                 }
             }
         }

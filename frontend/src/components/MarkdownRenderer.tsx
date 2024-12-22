@@ -480,6 +480,5 @@ marked.setOptions({
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
     const tokens = marked.lexer(markdown);
-    console.log('Marked tokens:', JSON.stringify(tokens, null, 2));
     return <div>{renderTokens(tokens, enableCodeApply)}</div>;
 };
