@@ -20,14 +20,15 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         folders,
         treeData,
         checkedKeys,
-        setCheckedKeys
+        setCheckedKeys,
+	expandedKeys,
+	setExpandedKeys
     } = useFolderContext();
     const [modelId, setModelId] = useState<string>('');
     const {isDarkMode} = useTheme();
 
 
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
-    const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
 
@@ -87,8 +88,8 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         return {filteredData, expandedKeys};
     };
 
-    const onExpand = (newExpandedKeys: React.Key[]) => {
-        setExpandedKeys(newExpandedKeys);
+    const onExpand = (keys: React.Key[]) => {
+        setExpandedKeys(keys);
         setAutoExpandParent(false);
     };
 
