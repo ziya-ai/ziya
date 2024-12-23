@@ -2,9 +2,129 @@ import React, { useState, useEffect, memo } from 'react';
 import { parseDiff, Diff, Hunk, tokenize, RenderToken } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { marked, Token, Tokens } from 'marked';
-import { Button, message, Radio, Space } from 'antd';
+import { Button, message, Radio, Space, Spin } from 'antd';
 import { useTheme } from '../context/ThemeContext';
+import * as Viz from '@viz-js/viz';
 import { CheckOutlined, CodeOutlined } from '@ant-design/icons';
+
+interface ErrorBoundaryProps {
+    children: React.ReactNode;
+    fallback?: React.ReactNode;
+}
+ 
+interface ErrorBoundaryState {
+    hasError: boolean;
+}
+ 
+class ErrorBoundary extends React.Component<
+    ErrorBoundaryProps,
+    ErrorBoundaryState> {
+    constructor(props) {
+        super(props);
+        this.state = { hasError: false };
+    }
+
+    static getDerivedStateFromError(error) {
+        return { hasError: true };
+    }
+
+    componentDidCatch(error, errorInfo) {
+        console.error('Graphviz Error:', error, errorInfo);
+    }
+
+    render() {
+        if (this.state.hasError) {
+            return this.props.fallback || (
+                <div>Something went wrong rendering the diagram.</div>
+            );
+        }
+
+        return this.props.children;
+    }
+}
+
+const GraphvizRenderer: React.FC<{ dot: string }> = ({ dot }) => {
+    const [svg, setSvg] = useState<string>('');
+    const [error, setError] = useState<string | null>(null);
+    const [isValidDot, setIsValidDot] = useState<boolean>(false);
+
+    useEffect(() => {
+        const renderGraph = async () => {
+            try {
+		// First validate DOT syntax
+                if (!dot.trim().startsWith('digraph') && !dot.trim().startsWith('graph')) {
+                    setError('Invalid DOT syntax');
+                    setIsValidDot(false);
+                    return;
+                }
+
+                // Check for incomplete DOT syntax (missing closing brace)
+                if (!dot.includes('}')) {
+                    setIsValidDot(false);
+                    setSvg('');
+                    return;
+                }
+		const instance = await Viz.instance();
+                const result = await instance.renderString(dot, {
+                    engine: 'dot',
+                    format: 'svg'
+                });
+                setSvg(result);
+		setIsValidDot(true);
+                setError(null);
+            } catch (err) {
+		const errorMessage = err instanceof Error
+                    ? err.message
+                    : 'Failed to render graph';
+
+                console.error('Graphviz rendering error:', errorMessage);
+		setIsValidDot(false);
+                setError(errorMessage);
+            }
+        };
+
+        renderGraph();
+    }, [dot]);
+
+    if (!isValidDot) {
+        return (
+            <div className="graphviz-container" style={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                minHeight: '100px'
+            }}>
+                <Spin tip="Rendering graph..." size="large">
+                    <div className="content" />
+                </Spin>
+            </div>
+        );
+    }
+
+
+    if (error) {
+        return (
+            <div className="graphviz-error">
+                <p>Error rendering graph: {error}</p>
+                <pre><code>{dot}</code></pre>
+            </div>
+        );
+    }
+
+    return (
+        <div
+            className="graphviz-container"
+            dangerouslySetInnerHTML={{ __html: svg }}
+            style={{
+                maxWidth: '100%',
+                overflow: 'auto',
+                backgroundColor: 'white',
+                padding: '1em',
+                borderRadius: '4px'
+            }}
+        />
+    );
+};
 
 interface ApplyChangesButtonProps {
     diff: string;
@@ -468,7 +588,39 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNod
             }
         }
 
+	// Handle Graphviz diagrams
+        if (token.type === 'code' && isCodeToken(token) && token.lang === 'graphviz') {
+            try {
+		    // First validate the DOT syntax
+                if (!token.text.trim().startsWith('digraph') &&
+                    !token.text.trim().startsWith('graph')) {
+                    return (
+                        <div key={index} className="graphviz-error">
+                            <p>Invalid Graphviz syntax. Must start with 'digraph' or 'graph'.</p>
+                            <pre><code>{token.text}</code></pre>
+                        </div>
+                    );
+                }
+
+                // Wrap Graphviz in error boundary
+                return (
+		    <div key={index} className="graphviz-container" style={{ padding: '1em' }}>
+                        <GraphvizRenderer dot={token.text} />
+                    </div>
+                );
+            } catch (error) {
+                console.error('Error in Graphviz rendering:', error);
+                return (
+                    <div key={index} className="graphviz-error">
+                        <p>Error rendering diagram</p>
+                        <pre><code>{token.text}</code></pre>
+                    </div>
+                );
+            }
+        }
+
         if (token.type === 'code' && isCodeToken(token)) {
+            console.log('Processing regular code block:', { lang: token.lang });
             // Regular code blocks (non-diff)
             return (
                 <pre key={index} style={{

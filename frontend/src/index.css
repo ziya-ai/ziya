@@ -679,3 +679,51 @@ body.dark .message li input[type="checkbox"] {
   }
 }
 
+/* Graphviz styling */
+.graphviz-container {
+  margin: 1em 0;
+  padding: 1em;
+  background-color: #f8f9fa;
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.graphviz-container svg {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+}
+
+.dark .graphviz-container {
+  background-color: #1f1f1f;
+  border: 1px solid #303030;
+}
+
+.graphviz-error {
+  padding: 1em;
+  margin: 1em 0;
+  background-color: #fff1f0;
+  border: 1px solid #ffa39e;
+  border-radius: 6px;
+}
+
+.dark .graphviz-error {
+  background-color: #2a1f1f;
+  border-color: #a61d24;
+}
+
+/* Graphviz loading state */
+.graphviz-container .ant-spin {
+    color: #1890ff;
+}
+
+.dark .graphviz-container .ant-spin {
+    color: #177ddc;
+}
+
+.graphviz-container .ant-spin .ant-spin-text {
+    margin-top: 8px;
+    opacity: 0.85;
+}
+
