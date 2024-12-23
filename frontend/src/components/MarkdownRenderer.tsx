@@ -100,11 +100,107 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string =>
                content.includes('+++ /dev/null');
 };
 
+const normalizeGitDiff = (diff: string): string => {
+    // because LLMs tend to ignore instructions and get lazy
+    if (diff.startsWith('diff --git')) {
+        const lines: string[] = diff.split('\n');
+        const normalizedLines: string[] = [];
+
+        // Check if this is a properly formatted diff
+        const hasDiffHeaders = lines.some(line =>
+            (line.startsWith('---') || line.startsWith('+++'))
+        );
+        const hasHunkHeader = lines.some(line => 
+            /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line)
+        );
+
+        if (hasDiffHeaders && hasHunkHeader) {
+            return diff;  // Return original diff if it's properly formatted
+        }
+        
+        let addCount = 0;
+        let removeCount = 0;
+        let contextCount = 0;
+        
+        // Always keep the diff --git line
+        normalizedLines.push(lines[0]);
+
+        // Extract file path from diff --git line
+        const filePathMatch = lines[0].match(/diff --git a\/(.*?) b\//);
+        const filePath = filePathMatch ? filePathMatch[1] : 'unknown';
+
+        // Add headers if missing
+        normalizedLines.push(`--- a/${filePath}`);
+        normalizedLines.push(`+++ b/${filePath}`);
+
+        // Count lines and collect content
+        const contentLines = lines.slice(1).filter(line => {
+            if (line.startsWith('diff --git') || line.startsWith('index ')) {
+                return false;
+            }
+            if (line.startsWith('---') || line.startsWith('+++')) {
+                return false;
+            }
+            // Check for +/- anywhere in the leading whitespace
+            const trimmed = line.trimStart();
+            if (trimmed.startsWith('+')) {
+                addCount++;
+                return true;
+            }
+            if (trimmed.startsWith('-')) {
+                removeCount++;
+                return true;
+            }
+            // Handle case where +/- might be preceded by spaces
+            const indentMatch = line.match(/^[\s]*([-+])/);
+            if (indentMatch) {
+                if (indentMatch[1] === '+') addCount++;
+                if (indentMatch[1] === '-') removeCount++;
+                return true;
+            }
+            if (line.trim().length > 0) {
+                contextCount++;
+                return true;
+            }
+            if (line.trim().length === 0) {
+                contextCount++;
+                return true;
+            }
+            return false;
+        });
+
+        // Add hunk header
+        normalizedLines.push(`@@ -1,${removeCount + contextCount} +1,${addCount + contextCount} @@`);
+
+        // Add content lines, preserving +/- and adding spaces for context
+        contentLines.forEach(line => {
+            const trimmed = line.trimStart();
+            if (trimmed.startsWith('+') || trimmed.startsWith('-')) {
+                // For indented +/- lines, preserve only the content indentation
+                const marker = trimmed[0];
+                const content = trimmed.slice(1);
+                normalizedLines.push(`${marker}${content}`);
+            } else {
+                // Handle case where +/- might be preceded by spaces
+                const indentMatch = line.match(/^[\s]*([-+])(.*)/);
+                if (indentMatch) {
+                    normalizedLines.push(`${indentMatch[1]}${indentMatch[2]}`);
+                } else {
+                    normalizedLines.push(` ${line.trim()}`);
+                }
+            }
+        });
+
+        return normalizedLines.join('\n');
+    }
+    return diff;
+};
+
 const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLineNumbers }) => {
     const { isDarkMode } = useTheme();
     let files;
     try {
-        files = parseDiff(diff);
+        files = parseDiff(normalizeGitDiff(diff));
 	// Special handling for deletion diffs that might not be parsed correctly
         if (files.length === 0 && isDeletionDiff(diff)) {
             // Force parse as a deletion
