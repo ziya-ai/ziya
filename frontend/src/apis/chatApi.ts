@@ -1,4 +1,5 @@
 import { createParser } from 'eventsource-parser';
+import { message } from 'antd';
 
 interface Operation {
     op: string;
@@ -18,7 +19,7 @@ const cleanMessages = (messages: any[]) => {
         .map(msg => ({ ...msg, content: msg.content.trim() }));
 };
 
-export const sendPayload = async (messages, question, setStreamedContent, checkedItems) => {
+export const sendPayload = async (messages, question, setStreamedContent, setIsStreaming, checkedItems) => {
     try {
 
 	// Filter out any empty messages
@@ -28,6 +29,11 @@ export const sendPayload = async (messages, question, setStreamedContent, checke
         }
 
         const response = await getApiResponse(messages, question, checkedItems);
+
+	if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.detail || 'Failed to get response from server');
+        }
 
         if (!response.body) {
             throw new Error('No body in response');
@@ -74,7 +80,12 @@ export const sendPayload = async (messages, question, setStreamedContent, checke
         await readStream();
 
     } catch (error) {
-        console.error(error);
+        console.error('Error in sendPayload:', error);
+        message.error({
+	content: error instanceof Error ? error.message : 'An unknown error occurred',
+            duration: 5
+        });
+        setIsStreaming(false);
     }
 };
 
