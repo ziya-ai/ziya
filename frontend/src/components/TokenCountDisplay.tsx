@@ -43,7 +43,7 @@ export const TokenCountDisplay = () => {
     const combinedTokenCount = totalTokenCount + chatTokenCount;
 
     useEffect(() => {
-        calculateTotalTokenCount(checkedKeys as string[]);
+        if (folders) calculateTotalTokenCount(checkedKeys as string[]);
     }, [checkedKeys]);
 
     const getTokenCountClass = (count: number) => {
