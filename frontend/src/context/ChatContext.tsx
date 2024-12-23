@@ -103,6 +103,7 @@ export function ChatProvider({children}: ChatProviderProps) {
                     id: currentConversationId,
                     title: message.content.slice(0, 45),
                     messages: [message],
+		    lastAccessedAt: Date.now()
                 }];
             }
         });
@@ -110,6 +111,17 @@ export function ChatProvider({children}: ChatProviderProps) {
     };
 
     const startNewChat = () => {
+	// Update last accessed timestamp for the current conversation
+        setConversations(prevConversations =>
+            prevConversations.map(conv =>
+                conv.id === currentConversationId
+                    ? {
+                        ...conv,
+                        lastAccessedAt: Date.now()
+                      }
+                    : conv
+            )
+        );
         setCurrentConversationId(uuidv4());
         setMessages([]);
     };
