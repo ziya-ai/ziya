@@ -307,8 +307,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                marginBottom: '10px',
-                padding: '8px'
+                marginBottom: '4px',
+                padding: '4px 8px'
             }}>
                 <b>{
                     file.type === 'delete'
@@ -554,8 +554,13 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNod
         if ('text' in token) {
             const text = token.text || '';
 	    const escapedText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            return text.trim() ?
-                <div key={index} dangerouslySetInnerHTML={{ __html: escapedText }} /> : null;
+            return text.trim() ? (
+                <div
+                    key={index}
+                    style={{ marginBottom: '6px' }}
+                    dangerouslySetInnerHTML={{ __html: escapedText }}
+                />
+            ) : null;
         }
 
         return null;
