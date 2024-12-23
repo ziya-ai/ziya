@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Tuple, Optional
 import tiktoken
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
@@ -11,6 +12,8 @@ from app.agents.agent import model
 from app.agents.agent import agent_executor
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from botocore.exceptions import ClientError, BotoCoreError
+
 
 # import pydevd_pycharm
 import uvicorn
@@ -29,6 +32,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(ClientError)
+async def boto_client_exception_handler(request: Request, exc: ClientError):
+    error_message = str(exc)
+    if "ExpiredTokenException" in error_message or "InvalidIdentityTokenException" in error_message:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "AWS credentials have expired. Please refresh your credentials."}
+        )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"AWS Service Error: {str(exc)}"}
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 app.mount("/static", StaticFiles(directory="../templates/static"), name="static")
 templates = Jinja2Templates(directory="../templates")

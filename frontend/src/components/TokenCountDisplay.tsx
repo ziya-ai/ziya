@@ -1,7 +1,7 @@
 import React, {useEffect, useState, useCallback} from 'react';
 import {Folders} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
-import {Tooltip, Spin} from "antd";
+import {Tooltip, Spin, message} from "antd";
 import {useChatContext} from "../context/ChatContext";
 
 const TOKEN_LIMIT = 160000;
@@ -16,11 +16,16 @@ const getTokenCount = async (text: string): Promise<number> => {
             body: JSON.stringify({ text }),
         });
         if (!response.ok) {
-            throw new Error('Token count request failed');
+            const errorData = await response.json();
+            throw new Error(errorData.detail || 'Token count request failed');
         }
         const data = await response.json();
         return data.token_count;
     } catch (error) {
+        message.error({
+	    content: error instanceof Error ? error.message : 'An unknown error occurred',
+            duration: 5
+        });
         console.error('Error getting token count:', error);
         return 0;
     }

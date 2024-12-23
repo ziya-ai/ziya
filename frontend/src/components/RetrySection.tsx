@@ -19,7 +19,7 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
         setMessages(updatedMessages);
         setIsStreaming(true);
         setStreamedContent('');
-        await sendPayload(updatedMessages, lastHumanMessage.content, setStreamedContent, checkedKeys);
+        await sendPayload(updatedMessages, lastHumanMessage.content, setStreamedContent, setIsStreaming, checkedKeys);
         setIsStreaming(false);
         setStreamedContent((content) => {
             setMessages((prevMessages) => [...prevMessages, {content, role: 'assistant'}]);

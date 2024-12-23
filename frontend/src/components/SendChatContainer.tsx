@@ -58,7 +58,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed = fa
         }
 
         setStreamedContent('');
-        await sendPayload([...messages, newHumanMessage], question, setStreamedContent, checkedKeys);
+        await sendPayload([...messages, newHumanMessage], question, setStreamedContent, setIsStreaming, checkedKeys);
         setStreamedContent((cont) => {
             const newAIMessage = {content: cont, role: 'assistant' as 'assistant'};
             addMessageToCurrentConversation(newAIMessage);

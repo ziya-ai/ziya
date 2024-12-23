@@ -30,7 +30,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
         const updatedMessages: Message[] = [...messages.slice(0, index), {content: editedMessage, role: 'human'}];
         setMessages(updatedMessages);
         setIsStreaming(true);
-        await sendPayload(updatedMessages, editedMessage, setStreamedContent, checkedKeys);
+        await sendPayload(updatedMessages, editedMessage, setStreamedContent, setIsStreaming, checkedKeys);
         setIsStreaming(false);
         setStreamedContent((content) => {
             setMessages((prevMessages) => [...prevMessages, {content, role: 'assistant'}]);
