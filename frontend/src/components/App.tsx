@@ -123,8 +123,9 @@ export const App = () => {
                 className={`panel-toggle ${isPanelCollapsed ? 'collapsed' : ''}`}
                 type="primary"
                 onClick={togglePanel}
-                icon={isPanelCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            />
+                size="small"
+                style={{ padding: '4px 8px' }}
+            >{isPanelCollapsed ? '›' : '‹'}</Button>
             <div style={{ height: 'var(--app-header-height)' }}>
 	    <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
 	        <h2 style={{

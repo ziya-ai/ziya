@@ -33,7 +33,9 @@ export const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) =
                                     </div>
                                 </div>
                             )}
-                            <MarkdownRenderer markdown={msg.content} enableCodeApply={enableCodeApply}/>
+                            <div className="message-content">
+                                <MarkdownRenderer markdown={msg.content} enableCodeApply={enableCodeApply}/>
+                            </div>
                         </div>
                     ))}
                 </div>

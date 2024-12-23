@@ -69,8 +69,8 @@ body.dark {
 
 /* Message Styles */
 .message {
-  padding: 10px 0;
-  border-radius: 8px;
+  padding: 5px 0;
+  border-radius: 6px;
   transition: background-color 0.3s ease, border-color 0.3s ease;
   overflow: visible;
 }
@@ -91,6 +91,10 @@ body.dark {
   color: #000;
 }
 
+.message .message-content {
+  padding: 4px 11px;
+}
+
 .dark .message.human {
   background-color: #1f1f1f;
   color: #e6e6e6;
@@ -106,7 +110,11 @@ body.dark {
 
 .message-sender {
   font-weight: bold;
-  margin-bottom: 5px;
+  padding: 0 11px;
+}
+
+.message-content > div:has(+ .diff-container) {
+  margin-bottom: 6px;
 }
 
 /* Input Container */
@@ -115,11 +123,8 @@ body.dark {
   display: flex;
   flex: 1;
   flex-direction: row;
-  align-items: center;
-  /* left: var(--folder-panel-width); */
-  left: 0;
   width: calc(100% - 40px);
-  margin-left: 20px;
+  margin-left: 10px;
   margin-right: 20px;
   box-sizing: border-box;
   transition: left 0.3s ease, width 0.3s ease;
@@ -277,7 +282,7 @@ body.dark {
 .diff-view {
   margin-top: 0.5em;
   font-size: 12px;
-  padding: 8px;
+  padding:8px;
   width: 100%;
   overflow-x: auto;
 }
@@ -546,12 +551,41 @@ body.dark .message li input[type="checkbox"] {
 /* Panel Toggle Button */
 .panel-toggle {
   position: fixed;
-  left: var(--folder-panel-width);
+  left: calc(var(--folder-panel-width) - 1px);
   top: 50%;
   transform: translateY(-50%);
-  z-index: 2;
+  z-index: 3;
   transition: left 0.3s ease;
-  margin-left: -1px;
+  margin-left: 0;
+  border-radius: 4px;
+  background: none;
+  padding: 0;
+}
+
+.panel-toggle::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: -100vh;
+  bottom: -100vh;
+  width: 2px;
+  background-color: #d9d9d9;
+  z-index: 2;
+}
+
+.panel-toggle .ant-btn {
+  background-color: #ffffff;
+  border: 1px solid #d9d9d9;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.dark .panel-toggle::before {
+  background-color: #424242;
+}
+
+.dark .panel-toggle .ant-btn {
+  background-color: #141414;
+  border: 1px solid #424242;
 }
 
 .panel-toggle.collapsed {
@@ -576,7 +610,7 @@ body.dark .message li input[type="checkbox"] {
     border: 1px solid #e8e8e8;
     border-radius: 6px;
     overflow: hidden;
-    margin-bottom: 1em;
+    margin-bottom: 5px;
 }
 
 /* Ensure diff text remains visible in both modes */
