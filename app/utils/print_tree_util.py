@@ -1,4 +1,6 @@
 import os
+from app.utils.logging_utils import logger
+
 
 def print_file_tree(file_paths):
     # Create a dictionary to store files and directories
@@ -23,15 +25,16 @@ def print_file_tree(file_paths):
             return
 
         printed_dirs.add(dir_path)
-        print(f"{indent}{os.path.basename(dir_path)}")
+        logger.debug(f"{indent}{os.path.basename(dir_path)}")
+
         if file_tree[dir_path]:
             for i, file_name in enumerate(file_tree[dir_path]):
                 if i == len(file_tree[dir_path]) - 1:
-                    print(f"{indent}    └── {file_name}")
+                    logger.debug(f"{indent}    └── {file_name}")
                 else:
-                    print(f"{indent}    ├── {file_name}")
+                    logger.debug(f"{indent}    ├── {file_name}")
         else:
-            print(f"{indent}    (empty)")
+             logger.debug(f"{indent}    (empty)")
 
         # Recursively print subdirectories
         subdirs = [subdir for subdir in sorted_dirs if subdir.startswith(dir_path + os.sep)]
