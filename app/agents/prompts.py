@@ -1,4 +1,3 @@
-from langchain_core.agents import AgentFinish
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 # import pydevd_pycharm
 
@@ -195,7 +194,3 @@ conversational_prompt = ChatPromptTemplate.from_messages(
         ("ai", "{agent_scratchpad}"),
     ]
 )
-
-def parse_output(message):
-    text = message.content
-    return AgentFinish(return_values={"output": text}, log=text)
