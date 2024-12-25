@@ -753,3 +753,13 @@ body.dark .message li input[type="checkbox"] {
     opacity: 0.85;
 }
 
+/* Error message styling */
+.service-error-message {
+  background-color: #fff2f0;
+  border: 1px solid #ffccc7;
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
