@@ -70,6 +70,7 @@ model = ChatBedrock(
 
 def get_combined_docs_from_files(files) -> str:
     combined_contents: str = ""
+    logger.debug("Processing files:")
     print_file_tree(files)
     user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
     for file_path in files:
@@ -93,7 +94,7 @@ def get_combined_docs_from_files(files) -> str:
 llm_with_stop = model.bind(stop=["</tool_input>"])
 
 def extract_codebase(x):
-    logger.info(f"Extracting codebase for files: {x['config'].get('files', [])}")
+    logger.debug(f"Extracting codebase for files: {x['config'].get('files', [])}")
     return get_combined_docs_from_files(x["config"].get("files", []))
 
 agent = (
