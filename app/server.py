@@ -52,6 +52,11 @@ async def boto_client_exception_handler(request: Request, exc: ClientError):
             status_code=401,
             content={"detail": "AWS credentials have expired. Please refresh your credentials."}
         )
+    elif "ServiceUnavailableException" in error_message:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "AWS Bedrock service is temporarily unavailable. This usually happens when the service is experiencing high load. Please wait a moment and try again."}
+        )
     return JSONResponse(
         status_code=500,
         content={"detail": f"AWS Service Error: {str(exc)}"}
