@@ -1,6 +1,7 @@
 import React, {createContext, Dispatch, ReactNode, SetStateAction, useContext, useEffect, useState} from 'react';
 import {Conversation, Message} from "../utils/types";
 import {v4 as uuidv4} from "uuid";
+import { db } from '../utils/db';
 
 interface ChatContext {
     messages: Message[];
@@ -28,7 +29,23 @@ interface ChatProviderProps {
     children: ReactNode;
 }
 
-const LOCAL_STORAGE_CONVERSATIONS_KEY = 'ZIYA_CONVERSATIONS';
+async function migrateFromLocalStorage() {
+    try {
+        // First check if we already have data in IndexedDB
+        const existingConversations = await db.getConversations();
+        if (existingConversations.length > 0) {
+            return; // Skip migration if we already have data
+        }
+
+        const storedConversations = localStorage.getItem('ZIYA_CONVERSATIONS');
+        if (storedConversations) {
+            await db.saveConversations(JSON.parse(storedConversations));
+            localStorage.removeItem('ZIYA_CONVERSATIONS');
+        }
+    } catch (error) {
+        console.error('Failed to migrate conversations:', error);
+    }
+}
 
 export function ChatProvider({children}: ChatProviderProps) {
     const [messages, setMessages] = useState<Message[]>([]);
@@ -38,6 +55,7 @@ export function ChatProvider({children}: ChatProviderProps) {
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
     const [isTopToBottom, setIsTopToBottom] = useState<boolean>(false);
+    const [isInitialized, setIsInitialized] = useState(false);
 
     const scrollToTop = () => {
         const bottomUpContent = document.querySelector('.bottom-up-content');
@@ -127,15 +145,29 @@ export function ChatProvider({children}: ChatProviderProps) {
     };
 
     useEffect(() => {
-        const storedConversations = localStorage.getItem(LOCAL_STORAGE_CONVERSATIONS_KEY);
-        if (storedConversations) {
-            setConversations(JSON.parse(storedConversations));
-        }
+        const initDB = async () => {
+            try {
+                await db.init();
+                // Attempt migration before loading conversations
+                await migrateFromLocalStorage();
+                const savedConversations = await db.getConversations();
+                setConversations(savedConversations);
+                setIsInitialized(true);
+            } catch (error) {
+                console.error('Failed to initialize database:', error);
+            }
+        };
+        initDB();
     }, []);
 
+    // Only save when initialized to prevent overwriting with empty state
+    const shouldSave = isInitialized && conversations.length > 0;
+
     useEffect(() => {
-        localStorage.setItem(LOCAL_STORAGE_CONVERSATIONS_KEY, JSON.stringify(conversations.slice(-50)));
-    }, [conversations]);
+        if (shouldSave) {
+            db.saveConversations(conversations).catch(console.error);
+        }
+    }, [conversations, shouldSave]);
 
     const value: ChatContext = {
         messages,
