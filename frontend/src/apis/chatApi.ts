@@ -34,6 +34,18 @@ export const sendPayload = async (messages, question, setStreamedContent, setIsS
             let errorMessage = 'Failed to get response from server';
             try {
                 const errorData = await response.json();
+                if (response.status === 503) {
+                    // Show service unavailable errors with a specific style
+                    message.error({
+                        content: errorData.detail,
+                        duration: 10,
+                        className: 'service-error-message',
+                        style: {
+                            width: '400px'
+                        }
+                    });
+                    return;
+                }
                 if (response.status === 401) {
                     // Show authentication errors with more prominence
                     message.error({
@@ -100,7 +112,7 @@ export const sendPayload = async (messages, question, setStreamedContent, setIsS
 
     } catch (error) {
         console.error('Error in sendPayload:', error);
-	// Only show error message if it's not an auth error (which is already handled)
+	// Only show error message if it's not an auth/service error (which is already handled)
         if (!(error instanceof Error && error.message.includes('401'))) {
             message.error({
                 content: error instanceof Error ? error.message : 'An unknown error occurred',
