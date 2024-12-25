@@ -707,11 +707,18 @@ body.dark .message li input[type="checkbox"] {
 
 /* Graphviz styling */
 .graphviz-container {
-  margin: 1em 0;
-  padding: 1em;
+  margin: 0 0;
+  padding: 0;
   background-color: #f8f9fa;
   border-radius: 6px;
   overflow: auto;
+}
+
+.graphviz-container.borderless {
+  border: none !important;
+  box-shadow: none !important;
+  background: none !important;
+  border-radius: 0 !important;
 }
 
 .graphviz-container svg {
@@ -723,7 +730,7 @@ body.dark .message li input[type="checkbox"] {
 
 .dark .graphviz-container {
   background-color: #1f1f1f;
-  border: 1px solid #303030;
+  border: 0;
 }
 
 .graphviz-error {
