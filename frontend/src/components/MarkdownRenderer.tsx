@@ -44,6 +44,7 @@ class ErrorBoundary extends React.Component<
 }
 
 const GraphvizRenderer: React.FC<{ dot: string }> = ({ dot }) => {
+    const { isDarkMode } = useTheme();
     const [svg, setSvg] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
     const [isValidDot, setIsValidDot] = useState<boolean>(false);
@@ -64,6 +65,18 @@ const GraphvizRenderer: React.FC<{ dot: string }> = ({ dot }) => {
                     setSvg('');
                     return;
                 }
+
+                const dotSource = dot.trim();
+                const themedDot = isDarkMode ?
+                    dotSource.replace(/^(digraph|graph)\s+(.+?)\s*{/,
+                        '$1 $2 {\n' +
+                        '  bgcolor="transparent";\n' +
+                        '  node [style="filled", fillcolor="#1f1f1f", color="#e6e6e6", fontcolor="#e6e6e6"];\n' +
+                        '  edge [color="#e6e6e6", fontcolor="#e6e6e6"];\n' +
+                        '  graph [bgcolor="transparent", color="#e6e6e6", fontcolor="#e6e6e6"];\n'
+                    )
+                    : dotSource;
+
 		const instance = await Viz.instance();
                 const result = await instance.renderString(dot, {
                     engine: 'dot',
@@ -113,14 +126,12 @@ const GraphvizRenderer: React.FC<{ dot: string }> = ({ dot }) => {
 
     return (
         <div
-            className="graphviz-container"
+            className="graphviz-container borderless"
             dangerouslySetInnerHTML={{ __html: svg }}
             style={{
                 maxWidth: '100%',
                 overflow: 'auto',
-                backgroundColor: 'white',
-                padding: '1em',
-                borderRadius: '4px'
+		padding: '1em 0'
             }}
         />
     );
@@ -544,7 +555,8 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     );
 };
 
-const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNode[] => {
+const renderTokens = (tokens: Token[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode[] => {
+
     return tokens.map((token, index) => {
         if (token.type === 'code' && isCodeToken(token) && token.lang === 'diff') {
             try {
@@ -602,10 +614,22 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNod
                     );
                 }
 
+                // Add theme-aware styling to the DOT source
+                const dotSource = token.text.trim();
+                const themedDot = isDarkMode
+                    ? dotSource.replace(/^(digraph|graph)\s+(.+?)\s*{/,
+                        '$1 $2 {\n' +
+                        '  bgcolor="transparent";\n' +
+                        '  node [style="filled", fillcolor="#1f1f1f", color="#e6e6e6", fontcolor="#e6e6e6"];\n' +
+                        '  edge [color="#e6e6e6", fontcolor="#e6e6e6"];\n' +
+                        '  graph [bgcolor="transparent", color="#e6e6e6", fontcolor="#e6e6e6"];\n'
+                      )
+                    : dotSource;
+
                 // Wrap Graphviz in error boundary
                 return (
-		    <div key={index} className="graphviz-container" style={{ padding: '1em' }}>
-                        <GraphvizRenderer dot={token.text} />
+		    <div key={index} className="graphviz-container borderless" style={{ padding: '1em 0' }}>
+                        <GraphvizRenderer dot={themedDot} />
                     </div>
                 );
             } catch (error) {
@@ -691,7 +715,7 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean): React.ReactNod
                             // Handle nested content in list items
                             return (
                                 <li key={itemIndex}>
-                                    {renderTokens(item.tokens, enableCodeApply)}
+                                    {renderTokens(item.tokens, enableCodeApply, isDarkMode)}
                                 </li>
                             );
                         }
@@ -732,6 +756,7 @@ marked.setOptions({
 });
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
+    const { isDarkMode } = useTheme();
     const tokens = marked.lexer(markdown);
-    return <div>{renderTokens(tokens, enableCodeApply)}</div>;
+    return <div>{renderTokens(tokens, enableCodeApply, isDarkMode)}</div>;
 };
