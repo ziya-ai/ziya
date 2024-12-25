@@ -1,4 +1,5 @@
 import os
+import os.path
 from typing import List, Tuple, Set, Union
 
 import json
@@ -8,10 +9,13 @@ from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
 from langchain_aws import ChatBedrock
 from langchain_community.document_loaders import TextLoader
+from langchain_core.agents import AgentFinish
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
-from app.agents.prompts import conversational_prompt, parse_output
+from app.agents.prompts import conversational_prompt
+from app.utils.sanitizer_util import clean_backtick_sequences
+
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 
@@ -34,6 +38,11 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
         buffer.append(HumanMessage(content=human))
         buffer.append(AIMessage(content=ai))
     return buffer
+
+def parse_output(message):
+    """Parse and sanitize the output from the language model."""
+    text = clean_backtick_sequences(message.content)
+    return AgentFinish(return_values={"output": text}, log=text)
 
 aws_profile = os.environ.get("ZIYA_AWS_PROFILE")
 if aws_profile:
@@ -66,6 +75,7 @@ def get_combined_docs_from_files(files) -> str:
     for file_path in files:
         try:
             full_file_path = os.path.join(user_codebase_dir, file_path)
+            if os.path.isdir(full_file_path): continue  # Skip directories 
             docs = TextLoader(full_file_path).load()
             for doc in docs:
                 combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
@@ -83,6 +93,7 @@ def get_combined_docs_from_files(files) -> str:
 llm_with_stop = model.bind(stop=["</tool_input>"])
 
 def extract_codebase(x):
+    logger.info(f"Extracting codebase for files: {x['config'].get('files', [])}")
     return get_combined_docs_from_files(x["config"].get("files", []))
 
 agent = (
