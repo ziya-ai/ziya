@@ -1,9 +1,9 @@
 import React, {useState} from 'react';
-import {List, Button, Input} from 'antd';
-import {DeleteOutlined, EditOutlined} from '@ant-design/icons';
+import {List, Button, Input, message} from 'antd';
+import {DeleteOutlined, EditOutlined, DownloadOutlined, UploadOutlined} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
 import {useTheme} from '../context/ThemeContext';
-
+import { db } from '../utils/db';
 
 export const ChatHistory: React.FC = () => {
     const {
@@ -15,6 +15,48 @@ export const ChatHistory: React.FC = () => {
     } = useChatContext();
     const {isDarkMode} = useTheme();
     const [editingId, setEditingId] = useState<string | null>(null);
+
+        const exportConversations = async () => {
+        try {
+            const data = await db.exportConversations();
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `ziya-conversations-${new Date().toISOString()}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            message.success('Conversations exported successfully');
+        } catch (error) {
+            console.error('Error exporting conversations:', error);
+            message.error('Failed to export conversations');
+        }
+    };
+
+    const importConversations = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const content = e.target?.result as string;
+                    await db.importConversations(content);
+                    const newConversations = await db.getConversations();
+                    setConversations(newConversations);
+                    message.success('Conversations imported successfully');
+                } catch (error) {
+                    console.error('Import error:', error);
+                    message.error(error instanceof Error ? error.message : 'Failed to import conversations');
+                }
+            };
+            reader.readAsText(file);
+        }
+        // Reset the input
+        event.target.value = '';
+    };
+
 
     const handleConversationClick = (conversationId: string) => {
         const selectedConversation = conversations.find(conv => conv.id === conversationId);
@@ -60,13 +102,7 @@ export const ChatHistory: React.FC = () => {
 
     return (
         <List
-	    style={{
-                height: 'calc(100% - var(--model-display-height))',
-                overflow: 'auto',
-                position: 'relative',
-                zIndex: 1,
-		width: '100%'
-            }}
+            className="chat-history-list"
             dataSource={sortedConversations}
             renderItem={(conversation) => (
                 <List.Item
@@ -83,7 +119,7 @@ export const ChatHistory: React.FC = () => {
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'flex-start',
-			width: '100%',
+                        width: '100%',
 			boxSizing: 'border-box'
                     }}
                 >
@@ -92,7 +128,7 @@ export const ChatHistory: React.FC = () => {
                             defaultValue={conversation.title}
                             onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
                             onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
-			    style={{ width: '100%' }}
+                            style={{ width: '100%' }}
                             onClick={(e) => e.stopPropagation()}
                         />
                     ) : (
@@ -120,7 +156,29 @@ export const ChatHistory: React.FC = () => {
                         />
                     </div>
                 </List.Item>
-            )}
+	    )}
+            footer={
+	    <div className="chat-history-footer">
+                <Button icon={<DownloadOutlined />} onClick={exportConversations}>
+                    Export
+                </Button>
+                <Button
+                    icon={<UploadOutlined />}
+                    onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = '.json';
+                        input.onchange = (e) => {
+                            const target = e.target as HTMLInputElement;
+                            if (target && target.files) {
+                                importConversations({ target } as React.ChangeEvent<HTMLInputElement>);
+                            }
+                        };
+                        input.click();
+                    }}>
+                    Import
+                </Button>
+            </div>}
         />
     );
 };

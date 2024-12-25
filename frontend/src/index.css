@@ -593,6 +593,32 @@ body.dark .message li input[type="checkbox"] {
 }
 
 /* Chat history item styles */
+
+.chat-history-list {
+  height: calc(100% - var(--model-display-height) - 60px);
+  overflow: auto;
+  position: relative;
+  z-index: 1;
+  width: 100%;
+}
+
+.chat-history-footer {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid #e8e8e8;
+  position: fixed;
+  bottom: var(--model-display-height);
+  width: calc(var(--folder-panel-width) - 40px);
+  background-color: #ffffff;
+  z-index: 2;
+}
+
+.dark .chat-history-footer {
+  border-top-color: #303030;
+  background-color: #141414;
+}
+
 .dark .ant-list-item {
   transition: background-color 0.3s ease, color 0.3s ease;
 }
