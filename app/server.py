@@ -95,12 +95,30 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
     def count_tokens(file_path: str) -> int:
         try:
-            with open(file_path, 'r') as file:
+            # Skip binary files by extension
+            binary_extensions = {
+                '.pyc', '.pyo', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
+                '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
+                '.pyd', '.woff', '.woff2', '.ttf', '.eot'
+            }
+
+            if any(file_path.endswith(ext) for ext in binary_extensions):
+                logger.debug(f"Skipping binary file by extension: {file_path}")
+                return 0
+
+            # Try to detect if file is binary by reading first few bytes
+            with open(file_path, 'rb') as file:
+                content_bytes = file.read(1024)
+                if b'\x00' in content_bytes:  # Binary file detection
+                    return 0
+
+            # If not binary, read as text
+            with open(file_path, 'r', encoding='utf-8') as file:
                 content = file.read()
                 return len(tiktoken.get_encoding("cl100k_base").encode(content))
-        except Exception as e:
-            logger.error(f"Error reading file {file_path}: {str(e)}", exc_info=True)
-            return 0
+        except (UnicodeDecodeError, IOError) as e:
+            logger.debug(f"Skipping binary or unreadable file {file_path}: {str(e)}")
+            return 0 # Skip files that can't be read as text
 
     def get_structure(current_dir: str, current_depth: int):
         if current_depth > max_depth:
