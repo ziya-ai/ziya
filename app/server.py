@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Dict, Any, List, Tuple, Optional
 
 import tiktoken
@@ -71,6 +72,9 @@ async def favicon():
     return FileResponse('../templates/favicon.ico')
 
 
+# Cache for folder structure with timestamp
+_folder_cache = {'timestamp': 0, 'data': None}
+
 def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
 
@@ -80,7 +84,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 content = file.read()
                 return len(tiktoken.get_encoding("cl100k_base").encode(content))
         except Exception as e:
-            print(f"Skipping file {file_path} due to error: {e}")
+            logger.error(f"Error reading file {file_path}: {str(e)}", exc_info=True)
             return 0
 
     def get_structure(current_dir: str, current_depth: int):
@@ -110,6 +114,17 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     folder_structure = get_structure(directory, 1)
     return folder_structure
 
+def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
+    current_time = time.time()
+    cache_age = current_time - _folder_cache['timestamp']
+
+    # Refresh cache if older than 10 seconds
+    if _folder_cache['data'] is None or cache_age > 10:
+        _folder_cache['data'] = get_folder_structure(directory, ignored_patterns, max_depth)
+        _folder_cache['timestamp'] = current_time
+        logger.info("Refreshed folder structure cache")
+
+    return _folder_cache['data']
 
 @app.get("/api/folders")
 async def get_folders():
@@ -117,8 +132,7 @@ async def get_folders():
     user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
     max_depth = int(os.environ.get("ZIYA_MAX_DEPTH"))
     ignored_patterns: List[Tuple[str, str]] = get_ignored_patterns(user_codebase_dir)
-    return get_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
-
+    return get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
 
 @app.get('/api/default-included-folders')
 def get_default_included_folders():
