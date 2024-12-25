@@ -31,8 +31,27 @@ export const sendPayload = async (messages, question, setStreamedContent, setIsS
         const response = await getApiResponse(messages, question, checkedItems);
 
 	if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.detail || 'Failed to get response from server');
+            let errorMessage = 'Failed to get response from server';
+            try {
+                const errorData = await response.json();
+                if (response.status === 401) {
+                    // Show authentication errors with more prominence
+                    message.error({
+                        content: errorData.detail,
+                        duration: 10,
+                        className: 'auth-error-message',
+                        style: {
+                            width: '600px',
+                            whiteSpace: 'pre-wrap'  // Preserve line breaks in error message
+                        }
+                    });
+                    return;
+                }
+                errorMessage = errorData.detail || errorMessage;
+            } catch (e) {
+                console.error('Error parsing error response:', e);
+            }
+            throw new Error(errorMessage);
         }
 
         if (!response.body) {
@@ -81,10 +100,14 @@ export const sendPayload = async (messages, question, setStreamedContent, setIsS
 
     } catch (error) {
         console.error('Error in sendPayload:', error);
-        message.error({
-	content: error instanceof Error ? error.message : 'An unknown error occurred',
-            duration: 5
-        });
+	// Only show error message if it's not an auth error (which is already handled)
+        if (!(error instanceof Error && error.message.includes('401'))) {
+            message.error({
+                content: error instanceof Error ? error.message : 'An unknown error occurred',
+                duration: 5,
+            });
+            setIsStreaming(false);
+        }
         setIsStreaming(false);
     }
 };

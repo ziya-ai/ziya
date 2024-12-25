@@ -13,7 +13,7 @@ from app.agents.agent import model
 from app.agents.agent import agent_executor
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from botocore.exceptions import ClientError, BotoCoreError
+from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
 
 
 # import pydevd_pycharm
@@ -33,6 +33,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(CredentialRetrievalError)
+async def credential_exception_handler(request: Request, exc: CredentialRetrievalError):
+    # Pass through the original error message which may contain helpful authentication instructions
+    error_message = str(exc)
+    return JSONResponse(
+        status_code=401,
+        content={"detail": f"AWS credential error: {error_message}"}
+    )
+
 
 @app.exception_handler(ClientError)
 async def boto_client_exception_handler(request: Request, exc: ClientError):
