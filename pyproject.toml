@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.1.45"
+version = "0.1.46"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>"]
 readme = "README.md"
