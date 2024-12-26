@@ -729,8 +729,14 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean, isDarkMode: boo
         // Handle regular text, only if it has content - wrap with pre tags for safety
         if ('text' in token) {
             const text = token.text || '';
-	    const escapedText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            return text.trim() ? (
+            // Only escape angle brackets if we're not in a code block
+            const escapedText = token.type === 'code' ?
+                text :
+                text.replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+
+            return text.trim() ?
+                (
                 <div
                     key={index}
                     style={{ marginBottom: '6px' }}
