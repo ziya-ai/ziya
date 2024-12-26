@@ -43,7 +43,7 @@ export const TokenCountDisplay = () => {
     const combinedTokenCount = totalTokenCount + chatTokenCount;
 
     useEffect(() => {
-        if (folders) calculateTotalTokenCount(checkedKeys as string[]);
+        if (folders && checkedKeys.length > 0) calculateTotalTokenCount(checkedKeys as string[]);
     }, [checkedKeys]);
 
     const getTokenCountClass = (count: number) => {
@@ -52,7 +52,8 @@ export const TokenCountDisplay = () => {
         return 'token-count-total green';
     };
 
-    const getFolderTokenCount = (filePath: string, folders: Folders) => {
+    const getFolderTokenCount = (filePath: string, folders: Folders): number => {
+
         let segments = filePath.split('/');
         let lastNode;
         for (const segment of segments) {
@@ -66,10 +67,12 @@ export const TokenCountDisplay = () => {
     };
 
     const calculateTotalTokenCount = (checked: string[]) => {
+	if (!folders) return;
+
         let totalTokenCount = 0;
         checked.forEach(item => {
-            const folderTokenCount = getFolderTokenCount(item, folders!);
-            totalTokenCount += folderTokenCount;
+            const tokenCount = getFolderTokenCount(item, folders);
+            totalTokenCount += tokenCount;		
         });
         setTotalTokenCount(totalTokenCount);
     };
@@ -96,6 +99,14 @@ export const TokenCountDisplay = () => {
     useEffect(() => {
         updateChatTokens();
     }, [updateChatTokens]);
+
+    // Add effect to calculate initial token count when folders are loaded
+    useEffect(() => {
+        if (folders && checkedKeys.length > 0) {
+            calculateTotalTokenCount(checkedKeys as string[]);
+        }
+    }, [folders]);
+
 
     // Add debounce effect for token updates
     useEffect(() => {
