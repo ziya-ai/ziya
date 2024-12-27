@@ -14,7 +14,13 @@ export interface Conversation {
     id: string;
     title: string;
     messages: Message[];
+    lastAccessedAt: number;
 }
+
 declare global {
-    interface Window { enableCodeApply?: string; }
+    interface Window { 
+        enableCodeApply?: string;
+        diffDisplayMode?: 'raw' | 'pretty';
+        diffViewType?: 'unified' | 'split';
+    }
 }
