@@ -19,8 +19,9 @@ from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalE
 # import pydevd_pycharm
 import uvicorn
 
+from app.utils.document_loader import DocumentLoader
 from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff
-from app.utils.directory_util import get_ignored_patterns
+from app.utils.directory_util import get_ignored_patterns, is_image_file
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
 
@@ -94,31 +95,9 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
 
     def count_tokens(file_path: str) -> int:
-        try:
-            # Skip binary files by extension
-            binary_extensions = {
-                '.pyc', '.pyo', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
-                '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
-                '.pyd', '.woff', '.woff2', '.ttf', '.eot'
-            }
-
-            if any(file_path.endswith(ext) for ext in binary_extensions):
-                logger.debug(f"Skipping binary file by extension: {file_path}")
-                return 0
-
-            # Try to detect if file is binary by reading first few bytes
-            with open(file_path, 'rb') as file:
-                content_bytes = file.read(1024)
-                if b'\x00' in content_bytes:  # Binary file detection
-                    return 0
-
-            # If not binary, read as text
-            with open(file_path, 'r', encoding='utf-8') as file:
-                content = file.read()
-                return len(tiktoken.get_encoding("cl100k_base").encode(content))
-        except (UnicodeDecodeError, IOError) as e:
-            logger.debug(f"Skipping binary or unreadable file {file_path}: {str(e)}")
-            return 0 # Skip files that can't be read as text
+        docs = DocumentLoader.load_document(file_path)
+        combined_content = "\n".join(doc.page_content for doc in docs)
+        return len(tiktoken.get_encoding("cl100k_base").encode(combined_content))
 
     def get_structure(current_dir: str, current_depth: int):
         if current_depth > max_depth:
@@ -138,7 +117,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                         token_count = sum(sub_structure[key]['token_count'] for key in sub_structure)
                         current_structure[entry] = {'token_count': token_count, 'children': sub_structure}
             else:
-                if not should_ignore_fn(entry_path):
+                if not should_ignore_fn(entry_path) and not is_image_file(entry_path):
                     token_count = count_tokens(entry_path)
                     current_structure[entry] = {'token_count': token_count}
 
