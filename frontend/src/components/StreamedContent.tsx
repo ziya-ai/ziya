@@ -1,8 +1,9 @@
-import React, { useEffect, useRef } from 'react';
-import {MarkdownRenderer} from "./MarkdownRenderer";
+import React, { useEffect, useRef, Suspense } from 'react';
 import {useChatContext} from '../context/ChatContext';
 import { Space } from 'antd';
 import { RobotOutlined } from '@ant-design/icons';
+
+const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC = () => {
     const {streamedContent, scrollToBottom, isTopToBottom, isStreaming} = useChatContext();
@@ -54,9 +55,11 @@ export const StreamedContent: React.FC = () => {
 		    {isStreaming && !streamedContent ? (
                         <LoadingIndicator />
                     ) : (
-                        <MarkdownRenderer
-                            markdown={streamedContent}
-                            enableCodeApply={enableCodeApply}/>
+		        <Suspense fallback={<div>Loading content...</div>}>
+                            <MarkdownRenderer
+                                markdown={streamedContent}
+                                enableCodeApply={enableCodeApply}/>
+                        </Suspense>
                     )}
                 </div>
             )}

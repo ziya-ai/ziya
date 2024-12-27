@@ -770,3 +770,74 @@ body.dark .message li input[type="checkbox"] {
   line-height: 1.5;
   margin-bottom: 16px;
 }
+
+/* Server error message styling */
+.server-error-message {
+    background-color: #fff2f0;
+    border: 1px solid #ffccc7;
+    padding: 16px;
+    border-radius: 4px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.dark .server-error-message {
+    background-color: #2a1f1f;
+    border-color: #a61d24;
+    color: #ff7875;
+}
+
+/* Dark mode syntax highlighting */
+.dark pre[class*="language-"],
+.dark code[class*="language-"] {
+    color: #e6e6e6;
+    text-shadow: none;
+    background: none;
+}
+
+.dark .token.comment,
+.dark .token.prolog,
+.dark .token.doctype,
+.dark .token.cdata {
+    color: #8b949e;
+}
+
+.dark .token.punctuation {
+    color: #c9d1d9;
+}
+
+.dark .token.function {
+    color: #d2a8ff;
+}
+
+.dark .token.property,
+.dark .token.tag,
+.dark .token.boolean,
+.dark .token.number,
+.dark .token.constant,
+.dark .token.symbol,
+.dark .token.deleted {
+    color: #79c0ff;
+}
+
+.dark .token.selector,
+.dark .token.attr-name,
+.dark .token.string,
+.dark .token.char,
+.dark .token.builtin,
+.dark .token.inserted {
+    color: #a5d6ff;
+}
+
+.dark .token.operator,
+.dark .token.entity,
+.dark .token.url,
+.dark .language-css .token.string,
+.dark .style .token.string {
+    color: #d2a8ff;
+    background: none;
+}
+
+.dark .token.keyword {
+    color: #ff7b72;
+}

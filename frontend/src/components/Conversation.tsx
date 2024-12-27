@@ -1,14 +1,16 @@
-import React from "react";
+import React, { Suspense } from "react";
 import {EditSection} from "./EditSection";
 import {RetrySection} from "./RetrySection";
-import {MarkdownRenderer} from "./MarkdownRenderer";
 import {useChatContext} from '../context/ChatContext';
+
+// Lazy load the MarkdownRenderer
+const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 interface ConversationProps {
     enableCodeApply: boolean;
 }
 
-export const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
+const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
     const {messages, isTopToBottom} = useChatContext();
     // In top-to-bottom mode, show messages in chronological order
     // In bottom-to-top mode, show messages in reverse chronological order
@@ -34,7 +36,9 @@ export const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) =
                                 </div>
                             )}
                             <div className="message-content">
+                                <Suspense fallback={<div>Loading content...</div>}>
                                 <MarkdownRenderer markdown={msg.content} enableCodeApply={enableCodeApply}/>
+                                </Suspense>
                             </div>
                         </div>
                     ))}
@@ -43,3 +47,5 @@ export const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) =
         </>
     );
 };
+
+export default Conversation;

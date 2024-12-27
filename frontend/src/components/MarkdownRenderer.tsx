@@ -1,20 +1,67 @@
-import React, { useState, useEffect, memo } from 'react';
+import React, { useState, useEffect, memo, Suspense } from 'react';
 import { parseDiff, Diff, Hunk, tokenize, RenderToken } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
-import { marked, Token, Tokens } from 'marked';
+import { marked, Tokens } from 'marked';
 import { Button, message, Radio, Space, Spin } from 'antd';
-import { useTheme } from '../context/ThemeContext';
+import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import * as Viz from '@viz-js/viz';
 import { CheckOutlined, CodeOutlined } from '@ant-design/icons';
+import 'prismjs/themes/prism.css';
+import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
+
+
+import { useTheme } from '../context/ThemeContext';
+
+import type * as PrismType from 'prismjs';
+
+
+declare global {
+    interface Window {
+        Prism: typeof PrismType;
+    }
+}
+
+// Define table-specific interfaces
+interface TableToken extends BaseToken {
+    type: 'table';
+    header: TokenWithText[];
+    align: Array<'left' | 'right' | 'center' | null>;
+    rows: TokenWithText[][];
+}
+
+// Define list-specific interface
+interface ListToken extends BaseToken {
+    type: 'list';
+    items: TokenWithText[];
+    ordered?: boolean;
+    start?: number;
+    loose: boolean;
+}
+
+interface BaseToken {
+    type: string;
+    raw?: string;
+}
+
+interface TokenWithText extends BaseToken {
+    text: string;
+    lang?: string;
+    tokens?: TokenWithText[];
+    task?: boolean;
+    checked?: boolean;
+}
 
 interface ErrorBoundaryProps {
     children: React.ReactNode;
     fallback?: React.ReactNode;
+    type?: 'graphviz' | 'code';
 }
  
 interface ErrorBoundaryState {
     hasError: boolean;
 }
+
+type ErrorType = 'graphviz' | 'code' | 'unknown';
  
 class ErrorBoundary extends React.Component<
     ErrorBoundaryProps,
@@ -24,17 +71,29 @@ class ErrorBoundary extends React.Component<
         this.state = { hasError: false };
     }
 
+
     static getDerivedStateFromError(error) {
         return { hasError: true };
     }
 
     componentDidCatch(error, errorInfo) {
-        console.error('Graphviz Error:', error, errorInfo);
+        const errorType: ErrorType = this.props.type || 'unknown';
+        console.error(`${errorType} rendering error:`, error, errorInfo);
     }
 
     render() {
         if (this.state.hasError) {
-            return this.props.fallback || (
+            if (this.props.type === 'graphviz') {
+                return this.props.fallback || (
+                    <div>Something went wrong rendering the diagram.</div>
+                );
+            }
+            if (this.props.type === 'code') {
+                return this.props.fallback || (
+                    <pre><code>Error rendering code block</code></pre>
+                );
+            }
+            return (
                 <div>Something went wrong rendering the diagram.</div>
             );
         }
@@ -101,6 +160,7 @@ const GraphvizRenderer: React.FC<{ dot: string }> = ({ dot }) => {
 
     if (!isValidDot) {
         return (
+	    <ErrorBoundary type="graphviz">
             <div className="graphviz-container" style={{
                 display: 'flex',
                 justifyContent: 'center',
@@ -111,6 +171,7 @@ const GraphvizRenderer: React.FC<{ dot: string }> = ({ dot }) => {
                     <div className="content" />
                 </Spin>
             </div>
+	    </ErrorBoundary>
         );
     }
 
@@ -506,16 +567,16 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     return enabled ? <Button onClick={handleApplyChanges} disabled={isApplied} icon={<CheckOutlined />}>Apply Changes (beta)</Button> : null;
 };
 
-const hasText = (token: Token): token is Token & { text: string } => {
+const hasText = (token: any): token is TokenWithText => {
     return 'text' in token;
 };
 
-const isCodeToken = (token: Token): token is Tokens.Code => {
+const isCodeToken = (token: TokenWithText): token is TokenWithText & { lang?: string } => {
     return token.type === 'code' && 'text' in token;
 };
 
 interface DiffViewWrapperProps {
-    token: Token;
+    token: TokenWithText;
     enableCodeApply: boolean;
     index?: number;
 }
@@ -555,8 +616,112 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     );
 };
 
-const renderTokens = (tokens: Token[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode[] => {
+// Cache for tracking which languages we've attempted to load
+const attemptedLanguages = new Set<string>();
 
+interface CodeBlockProps {
+    token: TokenWithText;
+    index: number;
+}
+
+const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
+    const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const { isDarkMode } = useTheme();
+    const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
+
+    useEffect(() => {
+        if (token.lang !== undefined && !prismInstance) {
+	    const loadLanguage = async () => {
+                setIsLanguageLoaded(false);
+                try {
+                    // Load language and get Prism instance
+                    await loadPrismLanguage(token.lang || 'plaintext');
+                    setPrismInstance(window.Prism);
+                } catch (error: unknown) {
+                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+	            setLoadError(`Error loading language ${token.lang}: ${errorMessage}`);
+                    console.error(`Error loading language ${token.lang}:`, error);
+		} finally {
+                    setIsLanguageLoaded(true);
+                }
+            };
+            loadLanguage();
+        } else {
+            setIsLanguageLoaded(true);
+        }
+    }, [token.lang]);
+
+    if (!isLanguageLoaded) {
+        return (
+            <div style={{ padding: '16px', backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa' }}>
+                <Spin size="small" /> Loading syntax highlighting...
+            </div>
+        );
+    }
+
+    const getHighlightedCode = () => {
+        if (!prismInstance || token.lang === undefined) {
+            return token.text;
+        }
+        try {
+            const grammar = window.Prism.languages[token.lang as string] || window.Prism.languages.plaintext;
+            return window.Prism.highlight(token.text, grammar, token.lang);
+        } catch (error) {
+            console.warn(`Failed to highlight code for language ${token.lang}:`, error);
+            return token.text;
+        }
+    };
+
+    if (!isLanguageLoaded) {
+        return (
+            <pre style={{
+                padding: '16px',
+                borderRadius: '6px',
+                overflow: 'auto',
+                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`
+            }}>
+                <code>{token.text}</code>
+            </pre>
+        );
+    }
+
+    const escapedText = token.text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return (
+        <ErrorBoundary type="code">
+            <pre style={{
+                padding: '16px',
+                borderRadius: '6px',
+                overflow: 'auto',
+                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`
+            }}
+            className={`language-${token.lang || 'plaintext'}`}
+            >
+                <code
+                        style={{
+                            textShadow: 'none',
+                            color: isDarkMode ? '#e6e6e6' : '#24292e'
+                         }} 
+			                     dangerouslySetInnerHTML={{ __html:
+                        (prismInstance && typeof token.lang === 'string')
+                            ? prismInstance.highlight(
+                                escapedText,
+                                prismInstance.languages[token.lang as keyof typeof prismInstance.languages] ||
+                                prismInstance.languages.plaintext,
+                                token.lang as string
+                            )
+                            : escapedText
+                    }}
+                />
+            </pre>
+        </ErrorBoundary>
+    );
+};
+
+
+const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode[] => {
     return tokens.map((token, index) => {
         if (token.type === 'code' && isCodeToken(token) && token.lang === 'diff') {
             try {
@@ -644,23 +809,13 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean, isDarkMode: boo
         }
 
         if (token.type === 'code' && isCodeToken(token)) {
-            console.log('Processing regular code block:', { lang: token.lang });
             // Regular code blocks (non-diff)
-            return (
-                <pre key={index} style={{
-                    backgroundColor: '#f6f8fa',
-                    padding: '16px',
-                    borderRadius: '6px',
-                    overflow: 'auto'
-                }}>
-                    <code>{token.text}</code>
-                </pre>
-            );
+	    return <CodeBlock key={index} token={token as TokenWithText} index={index} />;
         }
 
         // Handle tables specially
         if (token.type === 'table' && 'header' in token && 'rows' in token) {
-            const tableToken = token as Tokens.Table;
+            const tableToken = token as unknown as TableToken;
             return (
                 <table key={index} style={{
                     borderCollapse: 'collapse',
@@ -705,7 +860,7 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean, isDarkMode: boo
 
         // Handle ordered and unordered lists
         if (token.type === 'list' && 'items' in token) {
-            const listToken = token as Tokens.List;
+            const listToken = token as unknown as ListToken;
             const ListTag = listToken.ordered ? 'ol' : 'ul';
             return (
                 <ListTag key={index} 
@@ -729,10 +884,10 @@ const renderTokens = (tokens: Token[], enableCodeApply: boolean, isDarkMode: boo
         // Handle regular text, only if it has content - wrap with pre tags for safety
         if ('text' in token) {
             const text = token.text || '';
-            // Only escape angle brackets if we're not in a code block
-            const escapedText = token.type === 'code' ?
-                text :
-                text.replace(/</g, '&lt;')
+            // Only escape HTML in regular text, not in code blocks
+            const escapedText = token.type === 'code'
+                ? text  // Leave code blocks exactly as they are
+                : text.replace(/</g, '&lt;')
                     .replace(/>/g, '&gt;');
 
             return text.trim() ?
@@ -758,11 +913,15 @@ interface MarkdownRendererProps {
 marked.setOptions({
     renderer: new marked.Renderer(),
     gfm: true,
-    breaks: true
-});
+    breaks: true,
+    pedantic: false
+}) as any;
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
+const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
+
     const { isDarkMode } = useTheme();
-    const tokens = marked.lexer(markdown);
+    const tokens = marked.lexer(markdown) as TokenWithText[];;
     return <div>{renderTokens(tokens, enableCodeApply, isDarkMode)}</div>;
 };
+
+export default MarkdownRenderer;

@@ -1,8 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, Suspense } from 'react';
 import {FolderTree} from "./FolderTree";
 import {SendChatContainer} from "./SendChatContainer";
 import {StreamedContent} from './StreamedContent';
-import {Conversation} from "./Conversation";
 import {Button, Tooltip, ConfigProvider, theme } from "antd";
 import {
     MenuFoldOutlined,
@@ -13,6 +12,9 @@ import {
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
 import { useChatContext } from '../context/ChatContext';
+
+// Lazy load the Conversation component
+const Conversation = React.lazy(() => import("./Conversation"));
 
 export const App = () => {
     const {streamedContent, messages, startNewChat, isTopToBottom, setIsTopToBottom, scrollToBottom} = useChatContext();
@@ -89,7 +91,9 @@ export const App = () => {
 
     const chatContainerContent = isTopToBottom ? (
         <>
-            <Conversation key="conv" enableCodeApply={enableCodeApply}/>
+	    <Suspense fallback={<div>Loading conversation...</div>}>
+                <Conversation key="conv" enableCodeApply={enableCodeApply}/>
+            </Suspense>
 	    <div style={{
 		position: 'relative',
                 display: 'flex',
