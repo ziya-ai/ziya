@@ -1,6 +1,7 @@
 import os
 from typing import List
- 
+from app.utils.logging_utils import logger
+
 from langchain_community.document_loaders import TextLoader, PyPDFLoader
 from langchain_core.documents import Document
  
@@ -20,7 +21,17 @@ class DocumentLoader:
         # Skip silently if the path points to a folder
         if os.path.isdir(file_path):
             return []
-            
+
+        # Skip binary files by extension
+        binary_extensions = {
+            '.pyc', '.pyo', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
+            '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class', 
+            '.pyd', '.woff', '.woff2', '.ttf', '.eot'
+        }
+        if any(file_path.endswith(ext) for ext in binary_extensions):
+            logger.debug(f"Skipping binary file by extension: {file_path}")
+            return []
+
         _, file_extension = os.path.splitext(file_path.lower())
         
         try:
@@ -33,5 +44,5 @@ class DocumentLoader:
                 return loader.load()
                 
         except Exception as e:
-            print(f"Skipping file {file_path} due to error: {e}")
+            logger.error(f"Error loading file {file_path}: {str(e)}", exc_info=True)
             return []
