@@ -5,9 +5,11 @@ import {StreamedContent} from './StreamedContent';
 import {Button, Tooltip, ConfigProvider, theme } from "antd";
 import {
     MenuFoldOutlined,
+    ExperimentOutlined,
     MenuUnfoldOutlined,
     PlusOutlined,
     BulbOutlined,
+    CodeOutlined,
     SwapOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
@@ -15,12 +17,16 @@ import { useChatContext } from '../context/ChatContext';
 
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
+const PrismTest = React.lazy(() => import("./PrismTest"));
+const SyntaxTest = React.lazy(() => import("./SyntaxTest"));
 
 export const App = () => {
     const {streamedContent, messages, startNewChat, isTopToBottom, setIsTopToBottom, scrollToBottom} = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
+    const [showPrismTest, setShowPrismTest] = useState(false);
+    const [showSyntaxTest, setShowSyntaxTest] = useState(false);
 
     const preserveScrollPosition = (action: () => void) =>    {
       const chatContainer = document.querySelector('.chat-container');
@@ -153,6 +159,12 @@ export const App = () => {
                     <Tooltip title="Toggle theme">
                     <Button icon={<BulbOutlined />} onClick={toggleTheme} />
                     </Tooltip>
+                    <Tooltip title="Test Prism Support">
+                        <Button icon={<ExperimentOutlined />} onClick={() => setShowPrismTest(!showPrismTest)} />
+                    </Tooltip>
+                    <Tooltip title="Test Complex Syntax">
+                        <Button icon={<CodeOutlined />} onClick={() => setShowSyntaxTest(!showSyntaxTest)} />
+                    </Tooltip>
                     <Tooltip title="New Chat">
                     <Button icon={<PlusOutlined />} onClick={startNewChat} />
                     </Tooltip>
@@ -162,7 +174,19 @@ export const App = () => {
             <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
                 <FolderTree isPanelCollapsed={isPanelCollapsed}/>
                 <div className="chat-container">
-                    {chatContainerContent}
+                    {showSyntaxTest ? (
+                        <Suspense fallback={<div>Loading syntax test...</div>}>
+                            <SyntaxTest />
+                        </Suspense>
+                    ) : showPrismTest ? (
+                        <div style={{ padding: '20px' }}>
+                        <Suspense fallback={<div>Loading Prism test...</div>}>
+                            <PrismTest />
+                        </Suspense>
+                        </div>
+                    ) : (
+                        chatContainerContent
+                    )}
                 </div>
             </div>
         </ConfigProvider>

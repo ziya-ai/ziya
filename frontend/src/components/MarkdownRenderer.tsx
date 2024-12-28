@@ -687,7 +687,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         );
     }
 
-    const escapedText = token.text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const codeText = token.text;
     return (
         <ErrorBoundary type="code">
             <pre style={{
@@ -705,14 +705,14 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                             color: isDarkMode ? '#e6e6e6' : '#24292e'
                          }} 
 			                     dangerouslySetInnerHTML={{ __html:
-                        (prismInstance && typeof token.lang === 'string')
+                        (prismInstance && token.lang)
                             ? prismInstance.highlight(
-                                escapedText,
+                                codeText,
                                 prismInstance.languages[token.lang as keyof typeof prismInstance.languages] ||
                                 prismInstance.languages.plaintext,
                                 token.lang as string
                             )
-                            : escapedText
+                            : codeText
                     }}
                 />
             </pre>
