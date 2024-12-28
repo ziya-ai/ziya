@@ -53,6 +53,73 @@ def use_git_to_apply_code_diff(git_diff: str):
     finally:
         os.remove(temp_file)
 
+def normalize_new_file_diff(diff: str) -> str:
+    """Normalize a git diff for new file creation to ensure consistent format"""
+    if diff.startswith('diff --git'):
+        # Check if this appears to be a new file creation diff
+        lines = [line.rstrip('\n') for line in diff.split('\n')]
+        first_line = lines[0]
+
+        # Extract file path from the diff --git line
+        match = re.match(r'diff --git (?:a/)?(\S+) (?:b/)?(\S+)', first_line)
+        if not match:
+            return diff
+
+        file_path = match.group(2)
+
+        # Check if this is a new file creation
+        has_new_file_marker = any('new file' in line for line in lines[:3])
+        has_only_additions = all(line.startswith('+') or not line.strip()
+                               for line in lines[3:]
+                               if line.strip() and not line.startswith('diff'))
+
+        if has_new_file_marker or has_only_additions:
+            # Find where the actual content starts (after headers)
+            content_start = 3
+            for i, line in enumerate(lines[3:], start=3):
+                if line.startswith('+++') or line.startswith('---'):
+                    content_start = i + 1
+                    continue
+                if line.startswith('@@ '):
+                    content_start = i + 1
+                    break
+
+            content_lines = lines[content_start:]
+            normalized_diff = [
+                f'diff --git a/dev/null b/{file_path}',
+                'new file mode 100644',
+                '--- /dev/null',
+                f'+++ b/{file_path}',
+                f'@@ -0,0 +1,{len(content_lines)} @@'
+            ]
+            normalized_diff.extend(content_lines)
+            return '\n'.join(normalized_diff)
+
+    return diff
+
+def is_new_file_creation(diff_lines: list) -> bool:
+    """
+    Determine if a diff represents a new file creation.
+    """
+    if not diff_lines:
+        return False
+
+    # Check for standard new file markers
+    has_dev_null = any('diff --git a/dev/null' in line or 
+                      'diff --git /dev/null' in line for line in diff_lines[:3])
+    has_new_file_mode = any('new file mode' in line for line in diff_lines)
+    has_null_marker = '--- /dev/null' in diff_lines
+
+    # Also check for the pattern that indicates a new file
+    is_new_file_pattern = (
+        diff_lines[0].startswith('diff --git') and
+        any('new file mode' in line for line in diff_lines) and
+        any(line.startswith('--- /dev/null') for line in diff_lines) and
+        any('+++ b/' in line for line in diff_lines)
+    )
+
+    return bool(has_dev_null or has_new_file_mode or has_null_marker or is_new_file_pattern)
+
 def correct_git_diff(git_diff: str, original_file_path: str) -> str:
     """
     Corrects the hunk headers in a git diff string by recalculating the line counts and
@@ -81,59 +148,68 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
         - All lines in the hunk (including empty lines) are considered in the counts.
 
     """
-    # Split the diff into lines
+
+    # Split into lines first for analysis
     lines = git_diff.split('\n')
-    is_new_file = False
-    # Check if this is a new file creation
-    if lines and lines[0].startswith('diff --git a/dev/null'):
-        is_new_file = True
-        # Check if 'new file mode 100644' is present in the first few lines
-        has_file_mode = any('new file mode 100' in line for line in lines[:3])
-        if not has_file_mode:
-            # Insert the missing line after the first line
-            mode_line = 'new file mode 100644'
-            lines.insert(1, mode_line)
-            logger.info(f"Added missing '{mode_line}' to new file diff")
+    logger.info(f"Starting diff processing. First line: {lines[0] if lines else 'empty diff'}")
 
-    original_content = []
+    # Check if this is a new file creation BEFORE trying to open the original file
+    is_new_file = is_new_file_creation(lines)
+    if is_new_file:
+        logger.info(f"Detected new file creation for {original_file_path}")
+        return git_diff
 
-    if not is_new_file:
-        try:
+    # normalize the diff format
+    git_diff = normalize_new_file_diff(git_diff)
+    logger.info(f"Processing diff for {original_file_path}")
+
+    # If not a new file, proceed with normal diff correction
+
+    try:
+        if not os.path.exists(original_file_path):
+            if is_new_file:
+                logger.info(f"Confirmed new file creation after FileNotFoundError for {original_file_path}")
+                return git_diff
+            else:
+                error_msg = f"File {original_file_path} not found and diff does not indicate new file creation."
+                raise FileNotFoundError(error_msg)
+            original_content = []
+        else:
             with open(original_file_path, 'r') as f:
                 original_content = f.read().splitlines()
-        except FileNotFoundError:
-            error_msg = (
-                f"File {original_file_path} not found and diff does not indicate new file creation. "
-            )
-            raise FileNotFoundError(error_msg)
-
-    corrected_lines = []
-    line_index = 0
-
-    # Keep track of the cumulative line number adjustments
-    cumulative_line_offset = 0
-
-
-    while line_index < len(lines):
-        line = lines[line_index]
-        hunk_match = HUNK_HEADER_REGEX.match(line)
-
-        if hunk_match:
-            # Process the hunk
-            corrected_hunk_header, hunk_lines, line_index, line_offset = _process_hunk_with_original_content(
-                lines, line_index, cumulative_line_offset, original_content
-            )
-
-            # Update cumulative_line_offset
-            cumulative_line_offset += line_offset
-
-            # Append corrected hunk header and hunk lines
-            corrected_lines.append(corrected_hunk_header)
-            corrected_lines.extend(hunk_lines)
-        else:
-            # For non-hunk header lines, just append them
-            corrected_lines.append(line)
-            line_index += 1
+        corrected_lines = []
+        line_index = 0
+        # Keep track of the cumulative line number adjustments
+        cumulative_line_offset = 0
+ 
+        while line_index < len(lines):
+            line = lines[line_index]
+            hunk_match = HUNK_HEADER_REGEX.match(line)
+ 
+            if hunk_match:
+                # Process the hunk
+                corrected_hunk_header, hunk_lines, line_index, line_offset = _process_hunk_with_original_content(
+                    lines, line_index, cumulative_line_offset, original_content
+                )
+ 
+                # Update cumulative_line_offset
+                cumulative_line_offset += line_offset
+ 
+                # Append corrected hunk header and hunk lines
+                corrected_lines.append(corrected_hunk_header)
+                corrected_lines.extend(hunk_lines)
+            else:
+                # For non-hunk header lines, just append them
+                corrected_lines.append(line)
+                line_index += 1
+ 
+        # Join the corrected lines back into a string
+        corrected_diff = '\n'.join(corrected_lines)
+        return corrected_diff
+ 
+    except Exception as e:
+        logger.error(f"Error processing diff: {str(e)}", exc_info=True)
+        raise
 
     # Join the corrected lines back into a string
     corrected_diff = '\n'.join(corrected_lines)
