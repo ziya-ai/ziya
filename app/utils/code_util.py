@@ -27,6 +27,16 @@ def use_git_to_apply_code_diff(git_diff: str):
     if not user_codebase_dir:
         raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
 
+    # Clean the diff content - stop at first triple backtick
+    def clean_diff_content(content: str) -> str:
+        # Stop at triple backtick if present
+        end_marker = content.find('```')
+        if end_marker != -1:
+            content = content[:end_marker]
+        return content.strip()
+
+    git_diff = clean_diff_content(git_diff)
+
     # Create a temporary file with the diff content and a timestamp
     timestamp = int(time.time() * 1000)  # Get current timestamp in milliseconds
     temp_file = os.path.join(user_codebase_dir, f'temp_{timestamp}.diff')
@@ -40,13 +50,20 @@ def use_git_to_apply_code_diff(git_diff: str):
     try:
         # Apply the changes using git apply
         cmd = ['git', 'apply', '--verbose', '--ignore-whitespace', '--ignore-space-change', temp_file]
-        logger.info(f"Executing command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=user_codebase_dir, check=True)
-
-        logger.info(f"Git apply stdout: {result.stdout}")
-        logger.error(f"Git apply stderr: {result.stderr}")
-        logger.info(f"Git apply return code: {result.returncode}")
-
+        logger.info(f"Executing command in {user_codebase_dir}: {' '.join(cmd)}")
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=user_codebase_dir, check=True)
+            logger.info(f"Git apply stdout: {result.stdout}")
+            logger.info(f"Git apply stderr: {result.stderr}")
+            logger.info(f"Git apply return code: {result.returncode}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Git apply failed with return code {e.returncode}")
+            logger.error(f"Git apply stdout: {e.stdout}")
+            logger.error(f"Git apply stderr: {e.stderr}")
+            logger.error(f"Diff content that failed:\n{git_diff}")
+            raise
+            
     except Exception as e:
         logger.error(f"Error applying changes: {str(e)}", exc_info=True)
         raise

@@ -547,11 +547,20 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const [isApplied, setIsApplied] = useState(false);
 
     const handleApplyChanges = async () => {
+        // Clean the diff content - stop at first triple backtick
+        const cleanDiff = (() => {
+            const endMarker = diff.indexOf('```');
+            return endMarker !== -1 ? diff.slice(0, endMarker).trim() : diff.trim();
+        })();
+
         try {
             const response = await fetch('/api/apply-changes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ diff, filePath }),
+                body: JSON.stringify({ 
+                    diff: cleanDiff, 
+                    filePath 
+                }),
             });
             if (response.ok) {
                 setIsApplied(true);
