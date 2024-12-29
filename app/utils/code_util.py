@@ -4,7 +4,7 @@ from app.utils.logging_utils import logger
 import time
 import re
 
-HUNK_HEADER_REGEX = re.compile(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
+HUNK_HEADER_REGEX = re.compile(r'^@@[ ]?([+-]?\d+)(?:,(\d+))?[ ]?([+-]?\d+)(?:,(\d+))?[ ]?@@')
 
 def use_git_to_apply_code_diff(git_diff: str):
     """
@@ -281,7 +281,7 @@ def _find_correct_old_start_line(original_content: list, hunk_lines: list) -> in
     """
     # Extract context and deleted lines from the hunk
     if not original_content:
-        # Creating a new file, should start with @@ -0,0 +1,N @@
+        # Creating a new file or pure addition, should start with @@ -0,0 +1,N @@ or @@ +0,0 +1,N @@
         return 0
 
     if len(hunk_lines) < 3:
@@ -402,6 +402,14 @@ def _process_hunk_with_original_content(lines: list, start_index: int, cumulativ
     corrected_hunk_header = _format_hunk_header(
         start_line_old, actual_count_old, corrected_start_line_new, actual_count_new
     )
+
+
+    # Special handling for pure additions (when old count is 0)
+    if actual_count_old == 0:
+        # Use the same format as the original if it started with +
+        original_header = lines[start_index]
+        if original_header.strip().startswith('@@ +'):
+            corrected_hunk_header = f"@@ +{start_line_old},0 +{corrected_start_line_new},{actual_count_new} @@"
 
     return corrected_hunk_header, hunk_lines, line_index, line_offset
 
