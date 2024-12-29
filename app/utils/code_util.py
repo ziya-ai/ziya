@@ -27,6 +27,36 @@ def use_git_to_apply_code_diff(git_diff: str):
     if not user_codebase_dir:
         raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
 
+    def create_new_file(diff_content: str) -> None:
+        """Create a new file from a git diff"""
+        # Extract the file path
+        file_path = diff_content.split('diff --git a/dev/null b/')[1].split('\n')[0].strip()
+        full_path = os.path.join(user_codebase_dir, file_path)
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        
+        # Extract content after the hunk header
+        lines = diff_content.split('\n')
+        content_start = next(i for i, line in enumerate(lines) if line.startswith('@@ '))
+        content_lines = []
+        
+        # Process lines after the hunk header
+        for line in lines[content_start + 1:]:
+            if line.startswith('+'):
+                content_lines.append(line[1:])  # Remove the leading +
+        
+        # Write the file
+        with open(full_path, 'w', newline='\n') as f:
+            f.write('\n'.join(content_lines))
+        
+        logger.info(f"Successfully created new file: {file_path}")
+ 
+    # Check if this is a new file creation diff
+    if git_diff.startswith('diff --git a/dev/null b/'):
+        create_new_file(git_diff)
+        return
+
     # Clean the diff content - stop at first triple backtick
     def clean_diff_content(content: str) -> str:
         # Stop at triple backtick if present
