@@ -23,6 +23,7 @@ from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff
 from app.utils.directory_util import get_ignored_patterns
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
+from app.utils.file_utils import is_binary_file
 
 app = FastAPI()
 
@@ -95,23 +96,9 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
     def count_tokens(file_path: str) -> int:
         try:
-            # Skip binary files by extension
-            binary_extensions = {
-                '.pyc', '.pyo', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
-                '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
-                '.pyd', '.woff', '.woff2', '.ttf', '.eot'
-            }
-
-            if any(file_path.endswith(ext) for ext in binary_extensions):
+            if is_binary_file(file_path):
                 logger.debug(f"Skipping binary file by extension: {file_path}")
                 return 0
-
-            # Try to detect if file is binary by reading first few bytes
-            with open(file_path, 'rb') as file:
-                content_bytes = file.read(1024)
-                if b'\x00' in content_bytes:  # Binary file detection
-                    return 0
-
             # If not binary, read as text
             with open(file_path, 'r', encoding='utf-8') as file:
                 content = file.read()

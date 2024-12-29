@@ -18,6 +18,7 @@ from app.utils.sanitizer_util import clean_backtick_sequences
 
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
+from app.utils.file_utils import is_binary_file
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Clean chat history by removing invalid messages and normalizing content."""
@@ -75,11 +76,14 @@ def get_combined_docs_from_files(files) -> str:
     user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
     for file_path in files:
         try:
+            if os.path.isdir(os.path.join(user_codebase_dir, file_path)):
+                continue
+                
             full_file_path = os.path.join(user_codebase_dir, file_path)
-            if os.path.isdir(full_file_path): continue  # Skip directories 
-            docs = TextLoader(full_file_path).load()
-            for doc in docs:
-                combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
+            if not is_binary_file(full_file_path):
+                docs = TextLoader(full_file_path).load()
+                for doc in docs:
+                    combined_contents += f"File: {file_path}\n{doc.page_content}\n\n"
         except Exception as e:
             print(f"Skipping file {full_file_path} due to error: {e}")
 
