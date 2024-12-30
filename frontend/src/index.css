@@ -283,8 +283,13 @@ body.dark {
   margin-top: 0.5em;
   font-size: 12px;
   padding:8px;
+  border-bottom: 1px solid #e8e8e8;
   width: 100%;
   overflow-x: auto;
+}
+
+.diff-view:last-child {
+  border-bottom: none;
 }
 
 .diff-view.smaller-diff-view {
@@ -305,7 +310,7 @@ body.dark {
   font-size: 16px;
   background-color: #f0f0f0;
   border-top: 1px solid #e0e0e0;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 2px solid #a0a7e0;
 }
 
 .dark .diff-ellipsis {
@@ -339,6 +344,7 @@ body.dark {
 
 /* Dark Theme Diff Overrides */
 body.dark .diff-view {
+  border-bottom-color: #303030;
   --diff-background-color: #4e3e7e;
   --diff-text-color: #d4d4d4;
   --diff-code-insert-background-color: #133214;

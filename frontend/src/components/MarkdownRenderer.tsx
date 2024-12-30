@@ -1,6 +1,7 @@
 import React, { useState, useEffect, memo, Suspense } from 'react';
-import { parseDiff, Diff, Hunk, tokenize, RenderToken } from 'react-diff-view';
+import { parseDiff, Diff, Hunk, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
+import { DiffLine } from './DiffLine';
 import { marked, Tokens } from 'marked';
 import { Button, message, Radio, Space, Spin } from 'antd';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
@@ -416,19 +417,55 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
         return <pre><code>{diff}</code></pre>;
     } 
 
-    const renderHunks = (hunks) => {
-        return hunks.map((hunk, index) => {
-            const previousHunk = index > 0 ? hunks[index - 1] : null;
-            const showEllipsis = displayMode === 'pretty' && previousHunk &&
-                (hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines) > 1);
-            return (
-                <React.Fragment key={hunk.content}>
-                    {showEllipsis && displayMode === 'pretty' && <div className="diff-ellipsis">...</div>}
-                    <Hunk hunk={hunk} />
-                </React.Fragment>
-            );
-        });
+    // Function to detect language from file path
+    const detectLanguage = (filePath: string): string => {
+        if (!filePath) return 'plaintext';
+        const extension = filePath.split('.').pop()?.toLowerCase();
+        const languageMap: { [key: string]: string } = {
+            'js': 'javascript',
+            'jsx': 'javascript',
+            'ts': 'typescript',
+            'tsx': 'typescript',
+            'py': 'python',
+            'rb': 'ruby',
+            'php': 'php',
+            'java': 'java',
+            'go': 'go',
+            'rs': 'rust',
+            'cpp': 'cpp',
+            'c': 'c',
+            'cs': 'csharp',
+            'css': 'css',
+            'html': 'markup',
+            'xml': 'markup',
+            'md': 'markdown'
+        };
+        return languageMap[extension || ''] || 'plaintext';
     };
+
+    const renderContent = (hunk: any, filePath: string) => {
+        return hunk.changes && hunk.changes.map((change: any, i: number) => (
+                <DiffLine
+                    key={i}
+                    content={change.content}
+                    language={detectLanguage(filePath)}
+                    type={change.type}
+                />
+            )
+	 );
+    };
+
+const renderHunks = (hunks: any[], filePath: string) => hunks.map(hunk => (
+    <Diff
+        key={hunk.content}
+        viewType={viewType}
+        diffType="modify"
+        hunks={[hunk]}
+        gutterType={showLineNumbers ? 'default' : 'none'}
+    >
+        {hunks => hunks.map(h => renderContent(h, filePath))}
+    </Diff>
+));
 
     // If raw mode is selected, return the raw diff
     if (displayMode === 'raw') {
@@ -525,7 +562,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
                     gutterType={showLineNumbers ? 'default' : 'none'}
                     className="diff-view"
                 >
-                    {hunks => renderHunks(hunks)}
+		    {hunks => (
+                        <>{renderHunks(hunks, file.oldPath)}</>
+                    )}
                 </Diff>
             ) : (
                 <Diff
@@ -535,7 +574,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
                     gutterType={showLineNumbers ? 'default' : 'none'}
                     className="diff-view"
                 >
-                    {hunks => renderHunks(hunks)}
+		    {hunks => (
+                        <>{renderHunks(hunks, file.newPath || file.oldPath)}</>
+                    )}
                 </Diff>
             )}
         </div>
