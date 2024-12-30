@@ -280,20 +280,14 @@ body.dark {
 
 /* Diff View Styling */
 .diff-view {
-  margin-top: 0.5em;
   font-size: 12px;
-  padding:8px;
-  border-bottom: 1px solid #e8e8e8;
-  width: 100%;
-  overflow-x: auto;
+  padding: 8px;
+  overflow: auto;
+  width: max-content;
 }
 
 .diff-view:last-child {
   border-bottom: none;
-}
-
-.diff-view.smaller-diff-view {
-  overflow: hidden;
 }
 
 .diff-view .diff-code,
@@ -301,16 +295,25 @@ body.dark {
   color: var(--diff-text-color) !important;
 }
 
+.diff-view .diff-split {
+    min-width: max-content;
+}
+
 .diff-ellipsis {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #555;
-  padding: 12px 0;
-  font-size: 16px;
-  background-color: #f0f0f0;
-  border-top: 1px solid #e0e0e0;
-  border-bottom: 2px solid #a0a7e0;
+  height: 32px;
+  background-color: #f5f5f5;
+  font-size: 32px;
+  line-height: 0;
+  letter-spacing: 2px;
+  overflow: hidden;
+  color: #666;
+}
+
+.diff-ellipsis::before {
+  content: "•••";
 }
 
 .dark .diff-ellipsis {
@@ -321,7 +324,8 @@ body.dark {
 
 
 .diff-view.smaller-diff-view {
-  overflow: hidden;  /* Change from overflow-x: auto */
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .smaller-diff-view .diff-gutter,
@@ -642,7 +646,15 @@ body.dark .message li input[type="checkbox"] {
     border: 1px solid #e8e8e8;
     border-radius: 6px;
     overflow: hidden;
-    margin-bottom: 5px;
+    margin-bottom: 1em;
+    width: 100%;
+}
+
+[data-testid="diff-line"] {
+    display: block;
+    white-space: pre !important;
+    -webkit-user-select: text;    
+    user-select: text;
 }
 
 /* Ensure diff text remains visible in both modes */

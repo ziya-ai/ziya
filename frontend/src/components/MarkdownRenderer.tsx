@@ -455,17 +455,26 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
 	 );
     };
 
-const renderHunks = (hunks: any[], filePath: string) => hunks.map(hunk => (
-    <Diff
-        key={hunk.content}
-        viewType={viewType}
-        diffType="modify"
-        hunks={[hunk]}
-        gutterType={showLineNumbers ? 'default' : 'none'}
-    >
-        {hunks => hunks.map(h => renderContent(h, filePath))}
-    </Diff>
-));
+   const renderHunks = (hunks: any[], filePath: string) => hunks.map((hunk, index) => {
+        const previousHunk = index > 0 ? hunks[index - 1] : null;
+        const showEllipsis = displayMode === 'pretty' && previousHunk &&
+            (hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines) > 1);
+
+        return (
+            <React.Fragment key={`${hunk.content}-${index}`}>
+                {showEllipsis && <div className="diff-ellipsis" />}
+                <Diff
+                    key={hunk.content}
+                    viewType={viewType}
+                    diffType="modify"
+                    hunks={[hunk]}
+                    gutterType={showLineNumbers ? 'default' : 'none'}
+                >
+                    {hunks => hunks.map(h => renderContent(h, filePath))}
+                </Diff>
+            </React.Fragment>
+        );
+    });
 
     // If raw mode is selected, return the raw diff
     if (displayMode === 'raw') {
@@ -524,10 +533,9 @@ const renderHunks = (hunks: any[], filePath: string) => hunks.map(hunk => (
     return files.map((file, fileIndex) => {  
       return (  
         <div
-            key={fileIndex}
+	    key={`diff-${fileIndex}`}
             className="diff-view smaller-diff-view"
             style={{
-		width: 'auto',
                 backgroundColor: currentTheme.content.background,
                 color: currentTheme.content.color
             }}
@@ -645,7 +653,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     }
 
     return (
-	<div className="diff-container">
+	<div> 
             <DiffControls
                 displayMode={displayMode}
                 viewType={viewType}
@@ -654,7 +662,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
                 onViewTypeChange={setViewType}
                 onLineNumbersChange={setShowLineNumbers}
             />
-            <div id={`diff-view-${index || 0}`}>
+            <div className="diff-container" id={`diff-view-${index || 0}`}>
                 <DiffView
                     diff={token.text}
                     viewType={viewType}

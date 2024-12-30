@@ -50,7 +50,8 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type }) =
         fontFamily: 'ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace',
         fontSize: '12px',
         lineHeight: '20px',
-	whiteSpace: 'pre'
+	whiteSpace: 'pre-wrap',
+	wordBreak: 'break-all'
     };
 
     // Add theme-specific colors
@@ -78,10 +79,21 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type }) =
         );
     }
 
+    // Ensure line breaks are preserved by wrapping content in a div    
+    const wrapWithLineBreak = (content: string) => {
+        if (!content.endsWith('\n')) {
+            return content + '\n';
+	}
+	return content; 
+    };
+
     return (
         <div
-            style={{ ...baseStyles, ...themeStyles }}
-            dangerouslySetInnerHTML={{ __html: highlighted }}
+            style={{ ...baseStyles, ...themeStyles, minWidth: '100%' }}
+            dangerouslySetInnerHTML={{
+                __html: wrapWithLineBreak(highlighted)
+	    }}
+	    data-testid="diff-line"
         />
     );
-}
+};
