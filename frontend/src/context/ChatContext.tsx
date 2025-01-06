@@ -1,4 +1,4 @@
-import React, {createContext, Dispatch, ReactNode, SetStateAction, useContext, useEffect, useState} from 'react';
+import React, {createContext, Dispatch, ReactNode, SetStateAction, useContext, useEffect, useState, useMemo, useCallback} from 'react';
 import {Conversation, Message} from "../utils/types";
 import {v4 as uuidv4} from "uuid";
 import { db } from '../utils/db';
@@ -169,7 +169,8 @@ export function ChatProvider({children}: ChatProviderProps) {
         }
     }, [conversations, shouldSave]);
 
-    const value: ChatContext = {
+    // Memoize the context value
+    const value = useMemo<ChatContext>(() => ({
         messages,
         setMessages,
         question,
@@ -187,7 +188,8 @@ export function ChatProvider({children}: ChatProviderProps) {
         setCurrentConversationId,
         addMessageToCurrentConversation,
         startNewChat
-    };
+    }), [messages, question, streamedContent, isStreaming, conversations, currentConversationId, isTopToBottom]);
+
     return <chatContext.Provider value={value}>{children}</chatContext.Provider>;
 }
 

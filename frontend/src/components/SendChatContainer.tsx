@@ -1,9 +1,10 @@
-import React, {useEffect, useRef, useLayoutEffect} from "react";
+import React, {useEffect, useRef, memo, useCallback, useMemo, SetStateAction} from "react";
 import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {useFolderContext} from "../context/FolderContext";
 import {Button, Input} from 'antd';
 import {SendOutlined} from "@ant-design/icons";
+import debounce from 'lodash/debounce';
 
 const {TextArea} = Input;
 
@@ -14,7 +15,7 @@ interface SendChatContainerProps {
     empty?: boolean;
 }
 
-export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed = false, empty = false }) => {
+export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, empty = false }) => {
     const {
         question,
         setQuestion,
@@ -37,15 +38,30 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed = fa
         }
     }, [question]);
 
-    const handleChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
+	// Update the input value immediately for responsiveness
         setQuestion(event.target.value);
-    };
+    }, [setQuestion]);
+
+    // Clean up any pending debounced calls when component unmounts
+    useEffect(() => {
+        return () => {
+            if (handleChange) {
+                (handleChange as any).cancel?.();
+            }
+        };
+    }, [handleChange]);
 
     const handleSendPayload = async () => {
         setQuestion('');
         setIsStreaming(true);
         const newHumanMessage = {content: question, role: 'human' as 'human'};
         addMessageToCurrentConversation(newHumanMessage);
+
+	if (isTopToBottom) {
+            // Ensure scroll to bottom after sending message in top-down mode
+            setTimeout(scrollToBottom, 0);
+        }
 
         if (!isTopToBottom) {
             // In bottom-up mode, scroll to the input
@@ -74,6 +90,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed = fa
                 value={question}
                 onChange={handleChange}
                 placeholder="Enter your question.."
+		autoComplete="off"
                 className="input-textarea"
                 onPressEnter={(event) => {
                     if (!isStreaming && !event.shiftKey && !isQuestionEmpty(question)) {
@@ -93,4 +110,4 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed = fa
             </Button>
         </div>
     );
-};
+});

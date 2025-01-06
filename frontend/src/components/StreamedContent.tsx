@@ -35,14 +35,16 @@ export const StreamedContent: React.FC = () => {
     );
 
     useEffect(() => {
-        if (streamedContent) {
+        if (streamedContent && isTopToBottom) {
             // Focus the input after content updates
             const textarea = document.querySelector('.input-textarea') as HTMLTextAreaElement;
             if (textarea) {
                 textarea.focus();
             }
+            // Ensure scrolling to bottom during streaming in top-down mode
+            scrollToBottom();
         }
-
+        
     }, [streamedContent]);
 
     const enableCodeApply = window.enableCodeApply === 'true';
