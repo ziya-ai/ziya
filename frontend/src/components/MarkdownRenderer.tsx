@@ -63,6 +63,17 @@ interface ErrorBoundaryState {
 }
 
 type ErrorType = 'graphviz' | 'code' | 'unknown';
+
+type DiffChange = {
+    type: 'delete' | 'insert' | 'context';
+    content: string;
+    isDelete?: boolean;
+    isInsert?: boolean;
+    isNormal?: boolean;
+    lineNumber?: number | null;
+    oldLineNumber?: number | null;
+    newLineNumber?: number | null;
+};
  
 class ErrorBoundary extends React.Component<
     ErrorBoundaryProps,
@@ -205,10 +216,11 @@ interface ApplyChangesButtonProps {
     enabled: boolean;
 }
 
+type DisplayMode = 'raw' | 'pretty';
 export interface DiffViewProps {
     diff: string;
     viewType: 'split' | 'unified';
-    displayMode: 'raw' | 'pretty';
+    initialDisplayMode: DisplayMode;
     showLineNumbers: boolean;
 }
 
@@ -241,7 +253,16 @@ const DiffControls = memo(({
                         <Radio.Group
                             value={viewType}
                             buttonStyle="solid"
-                            onChange={(e) => onViewTypeChange(e.target.value)}
+                            onChange={(e) => {
+				window.diffViewType = e.target.value;
+                                // Debug verification
+                                console.log('Updated view type:', {
+                                    newValue: e.target.value,
+                                    windowSetting: window.diffViewType
+                                });
+		                onViewTypeChange(e.target.value);
+				console.log('Split/Unified button clicked:', e.target.value);
+			    }}
                         >
                             <Radio.Button value="unified">Unified View</Radio.Button>
                             <Radio.Button value="split">Split View</Radio.Button>
@@ -262,10 +283,10 @@ const DiffControls = memo(({
                 <Radio.Group
                     value={displayMode}
                     buttonStyle="solid"
-                    onChange={(e) => onDisplayModeChange(e.target.value)}
+                    onChange={(e) =>  window.diffDisplayMode = e.target.value}
                 >
-                    <Radio.Button value="pretty">Pretty</Radio.Button>
-                    <Radio.Button value="raw">Raw</Radio.Button>
+                <Radio.Button value="pretty">Pretty</Radio.Button>
+                <Radio.Button value="raw">Raw</Radio.Button>
                 </Radio.Group>
             </div>
         </div>
@@ -389,35 +410,21 @@ const normalizeGitDiff = (diff: string): string => {
     return diff;
 };
 
-const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLineNumbers }) => {
+const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers }) => {
+    const [isLoading, setIsLoading] = useState(true);
+    const [tokenizedHunks, setTokenizedHunks] = useState<any>(null);
     const { isDarkMode } = useTheme();
-    let files;
-    try {
-        files = parseDiff(normalizeGitDiff(diff));
-	// Special handling for deletion diffs that might not be parsed correctly
-        if (files.length === 0 && isDeletionDiff(diff)) {
-            // Force parse as a deletion
-            const match = diff.match(/--- a\/(.*)\n/);
-            if (match) {
-                const filePath = match[1];
-                files = [{
-                    type: 'delete',
-                    oldPath: filePath,
-                    hunks: [{
-                        content: diff,
-                        oldStart: 1,
-                        oldLines: diff.split('\n').length - 1,
-                        newStart: 0,
-                        newLines: 0
-                    }]
-                }];
-            }
-        }
-    } catch (error) {
-        return <pre><code>{diff}</code></pre>;
-    } 
+    const [parsedFiles, setParsedFiles] = useState<any[]>([]);
+    const [parseError, setParseError] = useState<boolean>(false);
+    const [displayMode, setDisplayMode] = useState<DisplayMode>(initialDisplayMode as DisplayMode);
 
-    // Function to detect language from file path
+    // Add debugging for view type changes
+    useEffect(() => {
+        console.log('View type changed to:', viewType);
+        console.log('Current DOM structure:', document.querySelector('.diff-container')?.outerHTML);
+    }, [viewType]);
+
+    // detect language from file path
     const detectLanguage = (filePath: string): string => {
         if (!filePath) return 'plaintext';
         const extension = filePath.split('.').pop()?.toLowerCase();
@@ -443,50 +450,231 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
         return languageMap[extension || ''] || 'plaintext';
     };
 
-    const renderContent = (hunk: any, filePath: string) => {
-        return hunk.changes && hunk.changes.map((change: any, i: number) => (
-                <DiffLine
-                    key={i}
-                    content={change.content}
-                    language={detectLanguage(filePath)}
-                    type={change.type}
-                />
-            )
-	 );
+    useEffect(() => {
+        const parseAndSetFiles = () => {
+            try {
+                let parsedFiles = parseDiff(normalizeGitDiff(diff));
+                // Special handling for deletion diffs
+                if (parsedFiles.length === 0 && isDeletionDiff(diff)) {
+                    const match = diff.match(/--- a\/(.*)\n/);
+                    if (match) {
+                        const filePath = match[1];
+                        parsedFiles = [{
+                            type: 'delete',
+                            oldPath: filePath,
+			    newPath: '/dev/null',
+			    oldRevision: 'HEAD',
+                            newRevision: '0000000',
+                            oldEndingNewLine: true,
+                            newEndingNewLine: true,
+                            oldMode: '100644',
+                            newMode: '000000',
+                            similarity: 0,
+                            hunks: [{
+                                content: diff,
+                                oldStart: 1,
+				oldLines: diff.split('\n').filter(line => line.startsWith('-')).length,
+                                newStart: 0,
+                                newLines: 0,
+				changes: diff.split('\n')
+                                    .filter(line => !line.match(/^(diff --git|index|---|^\+\+\+)/))
+                                    .map((line, index: number) => ({
+                                        type: 'delete' as const,
+                                        content: line.slice(1),
+                                        isDelete: true,
+                                        isInsert: false,
+                                        isNormal: false,
+					lineNumber: index + 1,
+                                        oldLineNumber: index + 1,
+                                        newLineNumber: undefined
+                                    }))
+                            }]
+                        }];
+                    }
+                }
+                setParsedFiles(parsedFiles);
+                setParseError(false);
+            } catch (error) {
+                setParseError(true);
+                setParsedFiles([]);
+            }
+        };
+        parseAndSetFiles();
+    }, [diff]);
+
+
+    // tokenize hunks
+    useEffect(() => {
+        const tokenizeHunks = async (hunks: any[], filePath: string) => {
+            setIsLoading(true);
+            const language = detectLanguage(filePath);
+            try {
+                // always load basic languages first
+                await Promise.all([
+                    loadPrismLanguage('markup'),
+                    loadPrismLanguage('clike'),
+                    loadPrismLanguage(language)
+                ]);
+
+		// Verify Prism is properly initialized
+                if (!window.Prism?.languages?.[language]) {
+                    console.warn(`Prism language ${language} not available, falling back to plain text`);
+                    // Try without syntax highlighting
+                    const tokens = tokenize(hunks, {
+                        highlight: true,
+                        refractor: window.Prism,
+                        language: 'plaintext'
+                    });
+                    setTokenizedHunks(tokens);
+                } else {
+                    // Try with the detected language
+                    setTokenizedHunks(null);
+                    console.log('After loading:', document.querySelector('.diff-view')?.innerHTML);
+                }
+            } catch (error) {
+                console.warn(`Error during tokenization for ${language}:`, error);
+                setTokenizedHunks(null);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        if (parsedFiles?.[0]) {
+            const file = parsedFiles[0];
+            tokenizeHunks(file.hunks, file.newPath || file.oldPath);
+        }
+    }, [parsedFiles]);
+
+    // Handle raw mode
+    if (displayMode === 'raw') {
+        return (
+            <pre className="diff-raw-block" style={{
+                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                color: isDarkMode ? '#e6e6e6' : 'inherit',
+                padding: '10px',
+                borderRadius: '4px'
+            }}>
+                <code>{diff}</code>
+            </pre>
+        );
+    }
+
+    const renderHunks = (hunks: any[], filePath: string) => {
+        const tableClassName = `diff-table ${viewType === 'split' ? 'diff-split' : ''}`;
+
+        console.log('Creating table with class:', tableClassName, 'viewType:', viewType);
+
+	if (viewType === 'split') {
+            console.group('Split View Debug');
+            console.log('View type:', viewType);
+            const table = document.querySelector('.diff-table.diff-split');
+            if (table) {
+                console.log('Table structure:', {
+                    width: getComputedStyle(table).width,
+                    cols: table.querySelectorAll('colgroup col').length,
+                    firstRowCells: table.querySelector('tr')?.children.length
+                });
+            }
+            console.groupEnd();
+        }
+
+	/*
+        if (isLoading) {
+            return (
+                <div style={{ padding: '8px' }}>
+                    <Spin size="small" />
+                    <span style={{ marginLeft: '8px' }}>Loading syntax highlighting...</span>
+                </div>
+            );
+        }
+        */
+
+       return (
+	       <table className={tableClassName}>
+                <colgroup>
+                    {viewType === 'split' ? (
+                        <>
+			    {showLineNumbers && <col
+                                className="diff-gutter-col"
+                                style={{ width: '50px', minWidth: '50px' }}
+                            />}
+                            <col
+                                className="diff-code-col"
+                                style={{ width: 'calc(50% - 50px)' }}
+                            />
+			    {showLineNumbers && <col
+                                className="diff-gutter-col"
+                                style={{ width: '50px', minWidth: '50px' }}
+                            />}
+                            <col
+                                className="diff-code-col"
+                                style={{ width: 'calc(50% - 50px)' }}
+                            />
+                        </>
+                    ) : (
+		        <>
+			    <col className="diff-gutter-col" />
+			    {showLineNumbers && <col className="diff-gutter-col" />}
+                            <col style={{ width: 'auto' }} />
+			</>
+                    )}
+                </colgroup>
+                <tbody>
+                    {hunks.map((hunk, index) => {
+                        const previousHunk = index > 0 ? hunks[index - 1] : null;
+                        const showEllipsis = displayMode === 'pretty' && previousHunk &&
+                            (hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines) > 1);
+                        return (
+                            <React.Fragment key={hunk.content}>
+                                {showEllipsis && <tr><td colSpan={viewType === 'split' ? 4 : 3} className="diff-ellipsis">...</td></tr>}
+                                {renderContent(hunk, filePath)}
+                            </React.Fragment>
+                        );
+                    })}
+                </tbody>
+            </table>
+        );
     };
 
-   const renderHunks = (hunks: any[], filePath: string) => hunks.map((hunk, index) => {
-        const previousHunk = index > 0 ? hunks[index - 1] : null;
-        const showEllipsis = displayMode === 'pretty' && previousHunk &&
-            (hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines) > 1);
-
-        return (
-            <React.Fragment key={`${hunk.content}-${index}`}>
-                {showEllipsis && <div className="diff-ellipsis" />}
-                <Diff
-                    key={hunk.content}
-                    viewType={viewType}
-                    diffType="modify"
-                    hunks={[hunk]}
-                    gutterType={showLineNumbers ? 'default' : 'none'}
-                >
-                    {hunks => hunks.map(h => renderContent(h, filePath))}
-                </Diff>
-            </React.Fragment>
-        );
-    });
-
-    // If raw mode is selected, return the raw diff
-    if (displayMode === 'raw') {
+    // Handle parse error case
+    if (parseError) {
         return (
             <pre style={{
                 backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                 color: isDarkMode ? '#e6e6e6' : 'inherit',
                 padding: '10px',
                 borderRadius: '4px'
-            }}><code>{diff}</code></pre>
+            }}>
+                <code>{diff}</code>
+            </pre>
         );
     }
+
+
+    const renderContent = (hunk: any, filePath: string) => {
+        return hunk.changes && hunk.changes.map((change: any, i: number) => {
+
+            let oldLine = undefined;
+            let newLine = undefined;
+            
+            if (showLineNumbers) {
+                oldLine = (change.type === 'normal' || change.type === 'delete') ? change.oldLineNumber || change.lineNumber : undefined;
+                newLine = (change.type === 'normal' || change.type === 'insert') ? change.newLineNumber || change.lineNumber : undefined;
+            }
+            return (
+                <DiffLine
+                    key={i}
+                    content={change.content}
+                    language={detectLanguage(filePath)}
+		    viewType={viewType}
+                    type={change.type}
+		    oldLineNumber={oldLine}
+                    newLineNumber={newLine}
+                    showLineNumbers={showLineNumbers}
+                />
+            );
+        });
+    };
 
     // Define theme-specific styles
     const darkModeStyles = {
@@ -528,9 +716,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
     };
 
     const currentTheme = isDarkMode ? darkModeStyles : lightModeStyles;
+    console.log('DiffView rendering with:', { viewType, displayMode, showLineNumbers });
 
-
-    return files.map((file, fileIndex) => {  
+    return <>{parsedFiles.map((file, fileIndex) => {
       return (  
         <div
 	    key={`diff-${fileIndex}`}
@@ -562,34 +750,17 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
                     />
                 }
             </div>
-	        {file.type === 'delete' ? (
-                <Diff
-		    viewType={file.type === 'delete' ? 'unified' : viewType}
-                    diffType={file.type === 'delete' ? 'modify' : file.type}
-                    hunks={file.hunks}
-                    gutterType={showLineNumbers ? 'default' : 'none'}
-                    className="diff-view"
-                >
-		    {hunks => (
-                        <>{renderHunks(hunks, file.oldPath)}</>
+	    <div className="diff-view">
+	        <div className="diff-content">
+                    {renderHunks(
+                        file.hunks,
+                        file.type === 'delete' ? file.oldPath : file.newPath || file.oldPath
                     )}
-                </Diff>
-            ) : (
-                <Diff
-                    viewType={viewType}
-                    diffType={file.type}
-                    hunks={file.hunks}
-                    gutterType={showLineNumbers ? 'default' : 'none'}
-                    className="diff-view"
-                >
-		    {hunks => (
-                        <>{renderHunks(hunks, file.newPath || file.oldPath)}</>
-                    )}
-                </Diff>
-            )}
+		</div>
+            </div>
         </div>
         );
-    });
+    })}</>;
 };
 
 const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, enabled }) => {
@@ -644,6 +815,14 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<'raw' | 'pretty'>(window.diffDisplayMode || 'pretty');
 
+    // Ensure window settings are synced with initial state
+    useEffect(() => {
+        if (window.diffViewType !== viewType) {
+            window.diffViewType = viewType;
+        }
+        console.log('Initial view settings:', { viewType, windowViewType: window.diffViewType });
+    }, []);
+
     if (!hasText(token)) {
         return null;
     }
@@ -666,7 +845,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
                 <DiffView
                     diff={token.text}
                     viewType={viewType}
-                    displayMode={displayMode}
+                    initialDisplayMode={displayMode}
                     showLineNumbers={showLineNumbers}
             />
             </div>
@@ -709,14 +888,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
             setIsLanguageLoaded(true);
         }
     }, [token.lang]);
-
-    if (!isLanguageLoaded) {
-        return (
-            <div style={{ padding: '16px', backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa' }}>
-                <Spin size="small" /> Loading syntax highlighting...
-            </div>
-        );
-    }
 
     const getHighlightedCode = () => {
         if (!prismInstance || token.lang === undefined) {

@@ -6,9 +6,13 @@ interface DiffLineProps {
     content: string;
     language: string;
     type: 'normal' | 'insert' | 'delete';
+    oldLineNumber?: number;
+    newLineNumber?: number;
+    viewType: 'unified' | 'split';
+    showLineNumbers?: boolean;
 }
 
-export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type }) => {
+export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, oldLineNumber, newLineNumber, showLineNumbers, viewType }) => {
     const [highlighted, setHighlighted] = useState(content);
     const [isLoading, setIsLoading] = useState(true);
     const { isDarkMode } = useTheme();
@@ -18,9 +22,13 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type }) =
             try {
                 await loadPrismLanguage(language);
                 if (window.Prism && content.length > 1) {
-                    // Preserve the first character (+ or - or space)
-                    const marker = content[0];
-                    const code = content.slice(1);
+		    // Skip the first character if it's a diff marker
+                    let marker = '';
+                    let code = content;
+                    if (content.startsWith('+') || content.startsWith('-') || content.startsWith(' ')) {
+                        marker = content[0];
+                        code = content.slice(1);
+                    }
                     
                     const grammar = window.Prism.languages[language] || window.Prism.languages.plaintext;
                     const highlightedCode = window.Prism.highlight(
@@ -48,10 +56,9 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type }) =
         display: 'inline-block',
         width: '100%',
         fontFamily: 'ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace',
-        fontSize: '12px',
-        lineHeight: '20px',
+	font: '12px/20px ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace',
 	whiteSpace: 'pre-wrap',
-	wordBreak: 'break-all'
+	wordBreak: 'break-word'
     };
 
     // Add theme-specific colors
@@ -87,13 +94,61 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type }) =
 	return content; 
     };
 
+    if (viewType === 'split') {
+        return (
+	    <tr className="diff-line" data-testid="diff-line">
+	        {showLineNumbers && (
+		    <td className={`diff-gutter-col diff-gutter-old ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
+                        {oldLineNumber}
+                    </td>
+                )}
+	        <td className="diff-code diff-code-left" style={{ width: 'calc(50% - 50px)' }}>
+		    <div className={`diff-code-content diff-code-${type}`}>
+                        {type !== 'insert' ? (
+                            <div dangerouslySetInnerHTML={{ __html: highlighted }} />
+                        ) : (
+                            <div className="diff-code-placeholder">&nbsp;</div>
+                        )}
+                    </div>
+		</td>
+
+		{showLineNumbers && (
+		    <td className={`diff-gutter-col diff-gutter-new ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
+                        {newLineNumber}
+                    </td>
+                )}
+	        <td className="diff-code diff-code-right" style={{ width: 'calc(50% - 50px)' }}>
+                    <div className={`diff-code-content diff-code-${type}`}>
+                        {type !== 'delete' ? (
+                            <div dangerouslySetInnerHTML={{ __html: highlighted }} />
+                        ) : (
+                            <div className="diff-code-placeholder">&nbsp;</div>
+                        )}
+                    </div>
+                </td>
+            </tr>
+        );
+    }
+			
     return (
-        <div
-            style={{ ...baseStyles, ...themeStyles, minWidth: '100%' }}
-            dangerouslySetInnerHTML={{
-                __html: wrapWithLineBreak(highlighted)
-	    }}
-	    data-testid="diff-line"
-        />
+        <tr className="diff-line" data-testid="diff-line">
+            {showLineNumbers && (
+		<td className={`diff-gutter-col diff-gutter-old ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
+		    {oldLineNumber}
+                </td>
+            )}
+            {showLineNumbers && (
+	        <td className={`diff-gutter-col diff-gutter-new ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>	
+                    {newLineNumber}
+                </td>
+            )}
+            <td
+                className={`diff-code diff-code-${type}`}
+                dangerouslySetInnerHTML={{
+                    __html: wrapWithLineBreak(highlighted)
+                }}
+		colSpan={showLineNumbers ? 1 : 3}>
+            </td>
+        </tr>
     );
 };
