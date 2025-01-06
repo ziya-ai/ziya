@@ -98,7 +98,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         return (
 	    <tr className="diff-line" data-testid="diff-line">
 	        {showLineNumbers && (
-		    <td className={`diff-gutter-col diff-gutter-old ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
+		    <td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
                         {oldLineNumber}
                     </td>
                 )}
@@ -113,7 +113,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 		</td>
 
 		{showLineNumbers && (
-		    <td className={`diff-gutter-col diff-gutter-new ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
+		    <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
                         {newLineNumber}
                     </td>
                 )}
@@ -133,12 +133,12 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
     return (
         <tr className="diff-line" data-testid="diff-line">
             {showLineNumbers && (
-		<td className={`diff-gutter-col diff-gutter-old ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
+		<td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
 		    {oldLineNumber}
                 </td>
             )}
             {showLineNumbers && (
-	        <td className={`diff-gutter-col diff-gutter-new ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>	
+	        <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>	
                     {newLineNumber}
                 </td>
             )}
@@ -146,7 +146,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 className={`diff-code diff-code-${type}`}
                 dangerouslySetInnerHTML={{
                     __html: wrapWithLineBreak(highlighted)
-                }}
+                }} 
 		colSpan={showLineNumbers ? 1 : 3}>
             </td>
         </tr>

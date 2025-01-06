@@ -242,6 +242,7 @@ const DiffControls = memo(({
     onViewTypeChange,
     onLineNumbersChange
 }: DiffControlsProps) => {
+    const { isDarkMode } = useTheme();
     const handleDisplayModeChange = (e: RadioChangeEvent) => {
 	const newMode = e.target.value as DisplayMode;
         onDisplayModeChange(newMode);
@@ -249,6 +250,7 @@ const DiffControls = memo(({
 
     return (
 	<div className="diff-view-controls" style={{
+	    backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
@@ -260,6 +262,10 @@ const DiffControls = memo(({
                         <Radio.Group
                             value={viewType}
                             buttonStyle="solid"
+			    style={{
+                                    backgroundColor: isDarkMode ? '#141414' : '#ffffff',
+                                    color: isDarkMode ? '#ffffff' : '#000000'
+                            }}
                             onChange={e => {
                                 window.diffViewType = e.target.value;
                                 onViewTypeChange(e.target.value);
@@ -271,6 +277,10 @@ const DiffControls = memo(({
                         <Radio.Group
                             value={showLineNumbers}
                             buttonStyle="solid"
+			    style={{
+                                    backgroundColor: isDarkMode ? '#141414' : '#ffffff',
+                                    color: isDarkMode ? '#ffffff' : '#000000'
+                            }}
                             onChange={(e) => onLineNumbersChange(e.target.value)}
                         >
                             <Radio.Button value={true}>Show Line Numbers</Radio.Button>
@@ -282,6 +292,10 @@ const DiffControls = memo(({
             <Radio.Group
                 value={displayMode}
                 buttonStyle="solid"
+		style={{
+                    backgroundColor: isDarkMode ? '#141414' : '#ffffff',
+                    color: isDarkMode ? '#ffffff' : '#000000'
+                }}
                 onChange={handleDisplayModeChange}
             >
                 <Radio.Button value="pretty">Pretty</Radio.Button>
@@ -805,7 +819,11 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
             window.diffViewType = viewType;
         }
         console.log('Initial view settings:', { viewType, windowViewType: window.diffViewType });
-    }, []);
+	console.debug('DiffViewWrapper mounted with token:', {
+	            text: token.text.substring(0, 100),
+	            lang: token.lang
+        });
+    }, [token]);
 
     if (!hasText(token)) {
         return null;
@@ -946,10 +964,14 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
     return tokens.map((token, index) => {
         if (token.type === 'code' && isCodeToken(token) && token.lang === 'diff') {
             try {
+                console.debug(`Processing diff token:`, { type: token.type, lang: token.lang, text: token.text.substring(0, 100) });
                 // Only attempt to parse as diff if it starts with 'diff --git'
                 if (token.text.trim().startsWith('diff --git')) {
+		    console.debug('Found diff --git marker, attempting to parse');
                     const files = parseDiff(token.text);
+		    console.debug('Parsed files:', files);
                     if (files && files.length > 0) {
+			console.debug('Successfully parsed diff files:', files.length);
                         return (
                             <DiffViewWrapper
                                 key={index}
@@ -959,12 +981,16 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
                             />
                         );
                     }
+		    console.debug('No files parsed from diff');
+                } else {
+                    console.debug('Diff token does not start with "diff --git"');
                 }
                 // If not a valid diff or doesn't start with diff marker, render as regular code
                 return (
                     <pre key={index} style={{
-                        backgroundColor: '#f6f8fa',
                         padding: '16px',
+                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                        color: isDarkMode ? '#e6e6e6' : '#24292e',
                         borderRadius: '6px',
                         overflow: 'auto'
                     }}>
@@ -972,11 +998,13 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
                     </pre>
                 );
             } catch (error) {
+                console.error('Error parsing diff:', error, '\nDiff content:', token.text);
                 // If parsing fails, render as regular code
                 return (
                     <pre key={index} style={{
-                        backgroundColor: '#f6f8fa',
                         padding: '16px',
+                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                        color: isDarkMode ? '#e6e6e6' : '#24292e',
                         borderRadius: '6px',
                         overflow: 'auto'
                     }}>

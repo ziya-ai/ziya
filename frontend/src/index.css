@@ -535,6 +535,15 @@ span.token-count-total.red { color: #f5222d; }
     position: relative;
 }
 
+/* Make line numbers non-selectable and non-copyable */
+.no-copy {
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+}
+
 /* Column styles */
 .diff-table.diff-split .diff-gutter-col {
     width: 50px !important;
@@ -542,6 +551,7 @@ span.token-count-total.red { color: #f5222d; }
     max-width: 50px !important;
     padding: 0 8px;
     text-align: right;
+    position: relative;
     box-sizing: border-box;
     white-space: nowrap;
     background-color: #f6f8fa;
@@ -551,6 +561,13 @@ span.token-count-total.red { color: #f5222d; }
 /* Code cell styles */
 .diff-table.diff-split .diff-code {
     width: calc(50% - var(--gutter-width, 0px)) !important;
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
+    user-select: text !important;
+    position: relative;
+    z-index: 1;
+    background: inherit;
     min-width: calc(50% - 50px) !important;
     max-width: calc(50% - 50px) !important;
     padding: 0 8px;
@@ -561,6 +578,8 @@ span.token-count-total.red { color: #f5222d; }
 /* Code content styles */
 .diff-code-content {
     white-space: pre;
+    position: relative;
+    z-index: 1;
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -604,6 +623,9 @@ span.token-count-total.red { color: #f5222d; }
     background-color: #161b22;
     border-right-color: #30363d;
     color: #8b949e;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
 }
 
 .dark .diff-code-insert {
@@ -632,7 +654,20 @@ span.token-count-total.red { color: #f5222d; }
     font-size: 12px;
     line-height: 20px;
     min-width: 100% !important; /* force full width */
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
     table-layout: fixed !important;
+}
+
+/* Ensure code content is selectable but line numbers aren't */
+.diff-code {
+    position: relative;
+    z-index: 1;
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
+    user-select: text !important;
 }
 
 .diff-code-content {
@@ -712,6 +747,9 @@ span.token-count-total.red { color: #f5222d; }
     position: absolute;
     top: 0;
     right: 10px;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
     width: 4px;
     height: 100%;
     background-color: #2ea043; 
@@ -723,6 +761,9 @@ span.token-count-total.red { color: #f5222d; }
     position: absolute;
     top: 0;
     right: 10px;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
     width: 4px;
     height: 100%;
     background-color: #f85149;
@@ -735,6 +776,9 @@ span.token-count-total.red { color: #f5222d; }
     position: absolute;
     top: 0;
     left: 2px;  /* Half char width from left margin */
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
     width: 4px;
     height: 100%;
     background-color: #2ea043;
@@ -746,6 +790,9 @@ span.token-count-total.red { color: #f5222d; }
     position: absolute;
     top: 0;
     left: 2px;  /* Half char width from left margin */
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
     width: 4px;
     height: 100%;
     background-color: #f85149;
@@ -769,6 +816,16 @@ span.token-count-total.red { color: #f5222d; }
     background-color: #0f5323;
 }
 
+/* Style for actual code content */
+.diff-code pre, .diff-code code {
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
+    user-select: text !important;
+    position: relative;
+    z-index: 1;
+}
+
 .diff-raw-block {
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
     font-size: 12px;
@@ -779,4 +836,87 @@ span.token-count-total.red { color: #f5222d; }
     margin: 0;
     width: 100%;
     border-radius: 6px;
+}
+
+/* Diff View */
+.diff-view-controls {
+  margin-bottom: 10px;
+  padding: 8px;
+  background-color: #fafafa;
+  width: 100%;
+  align-items: center;
+  margin-bottom: 0;
+  box-sizing: border-box;
+  color: #000000;
+  border-bottom: 1px solid #e1e4e8;
+}
+
+.dark .diff-view-controls {
+  background-color: #040404;
+  border-bottom-color: #303030;
+  color: #ffffff;
+}
+
+.diff-container {
+    border: 1px solid #e1e4e8;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.dark .diff-container {
+    border-color: #30363d;
+}
+
+.dark .diff-view-controls .ant-radio-button-wrapper {
+  background-color: #141414;
+  border-color: #434343;
+  color: #ffffff;
+}
+
+.dark .diff-view-controls .ant-radio-button-wrapper:hover {
+  color: #1890ff;
+  background-color: #1f1f1f;
+}
+
+.dark .diff-view-controls .ant-radio-button-wrapper-checked {
+  background-color: #177ddc;
+  border-color: #177ddc;
+  color: #ffffff;
+}
+
+.dark .diff-view-controls .ant-radio-button-wrapper-checked:hover {
+  background-color: #1890ff;
+  border-color: #1890ff;
+  color: #ffffff;
+}
+
+.dark .diff-view-controls .ant-radio-button-wrapper:not(:first-child)::before {
+  background-color: #434343;
+}
+
+.dark .diff-view-controls .ant-space {
+  gap: 8px;
+  margin-right: 8px;
+  display: flex;
+}
+
+/* Raw diff styling */
+.diff-raw-block {
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+    font-size: 12px;
+    line-height: 20px;
+    white-space: pre;
+    word-break: normal;
+    overflow-x: auto;
+    margin: 0;
+    width: 100%;
+    padding: 16px;
+    background-color: #f6f8fa;
+    color: #24292e;
+}
+
+.dark .diff-raw-block {
+    background-color: #1f1f1f;
+    color: #e6e6e6;
+    border-color: #30363d;
 }
