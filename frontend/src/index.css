@@ -694,3 +694,15 @@ span.token-count-total.red { color: #f5222d; }
 .dark .diff-table:not(.diff-split) .diff-gutter-col.diff-gutter-old.diff-gutter-insert::after {
     background-color: #0f5323;
 }
+
+.diff-raw-block {
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+    font-size: 12px;
+    line-height: 20px;
+    white-space: pre;
+    word-break: normal;
+    overflow-x: auto;
+    margin: 0;
+    width: 100%;
+    border-radius: 6px;
+}

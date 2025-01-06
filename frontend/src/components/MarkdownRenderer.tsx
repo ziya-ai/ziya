@@ -3,7 +3,7 @@ import { parseDiff, Diff, Hunk, tokenize, RenderToken, HunkProps } from 'react-d
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import { marked, Tokens } from 'marked';
-import { Button, message, Radio, Space, Spin } from 'antd';
+import { Button, message, Radio, Space, Spin, RadioChangeEvent } from 'antd';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import * as Viz from '@viz-js/viz';
 import { CheckOutlined, CodeOutlined } from '@ant-design/icons';
@@ -216,7 +216,8 @@ interface ApplyChangesButtonProps {
     enabled: boolean;
 }
 
-type DisplayMode = 'raw' | 'pretty';
+export const DisplayModes = ['raw', 'pretty'] as const;
+export type DisplayMode = typeof DisplayModes[number];
 export interface DiffViewProps {
     diff: string;
     viewType: 'split' | 'unified';
@@ -241,11 +242,17 @@ const DiffControls = memo(({
     onViewTypeChange,
     onLineNumbersChange
 }: DiffControlsProps) => {
+    const handleDisplayModeChange = (e: RadioChangeEvent) => {
+	const newMode = e.target.value as DisplayMode;
+        onDisplayModeChange(newMode);
+    };
+
     return (
-        <div className="diff-view-controls" style={{
+	<div className="diff-view-controls" style={{
             display: 'flex',
             justifyContent: 'space-between',
-            alignItems: 'center'
+            alignItems: 'center',
+            width: '100%'
         }}>
             <div>
                 {displayMode === 'pretty' && (
@@ -253,21 +260,14 @@ const DiffControls = memo(({
                         <Radio.Group
                             value={viewType}
                             buttonStyle="solid"
-                            onChange={(e) => {
-				window.diffViewType = e.target.value;
-                                // Debug verification
-                                console.log('Updated view type:', {
-                                    newValue: e.target.value,
-                                    windowSetting: window.diffViewType
-                                });
-		                onViewTypeChange(e.target.value);
-				console.log('Split/Unified button clicked:', e.target.value);
-			    }}
+                            onChange={e => {
+                                window.diffViewType = e.target.value;
+                                onViewTypeChange(e.target.value);
+                            }}
                         >
                             <Radio.Button value="unified">Unified View</Radio.Button>
                             <Radio.Button value="split">Split View</Radio.Button>
                         </Radio.Group>
-
                         <Radio.Group
                             value={showLineNumbers}
                             buttonStyle="solid"
@@ -279,17 +279,15 @@ const DiffControls = memo(({
                     </Space>
                 )}
             </div>
-            <div>
-                <Radio.Group
-                    value={displayMode}
-                    buttonStyle="solid"
-                    onChange={(e) =>  window.diffDisplayMode = e.target.value}
-                >
+            <Radio.Group
+                value={displayMode}
+                buttonStyle="solid"
+                onChange={handleDisplayModeChange}
+            >
                 <Radio.Button value="pretty">Pretty</Radio.Button>
                 <Radio.Button value="raw">Raw</Radio.Button>
-                </Radio.Group>
-            </div>
-        </div>
+            </Radio.Group>
+           </div>
     );
 });
 
@@ -545,20 +543,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         }
     }, [parsedFiles]);
 
-    // Handle raw mode
-    if (displayMode === 'raw') {
-        return (
-            <pre className="diff-raw-block" style={{
-                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                color: isDarkMode ? '#e6e6e6' : 'inherit',
-                padding: '10px',
-                borderRadius: '4px'
-            }}>
-                <code>{diff}</code>
-            </pre>
-        );
-    }
-
     const renderHunks = (hunks: any[], filePath: string) => {
         const tableClassName = `diff-table ${viewType === 'split' ? 'diff-split' : ''}`;
 
@@ -813,7 +797,7 @@ interface DiffViewWrapperProps {
 const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeApply, index }) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
-    const [displayMode, setDisplayMode] = useState<'raw' | 'pretty'>(window.diffDisplayMode || 'pretty');
+    const [displayMode, setDisplayMode] = useState<DisplayMode>('pretty');
 
     // Ensure window settings are synced with initial state
     useEffect(() => {
@@ -841,15 +825,23 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
                 onViewTypeChange={setViewType}
                 onLineNumbersChange={setShowLineNumbers}
             />
-            <div className="diff-container" id={`diff-view-${index || 0}`}>
-                <DiffView
-                    diff={token.text}
-                    viewType={viewType}
-                    initialDisplayMode={displayMode}
-                    showLineNumbers={showLineNumbers}
-            />
+	    <div className="diff-container" id={`diff-view-${index || 0}`}>
+		{(displayMode as DisplayMode) === 'raw' ? (
+                    <pre className="diff-raw-block" style={{
+                        padding: '16px'
+                    }}>
+                        <code>{token.text}</code>
+                    </pre>
+                ) : (
+                    <DiffView
+                        diff={token.text}
+                        viewType={viewType}
+                        initialDisplayMode={displayMode}
+                        showLineNumbers={showLineNumbers}
+                    />
+                )}
             </div>
-        </div>
+	</div>
     );
 };
 
