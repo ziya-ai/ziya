@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useCallback} from 'react';
 import {List, Button, Input, message} from 'antd';
 import {DeleteOutlined, EditOutlined, DownloadOutlined, UploadOutlined} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
@@ -12,9 +12,25 @@ export const ChatHistory: React.FC = () => {
         setMessages,
         currentConversationId,
         setConversations,
+	isLoadingConversation,
+	loadConversation,
     } = useChatContext();
     const {isDarkMode} = useTheme();
     const [editingId, setEditingId] = useState<string | null>(null);
+
+    const handleConversationClick = useCallback(async (conversationId: string) => {
+        const selectedConversation = conversations.find(conv => conv.id === conversationId);
+        if (selectedConversation && conversationId !== currentConversationId) {
+            setCurrentConversationId(conversationId);
+
+            // Use requestAnimationFrame to ensure the UI updates before heavy processing
+            requestAnimationFrame(() => {
+                // Break up the message setting into chunks if there are many messages
+                const messages = selectedConversation.messages;
+                setMessages(messages);
+            });
+        }
+    }, [conversations, currentConversationId, setCurrentConversationId, setMessages]);
 
         const exportConversations = async () => {
         try {
@@ -55,15 +71,6 @@ export const ChatHistory: React.FC = () => {
         }
         // Reset the input
         event.target.value = '';
-    };
-
-
-    const handleConversationClick = (conversationId: string) => {
-        const selectedConversation = conversations.find(conv => conv.id === conversationId);
-        if (selectedConversation) {
-            setCurrentConversationId(conversationId);
-            setMessages(selectedConversation.messages);
-        }
     };
 
     const handleEditClick = (e: React.MouseEvent, conversationId: string) => {
@@ -107,20 +114,22 @@ export const ChatHistory: React.FC = () => {
             renderItem={(conversation) => (
                 <List.Item
                     key={conversation.id}
-                    onClick={() => handleConversationClick(conversation.id)}
+                    onClick={isLoadingConversation ? undefined : () => loadConversation(conversation.id)} 
                     style={{
                         cursor: 'pointer',
                         backgroundColor: conversation.id === currentConversationId
                             ? (isDarkMode ? '#177ddc' : '#e6f7ff')
                             : 'transparent',
                         color: conversation.id === currentConversationId && isDarkMode ? '#ffffff' : undefined,
+			opacity: isLoadingConversation ? 0.5 : 1,
                         padding: '8px',
                         borderRadius: '4px',
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'flex-start',
                         width: '100%',
-			boxSizing: 'border-box'
+			boxSizing: 'border-box',
+			pointerEvents: isLoadingConversation ? 'none' : 'auto'
                     }}
                 >
                     {editingId === conversation.id ? (

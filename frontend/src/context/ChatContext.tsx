@@ -13,6 +13,8 @@ interface ChatContext {
     isStreaming: boolean;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
     conversations: Conversation[];
+    loadConversation: (conversationId: string) => Promise<void>;
+    isLoadingConversation: boolean;
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
     currentConversationId: string;
     setCurrentConversationId: Dispatch<SetStateAction<string>>;
@@ -53,6 +55,7 @@ export function ChatProvider({children}: ChatProviderProps) {
     const [streamedContent, setStreamedContent] = useState('');
     const [isStreaming, setIsStreaming] = useState(false);
     const [conversations, setConversations] = useState<Conversation[]>([]);
+    const [isLoadingConversation, setIsLoadingConversation] = useState(false);
     const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
     const [isTopToBottom, setIsTopToBottom] = useState<boolean>(false);
     const [isInitialized, setIsInitialized] = useState(false);
@@ -128,6 +131,29 @@ export function ChatProvider({children}: ChatProviderProps) {
 	scrollToBottom();
     };
 
+    const loadConversation = useCallback(async (conversationId: string) => {
+        const selectedConversation = conversations.find(conv => conv.id === conversationId);
+        if (selectedConversation && conversationId !== currentConversationId) {
+            console.log('setting loading state to true');
+            setIsLoadingConversation(true);
+	    try {
+                // Clear current messages first to reduce unmounting overhead
+                setMessages([]);
+
+                // Small delay to ensure loading state is visible
+                await new Promise(resolve => setTimeout(resolve, 50));
+
+                // Update conversation ID and messages
+                setCurrentConversationId(conversationId);
+                setMessages(selectedConversation.messages);
+            } catch (error) {
+                console.error('Error loading conversation:', error);
+            } finally {
+                setIsLoadingConversation(false);
+            }
+        }
+    }, [conversations, currentConversationId, setMessages]);
+
     const startNewChat = () => {
 	// Update last accessed timestamp for the current conversation
         setConversations(prevConversations =>
@@ -180,9 +206,11 @@ export function ChatProvider({children}: ChatProviderProps) {
         isStreaming,
         setIsStreaming,
         conversations,
+	isLoadingConversation,
         setConversations,
         currentConversationId,
 	isTopToBottom,
+	loadConversation,
         setIsTopToBottom,
 	scrollToBottom,
         setCurrentConversationId,

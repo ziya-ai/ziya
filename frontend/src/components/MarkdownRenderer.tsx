@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo, Suspense } from 'react';
+import React, { useState, useEffect, memo, Suspense, useCallback } from 'react';
 import { parseDiff, Diff, Hunk, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
