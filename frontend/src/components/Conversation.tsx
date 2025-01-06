@@ -1,4 +1,4 @@
-import React, { Suspense, useMemo } from "react";
+import React, { Suspense, useMemo, useEffect, useRef } from "react";
 import { Spin } from 'antd';
 import {EditSection} from "./EditSection";
 import {RetrySection} from "./RetrySection";
@@ -16,6 +16,33 @@ const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
     // In top-to-bottom mode, show messages in chronological order
     // In bottom-to-top mode, show messages in reverse chronological order
     const displayMessages = isTopToBottom ? messages : messages.slice().reverse();
+
+    // Keep track of rendered messages for performance monitoring
+    const renderedCountRef = useRef(0);
+
+    useEffect(() => {
+        if (messages.length !== renderedCountRef.current) {
+            renderedCountRef.current = messages.length;
+            console.log(`Rendered ${messages.length} messages`);
+        }
+    }, [messages.length]);
+
+    // Loading indicator text based on progress
+    const loadingText = useMemo(() => {
+        if (!isLoadingConversation) return '';
+
+        const progress = messages.length > 0
+            ? `Loading messages (${messages.length} loaded)...`
+            : 'Loading conversation...';
+
+        return progress;
+    }, [isLoadingConversation, messages.length]);
+
+    // Progressive loading indicator
+    const showProgressiveLoading = isLoadingConversation && messages.length > 0;
+
+    // Track whether we're in the initial loading state
+    const isInitialLoading = isLoadingConversation && messages.length === 0;
 
     // Memoize the message content to prevent unnecessary re-renders
     const messageContent = useMemo(() => (
@@ -48,7 +75,7 @@ const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
 
     return (
 	<div style={{ position: 'relative' }}>
-            {isLoadingConversation && (
+	    {isInitialLoading && (
 		<div style={{
                     position: 'fixed',
                     top: 'var(--header-height)',
@@ -61,10 +88,28 @@ const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
                     alignItems: 'center',
 		    zIndex: 1000
                 }}>
-		    <Spin size="large" tip="Loading..." />
+		    <Spin size="large" tip={loadingText} />
                 </div>
             )}
             <div style={{ opacity: isLoadingConversation ? 0.5 : 1 }}>
+	        {showProgressiveLoading && (
+                    <div style={{
+                        position: 'sticky',
+                        top: 0,
+                        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                        color: '#fff',
+                        padding: '8px 16px',
+                        borderRadius: '4px',
+                        margin: '8px 0',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        zIndex: 1000
+                    }}>
+                        <Spin size="small" />
+                        <span>{loadingText}</span>
+                    </div>
+                )}
                 {messageContent}
             </div>
         </div>

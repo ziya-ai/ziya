@@ -196,6 +196,18 @@ body.dark {
   overflow: visible;
 }
 
+.progressive-loading {
+  background-color: rgba(255, 255, 255, 0.9);
+  color: #000;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(4px);
+}
+
+.dark .progressive-loading {
+  background-color: rgba(0, 0, 0, 0.8);
+  color: #fff;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;

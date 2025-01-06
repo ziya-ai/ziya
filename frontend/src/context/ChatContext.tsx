@@ -131,6 +131,30 @@ export function ChatProvider({children}: ChatProviderProps) {
 	scrollToBottom();
     };
 
+    // helper - laod chunks instead of full for faster loading
+    const loadMessagesInChunks = useCallback((messages: Message[], chunkSize: number = 10) => {
+        let currentChunk = 0;
+        const totalChunks = Math.ceil(messages.length / chunkSize);
+
+        const loadNextChunk = () => {
+            if (currentChunk >= totalChunks) {
+                setIsLoadingConversation(false);
+                return;
+            }
+
+            const start = currentChunk * chunkSize;
+            const end = Math.min(start + chunkSize, messages.length);
+
+            setMessages(prevMessages => [...prevMessages, ...messages.slice(start, end)]);
+            currentChunk++;
+
+            // Schedule next chunk with requestAnimationFrame to keep UI responsive
+            requestAnimationFrame(loadNextChunk);
+        };
+
+        return loadNextChunk;
+    }, []);
+
     const loadConversation = useCallback(async (conversationId: string) => {
         const selectedConversation = conversations.find(conv => conv.id === conversationId);
         if (selectedConversation && conversationId !== currentConversationId) {
@@ -140,19 +164,20 @@ export function ChatProvider({children}: ChatProviderProps) {
                 // Clear current messages first to reduce unmounting overhead
                 setMessages([]);
 
-                // Small delay to ensure loading state is visible
+		setCurrentConversationId(conversationId);
                 await new Promise(resolve => setTimeout(resolve, 50));
 
-                // Update conversation ID and messages
-                setCurrentConversationId(conversationId);
-                setMessages(selectedConversation.messages);
+		// Start loading messages in chunks
+                const loadChunks = loadMessagesInChunks(selectedConversation.messages);
+                loadChunks();
             } catch (error) {
                 console.error('Error loading conversation:', error);
+		setIsLoadingConversation(false);
             } finally {
                 setIsLoadingConversation(false);
             }
         }
-    }, [conversations, currentConversationId, setMessages]);
+    }, [conversations, currentConversationId, loadMessagesInChunks]);
 
     const startNewChat = () => {
 	// Update last accessed timestamp for the current conversation
