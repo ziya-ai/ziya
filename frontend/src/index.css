@@ -219,7 +219,7 @@ body.dark {
 
 @keyframes pulse {
   0% {
-    transform: scale(1);
+    transform: scale(0.8);
     opacity: 1;
   }
   50% {
@@ -227,7 +227,7 @@ body.dark {
     opacity: 0.7;
   }
   100% {
-    transform: scale(1);
+    transform: scale(0.8);
     opacity: 1;
   }
 }
@@ -236,6 +236,13 @@ body.dark {
   100% {
     transform: rotate(360deg);
   }
+}
+
+@keyframes shake {
+  10%, 90% { transform: translate3d(-1px, 0, 0); }
+  20%, 80% { transform: translate3d(2px, 0, 0); }
+  30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+  40%, 60% { transform: translate3d(4px, 0, 0); }
 }
 
 .loading-icon {
@@ -919,4 +926,109 @@ span.token-count-total.red { color: #f5222d; }
     background-color: #1f1f1f;
     color: #e6e6e6;
     border-color: #30363d;
+}
+
+/* Token with invisibles styling */
+.token-with-invisibles {
+    display: inline-block;
+    border-radius: 2px;
+    padding: 0 2px;
+    margin: 0 1px;
+    font-weight: bold;
+}
+
+/* Whitespace characters base styles */
+.token-with-invisibles .token.space::before,
+.token-with-invisibles .token.tab::before,
+.token-with-invisibles .token.cr::before {
+    display: inline-block;
+    opacity: 1 !important;
+    font-weight: bold;
+    text-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+/* Space visualization */
+.token-with-invisibles .token.space::before {
+    content: '␣';
+}
+
+/* Line ending visualization */
+.token-with-invisibles .token.cr::before {
+    content: '↵';
+}
+
+/* Added whitespace */
+.token-with-invisibles.ws-add {
+    background-color: rgba(46, 160, 67, 0.4);
+    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.8);
+}
+
+.token-with-invisibles.ws-add .token::before {
+    color: #28a745;
+}
+
+/* Deleted whitespace */
+.token-with-invisibles.ws-delete {
+    background-color: rgba(248, 81, 73, 0.4);
+    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.8); 
+}
+
+.token-with-invisibles.ws-delete .token::before {
+    color: #cb2431;
+}
+
+/* Dark theme adjustments */
+.dark .token-with-invisibles {
+    box-shadow: 0 0 0 1px #2f3437;
+}
+
+.dark .token-with-invisibles.ws-add {
+    background-color: rgba(46, 160, 67, 0.4);
+    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.8);
+    color: #3fb950;
+}
+
+.dark .token-with-invisibles.ws-add .token::before {
+    color: #3fb950;
+}
+
+.dark .token-with-invisibles.ws-delete {
+    background-color: rgba(248, 81, 73, 0.4);
+    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.8);
+    color: #ff6b6b;
+}
+
+.dark .token-with-invisibles.ws-delete .token::before {
+    color: #f85149;
+}
+
+/* Ensure whitespace tokens don't collapse */
+.token.space, .token.tab, .token.cr {
+    display: inline-block;
+}
+
+/* Make whitespace more visible in add/remove lines */
+.diff-line-insert .token-with-invisibles,
+.diff-line-delete .token-with-invisibles {
+    background: rgba(255, 100, 100, 0.15);
+    border-radius: 2px;
+}
+
+/* Error states */
+.stream-error {
+  margin: 16px 0;
+  padding: 12px;
+  border-radius: 4px;
+  background-color: #fff2f0;
+  border: 1px solid #ffccc7;
+}
+
+.dark .stream-error {
+  background-color: #2a1f1f;
+  border-color: #a61d24;
+  color: #ff7875;
+}
+
+.loading-indicator.error {
+  color: #ff4d4f;
 }
