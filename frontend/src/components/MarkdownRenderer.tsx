@@ -430,12 +430,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [parseError, setParseError] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>(initialDisplayMode as DisplayMode);
 
-    // Add debugging for view type changes
-    useEffect(() => {
-        console.log('View type changed to:', viewType);
-        console.log('Current DOM structure:', document.querySelector('.diff-container')?.outerHTML);
-    }, [viewType]);
-
     // detect language from file path
     const detectLanguage = (filePath: string): string => {
         if (!filePath) return 'plaintext';
@@ -541,7 +535,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 } else {
                     // Try with the detected language
                     setTokenizedHunks(null);
-                    console.log('After loading:', document.querySelector('.diff-view')?.innerHTML);
                 }
             } catch (error) {
                 console.warn(`Error during tokenization for ${language}:`, error);
@@ -560,20 +553,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const renderHunks = (hunks: any[], filePath: string) => {
         const tableClassName = `diff-table ${viewType === 'split' ? 'diff-split' : ''}`;
 
-        console.log('Creating table with class:', tableClassName, 'viewType:', viewType);
-
 	if (viewType === 'split') {
-            console.group('Split View Debug');
-            console.log('View type:', viewType);
             const table = document.querySelector('.diff-table.diff-split');
-            if (table) {
-                console.log('Table structure:', {
-                    width: getComputedStyle(table).width,
-                    cols: table.querySelectorAll('colgroup col').length,
-                    firstRowCells: table.querySelector('tr')?.children.length
-                });
-            }
-            console.groupEnd();
         }
 
 	/*
@@ -714,8 +695,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     };
 
     const currentTheme = isDarkMode ? darkModeStyles : lightModeStyles;
-    console.log('DiffView rendering with:', { viewType, displayMode, showLineNumbers });
-
     return <>{parsedFiles.map((file, fileIndex) => {
       return (  
         <div
@@ -818,11 +797,6 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
         if (window.diffViewType !== viewType) {
             window.diffViewType = viewType;
         }
-        console.log('Initial view settings:', { viewType, windowViewType: window.diffViewType });
-	console.debug('DiffViewWrapper mounted with token:', {
-	            text: token.text.substring(0, 100),
-	            lang: token.lang
-        });
     }, [token]);
 
     if (!hasText(token)) {

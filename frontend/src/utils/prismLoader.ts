@@ -1,4 +1,5 @@
 import 'prismjs/themes/prism.css';
+import 'prismjs/plugins/show-invisibles/prism-show-invisibles';
  
 // Track loaded languages to avoid duplicate loading
 const loadedLanguages = new Set<string>();

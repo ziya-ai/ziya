@@ -1014,6 +1014,36 @@ span.token-count-total.red { color: #f5222d; }
     border-radius: 2px;
 }
 
+/* Whitespace visualization */
+.ws-marker {
+    position: relative;
+    display: inline-block;
+    font-weight: bold;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+/* Make the actual whitespace available for copy but invisible */
+.ws-marker::after {
+    content: attr(data-content);
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    user-select: text;
+}
+
+/* Added whitespace */
+.ws-marker.ws-add {
+    color: #28a745;
+    background: rgba(46, 160, 67, 0.2);
+}
+
+/* Deleted whitespace */
+.ws-marker.ws-delete {
+    color: #cb2431;
+    background: rgba(248, 81, 73, 0.2);
+}
+
 /* Error states */
 .stream-error {
   margin: 16px 0;

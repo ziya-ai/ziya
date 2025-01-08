@@ -30,14 +30,38 @@ const normalizeCompare = (line: string | null | undefined): string => {
     return content;
 }
 
+const visualizeWhitespace = (text: string, changeType: 'ws-add' | 'ws-delete'): string => {
+    // Look for trailing whitespace only
+    const match = text.match(/[\s\t]+$/);
+    if (!match) return text;
+
+    const trailingWs = match[0];
+    const baseText = text.slice(0, -trailingWs.length);
+
+    // Convert each whitespace char to a span with visual marker
+    const wrappedWs = trailingWs
+        .split('')
+        .map(c => {
+            if (c === ' ') {
+                return `<span class="ws-marker ${changeType}" data-content=" ">␣</span>`;
+            }
+            if (c === '\t') {
+                return `<span class="ws-marker ${changeType}" data-content="\t">→</span>`;
+            }
+            return c;
+        })
+        .join('');
+
+    // Return the base text plus wrapped whitespace
+    return baseText + wrappedWs;
+}
+
 const compareLines = (line1: string, line2: string): boolean => {
     if (!line1?.trim() || !line2?.trim()) return false;
 
     // Normalize both lines
     const content1 = normalizeCompare(line1 || '');
     const content2 = normalizeCompare(line2 || '');
-
-    console.log('Normalized contents:', { content1, content2 });
 
     // If the lines are identical after normalization, they're not whitespace-only different
     if (content1 === content2) return false;
@@ -50,8 +74,6 @@ const compareLines = (line1: string, line2: string): boolean => {
     // Remove all whitespace and compare
     const stripped1 = content1.replace(/[\s\u00a0]+/g, '');
     const stripped2 = content2.replace(/[\s\u00a0]+/g, '');
-
-    console.log('Stripped contents:', { stripped1, stripped2 });
 
     // If they're not identical after removing all whitespace, it's not a whitespace-only change
     if (stripped1 !== stripped2) {
@@ -90,31 +112,17 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 }
 
                 // Highlight the code with Prism
-                console.log('Tokenization attempt:', {
-                    language,
-                    grammar: window.Prism.languages[language],
-                    fallbackGrammar: window.Prism.languages.plaintext
-                });
                 const grammar = window.Prism.languages[language] || window.Prism.languages.plaintext;
                 const highlightedCode = window.Prism.highlight(code, grammar, language);
 
                 // Check for whitespace-only differences in insert/delete lines
                 if (type === 'insert' || type === 'delete') {
-                    console.log(`Checking whitespace diff for ${type} line:`, {
-                        content,
-			oldLineNumber: oldLineNumber || 1,
-                        newLineNumber: newLineNumber || 1
-                    });
 
 		    // For insert lines, look for matching delete lines and vice versa
                     const matchLineNumber = type === 'insert' ? oldLineNumber || 1 : newLineNumber || 1;
                     const otherType = type === 'insert' ? 'delete' : 'insert';
 		    const selector = `.diff-line-${otherType}[data-line="${matchLineNumber}"]`;
-                    console.log('Looking for matching line with selector:', selector, 
-				'Current line type:', type, 'Match line number:', matchLineNumber);
-
                     const otherLineElement = document.querySelector(selector);
-                    console.log('Found element:', otherLineElement);
 
                     if (otherLineElement instanceof HTMLElement) {
                         // Extract content from the div.diff-line-content inside the td
@@ -130,39 +138,24 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                         }
 
                         if (!otherContent) {
-                            console.log('No content found in matching line');
                             return;
                         }
 
-                        console.log('Extracted content:', { otherContent });
                         const isWhitespaceDiff = compareLines(content, otherContent);
-                        console.log('Whitespace comparison:', {
-                            thisLine: content,
-                            otherLine: otherContent,
-                            isWhitespaceDiff
-                        });
 
                         // If we found a whitespace-only difference, highlight it
                         if (isWhitespaceDiff) {
-                            console.log('Applying whitespace highlighting');
                             const changeType = type === 'insert' ? 'ws-add' : 'ws-delete';
 
-			     // Just highlight trailing whitespace for now
+                            // Just highlight trailing whitespace for now
                             const match = code.match(/\s+$/);
                             if (match) {
                                 const index = match.index!;
                                 const ws = match[0];
 
-                                // Split into content and trailing whitespace
                                 const beforeWs = code.slice(0, index);
-                                const highlightedWs = `<span class="token-with-invisibles ${changeType}">${
-                                    ws.replace(/ /g, '␣')
-                                      .replace(/\t/g, '→')
-                                      .replace(/\n/g, '↵')
-                                }</span>`;
-
-                                // Combine with marker
-                                setHighlighted(marker + beforeWs + highlightedWs);
+				const visualizedCode = visualizeWhitespace(code, changeType);
+                                setHighlighted(marker + visualizedCode);
                                 return;
                             }
 
@@ -171,7 +164,6 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                                 marker + highlightedCode
                             );
 
-                            console.log('Applied whitespace highlighting to specific parts');
                             return;
                         }
                     }
