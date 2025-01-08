@@ -4,6 +4,7 @@ import {sendPayload} from "../apis/chatApi";
 import {useFolderContext} from "../context/FolderContext";
 import {Message} from "../utils/types";
 import {Button, Tooltip, Input, Space} from "antd";
+import { convertKeysToStrings } from '../utils/types';
 import {EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined} from "@ant-design/icons";
 
 interface EditSectionProps {
@@ -14,7 +15,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
     const {messages, setMessages, setStreamedContent, setIsStreaming} = useChatContext();
     const [isEditing, setIsEditing] = useState(false);
     const [editedMessage, setEditedMessage] = useState(messages[index].content);
-    const {checkedKeys} = useFolderContext()
+    const {checkedKeys} = useFolderContext();
     const {TextArea} = Input;
     const handleEdit = () => {
         setIsEditing(true);
@@ -44,7 +45,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
         const updatedMessages: Message[] = [...messages.slice(0, index), {content: editedMessage, role: 'human'}];
         setMessages(updatedMessages);
         setIsStreaming(true);
-        await sendPayload(updatedMessages, editedMessage, setStreamedContent, setIsStreaming, checkedKeys);
+	await sendPayload(updatedMessages, editedMessage, setStreamedContent, setIsStreaming, convertKeysToStrings(checkedKeys));
         setIsStreaming(false);
         setStreamedContent((content) => {
             setMessages((prevMessages) => [...prevMessages, {content, role: 'assistant'}]);

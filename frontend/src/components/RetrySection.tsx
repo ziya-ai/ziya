@@ -3,6 +3,7 @@ import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {useFolderContext} from "../context/FolderContext";
 import {Button, Tooltip} from "antd";
+import { convertKeysToStrings } from '../utils/types';
 import {RedoOutlined} from "@ant-design/icons";
 
 interface RetrySectionProps {
@@ -19,7 +20,7 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
         setMessages(updatedMessages);
         setIsStreaming(true);
         setStreamedContent('');
-        await sendPayload(updatedMessages, lastHumanMessage.content, setStreamedContent, setIsStreaming, checkedKeys);
+	await sendPayload(updatedMessages, lastHumanMessage.content, setStreamedContent, setIsStreaming, convertKeysToStrings(checkedKeys));
         setIsStreaming(false);
         setStreamedContent((content) => {
             setMessages((prevMessages) => [...prevMessages, {content, role: 'assistant'}]);

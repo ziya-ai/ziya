@@ -1,3 +1,5 @@
+import { Key } from 'react';
+
 export interface Folders {
     [key: string]: {
         token_count: number;
@@ -16,6 +18,10 @@ export interface Conversation {
     messages: Message[];
     lastAccessedAt: number;
 }
+
+export const convertKeysToStrings = (keys: Key[]): string[] => {
+    return keys.map(key => String(key));
+};
 
 declare global {
     interface Window { 
