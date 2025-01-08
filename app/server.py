@@ -1,11 +1,12 @@
 import os
 import time
+import asyncio
 from typing import Dict, Any, List, Tuple, Optional
 
 import tiktoken
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
@@ -15,7 +16,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
 
-
+from botocore.exceptions import EventStreamError
+from sse_starlette.sse import EventSourceResponse
 # import pydevd_pycharm
 import uvicorn
 
@@ -41,6 +43,11 @@ async def credential_exception_handler(request: Request, exc: CredentialRetrieva
     error_message = str(exc)
     return JSONResponse(
         status_code=401,
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        },
         content={"detail": f"AWS credential error: {error_message}"}
     )
 
@@ -51,6 +58,11 @@ async def boto_client_exception_handler(request: Request, exc: ClientError):
     if "ExpiredTokenException" in error_message or "InvalidIdentityTokenException" in error_message:
         return JSONResponse(
             status_code=401,
+            headers={
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0'
+            },
             content={"detail": "AWS credentials have expired. Please refresh your credentials."}
         )
     elif "ServiceUnavailableException" in error_message:
@@ -63,10 +75,80 @@ async def boto_client_exception_handler(request: Request, exc: ClientError):
         content={"detail": f"AWS Service Error: {str(exc)}"}
     )
 
+@app.exception_handler(EventStreamError)
+async def event_stream_exception_handler(request: Request, exc: EventStreamError):
+    if "modelStreamErrorException" in str(exc):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "The model service is temporarily unavailable. Please try your request again in a few moments."}
+        )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"AWS Service Error: {str(exc)}"}
+    )
+
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
     return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+@app.exception_handler(asyncio.CancelledError)
+async def cancelled_error_handler(request: Request, exc: asyncio.CancelledError):
+    """Handle client disconnections gracefully"""
+    logger.info("Client disconnected, cleaning up...")
+    # Add headers to prevent caching of error responses
+    headers = {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Connection': 'close'  # Explicitly close connection
+    }
+    return JSONResponse(
+        status_code=499,  # Client Closed Request
+        content={"detail": "Client disconnected"}
+    )
+
+class SafeEventSourceResponse(EventSourceResponse):
+    async def listen_for_disconnect(self, receive):
+        try:
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    logger.info("Client disconnected, stopping stream")
+                    break
+        except asyncio.CancelledError:
+            logger.info("Stream cancelled by client")
+        finally:
+            self.should_end_stream = True
+
+async def stream_with_error_handling(iterator):
+    """
+    Wrapper for streaming responses that handles errors gracefully.
+    """
+    try:
+        async for item in iterator:
+            yield item
+    except EventStreamError as e:
+        error_message = str(e)
+        if "modelStreamErrorException" in error_message:
+            error_data = {
+                "detail": "The model service is temporarily unavailable. Please try your request again in a few moments."
+            }
+        else:
+            error_data = {"detail": f"AWS Service Error: {error_message}"}
+        yield {"data": json.dumps(error_data), "event": "error"}
+    except asyncio.CancelledError:
+        logger.info("Client disconnected, stopping stream")
+        yield {
+            "data": json.dumps({
+                "detail": "Stream cancelled by client"
+            }),
+            "event": "cancelled"
+        }
+    except Exception as e:
+        logger.error(f"Error in stream: {str(e)}", exc_info=True)
+        yield {"data": json.dumps({"detail": str(e)}), "event": "error"}
+
 
 app.mount("/static", StaticFiles(directory="../templates/static"), name="static")
 templates = Jinja2Templates(directory="../templates")
@@ -74,6 +156,19 @@ templates = Jinja2Templates(directory="../templates")
 # Add a route for the frontend
 add_routes(app, agent_executor, disabled_endpoints=["playground"], path="/ziya")
 
+# Override the /stream_log endpoint to use our error handling
+@app.post("/ziya/stream_log")
+async def stream_log(request: Request):
+    body = await request.json()
+
+    # Get the original iterator from the agent executor
+    original_iterator = agent_executor.stream_log(
+        input=body.get("input", {}),
+        config=body.get("config", {}),
+    )
+
+    # Wrap it with our error handling
+    return SafeEventSourceResponse(stream_with_error_handling(original_iterator))
 
 @app.get("/")
 async def root(request: Request):
