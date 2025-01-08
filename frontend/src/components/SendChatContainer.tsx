@@ -1,8 +1,8 @@
 import React, {useEffect, useRef, memo, useCallback, useMemo, SetStateAction} from "react";
 import {useChatContext} from '../context/ChatContext';
-import {sendPayload} from "../apis/chatApi";
+import {sendPayload, SetStreamedContentFunction} from "../apis/chatApi";
 import {useFolderContext} from "../context/FolderContext";
-import {Button, Input} from 'antd';
+import {Button, Input, message} from 'antd';
 import {SendOutlined} from "@ant-design/icons";
 import debounce from 'lodash/debounce';
 
@@ -24,6 +24,7 @@ export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, 
         messages,
         addMessageToCurrentConversation,
         setStreamedContent,
+	streamedContent,
 	scrollToBottom,
 	isTopToBottom
     } = useChatContext();
@@ -48,13 +49,14 @@ export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, 
         return () => {
             if (handleChange) {
                 (handleChange as any).cancel?.();
-            }
+            } 
         };
     }, [handleChange]);
 
     const handleSendPayload = async () => {
         setQuestion('');
         setIsStreaming(true);
+
         const newHumanMessage = {content: question, role: 'human' as 'human'};
         addMessageToCurrentConversation(newHumanMessage);
 
@@ -73,14 +75,48 @@ export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, 
             }
         }
 
+    try {
+        let finalContent = '';
+        
+        const updateStreamedContent: SetStreamedContentFunction = (updater) => {
+            if (typeof updater === 'function') {
+                const newContent = updater(finalContent);
+                finalContent = newContent;
+                setStreamedContent(newContent);
+            } else {
+                finalContent = updater;
+                setStreamedContent(updater);
+            }
+            return finalContent;
+        };
+
+        await sendPayload(
+            [...messages, newHumanMessage],
+            question,
+            updateStreamedContent,
+            setIsStreaming,
+            checkedKeys.map(key => String(key))
+        );
+
+        // Clear streamed content before saving the final message
         setStreamedContent('');
-        await sendPayload([...messages, newHumanMessage], question, setStreamedContent, setIsStreaming, checkedKeys);
-        setStreamedContent((cont) => {
-            const newAIMessage = {content: cont, role: 'assistant' as 'assistant'};
+
+        // Save the complete message
+        if (finalContent) {
+            const newAIMessage = {content: finalContent, role: 'assistant' as 'assistant'};
             addMessageToCurrentConversation(newAIMessage);
-            return "";
+            console.log('Message saved:', {
+                contentLength: finalContent.length,
+                messageCount: messages.length + 1
+            });
+        }
+    } catch (error) {
+        console.error('Error sending message:', error);
+        message.error({
+            content: 'Failed to send message. Please try again.',
+            duration: 5
         });
-        setIsStreaming(false);
+    }
     };
 
     return (

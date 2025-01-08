@@ -102,29 +102,58 @@ export function ChatProvider({children}: ChatProviderProps) {
     };
 
     const addMessageToCurrentConversation = (message: Message) => {
+	console.log('Adding message:', {
+            conversationId: currentConversationId,
+	    messageContent: message.content.substring(0, 100),
+            messageType: message.role,
+            currentMessageCount: messages.length
+        });
         const cleanedMessage = cleanMessage(message);
         if (!cleanedMessage) {
             console.warn('Attempted to add invalid message:', message);
             return;
         }
-        setMessages(prevMessages => [...prevMessages, message]);
+	// Update messages state
+        setMessages(prevMessages => {
+            const updatedMessages = [...prevMessages, message];
+	    console.log('Message state update:', {
+                prevMessageCount: prevMessages.length,
+                newMessageCount: updatedMessages.length,
+                lastMessage: message.content.substring(0, 100),
+                role: message.role,
+                conversationId: currentConversationId
+            });
+            return updatedMessages;
+        });
+
+        // Update conversations state
         setConversations(prevConversations => {
             const existingConversationIndex = prevConversations.findIndex(conv => conv.id === currentConversationId);
             if (existingConversationIndex !== -1) {
                 // Update existing conversation
                 const updatedConversations = [...prevConversations];
+		console.log('Updating existing conversation:', {
+                    id: currentConversationId,
+                    messageCount: updatedConversations[existingConversationIndex].messages.length
+                });
                 updatedConversations[existingConversationIndex] = {
                     ...updatedConversations[existingConversationIndex],
-                    messages: [...updatedConversations[existingConversationIndex].messages, message]
+                    messages: [...updatedConversations[existingConversationIndex].messages, message],
+		    lastAccessedAt: Date.now()
                 };
                 return updatedConversations;
             } else {
                 // Create new conversation
+		console.log('Creating new conversation:', {
+                    id: currentConversationId,
+                    firstMessage: message.content.slice(0, 45)
+                });
                 return [...prevConversations, {
                     id: currentConversationId,
                     title: message.content.slice(0, 45),
                     messages: [message],
-		    lastAccessedAt: Date.now()
+		    lastAccessedAt: Date.now(),
+		    isActive: true
                 }];
             }
         });
@@ -158,18 +187,31 @@ export function ChatProvider({children}: ChatProviderProps) {
     const loadConversation = useCallback(async (conversationId: string) => {
         const selectedConversation = conversations.find(conv => conv.id === conversationId);
         if (selectedConversation && conversationId !== currentConversationId) {
+	    console.log('Loading conversation:', {
+                from: currentConversationId,
+                to: conversationId,
+                currentMessages: messages
+            });
             console.log('setting loading state to true');
             setIsLoadingConversation(true);
 	    try {
                 // Clear current messages first to reduce unmounting overhead
                 setMessages([]);
+		setStreamedContent(''); // Clear any existing streamed content
 
 		setCurrentConversationId(conversationId);
+		console.log('Conversation ID changed:', {
+                    old: currentConversationId,
+                    new: conversationId
+                });
                 await new Promise(resolve => setTimeout(resolve, 50));
 
 		// Start loading messages in chunks
                 const loadChunks = loadMessagesInChunks(selectedConversation.messages);
-                loadChunks();
+                console.log('Loading messages:', {
+                    count: selectedConversation.messages.length
+                });
+		loadChunks();
             } catch (error) {
                 console.error('Error loading conversation:', error);
 		setIsLoadingConversation(false);
@@ -179,18 +221,45 @@ export function ChatProvider({children}: ChatProviderProps) {
         }
     }, [conversations, currentConversationId, loadMessagesInChunks]);
 
+    // Synchronization effect to guarantee  messages are saved to conversations
+    useEffect(() => {
+        if (messages.length > 0) {
+            setConversations(prevConversations => {
+                const conversationIndex = prevConversations.findIndex(conv => conv.id === currentConversationId);
+                if (conversationIndex !== -1) {
+                    const updatedConversations = [...prevConversations];
+                    updatedConversations[conversationIndex] = {
+                        ...updatedConversations[conversationIndex],
+                        messages: messages,
+                        lastAccessedAt: Date.now()
+                    };
+                    return updatedConversations;
+                }
+                return prevConversations;
+            });
+        }
+    }, [messages, currentConversationId]);
+
     const startNewChat = () => {
 	// Update last accessed timestamp for the current conversation
         setConversations(prevConversations =>
-            prevConversations.map(conv =>
-                conv.id === currentConversationId
-                    ? {
+	    prevConversations.map(conv => {
+                if (conv.id === currentConversationId) {
+                    // Save current messages to the conversation before creating new chat
+                    return {
                         ...conv,
-                        lastAccessedAt: Date.now()
-                      }
-                    : conv
+                        messages: messages,  // Save current messages
+                        lastAccessedAt: Date.now(),
+                        isActive: false
+                    };
+                }
+                return conv;
+            }
             )
         );
+
+	// Clear current state for new chat
+	setStreamedContent(''); // Clear any existing streamed content
         setCurrentConversationId(uuidv4());
         setMessages([]);
     };
