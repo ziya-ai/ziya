@@ -17,13 +17,24 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
     const handleRetry = async () => {
         const updatedMessages = messages.slice(0, index);
         const lastHumanMessage = updatedMessages[updatedMessages.length - 1];
+	const originalMessage = messages[index];  // Get the original message we're retrying
+
         setMessages(updatedMessages);
         setIsStreaming(true);
         setStreamedContent('');
 	await sendPayload(updatedMessages, lastHumanMessage.content, setStreamedContent, setIsStreaming, convertKeysToStrings(checkedKeys));
         setIsStreaming(false);
         setStreamedContent((content) => {
-            setMessages((prevMessages) => [...prevMessages, {content, role: 'assistant'}]);
+	    setMessages((prevMessages) => [
+                ...prevMessages,
+                {
+                    content,
+                    role: 'assistant',
+                    // Preserve the original message's sequence and timestamp
+                    sequence: originalMessage.sequence,
+                    timestamp: originalMessage.timestamp
+                }
+            ]);
             return "";
         });
     };

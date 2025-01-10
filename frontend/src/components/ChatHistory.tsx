@@ -102,8 +102,8 @@ export const ChatHistory: React.FC = () => {
 
     // Sort conversations by lastAccessedAt
     const sortedConversations = [...conversations].sort((a, b) => {
-        const aTime = a.lastAccessedAt || 0;
-        const bTime = b.lastAccessedAt || 0;
+        const aTime = a.lastAccessedAt ?? 0;
+        const bTime = b.lastAccessedAt ?? 0;
         return bTime - aTime;
     });
 

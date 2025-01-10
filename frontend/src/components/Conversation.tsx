@@ -1,4 +1,4 @@
-import React, { Suspense, useMemo, useEffect, useRef } from "react";
+import React, { Suspense, useMemo, useEffect, useRef, memo, Component } from "react";
 import { Spin } from 'antd';
 import {EditSection} from "./EditSection";
 import {RetrySection} from "./RetrySection";
@@ -7,15 +7,53 @@ import {useChatContext} from '../context/ChatContext';
 // Lazy load the MarkdownRenderer
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
+class MessageErrorBoundary extends Component<{children: React.ReactNode}, {hasError: boolean}> {
+    constructor(props) {
+        super(props);
+        this.state = { hasError: false };
+    }
+
+    static getDerivedStateFromError(error) {
+        return { hasError: true };
+    }
+
+    componentDidCatch(error, errorInfo) {
+        console.error('Error rendering message:', error, errorInfo);
+    }
+
+    render() {
+        if (this.state.hasError) {
+            return (
+                <div className="message error">
+                    Error rendering message. Please try refreshing the page.
+                </div>
+            );
+        }
+        return this.props.children;
+    }
+}
+
 interface ConversationProps {
     enableCodeApply: boolean;
 }
 
-const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
+const Conversation: React.FC<ConversationProps> = memo (({ enableCodeApply }) => {
     const {messages, isTopToBottom, isLoadingConversation} = useChatContext();
     // In top-to-bottom mode, show messages in chronological order
     // In bottom-to-top mode, show messages in reverse chronological order
-    const displayMessages = isTopToBottom ? messages : messages.slice().reverse();
+
+    // Sort messages by sequence number to maintain strict ordering
+    const displayMessages = useMemo(() => {
+	const sorted = [...messages].sort((a, b) => {
+            // First compare by sequence
+            if (a.sequence !== b.sequence) {
+                return a.sequence - b.sequence;
+            }
+            // If sequences are equal, use timestamp as tiebreaker
+            return a.timestamp - b.timestamp;
+        });
+        return isTopToBottom ? sorted : sorted.reverse();
+    }, [messages, isTopToBottom]);
 
     // Keep track of rendered messages for performance monitoring
     const renderedCountRef = useRef(0);
@@ -110,10 +148,12 @@ const Conversation: React.FC<ConversationProps> = ({ enableCodeApply }) => {
                         <span>{loadingText}</span>
                     </div>
                 )}
-                {messageContent}
+		<div>
+                    {messageContent}
+		</div>
             </div>
         </div>
     );
-};
+});
 
 export default Conversation;

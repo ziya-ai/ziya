@@ -67,6 +67,7 @@ export const sendPayload = async (
             throw new Error('No valid messages to send');
         }
 
+	let finalContent = '';
 	setIsStreaming(true);
         let response = await getApiResponse(messages, question, checkedItems);
         
@@ -119,10 +120,11 @@ export const sendPayload = async (
                             const newContent = op.value || '';
                             if (!newContent) continue;
 
+			    finalContent += newContent;
                             currentContent += newContent;
-                            setStreamedContent(() => {
-                                return currentContent;
-                            });
+			    setStreamedContent(() => currentContent);
+                        } else {
+                            continue;
                         }
                     }
                 } catch (e) {
@@ -162,6 +164,11 @@ export const sendPayload = async (
             console.error('Stream error:', error);
             hasError = true;
             throw error;
+	} finally {
+	    setIsStreaming(false);
+            if (finalContent && !errorOccurred) {
+                return finalContent;
+            }
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
@@ -173,7 +180,7 @@ export const sendPayload = async (
             });
         }
     } finally {
-        setIsStreaming(false);
+        return '';
     }
 };
 

@@ -10,13 +10,16 @@ export interface Folders {
 export type Message = {
     content: string;
     role: 'human' | 'assistant';
+    timestamp: number;
+    sequence: number;
 };
 
 export interface Conversation {
     id: string;
     title: string;
     messages: Message[];
-    lastAccessedAt: number;
+    lastAccessedAt: number | null;
+    isActive: boolean;
 }
 
 export const convertKeysToStrings = (keys: Key[]): string[] => {

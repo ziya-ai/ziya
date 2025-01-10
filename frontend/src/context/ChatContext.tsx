@@ -102,27 +102,44 @@ export function ChatProvider({children}: ChatProviderProps) {
     };
 
     const addMessageToCurrentConversation = (message: Message) => {
-	console.log('Adding message:', {
-            conversationId: currentConversationId,
-	    messageContent: message.content.substring(0, 100),
-            messageType: message.role,
-            currentMessageCount: messages.length
-        });
         const cleanedMessage = cleanMessage(message);
-        if (!cleanedMessage) {
+	if (!cleanedMessage) {
             console.warn('Attempted to add invalid message:', message);
             return;
         }
-	// Update messages state
+
+	// Calculate next sequence number
+        let nextSequence = 1;
+        if (messages.length > 0) {
+            const maxSequence = Math.max(...messages.map(m => m.sequence));
+            nextSequence = maxSequence + 1;
+        }
+
+        // Create enahnced message with sequence and timestamp
+        const enhancedMessage = {
+            ...cleanedMessage,
+            timestamp: Date.now(),
+            sequence: nextSequence
+        };
+
+	// Update messages state with new message
         setMessages(prevMessages => {
-            const updatedMessages = [...prevMessages, message];
-	    console.log('Message state update:', {
-                prevMessageCount: prevMessages.length,
-                newMessageCount: updatedMessages.length,
-                lastMessage: message.content.substring(0, 100),
-                role: message.role,
-                conversationId: currentConversationId
+	    // check for dupe seq nums
+            const sequences = new Set(prevMessages.map(m => m.sequence));
+            if (sequences.has(enhancedMessage.sequence)) {
+                console.warn(`Duplicate sequence number ${enhancedMessage.sequence} detected`);
+                enhancedMessage.sequence = Math.max(...sequences) + 1;
+            }
+
+	    // Create new array with spread
+            const updatedMessages = [...prevMessages];
+            // Add new message
+            updatedMessages.push(enhancedMessage);
+            // Sort messages by sequence number to maintain order
+	    updatedMessages.sort((a, b) => {
+                return a.sequence !== b.sequence ? a.sequence - b.sequence : a.timestamp - b.timestamp;
             });
+
             return updatedMessages;
         });
 
@@ -132,26 +149,18 @@ export function ChatProvider({children}: ChatProviderProps) {
             if (existingConversationIndex !== -1) {
                 // Update existing conversation
                 const updatedConversations = [...prevConversations];
-		console.log('Updating existing conversation:', {
-                    id: currentConversationId,
-                    messageCount: updatedConversations[existingConversationIndex].messages.length
-                });
                 updatedConversations[existingConversationIndex] = {
                     ...updatedConversations[existingConversationIndex],
-                    messages: [...updatedConversations[existingConversationIndex].messages, message],
+		    messages: [...updatedConversations[existingConversationIndex].messages, enhancedMessage],
 		    lastAccessedAt: Date.now()
                 };
                 return updatedConversations;
             } else {
                 // Create new conversation
-		console.log('Creating new conversation:', {
-                    id: currentConversationId,
-                    firstMessage: message.content.slice(0, 45)
-                });
                 return [...prevConversations, {
                     id: currentConversationId,
                     title: message.content.slice(0, 45),
-                    messages: [message],
+		    messages: [enhancedMessage],
 		    lastAccessedAt: Date.now(),
 		    isActive: true
                 }];
@@ -187,12 +196,6 @@ export function ChatProvider({children}: ChatProviderProps) {
     const loadConversation = useCallback(async (conversationId: string) => {
         const selectedConversation = conversations.find(conv => conv.id === conversationId);
         if (selectedConversation && conversationId !== currentConversationId) {
-	    console.log('Loading conversation:', {
-                from: currentConversationId,
-                to: conversationId,
-                currentMessages: messages
-            });
-            console.log('setting loading state to true');
             setIsLoadingConversation(true);
 	    try {
                 // Clear current messages first to reduce unmounting overhead
@@ -200,17 +203,10 @@ export function ChatProvider({children}: ChatProviderProps) {
 		setStreamedContent(''); // Clear any existing streamed content
 
 		setCurrentConversationId(conversationId);
-		console.log('Conversation ID changed:', {
-                    old: currentConversationId,
-                    new: conversationId
-                });
                 await new Promise(resolve => setTimeout(resolve, 50));
 
 		// Start loading messages in chunks
                 const loadChunks = loadMessagesInChunks(selectedConversation.messages);
-                console.log('Loading messages:', {
-                    count: selectedConversation.messages.length
-                });
 		loadChunks();
             } catch (error) {
                 console.error('Error loading conversation:', error);

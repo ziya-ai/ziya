@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo, Suspense, useCallback } from 'react';
+import React, { useState, useEffect, memo, useMemo, Suspense, useCallback } from 'react';
 import { parseDiff, Diff, Hunk, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
@@ -1140,11 +1140,18 @@ marked.setOptions({
     pedantic: false
 }) as any;
 
-const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, enableCodeApply }) => {
-
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply }) => {
     const { isDarkMode } = useTheme();
-    const tokens = marked.lexer(markdown) as TokenWithText[];;
-    return <div>{renderTokens(tokens, enableCodeApply, isDarkMode)}</div>;
-};
+
+    const tokens = useMemo(() => {
+        return (typeof markdown === 'string' ? marked.lexer(markdown) : []) as TokenWithText[];
+    }, [markdown]);
+
+    const renderedContent = useMemo(() => {
+	return renderTokens(tokens, enableCodeApply, isDarkMode);
+    }, [tokens, enableCodeApply, isDarkMode]);
+
+    return <div>{renderedContent}</div>;
+});
 
 export default MarkdownRenderer;

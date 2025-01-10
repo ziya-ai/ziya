@@ -25,9 +25,13 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
         // Only update the message content without regenerating response
         setMessages(prevMessages => {
             const updatedMessages = [...prevMessages];
+	    const originalMessage = updatedMessages[index];
             updatedMessages[index] = {
                 content: editedMessage,
-                role: 'human'
+                role: 'human',
+		// Preserve original timestamp and sequence
+                timestamp: originalMessage.timestamp,
+                sequence: originalMessage.sequence
             };
             return updatedMessages;
         });
@@ -42,13 +46,34 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
 
     const handleSubmit = async () => {
         setIsEditing(false);
-        const updatedMessages: Message[] = [...messages.slice(0, index), {content: editedMessage, role: 'human'}];
+	// Get the original message's sequence and timestamp
+        const originalMessage = messages[index];
+        const updatedMessages: Message[] = [
+            ...messages.slice(0, index),
+            {
+                content: editedMessage,
+                role: 'human',
+                timestamp: originalMessage.timestamp,
+                sequence: originalMessage.sequence
+            }
+        ];
         setMessages(updatedMessages);
         setIsStreaming(true);
 	await sendPayload(updatedMessages, editedMessage, setStreamedContent, setIsStreaming, convertKeysToStrings(checkedKeys));
         setIsStreaming(false);
         setStreamedContent((content) => {
-            setMessages((prevMessages) => [...prevMessages, {content, role: 'assistant'}]);
+            setMessages((prevMessages) => {
+            // Get the original message's metadata
+                const originalMessage = prevMessages[index];
+                const newMessage: Message = {
+                    content,
+                    role: 'assistant',
+                    // Keep the same timestamp and sequence as the original message
+                    timestamp: originalMessage.timestamp,
+                    sequence: originalMessage.sequence
+                };
+                return [...prevMessages, newMessage]; 
+            });
             return "";
         });
     };

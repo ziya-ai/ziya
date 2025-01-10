@@ -1,6 +1,7 @@
-import React, {useEffect, useRef, memo, useCallback, useMemo, SetStateAction} from "react";
+import React, {useEffect, useRef, memo, useCallback} from "react";
 import {useChatContext} from '../context/ChatContext';
 import {sendPayload, SetStreamedContentFunction} from "../apis/chatApi";
+import {Message} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
 import {Button, Input, message} from 'antd';
 import {SendOutlined} from "@ant-design/icons";
@@ -15,16 +16,16 @@ interface SendChatContainerProps {
     empty?: boolean;
 }
 
-export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, empty = false }) => {
+export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed = false, empty = false }) => {
     const {
         question,
         setQuestion,
         isStreaming,
         setIsStreaming,
+	streamedContent,
         messages,
         addMessageToCurrentConversation,
-        setStreamedContent,
-	streamedContent,
+	setStreamedContent,
 	scrollToBottom,
 	isTopToBottom
     } = useChatContext();
@@ -40,7 +41,6 @@ export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, 
     }, [question]);
 
     const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
-	// Update the input value immediately for responsiveness
         setQuestion(event.target.value);
     }, [setQuestion]);
 
@@ -49,15 +49,30 @@ export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, 
         return () => {
             if (handleChange) {
                 (handleChange as any).cancel?.();
-            } 
+            }
         };
     }, [handleChange]);
+
+    // Memoize the disabled state to prevent unnecessary re-renders
+    const isDisabled = isStreaming || isQuestionEmpty(question);
 
     const handleSendPayload = async () => {
         setQuestion('');
         setIsStreaming(true);
 
-        const newHumanMessage = {content: question, role: 'human' as 'human'};
+	// Get current max sequence before adding new message
+        const currentMaxSequence = messages.length > 0
+            ? Math.max(...messages.map(m => m.sequence))
+            : 0;
+	
+	const newHumanMessage: Message = {
+            content: question,
+            role: 'human',
+            // For new messages, use current time and next sequence
+            timestamp: Date.now(),
+	    sequence: currentMaxSequence + 1
+        };
+
         addMessageToCurrentConversation(newHumanMessage);
 
 	if (isTopToBottom) {
@@ -76,39 +91,28 @@ export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, 
         }
 
     try {
-        let finalContent = '';
-        
-        const updateStreamedContent: SetStreamedContentFunction = (updater) => {
-            if (typeof updater === 'function') {
-                const newContent = updater(finalContent);
-                finalContent = newContent;
-                setStreamedContent(newContent);
-            } else {
-                finalContent = updater;
-                setStreamedContent(updater);
-            }
-            return finalContent;
-        };
-
-        await sendPayload(
+	const result = await sendPayload(
             [...messages, newHumanMessage],
             question,
-            updateStreamedContent,
+	    (content) => {
+                    setStreamedContent(content); // Only update streamed content, don't clear it
+            },
             setIsStreaming,
             checkedKeys.map(key => String(key))
         );
 
-        // Clear streamed content before saving the final message
-        setStreamedContent('');
+	// Get the final streamed content
+            const finalContent = streamedContent || result;
 
-        // Save the complete message
-        if (finalContent) {
-            const newAIMessage = {content: finalContent, role: 'assistant' as 'assistant'};
-            addMessageToCurrentConversation(newAIMessage);
-            console.log('Message saved:', {
-                contentLength: finalContent.length,
-                messageCount: messages.length + 1
-            });
+            if (finalContent) {
+		const newAIMessage: Message = {
+                    content: finalContent,
+                    role: 'assistant',
+                    // For AI responses, use current time and next sequence
+                    timestamp: Date.now(),
+		    sequence: Math.max(...messages.map(m => m.sequence)) + 1
+                };
+	    addMessageToCurrentConversation(newAIMessage);
         }
     } catch (error) {
         console.error('Error sending message:', error);
@@ -116,11 +120,11 @@ export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, 
             content: 'Failed to send message. Please try again.',
             duration: 5
         });
-    }
+    } 
     };
 
     return (
-         <div className={`input-container ${empty ? 'empty-state' : ''}`}>
+        <div className={`input-container ${empty ? 'empty-state' : ''}`}>
             <TextArea
                 ref={textareaRef}
                 value={question}
@@ -137,7 +141,7 @@ export const SendChatContainer = memo<SendChatContainerProps>(({ fixed = false, 
             />
             <Button
                 onClick={handleSendPayload}
-                disabled={isStreaming || isQuestionEmpty(question)}
+                disabled={isDisabled}
                 type="primary"
                 icon={<SendOutlined/>}
                 style={{marginLeft: '10px'}}
