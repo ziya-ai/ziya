@@ -1,6 +1,7 @@
 import React from "react";
 import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
+import {Message} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
 import {Button, Tooltip} from "antd";
 import { convertKeysToStrings } from '../utils/types';
@@ -11,32 +12,44 @@ interface RetrySectionProps {
 }
 
 export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
-    const {messages, setMessages, setStreamedContent, setIsStreaming} = useChatContext();
+    const {
+        currentMessages,
+        currentConversationId,
+        addMessageToCurrentConversation,
+        setStreamedContent,
+        setIsStreaming
+    } = useChatContext();
+    
     const {checkedKeys} = useFolderContext();
 
     const handleRetry = async () => {
-        const updatedMessages = messages.slice(0, index);
-        const lastHumanMessage = updatedMessages[updatedMessages.length - 1];
-	const originalMessage = messages[index];  // Get the original message we're retrying
-
-        setMessages(updatedMessages);
+        const lastHumanMessage = currentMessages[index];
         setIsStreaming(true);
         setStreamedContent('');
-	await sendPayload(updatedMessages, lastHumanMessage.content, setStreamedContent, setIsStreaming, convertKeysToStrings(checkedKeys));
-        setIsStreaming(false);
-        setStreamedContent((content) => {
-	    setMessages((prevMessages) => [
-                ...prevMessages,
-                {
-                    content,
-                    role: 'assistant',
-                    // Preserve the original message's sequence and timestamp
-                    sequence: originalMessage.sequence,
-                    timestamp: originalMessage.timestamp
-                }
-            ]);
-            return "";
-        });
+
+        try {
+            const result = await sendPayload(
+                currentConversationId,
+                lastHumanMessage.content,
+		currentMessages,
+                setStreamedContent,
+                setIsStreaming,
+                convertKeysToStrings(checkedKeys),
+		addMessageToCurrentConversation
+            );
+
+            if (result) {
+                const newAIMessage: Message = {
+                    content: result,
+                    role: 'assistant'
+                };
+                addMessageToCurrentConversation(newAIMessage);
+            }
+        } catch (error) {
+            console.error('Error retrying message:', error);
+        } finally {
+            setIsStreaming(false);
+        }
     };
 
     return (

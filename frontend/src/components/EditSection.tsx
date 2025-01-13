@@ -1,8 +1,8 @@
 import React, {useState} from "react";
 import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
-import {useFolderContext} from "../context/FolderContext";
 import {Message} from "../utils/types";
+import {useFolderContext} from "../context/FolderContext";
 import {Button, Tooltip, Input, Space} from "antd";
 import { convertKeysToStrings } from '../utils/types';
 import {EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined} from "@ant-design/icons";
@@ -12,72 +12,69 @@ interface EditSectionProps {
 }
 
 export const EditSection: React.FC<EditSectionProps> = ({index}) => {
-    const {messages, setMessages, setStreamedContent, setIsStreaming} = useChatContext();
+    const {
+        currentMessages,
+        currentConversationId,
+        addMessageToCurrentConversation,
+        setStreamedContent,
+        setIsStreaming
+    } = useChatContext();
+    
     const [isEditing, setIsEditing] = useState(false);
-    const [editedMessage, setEditedMessage] = useState(messages[index].content);
+    const [editedMessage, setEditedMessage] = useState(currentMessages[index].content);
     const {checkedKeys} = useFolderContext();
     const {TextArea} = Input;
+
     const handleEdit = () => {
         setIsEditing(true);
     };
     
     const handleSave = () => {
         // Only update the message content without regenerating response
-        setMessages(prevMessages => {
-            const updatedMessages = [...prevMessages];
-	    const originalMessage = updatedMessages[index];
-            updatedMessages[index] = {
-                content: editedMessage,
-                role: 'human',
-		// Preserve original timestamp and sequence
-                timestamp: originalMessage.timestamp,
-                sequence: originalMessage.sequence
-            };
-            return updatedMessages;
-        });
+        const updatedMessage: Message = {
+            content: editedMessage,
+            role: 'human'
+        };
+        addMessageToCurrentConversation(updatedMessage);
         setIsEditing(false);
     };
 
-
     const handleCancel = () => {
         setIsEditing(false);
-        setEditedMessage(messages[index].content);
+        setEditedMessage(currentMessages[index].content);
     };
 
     const handleSubmit = async () => {
         setIsEditing(false);
-	// Get the original message's sequence and timestamp
-        const originalMessage = messages[index];
-        const updatedMessages: Message[] = [
-            ...messages.slice(0, index),
-            {
-                content: editedMessage,
-                role: 'human',
-                timestamp: originalMessage.timestamp,
-                sequence: originalMessage.sequence
-            }
-        ];
-        setMessages(updatedMessages);
         setIsStreaming(true);
-	await sendPayload(updatedMessages, editedMessage, setStreamedContent, setIsStreaming, convertKeysToStrings(checkedKeys));
-        setIsStreaming(false);
-        setStreamedContent((content) => {
-            setMessages((prevMessages) => {
-            // Get the original message's metadata
-                const originalMessage = prevMessages[index];
-                const newMessage: Message = {
-                    content,
-                    role: 'assistant',
-                    // Keep the same timestamp and sequence as the original message
-                    timestamp: originalMessage.timestamp,
-                    sequence: originalMessage.sequence
-                };
-                return [...prevMessages, newMessage]; 
-            });
-            return "";
-        });
-    };
 
+        try {
+            const result = await sendPayload(
+                currentConversationId,
+                editedMessage,
+		currentMessages,
+                setStreamedContent,
+                setIsStreaming,
+                convertKeysToStrings(checkedKeys),
+		addMessageToCurrentConversation
+            );
+
+            // Get the final streamed content
+            const finalContent = result;
+
+            if (finalContent) {
+                const newAIMessage: Message = {
+                    content: finalContent,
+                    role: 'assistant'
+                };
+                addMessageToCurrentConversation(newAIMessage);
+            }
+        } catch (error) {
+            console.error('Error sending message:', error);
+        } finally {
+            setIsStreaming(false);
+        }
+    };
 
     return (
         <div>
@@ -96,7 +93,8 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
                             Save
                         </Button>
                         <Button icon={<CheckOutlined />} onClick={handleSubmit} size="small" type="primary">
-                            Submit</Button>
+                            Submit
+                        </Button>
                     </Space>
                 </>
             ) : (

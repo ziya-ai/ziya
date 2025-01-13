@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, Suspense, useState } from 'react';
+import React, { useEffect, Suspense, useState } from 'react';
 import {useChatContext} from '../context/ChatContext';
 import { Space, Alert } from 'antd';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
@@ -7,15 +7,14 @@ const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
-    const {streamedContent, scrollToBottom, isTopToBottom, isStreaming,
-           addMessageToCurrentConversation, setStreamedContent} = useChatContext();
+    const {streamedContent, isStreaming} = useChatContext();
 
     const LoadingIndicator = () => (
         <div style={{ 
             padding: '20px', 
             textAlign: 'center',
             color: 'var(--loading-color, #1890ff)'
-	}} className="loading-indicator">
+        }} className="loading-indicator">
             <Space>
                 <RobotOutlined 
                     style={{ 
@@ -23,7 +22,7 @@ export const StreamedContent: React.FC = () => {
                         animation: 'pulse 2s infinite'
                     }} 
                 />
-		<LoadingOutlined spin />
+                <LoadingOutlined spin />
                 <span style={{ 
                     animation: 'fadeInOut 2s infinite',
                     display: 'inline-block',
@@ -48,36 +47,24 @@ export const StreamedContent: React.FC = () => {
         />
     );
 
-    // Effect for scrolling and focus behavior
+    // Reset error when new content starts streaming
     useEffect(() => {
-        if (streamedContent && isTopToBottom) {
-            // Focus the input after content updates
-            const textarea = document.querySelector('.input-textarea') as HTMLTextAreaElement;
-            if (textarea) {
-                textarea.focus();
-            }
-            // Ensure scrolling to bottom during streaming in top-down mode
-            scrollToBottom();
-        }
-
-        // Reset error when new content starts streaming
         if (isStreaming) {
             setError(null);
         }
-        
-    }, [streamedContent, isStreaming, isTopToBottom, scrollToBottom]);
+    }, [isStreaming]);
 
     const enableCodeApply = window.enableCodeApply === 'true';
     return (
         <>
-           {(isStreaming || streamedContent) && (
+            {isStreaming && (
                 <div className="message assistant">
                     <div className="message-sender" style={{ marginTop: 0 }}>AI:</div>
-		    {error && <ErrorDisplay message={error} />}
-		    {isStreaming && !streamedContent ? (
+                    {error && <ErrorDisplay message={error} />}
+                    {!streamedContent ? (
                         <LoadingIndicator />
                     ) : (
-		        <Suspense fallback={<div>Loading content...</div>}>
+                        <Suspense fallback={<div>Loading content...</div>}>
                             <MarkdownRenderer
                                 markdown={streamedContent || ''}
                                 enableCodeApply={enableCodeApply}/>

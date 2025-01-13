@@ -1,5 +1,9 @@
+import { SetStateAction } from 'react';
 import { createParser } from 'eventsource-parser';
 import { message } from 'antd';
+import { Message } from '../utils/types';
+import { db } from '../utils/db';
+
 
 interface Operation {
     op: string;
@@ -7,8 +11,9 @@ interface Operation {
     value?: string;
 }
 
-export type SetStreamedContentFunction = {
-    (updater: (prev: string) => string): void;
+export type SetStreamedContentFunction = ((updater: (prev: string) => string) => void) & {
+    (value: string): void;
+    (value: SetStateAction<string>): void;
 };
 
 const isValidMessage = (message: any) => {
@@ -51,25 +56,26 @@ const createEventSource = (url: string, body: any): EventSource => {
 };
 
 export const sendPayload = async (
-    messages: any[],
+    conversationId: string,
     question: string,
+    messages: Message[],
     setStreamedContent: SetStreamedContentFunction,
     setIsStreaming: (streaming: boolean) => void,
-    checkedItems: string[],
+    checkedItems: string[], 
+    addMessageToConversation: (message: Message) => void,
     onStreamComplete?: (content: string) => void
 ) => {
     try {
 	let hasError = false;
 
-	// Filter out any empty messages
-        const validMessages = messages.filter(msg => msg.content?.trim());
-        if (validMessages.length === 0) {
-            throw new Error('No valid messages to send');
-        }
+	console.log('Messages received in sendPayload:', messages.map(m => ({
+            role: m.role,
+            content: m.content.substring(0, 50)
+        })));
 
 	let finalContent = '';
 	setIsStreaming(true);
-        let response = await getApiResponse(messages, question, checkedItems);
+	let response = await getApiResponse(messages, question, checkedItems);
         
         if (!response.ok) {
             if (response.status === 503) {
@@ -157,6 +163,13 @@ export const sendPayload = async (
 	    // After successful streaming, update with final content
             if (currentContent && !errorOccurred) {
                 onStreamComplete?.(currentContent);
+		// Add AI response to conversation
+                const aiMessage: Message = {
+                    role: 'assistant',
+                    content: currentContent
+                };
+                addMessageToConversation(aiMessage);
+                return currentContent;
             }
         } catch (error) {
 	    // Type guard for DOMException
@@ -185,36 +198,80 @@ export const sendPayload = async (
 };
 
 async function getApiResponse(messages: any[], question: string, checkedItems: string[]) {
-    const messageTuples = [];
-    let tempArray = [];
+    const messageTuples: string[][] = [];
 
-    messages = cleanMessages(messages);
+    console.log('Messages received in getApiResponse:', messages.map(m => ({
+        role: m.role,
+        content: m.content.substring(0, 50)
+    })));
 
-    for (let i = 0; i < messages.length; i++) {
-        // @ts-ignore
-        tempArray.push(messages[i].content);
-        if (tempArray.length === 2) {
-            // @ts-ignore
-            messageTuples.push(tempArray);
-            tempArray = [];
+    // Build pairs of human messages and AI responses
+    try {
+	// If this is the first message, we won't have any pairs yet
+        if (messages.length === 1 && messages[0].role === 'human') {
+            console.log('First message in conversation, no history to send');
+            return await fetch('/ziya/stream_log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    input: {
+                        chat_history: [],
+                        question: question,
+                        config: { files: checkedItems },
+                    },
+                }),
+            }) as Response;
         }
-    }
-    console.log('Sending payload:', JSON.stringify({chat_history: messageTuples, question, config: { files: checkedItems }}, null, 2));
-    const response = await fetch('/ziya/stream_log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            input: {
-                chat_history: messageTuples,
-                question: question,
-                config: { files: checkedItems },
-            },
-        }),
-    });
+ 
+        // For subsequent messages, build the history pairs
+        const validMessages = messages.filter(msg => msg?.content?.trim());
 
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`API request failed: ${error}`);
+	console.log('Valid messages:', validMessages.map(m => ({
+            role: m.role,
+            content: m.content.substring(0, 50)
+        })));
+
+	// Build pairs from completed exchanges
+        for (let i = 0; i < validMessages.length; i++) {
+            const current = validMessages[i];
+            const next = validMessages[i + 1];
+
+            // Only add complete human-assistant pairs
+            if (current?.role === 'human' && next?.role === 'assistant') {
+                messageTuples.push([current.content, next.content]);
+		console.log('Added pair:', {
+                    human: current.content.substring(0, 50),
+                    ai: next.content.substring(0, 50),
+		    humanRole: current.role,
+                    aiRole: next.role
+                });
+		i++; // Skip the next message since we've used it
+            }
+        }
+
+        console.log('Chat history pairs:', messageTuples.length);
+	console.log('Current question:', question);
+	console.log('Full chat history:', messageTuples);
+
+        console.log('Sending payload:', JSON.stringify({
+            chat_history: messageTuples,
+            question,
+            config: { files: checkedItems }
+        }, null, 2));
+
+        return await fetch('/ziya/stream_log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                input: {
+                    chat_history: messageTuples,
+                    question: question,
+                    config: { files: checkedItems },
+                },
+            }),
+        }) as Response;
+    } catch (error) {
+        console.error('API request failed:', error);
+        throw error;
     }
-    return response;
 }

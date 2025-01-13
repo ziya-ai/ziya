@@ -10,8 +10,6 @@ export interface Folders {
 export type Message = {
     content: string;
     role: 'human' | 'assistant';
-    timestamp: number;
-    sequence: number;
 };
 
 export interface Conversation {
@@ -27,7 +25,7 @@ export const convertKeysToStrings = (keys: Key[]): string[] => {
 };
 
 declare global {
-    interface Window { 
+    interface Window {
         enableCodeApply?: string;
         diffDisplayMode?: 'raw' | 'pretty';
         diffViewType?: 'unified' | 'split';

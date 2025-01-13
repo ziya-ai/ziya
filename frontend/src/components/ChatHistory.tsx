@@ -1,5 +1,5 @@
 import React, {useState, useCallback} from 'react';
-import {List, Button, Input, message} from 'antd';
+import {List, Button, Input, message, Modal} from 'antd';
 import {DeleteOutlined, EditOutlined, DownloadOutlined, UploadOutlined} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
 import {useTheme} from '../context/ThemeContext';
@@ -9,30 +9,22 @@ export const ChatHistory: React.FC = () => {
     const {
         conversations,
         setCurrentConversationId,
-        setMessages,
         currentConversationId,
         setConversations,
-	isLoadingConversation,
-	loadConversation,
+        isLoadingConversation,
+        loadConversation,
     } = useChatContext();
     const {isDarkMode} = useTheme();
+    const [isRepairing, setIsRepairing] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
 
     const handleConversationClick = useCallback(async (conversationId: string) => {
-        const selectedConversation = conversations.find(conv => conv.id === conversationId);
-        if (selectedConversation && conversationId !== currentConversationId) {
-            setCurrentConversationId(conversationId);
-
-            // Use requestAnimationFrame to ensure the UI updates before heavy processing
-            requestAnimationFrame(() => {
-                // Break up the message setting into chunks if there are many messages
-                const messages = selectedConversation.messages;
-                setMessages(messages);
-            });
+        if (conversationId !== currentConversationId && !isLoadingConversation) {
+            await loadConversation(conversationId);
         }
-    }, [conversations, currentConversationId, setCurrentConversationId, setMessages]);
+    }, [currentConversationId, isLoadingConversation, loadConversation]);
 
-        const exportConversations = async () => {
+    const exportConversations = async () => {
         try {
             const data = await db.exportConversations();
             const blob = new Blob([data], { type: 'application/json' });
@@ -87,17 +79,64 @@ export const ChatHistory: React.FC = () => {
         setEditingId(null);
     };
 
-    const handleTitleBlur = (conversationId: string, newTitle: string) => handleTitleChange(conversationId, newTitle);
+    const handleTitleBlur = (conversationId: string, newTitle: string) => {
+        handleTitleChange(conversationId, newTitle);
+    };
 
-    const handleDeleteConversation = (e: React.MouseEvent, conversationId: string) => {
-        e.stopPropagation(); // Prevent the click from bubbling up to the List.Item
-        setConversations(prevConversations =>
-            prevConversations.filter(conv => conv.id !== conversationId)
-        );
-        if (currentConversationId === conversationId) {
-            setCurrentConversationId('');
-            setMessages([]);
+    const handleDeleteConversation = async (e: React.MouseEvent, conversationId: string) => {
+        e.stopPropagation();
+        try {
+            // Update state
+            const updatedConversations = conversations.filter(conv => conv.id !== conversationId);
+            setConversations(updatedConversations);
+
+            // Persist to IndexedDB
+            await db.saveConversations(updatedConversations);
+            
+            message.success('Conversation deleted successfully');
+        } catch (error) {
+            message.error('Failed to delete conversation');
+            console.error('Error deleting conversation:', error);
         }
+    };
+
+    const handleRepairDatabase = async () => {
+        Modal.confirm({
+            title: 'Repair Database',
+            content: 'This will attempt to repair the conversation database by removing corrupted entries. Continue?',
+            okText: 'Yes',
+            cancelText: 'No',
+            onOk: async () => {
+                setIsRepairing(true);
+                try {
+                    await db.repairDatabase();
+                    // Reload conversations after repair
+                    const repairedConversations = await db.getConversations();
+                    setConversations(repairedConversations);
+                    message.success('Database repair completed successfully');
+                } catch (error) {
+                    message.error('Failed to repair database');
+                    console.error('Database repair error:', error);
+                } finally {
+                    setIsRepairing(false);
+                }
+            }
+        });
+    };
+
+    const handleClearDatabase = () => {
+        Modal.confirm({
+            title: 'Clear Database',
+            content: 'This will permanently delete all conversations. This action cannot be undone. Continue?',
+            okText: 'Yes',
+            okType: 'danger',
+            cancelText: 'No',
+            onOk: async () => {
+                await db.clearDatabase();
+                setConversations([]);
+                message.success('Database cleared successfully');
+            }
+        });
     };
 
     // Sort conversations by lastAccessedAt
@@ -114,22 +153,22 @@ export const ChatHistory: React.FC = () => {
             renderItem={(conversation) => (
                 <List.Item
                     key={conversation.id}
-                    onClick={isLoadingConversation ? undefined : () => loadConversation(conversation.id)} 
+                    onClick={() => handleConversationClick(conversation.id)} 
                     style={{
                         cursor: 'pointer',
                         backgroundColor: conversation.id === currentConversationId
                             ? (isDarkMode ? '#177ddc' : '#e6f7ff')
                             : 'transparent',
                         color: conversation.id === currentConversationId && isDarkMode ? '#ffffff' : undefined,
-			opacity: isLoadingConversation ? 0.5 : 1,
+                        opacity: isLoadingConversation ? 0.5 : 1,
                         padding: '8px',
                         borderRadius: '4px',
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'flex-start',
                         width: '100%',
-			boxSizing: 'border-box',
-			pointerEvents: isLoadingConversation ? 'none' : 'auto'
+                        boxSizing: 'border-box',
+                        pointerEvents: isLoadingConversation ? 'none' : 'auto'
                     }}
                 >
                     {editingId === conversation.id ? (
@@ -165,29 +204,43 @@ export const ChatHistory: React.FC = () => {
                         />
                     </div>
                 </List.Item>
-	    )}
+            )}
             footer={
-	    <div className="chat-history-footer">
-                <Button icon={<DownloadOutlined />} onClick={exportConversations}>
-                    Export
-                </Button>
-                <Button
-                    icon={<UploadOutlined />}
-                    onClick={() => {
-                        const input = document.createElement('input');
-                        input.type = 'file';
-                        input.accept = '.json';
-                        input.onchange = (e) => {
-                            const target = e.target as HTMLInputElement;
-                            if (target && target.files) {
-                                importConversations({ target } as React.ChangeEvent<HTMLInputElement>);
-                            }
-                        };
-                        input.click();
-                    }}>
-                    Import
-                </Button>
-            </div>}
+                <>
+                <div className="chat-history-footer">
+                    <Button icon={<DownloadOutlined />} onClick={exportConversations}>
+                        Export
+                    </Button>
+                    <Button
+                        icon={<UploadOutlined />}
+                        onClick={() => {
+                            const input = document.createElement('input');
+                            input.type = 'file';
+                            input.accept = '.json';
+                            input.onchange = (e) => {
+                                const target = e.target as HTMLInputElement;
+                                if (target && target.files) {
+                                    importConversations({ target } as React.ChangeEvent<HTMLInputElement>);
+                                }
+                            };
+                            input.click();
+                        }}>
+                        Import
+                    </Button>
+                </div>
+                <div style={{ marginTop: '8px', display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                    <Button 
+                        type="dashed" 
+                        onClick={handleRepairDatabase}
+                        loading={isRepairing}>
+                        Repair Database
+                    </Button>
+                    <Button type="dashed" danger onClick={handleClearDatabase}>
+                        Clear Database
+                    </Button>
+                </div>
+                </>
+            }
         />
     );
 };
