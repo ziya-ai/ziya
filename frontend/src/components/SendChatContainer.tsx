@@ -26,7 +26,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         currentMessages,
         addMessageToCurrentConversation,
         setStreamedContent,
-        currentConversationId
+        currentConversationId,
+	streamingConversationId,
+        setStreamingConversationId
     } = useChatContext();
 
     const {checkedKeys} = useFolderContext();
@@ -58,6 +60,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         setQuestion('');
         setIsStreaming(true);
 	setStreamedContent('');
+	setStreamingConversationId(currentConversationId);
 	setIsProcessing(true);
 	
         // Create new human message

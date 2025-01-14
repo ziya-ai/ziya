@@ -7,7 +7,7 @@ const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
-    const {streamedContent, isStreaming} = useChatContext();
+    const {streamedContent, isStreaming, currentConversationId, streamingConversationId, addMessageToCurrentConversation} = useChatContext();
 
     const LoadingIndicator = () => (
         <div style={{ 
@@ -57,7 +57,7 @@ export const StreamedContent: React.FC = () => {
     const enableCodeApply = window.enableCodeApply === 'true';
     return (
         <>
-            {isStreaming && (
+	    {isStreaming && streamingConversationId && streamingConversationId === currentConversationId && (
                 <div className="message assistant">
                     <div className="message-sender" style={{ marginTop: 0 }}>AI:</div>
                     {error && <ErrorDisplay message={error} />}

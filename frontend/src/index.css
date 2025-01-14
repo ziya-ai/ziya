@@ -686,6 +686,16 @@ span.token-count-total.red { color: #f5222d; }
     color: #c9d1d9;
 }
 
+/* Preserve syntax highlighting in diffs */
+.diff-code-normal .token {
+   color: inherit;  /* Use theme colors for normal lines */
+}
+
+.diff-code-insert .token,
+.diff-code-delete .token {
+   opacity: 0.9;
+}
+
 .dark .diff-code-normal {
     color: #c9d1d9;
 }
@@ -1014,22 +1024,9 @@ span.token-count-total.red { color: #f5222d; }
     border-radius: 2px;
 }
 
-/* Whitespace visualization */
 .ws-marker {
-    position: relative;
-    display: inline-block;
-    font-weight: bold;
-    border-radius: 2px;
-    padding: 0 1px;
-}
-
-/* Make the actual whitespace available for copy but invisible */
-.ws-marker::after {
-    content: attr(data-content);
     position: absolute;
-    opacity: 0;
     pointer-events: none;
-    user-select: text;
 }
 
 /* Added whitespace */
@@ -1043,6 +1040,7 @@ span.token-count-total.red { color: #f5222d; }
     color: #cb2431;
     background: rgba(248, 81, 73, 0.2);
 }
+
 
 /* Error states */
 .stream-error {
@@ -1062,3 +1060,92 @@ span.token-count-total.red { color: #f5222d; }
 .loading-indicator.error {
   color: #ff4d4f;
 }
+
+/* Preserve Prism token colors in diff lines */
+.token-container .token {
+   background: none !important;
+}
+
+/* Override the token colors with proper syntax highlighting */
+.dark .token-container .token.keyword {
+   color: #ff7b72 !important;
+}
+
+.dark .token-container .token.function {
+   color: #d2a8ff !important;
+}
+
+.dark .token-container .token.string {
+   color: #a5d6ff !important;
+}
+
+.dark .token-container .token.number {
+   color: #79c0ff !important;
+}
+
+.dark .token-container .token.comment {
+   color: #8b949e !important;
+}
+
+.dark .token-container .token.punctuation {
+   color: #c9d1d9 !important;
+}
+
+.dark .token-container .token.operator {
+   color: #ff7b72 !important;
+}
+
+.dark .token-container .token.class-name {
+   color: #d2a8ff !important;
+}
+
+
+.token-container .token.keyword,
+.token-container .token.function,
+.token-container .token.string,
+.token-container .token.number,
+.token-container .token.operator,
+.token-container .token.class-name,
+.token-container .token.comment,
+.token-container .token.punctuation {
+   opacity: 0.9;
+   text-shadow: none;
+}
+
+/* Light mode colors */
+.ws-marker {
+   user-select: none;
+   -webkit-user-select: none;
+   pointer-events: none;
+   color: #666;
+}
+
+/* Dark mode colors */
+.dark .ws-marker {
+   color: #000;
+}
+
+/* Actual whitespace content */
+.ws-marker .ws-actual {
+   position: absolute;
+   top: 0;
+   left: 0;
+   width: 100%;
+   height: 100%;
+   opacity: 1;
+   user-select: text;
+   -webkit-user-select: text;
+   -moz-user-select: text;
+   color: transparent;
+}
+
+/* Visual marker */
+.ws-marker .ws-visual {
+   position: relative;
+   font-weight: bold;
+   user-select: none;
+   -webkit-user-select: none;
+   -moz-user-select: none;
+   pointer-events: none;
+}
+

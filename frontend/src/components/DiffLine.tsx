@@ -31,30 +31,26 @@ const normalizeCompare = (line: string | null | undefined): string => {
 }
 
 const visualizeWhitespace = (text: string, changeType: 'ws-add' | 'ws-delete'): string => {
-    // Look for trailing whitespace only
-    const match = text.match(/[\s\t]+$/);
-    if (!match) return text;
+   // Match trailing whitespace only
+   const match = text.match(/[ \t]+$/);
+   if (!match) {
+       return text;
+   }
 
-    const trailingWs = match[0];
-    const baseText = text.slice(0, -trailingWs.length);
+   const trailingWs = match[0];
+   const baseText = text.slice(0, -trailingWs.length);
 
-    // Convert each whitespace char to a span with visual marker
-    const wrappedWs = trailingWs
-        .split('')
-        .map(c => {
-            if (c === ' ') {
-                return `<span class="ws-marker ${changeType}" data-content=" ">␣</span>`;
-            }
-            if (c === '\t') {
-                return `<span class="ws-marker ${changeType}" data-content="\t">→</span>`;
-            }
-            return c;
-        })
-        .join('');
+   // Create the visual markers
+   const markers = Array.from(trailingWs)
+       .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
+       .join('');
 
-    // Return the base text plus wrapped whitespace
-    return baseText + wrappedWs;
-}
+   // Keep the actual whitespace and overlay the markers (put markers first to avoid tab displacement)
+   const visibleMarkers = `<span class="ws-marker ${changeType}">${markers}</span>${trailingWs}`;
+
+   // Return the base text followed by both spans
+   return `${baseText}${visibleMarkers}`;
+};
 
 const compareLines = (line1: string, line2: string): boolean => {
     if (!line1?.trim() || !line2?.trim()) return false;
@@ -103,17 +99,20 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 await loadPrismLanguage(language);
                 if (!window.Prism || content.length <= 1) return;
 
-                // Extract marker and code
-                let marker = '';
+		// remove marker for syntax highlighting
                 let code = content;
                 if (content.startsWith('+') || content.startsWith('-') || content.startsWith(' ')) {
-                    marker = content[0];
                     code = content.slice(1);
                 }
 
                 // Highlight the code with Prism
                 const grammar = window.Prism.languages[language] || window.Prism.languages.plaintext;
-                const highlightedCode = window.Prism.highlight(code, grammar, language);
+                let highlightedCode = window.Prism.highlight(code, grammar, language);
+                
+                // Wrap the highlighted code in a span to preserve Prism classes
+                highlightedCode = `<span class="token-line">${highlightedCode}</span>`;
+                
+                setHighlighted(highlightedCode);
 
                 // Check for whitespace-only differences in insert/delete lines
                 if (type === 'insert' || type === 'delete') {
@@ -154,15 +153,12 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                                 const ws = match[0];
 
                                 const beforeWs = code.slice(0, index);
-				const visualizedCode = visualizeWhitespace(code, changeType);
-                                setHighlighted(marker + visualizedCode);
+				setHighlighted(visualizeWhitespace(code, changeType));
                                 return;
                             }
 
                             // If no trailing whitespace, just highlight normally
-                            setHighlighted(
-                                marker + highlightedCode
-                            );
+			    setHighlighted(visualizeWhitespace(code, changeType));
 
                             return;
                         }
@@ -170,7 +166,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 }
 
                 // Default case: just return highlighted code with marker
-                setHighlighted(marker + highlightedCode);
+                setHighlighted(highlightedCode);
             } catch (error) {
                 console.error(`Failed to highlight ${language}:`, error);
                 setHighlighted(content);
@@ -223,7 +219,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         <td
             className={`diff-code diff-code-${type}`}
             dangerouslySetInnerHTML={{
-                __html: `<div class="diff-line-content" style="${
+                __html: `<div class="diff-line-content token-container" style="${
                     isLoading ? Object.entries({...baseStyles, ...themeStyles}).map(([k,v]) => `${k}:${v}`).join(';') : ''
                 }">${wrapWithLineBreak(lineContent)}</div>`
             }}

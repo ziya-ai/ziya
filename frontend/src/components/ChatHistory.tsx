@@ -1,6 +1,6 @@
-import React, {useState, useCallback} from 'react';
+import React, {useState, useCallback, useEffect} from 'react';
 import {List, Button, Input, message, Modal} from 'antd';
-import {DeleteOutlined, EditOutlined, DownloadOutlined, UploadOutlined} from '@ant-design/icons';
+import {DeleteOutlined, EditOutlined, DownloadOutlined, UploadOutlined, LoadingOutlined} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
 import {useTheme} from '../context/ThemeContext';
 import { db } from '../utils/db';
@@ -12,14 +12,33 @@ export const ChatHistory: React.FC = () => {
         currentConversationId,
         setConversations,
         isLoadingConversation,
+	isStreaming,
+        streamingConversationId,
         loadConversation,
     } = useChatContext();
     const {isDarkMode} = useTheme();
     const [isRepairing, setIsRepairing] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
 
+    // Periodically check for updates when the component is mounted
+    useEffect(() => {
+       const checkForUpdates = async () => {
+           try {
+               const saved = await db.getConversations();
+               if (JSON.stringify(saved) !== JSON.stringify(conversations)) {
+                   setConversations(saved);
+               }
+           } catch (error) {
+               console.error('Error checking for conversation updates:', error);
+           }
+       };
+
+       const interval = setInterval(checkForUpdates, 2000); // Check every 2 seconds
+       return () => clearInterval(interval);
+    }, [conversations, setConversations]);
+
     const handleConversationClick = useCallback(async (conversationId: string) => {
-        if (conversationId !== currentConversationId && !isLoadingConversation) {
+	if (conversationId !== currentConversationId && !isLoadingConversation) {
             await loadConversation(conversationId);
         }
     }, [currentConversationId, isLoadingConversation, loadConversation]);
@@ -155,7 +174,7 @@ export const ChatHistory: React.FC = () => {
                     key={conversation.id}
                     onClick={() => handleConversationClick(conversation.id)} 
                     style={{
-                        cursor: 'pointer',
+			cursor: 'pointer',
                         backgroundColor: conversation.id === currentConversationId
                             ? (isDarkMode ? '#177ddc' : '#e6f7ff')
                             : 'transparent',
@@ -180,15 +199,36 @@ export const ChatHistory: React.FC = () => {
                             onClick={(e) => e.stopPropagation()}
                         />
                     ) : (
-                        <div style={{
-                            flex: 1,
-                            marginRight: '8px',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap'
+                        <div style={{ 
+                            display: 'flex',
+                            alignItems: 'center',
+                            flex: 1
                         }}>
-                            {conversation.title}
+                            <div style={{
+                                flex: 1,
+                                marginRight: '8px',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap'
+                            }}>
+                                {conversation.title}
+                                {isStreaming && conversation.id === streamingConversationId && (
+                                    <span style={{ 
+                                        marginLeft: '8px', 
+                                        fontSize: '12px', 
+                                        color: isDarkMode ? '#177ddc' : '#1890ff' 
+                                    }}>(receiving response...)</span>
+                                )}
+                            </div>
                         </div>
+                    )}
+                    {isStreaming && conversation.id === streamingConversationId && (
+                        <LoadingOutlined 
+                            style={{ 
+                                marginLeft: '8px',
+                                color: isDarkMode ? '#177ddc' : '#1890ff'
+                            }} 
+                        />
                     )}
                     <div style={{display: 'flex', alignItems: 'center', flexShrink: 0}}>
                         <Button

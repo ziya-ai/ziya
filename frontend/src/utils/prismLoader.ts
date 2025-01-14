@@ -1,5 +1,6 @@
 import 'prismjs/themes/prism.css';
 import 'prismjs/plugins/show-invisibles/prism-show-invisibles';
+import 'prismjs/components/prism-core';
  
 // Track loaded languages to avoid duplicate loading
 const loadedLanguages = new Set<string>();
@@ -113,7 +114,8 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
   const mappedLanguage = languageMap[language] || language;
 
   // Skip if already loaded and initialized
-  if (prism.languages[mappedLanguage] && Object.keys(prism.languages[mappedLanguage]).length > 0) {
+  if (window.Prism?.languages?.[mappedLanguage] && 
+      Object.keys(window.Prism.languages[mappedLanguage]).length > 0) {
     console.debug(`Language ${mappedLanguage} already loaded`);
     return;
   }
@@ -121,16 +123,22 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
   console.debug(`Loading ${mappedLanguage} (mapped from ${language})`); 
 
   try {
-    // Handle language-specific dependencies
+    // Always ensure core languages are loaded first
+    if (!window.Prism?.languages?.javascript || 
+        Object.keys(window.Prism?.languages?.javascript || {}).length === 0) {
+      await import('prismjs/components/prism-clike');
+      await import('prismjs/components/prism-javascript');
+    }
+
+    // Handle TypeScript-specific dependencies
     switch (mappedLanguage) {
-      case 'cpp':
-        await import('prismjs/components/prism-clike');
-        await import('prismjs/components/prism-c');
-        await import('prismjs/components/prism-cpp');
-        break;
-      case 'java':
-        await import('prismjs/components/prism-clike');
-        await import('prismjs/components/prism-java');
+      case 'typescript':
+      case 'ts':
+      case 'tsx':
+        if (!window.Prism?.languages?.typescript || 
+            Object.keys(window.Prism?.languages?.typescript || {}).length === 0) {
+          await import('prismjs/components/prism-typescript');
+        }
         break;
       case 'csharp':
         await import('prismjs/components/prism-clike');
@@ -138,25 +146,15 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         break;
       case 'tsx':
       case 'jsx': {
-        // Load dependencies in sequence
-        if (!prism.languages.javascript || Object.keys(prism.languages.javascript).length === 0) {
-          await import('prismjs/components/prism-javascript');
-        }
-        if (!prism.languages.typescript || Object.keys(prism.languages.typescript).length === 0) {
+        if (!window.Prism?.languages?.typescript) {
           await import('prismjs/components/prism-typescript');
         }
         await import('prismjs/components/prism-jsx');
         await import('prismjs/components/prism-tsx');
         break;
       }
-      case 'javascript': {
-        if (!prism.languages.javascript || Object.keys(prism.languages.javascript).length === 0) {
-          await import(/* webpackChunkName: "prism-javascript" */ 'prismjs/components/prism-javascript');
-        }
-        break;
-      }
       case 'clike': {
-        if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
+        if (!window.Prism?.languages?.clike) {
           await import('prismjs/components/prism-clike');
         }
         break;
@@ -168,7 +166,7 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         break;
       }
       case 'python': {
-        // Make sure core dependencies are loaded first
+        // Python-specific dependencies
         if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
           await import('prismjs/components/prism-clike');
         }
@@ -181,7 +179,7 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         try {
           // Load other languages directly
           await import(/* webpackChunkName: "prism-lang.[request]" */ `prismjs/components/prism-${mappedLanguage}`);
-          if (!prism.languages[mappedLanguage] || Object.keys(prism.languages[mappedLanguage]).length === 0) {
+          if (!window.Prism?.languages?.[mappedLanguage]) {
 
             throw new Error(`Language ${mappedLanguage} (${language}) failed to load`);
           }
@@ -191,7 +189,7 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         break;
     }
 
-    if (!prism.languages[mappedLanguage] || Object.keys(prism.languages[mappedLanguage]).length === 0) {
+    if (!window.Prism?.languages?.[mappedLanguage]) {
       console.warn(`Language ${mappedLanguage} did not load properly`);
       return;
     }

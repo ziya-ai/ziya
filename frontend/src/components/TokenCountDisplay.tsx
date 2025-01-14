@@ -34,7 +34,7 @@ const getTokenCount = async (text: string): Promise<number> => {
 export const TokenCountDisplay = () => {
 
     const {folders, checkedKeys} = useFolderContext();
-    const {messages} = useChatContext();
+    const {currentMessages} = useChatContext();
 
     const [totalTokenCount, setTotalTokenCount] = useState(0);
     const [chatTokenCount, setChatTokenCount] = useState(0);
@@ -78,14 +78,14 @@ export const TokenCountDisplay = () => {
     };
 
     const updateChatTokens = useCallback(async () => {
-        if (messages.length === 0) {
+        if (currentMessages.length === 0) {
             setChatTokenCount(0);
             return;
         }
 
         setIsLoading(true);
         try {
-            const allText = messages.map(msg => msg.content).join('\n');
+            const allText = currentMessages.map(msg => msg.content).join('\n');
             const tokens = await getTokenCount(allText);
             setChatTokenCount(tokens);
         } catch (error) {
@@ -94,7 +94,7 @@ export const TokenCountDisplay = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [messages]);
+    }, [currentMessages]);
 
     useEffect(() => {
         updateChatTokens();
@@ -114,7 +114,7 @@ export const TokenCountDisplay = () => {
             updateChatTokens();
         }, 500); // 500ms debounce
         return () => clearTimeout(timer);
-    }, [messages, updateChatTokens]);
+    }, [currentMessages, updateChatTokens]);
 
     return (
         <div className="token-display">

@@ -21,54 +21,60 @@ const PrismTest = React.lazy(() => import("./PrismTest"));
 const SyntaxTest = React.lazy(() => import("./SyntaxTest"));
 
 export const App = () => {
-    const {streamedContent, messages, startNewChat, isTopToBottom, setIsTopToBottom, scrollToBottom} = useChatContext();
+    const {streamedContent, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContent} = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
     const [showPrismTest, setShowPrismTest] = useState(false);
     const [showSyntaxTest, setShowSyntaxTest] = useState(false);
 
+    const handleNewChat = () => {
+        startNewChat();
+        setStreamedContent('');
+    };
+
     const preserveScrollPosition = (action: () => void) =>    {
-      const chatContainer = document.querySelector('.chat-container');
-      if (!chatContainer) return;
 
-      if (isTopToBottom) {
-        // Get the element and its exact offset from viewport top
-        const rect = chatContainer.getBoundingClientRect();
-        const messages = chatContainer.querySelectorAll('.message');
-        let targetMessage: Element | null = null;
-        let targetOffset = 0;
+        const chatContainer = document.querySelector('.chat-container');
+        if (!chatContainer) return;
 
-        for (const msg of messages) {
-            const msgRect = msg.getBoundingClientRect();
-            if (msgRect.top >= rect.top) {
-                targetMessage = msg;
-                targetOffset = msgRect.top - rect.top;
-                break;
+        if (isTopToBottom) {
+            // Get the element and its exact offset from viewport top
+            const rect = chatContainer.getBoundingClientRect();
+            const messages = chatContainer.querySelectorAll('.message');
+            let targetMessage: Element | null = null;
+            let targetOffset = 0;
+
+            for (const msg of messages) {
+                const msgRect = msg.getBoundingClientRect();
+                if (msgRect.top >= rect.top) {
+                    targetMessage = msg;
+                    targetOffset = msgRect.top - rect.top;
+                    break;
+                }
             }
+
+            action();
+
+            requestAnimationFrame(() => {
+                if (!targetMessage) return;
+                const newRect = chatContainer.getBoundingClientRect();
+                const newMsgRect = targetMessage.getBoundingClientRect();
+                chatContainer.scrollTop += (newMsgRect.top - (newRect.top + targetOffset));
+            });
+
+            // Double-check position after transition
+            setTimeout(() => {
+                const finalMsgRect = targetMessage?.getBoundingClientRect();
+                const finalContainerRect = chatContainer.getBoundingClientRect();
+                if (finalMsgRect && Math.abs(finalMsgRect.top - (finalContainerRect.top + targetOffset)) > 1) {
+                    chatContainer.scrollTop += (finalMsgRect.top - (finalContainerRect.top + targetOffset));
+                }
+            }, 300);
+        } else {
+            // Bottom-up mode handles itself correctly
+            action();
         }
-
-        action();
-
-        requestAnimationFrame(() => {
-            if (!targetMessage) return;
-            const newRect = chatContainer.getBoundingClientRect();
-            const newMsgRect = targetMessage.getBoundingClientRect();
-            chatContainer.scrollTop += (newMsgRect.top - (newRect.top + targetOffset));
-        });
-
-        // Double-check position after transition
-        setTimeout(() => {
-            const finalMsgRect = targetMessage?.getBoundingClientRect();
-            const finalContainerRect = chatContainer.getBoundingClientRect();
-            if (finalMsgRect && Math.abs(finalMsgRect.top - (finalContainerRect.top + targetOffset)) > 1) {
-               chatContainer.scrollTop += (finalMsgRect.top - (finalContainerRect.top + targetOffset));
-            }
-        }, 300);
-      } else {
-        // Bottom-up mode handles itself correctly
-        action();
-      }
     };
 
     const togglePanel = () => {
@@ -91,17 +97,17 @@ export const App = () => {
                 requestAnimationFrame(() => bottomUpContent.scrollTop = 0);
             }
         }, 100);
-    }, [isTopToBottom]);;
+    }, [isTopToBottom]);
 
     const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
 
     const chatContainerContent = isTopToBottom ? (
         <>
-	    <Suspense fallback={<div>Loading conversation...</div>}>
+            <Suspense fallback={<div>Loading conversation...</div>}>
                 <Conversation key="conv" enableCodeApply={enableCodeApply}/>
             </Suspense>
-	    <div style={{
-		position: 'relative',
+            <div style={{
+                position: 'relative',
                 display: 'flex',
                 flexDirection: 'column'
             }}>
@@ -110,13 +116,14 @@ export const App = () => {
             </div>
         </>
     ) : (
-            <div className="chat-content-with-fixed-input">
-	        <SendChatContainer fixed={true}/>
-                <StreamedContent key="stream" />
+        <div className="chat-content-with-fixed-input">
+            <SendChatContainer fixed={true}/>
+            <StreamedContent key="stream" />
             <div className="bottom-up-content" ref={bottomUpContentRef}>
                 <Conversation key="conv" enableCodeApply={enableCodeApply} />
             </div>
-        </div>);
+        </div>
+    );
 
     return (
         <ConfigProvider
@@ -129,7 +136,7 @@ export const App = () => {
                 },
             }}
         >
-	    <Button
+            <Button
                 className={`panel-toggle ${isPanelCollapsed ? 'collapsed' : ''}`}
                 type="primary"
                 onClick={togglePanel}
@@ -137,39 +144,39 @@ export const App = () => {
                 style={{ padding: '4px 8px' }}
             >{isPanelCollapsed ? '›' : '‹'}</Button>
             <div style={{ height: 'var(--app-header-height)' }}>
-	    <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
-	        <h2 style={{
-                    color: isDarkMode ? '#fff' : '#000',
-                    transition: 'color 0.3s ease'
-                }}>
-                <div style={{ position: 'absolute', left: '10px', display: 'flex', gap: '10px' }}>
-		<Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
-                        <Button
-                            icon={<SwapOutlined rotate={90} />}
-                            onClick={toggleDirection}
-                            type={isTopToBottom ? 'primary' : 'default'}
-                        >
-                            {isTopToBottom ? 'Top-Down' : 'Bottom-Up'}
-                        </Button>
-                </Tooltip>
+                <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
+                    <h2 style={{
+                        color: isDarkMode ? '#fff' : '#000',
+                        transition: 'color 0.3s ease'
+                    }}>
+                        <div style={{ position: 'absolute', left: '10px', display: 'flex', gap: '10px' }}>
+                            <Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
+                                <Button
+                                    icon={<SwapOutlined rotate={90} />}
+                                    onClick={toggleDirection}
+                                    type={isTopToBottom ? 'primary' : 'default'}
+                                >
+                                    {isTopToBottom ? 'Top-Down' : 'Bottom-Up'}
+                                </Button>
+                            </Tooltip>
+                        </div>
+                        Ziya: Code Assist
+                    </h2>
+                    <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '10px' }}>
+                        <Tooltip title="Toggle theme">
+                            <Button icon={<BulbOutlined />} onClick={toggleTheme} />
+                        </Tooltip>
+                        <Tooltip title="Test Prism Support">
+                            <Button icon={<ExperimentOutlined />} onClick={() => setShowPrismTest(!showPrismTest)} />
+                        </Tooltip>
+                        <Tooltip title="Test Complex Syntax">
+                            <Button icon={<CodeOutlined />} onClick={() => setShowSyntaxTest(!showSyntaxTest)} />
+                        </Tooltip>
+                        <Tooltip title="New Chat">
+                            <Button icon={<PlusOutlined />} onClick={handleNewChat} />
+                        </Tooltip>
+                    </div>
                 </div>
-		                    Ziya: Code Assist
-                </h2>
-                <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '10px' }}>
-                    <Tooltip title="Toggle theme">
-                    <Button icon={<BulbOutlined />} onClick={toggleTheme} />
-                    </Tooltip>
-                    <Tooltip title="Test Prism Support">
-                        <Button icon={<ExperimentOutlined />} onClick={() => setShowPrismTest(!showPrismTest)} />
-                    </Tooltip>
-                    <Tooltip title="Test Complex Syntax">
-                        <Button icon={<CodeOutlined />} onClick={() => setShowSyntaxTest(!showSyntaxTest)} />
-                    </Tooltip>
-                    <Tooltip title="New Chat">
-                    <Button icon={<PlusOutlined />} onClick={startNewChat} />
-                    </Tooltip>
-		</div>
-	        </div>
             </div>
             <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
                 <FolderTree isPanelCollapsed={isPanelCollapsed}/>
@@ -180,9 +187,9 @@ export const App = () => {
                         </Suspense>
                     ) : showPrismTest ? (
                         <div style={{ padding: '20px' }}>
-                        <Suspense fallback={<div>Loading Prism test...</div>}>
-                            <PrismTest />
-                        </Suspense>
+                            <Suspense fallback={<div>Loading Prism test...</div>}>
+                                <PrismTest />
+                            </Suspense>
                         </div>
                     ) : (
                         chatContainerContent
