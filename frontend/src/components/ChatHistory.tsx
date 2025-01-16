@@ -1,6 +1,6 @@
 import React, {useState, useCallback, useEffect} from 'react';
 import {List, Button, Input, message, Modal} from 'antd';
-import {DeleteOutlined, EditOutlined, DownloadOutlined, UploadOutlined, LoadingOutlined} from '@ant-design/icons';
+import {DeleteOutlined, EditOutlined, DownloadOutlined, UploadOutlined, LoadingOutlined, SettingOutlined} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
 import {useTheme} from '../context/ThemeContext';
 import { db } from '../utils/db';
@@ -89,13 +89,23 @@ export const ChatHistory: React.FC = () => {
         setEditingId(conversationId);
     };
 
-    const handleTitleChange = (conversationId: string, newTitle: string) => {
-        setConversations(prevConversations =>
-            prevConversations.map(conv =>
+    const handleTitleChange = async (conversationId: string, newTitle: string) => {
+        try {
+            // Update state first
+            const updatedConversations = conversations.map(conv =>
                 conv.id === conversationId ? {...conv, title: newTitle} : conv
-            )
-        );
-        setEditingId(null);
+	    );
+            
+            // Persist to IndexedDB before updating state
+            await db.saveConversations(updatedConversations);
+            
+            // Update state after successful save
+            setConversations(updatedConversations);
+            setEditingId(null);
+        } catch (error) {
+            console.error('Error saving conversation title:', error);
+            message.error('Failed to save conversation title');
+        }
     };
 
     const handleTitleBlur = (conversationId: string, newTitle: string) => {
@@ -263,21 +273,9 @@ export const ChatHistory: React.FC = () => {
                                     importConversations({ target } as React.ChangeEvent<HTMLInputElement>);
                                 }
                             };
-                            input.click();
-                        }}>
+			    input.click();}}>
                         Import
-                    </Button>
-                </div>
-                <div style={{ marginTop: '8px', display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                    <Button 
-                        type="dashed" 
-                        onClick={handleRepairDatabase}
-                        loading={isRepairing}>
-                        Repair Database
-                    </Button>
-                    <Button type="dashed" danger onClick={handleClearDatabase}>
-                        Clear Database
-                    </Button>
+		    </Button>
                 </div>
                 </>
             }

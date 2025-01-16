@@ -17,6 +17,25 @@ interface WhitespaceMatch {
     text: string;
 }
 
+const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): string => {
+    if (!content) return '';
+
+    // Preserve Prism token classes while adding our own styling
+    return content
+        .replace(/<span class="token ([^"]+)">/g, (match, tokenClass) => {
+            // Add our custom class while preserving Prism's token class
+            return `<span class="token ${tokenClass} diff-token-${type}">`;
+        })
+        .replace(
+            /([\s]+)$/g,
+            (match) => {
+                // Highlight trailing whitespace
+                const markers = match.replace(/ /g, '·').replace(/\t/g, '→');
+                return `<span class="ws-marker ${type === 'insert' ? 'ws-add' : 'ws-delete'}">${markers}</span>${match}`;
+            }
+        );
+};
+
 const normalizeCompare = (line: string | null | undefined): string => {
     // Return empty string if line is null or undefined
     if (!line) return '';
@@ -30,12 +49,25 @@ const normalizeCompare = (line: string | null | undefined): string => {
     return content;
 }
 
+const isJsxToken = (text: string): boolean => {
+       // Check if this is a JSX/TSX component or element
+       return /^<[A-Z][^>]*>|^<\/[A-Z][^>]*>|^<[a-z][^>]*>|^<\/[a-z][^>]*>/.test(text);
+};
+
 const visualizeWhitespace = (text: string, changeType: 'ws-add' | 'ws-delete'): string => {
    // Match trailing whitespace only
    const match = text.match(/[ \t]+$/);
    if (!match) {
        return text;
    }
+
+   // Check if we're inside a JSX/HTML tag
+  const openBracket = text.lastIndexOf('<');
+  const closeBracket = text.lastIndexOf('>');
+  if (openBracket > closeBracket) {
+      // We're inside an unclosed tag, don't mark whitespace
+      return text;
+  }
 
    const trailingWs = match[0];
    const baseText = text.slice(0, -trailingWs.length);
@@ -94,22 +126,64 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
     const { isDarkMode } = useTheme();
 
     useEffect(() => {
+       console.log('DiffLine initial props:', {
+           content,
+           charCodes: Array.from(content).map(c => c.charCodeAt(0))
+       });
+    }, [content]);
+
+    useEffect(() => {
         const highlightCode = async () => {
             try {
                 await loadPrismLanguage(language);
                 if (!window.Prism || content.length <= 1) return;
 
-		// remove marker for syntax highlighting
+		// Handle whitespace-only lines before any processing
+                if (!content.trim()) {
+                    const markers = content.replace(/[ \t]/g, '·');
+		    const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
+                    setHighlighted(
+                        `<span class="token-line">` +
+                        `<span class="ws-marker ${wsClass}">${markers}</span>${content}` +
+                        `</span>`);
+                    return;
+                }
+
+		// First get the actual content without the diff marker
                 let code = content;
-                if (content.startsWith('+') || content.startsWith('-') || content.startsWith(' ')) {
-                    code = content.slice(1);
+                if (content.startsWith('+') || content.startsWith('-')) {
+		    // Keep the original indentation by preserving all spaces after the marker
+                    const marker = content[0];
+		    console.log('Marker removal:', {marker, beforeSlice: code, afterSlice: content.slice(1)});
+                    code = content.slice(1);  // Remove just the marker
+                }
+
+		// Handle whitespace before syntax highlighting
+                const match = code.match(/\s+$/);
+                if (match) {
+                    const trailingWs = match[0];
+                    const markers = Array.from(trailingWs)
+                        .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
+                        .join('');
+                    code = code.slice(0, -trailingWs.length) + `<span class="ws-marker ${type === 'insert' ? 'ws-add' : 'ws-delete'}">${markers}</span>${trailingWs}`;
                 }
 
                 // Highlight the code with Prism
                 const grammar = window.Prism.languages[language] || window.Prism.languages.plaintext;
                 let highlightedCode = window.Prism.highlight(code, grammar, language);
-                
-                // Wrap the highlighted code in a span to preserve Prism classes
+
+		// Handle whitespace-only lines immediately
+                if (!code.trim()) {
+                    const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
+                    highlightedCode = highlightedCode.replace(/^(\s+)/, (spaces) => {
+                        const markers = Array.from(spaces)
+                            .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
+                            .join('');
+                        return `<span class="ws-marker ${wsClass}">${markers}</span>${spaces}`;
+                    });
+                }
+             
+	     	// Wrap the highlighted code in a span to preserve Prism classes
                 highlightedCode = `<span class="token-line">${highlightedCode}</span>`;
                 
                 setHighlighted(highlightedCode);
@@ -145,12 +219,23 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                         // If we found a whitespace-only difference, highlight it
                         if (isWhitespaceDiff) {
                             const changeType = type === 'insert' ? 'ws-add' : 'ws-delete';
+ 
+			    // Handle leading whitespace for whitespace-only differences
+                            let processedCode = highlightedCode.replace(/^(<span class="token-line">)?(\s+)/, (match, span, spaces) => {
+                                if (!spaces) return match;
+                                const markers = Array.from(spaces)
+                                    .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
+                                    .join('');
+                                const prefix = span || '';
+                                return `${prefix}<span class="ws-marker ${changeType}">${markers}</span>${spaces}`;
+                            });
 
                             // Just highlight trailing whitespace for now
                             const match = code.match(/\s+$/);
                             if (match) {
                                 const index = match.index!;
                                 const ws = match[0];
+				console.log('Whitespace processing:', { text: code, match: ws, index });
 
                                 const beforeWs = code.slice(0, index);
 				setHighlighted(visualizeWhitespace(code, changeType));
@@ -215,15 +300,26 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 	return content; 
     };
 
+    const preserveJsxSyntax = (content: string) => {
+       // Preserve JSX angle brackets and attributes
+       return content.replace(/(<\/?[A-Z][a-zA-Z]*)|(<\/?)([a-z][a-zA-Z]*)/g, (match) => {
+           // Keep the original casing and structure
+           return match;
+       });
+   };
+
     const renderContent = () => (
         <td
-            className={`diff-code diff-code-${type}`}
-            dangerouslySetInnerHTML={{
-                __html: `<div class="diff-line-content token-container" style="${
+           className={`diff-code diff-code-${type}`}
+           dangerouslySetInnerHTML={{
+               __html: `<div class="diff-line-content token-container" style="white-space: pre;${
                     isLoading ? Object.entries({...baseStyles, ...themeStyles}).map(([k,v]) => `${k}:${v}`).join(';') : ''
-                }">${wrapWithLineBreak(lineContent)}</div>`
-            }}
-            colSpan={showLineNumbers ? 1 : 3}
+	       }">${preserveTokens(
+                   wrapWithLineBreak(
+                       preserveJsxSyntax(lineContent)
+                   ), type)}</div>`
+           }}
+           colSpan={showLineNumbers ? 1 : 3}
         />
     );
 

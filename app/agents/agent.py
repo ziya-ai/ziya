@@ -63,48 +63,68 @@ model_id = {
     "haiku": "us.anthropic.claude-3-haiku-20240307-v1:0",
 }[os.environ.get("ZIYA_AWS_MODEL", "sonnet3.5-v2")]
 logger.info(f"Using Claude Model: {model_id}")
-
+    
 model = ChatBedrock(
     model_id=model_id,
     model_kwargs={"max_tokens": 4096, "temperature": 0.3, "top_k": 15},
     credentials_profile_name=aws_profile if aws_profile else None,
-    config=botocore.config.Config(
-        read_timeout=900,
-        retries={
-            'max_attempts': 3,
-            'mode': 'adaptive',
-            'total_max_attempts': 5
-        },
-        retry_mode='adaptive'
+    config=botocore.config.Config( 
+        read_timeout=900, 
+        retries={ 
+            'max_attempts': 3, 
+            'total_max_attempts': 5 
+        } 
+        # retry_mode is not supported in this version
     )
 )
 
-# Add retry decorator for the model's invoke method
-def with_retries(func):
-    async def wrapper(*args, **kwargs):
+# Create a wrapper class that adds retries
+class RetryingChatBedrock:
+    def __init__(self, model):
+        self.model = model
+
+    def bind(self, **kwargs):
+        return RetryingChatBedrock(self.model.bind(**kwargs))
+
+    def get_num_tokens(self, text: str) -> int:
+        return self.model.get_num_tokens(text)
+
+    def __getattr__(self, name: str):
+        # Delegate any unknown attributes to the underlying model
+        return getattr(self.model, name)
+
+    async def _with_retries(self, func, *args, **kwargs):
         max_retries = 3
-        retry_delay = 1  # Initial delay in seconds
+        retry_delay = 1
+        last_error = None
 
         for attempt in range(max_retries):
             try:
-                return await func(*args, **kwargs)
+                result = func(*args, **kwargs)
+                if hasattr(result, '__await__'):
+                    return await result
+                return result
             except botocore.exceptions.EventStreamError as e:
-                if "modelStreamErrorException" in str(e):
-                    if attempt < max_retries - 1:
-                        delay = retry_delay * (2 ** attempt)  # Exponential backoff
-                        logger.info(f"Stream error, retrying in {delay} seconds (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(delay)
-                        continue
-                raise
+                if "modelStreamErrorException" in str(e) and attempt < max_retries - 1:
+                    delay = retry_delay * (2 ** attempt)
+                    logger.info(f"Stream error, retrying in {delay} seconds (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+                last_error = e
             except Exception as e:
-                logger.error(f"Unexpected error during model invocation: {str(e)}")
-                raise
-        return await func(*args, **kwargs)  # Final attempt
-    return wrapper
+                last_error = e
+                break
 
-# Apply retry decorator to the model's invoke method
-model.invoke = with_retries(model.invoke)
-model.astream = with_retries(model.astream)
+        if last_error:
+            raise last_error
+
+    async def __call__(self, *args, **kwargs):
+        return await self._with_retries(self.model.invoke, *args, **kwargs)
+
+    async def astream(self, *args, **kwargs):
+        return await self._with_retries(self.model.astream, *args, **kwargs)
+
+model = RetryingChatBedrock(model)
 
 file_state_manager = FileStateManager()
 

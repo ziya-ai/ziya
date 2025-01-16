@@ -6,6 +6,7 @@ import { marked, Tokens } from 'marked';
 import { Button, message, Radio, Space, Spin, RadioChangeEvent } from 'antd';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import * as Viz from '@viz-js/viz';
+import { D3Renderer } from './D3Renderer';
 import { CheckOutlined, CodeOutlined } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
 import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
@@ -1028,6 +1029,27 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
                         <pre><code>{token.text}</code></pre>
                     </div>
                 );
+            }
+        }
+
+        // Handle D3.js visualizations
+        if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
+            try {
+                // Parse the D3 specification
+                const spec = JSON.parse(token.text);
+                return (
+                    <div key={index} className="d3-visualization-container" style={{
+                        margin: '1em 0',
+                        padding: '1em',
+                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f8f9fa',
+                        borderRadius: '6px',
+                        overflow: 'auto'
+                    }}>
+                        <D3Renderer spec={token.text} />
+                    </div>
+                );
+            } catch (error) {
+                return <pre key={index}><code>Error parsing D3 specification: {error instanceof Error ? error.message : String(error)}</code></pre>;
             }
         }
 
