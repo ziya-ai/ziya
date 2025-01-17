@@ -61,6 +61,12 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         setIsStreaming(true);
 	setStreamedContent('');
 	setStreamingConversationId(currentConversationId);
+
+	// Debug log the selected files state
+        console.log('Current file selection state:', {
+            checkedKeys,
+            selectedFiles: convertKeysToStrings(checkedKeys)
+        });
 	setIsProcessing(true);
 	
         // Create new human message
@@ -80,13 +86,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         try {
 	    // Get latest messages after state update
             const updatedMessages = [...currentMessages, newHumanMessage];
+	    const selectedFiles = convertKeysToStrings(checkedKeys);
             const result = await sendPayload(
                 currentConversationId,
                 question,
                 updatedMessages,
                 setStreamedContent,
                 setIsStreaming,
-		convertKeysToStrings(checkedKeys),
+		selectedFiles,
                 addMessageToCurrentConversation
             );
 

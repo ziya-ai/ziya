@@ -1,5 +1,5 @@
 import React, { useState, Suspense } from 'react';
-import { Card, Tabs, Button, Tooltip, Modal, message, Space } from 'antd';
+import { Card, Tabs, Button, Tooltip, Modal, message, Space, Alert, Typography } from 'antd';
 import {
     ExperimentOutlined,
     CodeOutlined,
@@ -14,6 +14,8 @@ import { db } from '../utils/db';
 import { DiffTestRunner } from '../utils/diffTestRunner';
 import { diffTestSuites } from '../utils/diffTestCases';
 import { DiffTestReport } from '../utils/diffTestTypes';
+import { useChatContext } from '../context/ChatContext';
+import { useFolderContext } from '../context/FolderContext';
 
 // Lazy load test components
 const PrismTest = React.lazy(() => import('./PrismTest'));
@@ -29,6 +31,8 @@ export const Debug: React.FC = () => {
     const [testReport, setTestReport] = useState<DiffTestReport | null>(null);
     const [isRunningTests, setIsRunningTests] = useState(false);
     const [isRepairing, setIsRepairing] = useState(false);
+    const { dbError } = useChatContext();
+    const { folders } = useFolderContext();
     const { isDarkMode, toggleTheme } = useTheme();
 
     const runAllTests = async () => {
@@ -41,6 +45,47 @@ export const Debug: React.FC = () => {
             setTestReport(results[0]);
         } finally {
             setIsRunningTests(false);
+        }
+    };
+
+    const handleForceReset = async () => {
+        Modal.confirm({
+            title: 'Force Reset Database',
+            content: 'This will completely delete and reinitialize the database. All data will be lost. Continue?',
+            okText: 'Yes',
+            okType: 'danger',
+            cancelText: 'No',
+            onOk: async () => {
+                try {
+                    await db.forceReset();
+                    message.success('Database reset successfully');
+                    window.location.reload(); // Force reload to reinitialize everything
+                } catch (error) {
+                    message.error('Failed to reset database');
+                }
+            }
+        });
+    };
+
+    const checkDatabaseHealth = async () => {
+        try {
+            const health = await db.checkDatabaseHealth();
+            Modal.info({
+                title: 'Database Health Check',
+                content: (
+                    <div>
+                        <p>Status: {health.isHealthy ? 'Healthy' : 'Unhealthy'}</p>
+                        {health.errors.length > 0 && (
+                            <ul>
+                                {health.errors.map((error, i) => <li key={i}>{error}</li>)}
+                            </ul>
+                        )}
+                        <p>Can recover: {health.canRecover ? 'Yes' : 'No'}</p>
+                    </div>
+                )
+            });
+        } catch (error) {
+            message.error('Failed to check database health');
         }
     };
 
@@ -86,8 +131,39 @@ export const Debug: React.FC = () => {
             backgroundColor: isDarkMode ? '#141414' : '#f0f2f5'
         }}>
             <Card style={{ marginBottom: 16 }}>
-                <div style={{ position: 'relative' }}>
-                    <Space style={{ 
+                {/* Database Status Section */}
+                {dbError && (
+                    <Alert
+                        message="Database Error"
+                        description={dbError}
+                        type="error"
+                        showIcon
+                        style={{ marginBottom: 16 }}
+                    />
+                )}
+                <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }}>
+                    <Typography.Title level={4}>System Status</Typography.Title>
+                    <Space wrap>
+                        <Button onClick={checkDatabaseHealth}>
+                            Check Database Health
+                        </Button>
+                        <Button type="primary" danger onClick={handleForceReset}>
+                            Force Reset Database
+                        </Button>
+                        <Button 
+                            onClick={() => window.localStorage.clear()} 
+                            danger
+                        >
+                            Clear Local Storage
+                        </Button>
+                        <Alert
+                            message={`File Context Status: ${folders ? 'Loaded' : 'Not Loaded'}`}
+                            type={folders ? 'success' : 'warning'}
+                        />    
+		    </Space>
+		</Space>
+		<div style={{ position: 'relative' }}>
+		    <Space style={{
                         position: 'absolute',
                         top: 0,
                         right: 0,

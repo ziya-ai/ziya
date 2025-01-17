@@ -17,17 +17,28 @@ interface DB {
  
 class ConversationDB implements DB {
     private saveInProgress = false;
+    private lastSavedData: string | null = null;
+    private lastKnownVersion: number = 0;
+    private initializing = true;
+
     db: IDBDatabase | null = null;
  
     async init(): Promise<void> {
         return new Promise((resolve, reject) => {
+	    console.log('Initializing database...');
             const request = indexedDB.open(DB_NAME, DB_VERSION);
 	    console.log('Initializing ZiyaDB...');
  
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
                 this.db = request.result;
+		this.initializing = false;
                 resolve();
+		console.log('Database initialized successfully', {
+                    name: this.db.name,
+                    version: this.db.version,
+                    stores: Array.from(this.db.objectStoreNames)
+                });
             };
  
             request.onupgradeneeded = (event) => {
@@ -45,9 +56,34 @@ class ConversationDB implements DB {
                 }
             };
 	    request.onblocked = () => console.error('Database upgrade was blocked');
-        });
+            request.onerror = (event) => {
+                const error = request.error?.message || 'Unknown database error';
+                console.error('Database initialization error:', error);
+                reject(new Error(`Database initialization failed: ${error}`));
+            };
+	});
     }
  
+    async checkDatabaseHealth(): Promise<{
+        isHealthy: boolean;
+        errors: string[];
+        canRecover: boolean;
+    }> {
+        return new Promise((resolve) => {
+            const request = indexedDB.open(DB_NAME);
+            request.onsuccess = () => {
+                const db = request.result;
+                const hasRequiredStores = db.objectStoreNames.contains(STORE_NAME) &&
+                    db.objectStoreNames.contains(BACKUP_STORE_NAME);
+                resolve({
+                    isHealthy: hasRequiredStores,
+                    errors: hasRequiredStores ? [] : ['Missing required object stores'],
+                    canRecover: true
+                });
+            };
+	 });
+    }
+
     private validateConversations(conversations: Conversation[]): boolean {
         return conversations.every(conv =>
             typeof conv === 'object' &&
@@ -89,16 +125,124 @@ class ConversationDB implements DB {
             }
         });
     }
- 
+
+    private lastMergedVersion: number = 0;
+    private async hasDataChanged(conversations: Conversation[]): Promise<boolean> {
+        try {
+            // First check our cached last saved state
+            const newData = JSON.stringify(conversations);
+            if (newData === this.lastSavedData) {
+                console.debug('No changes detected from last save, skipping');
+                return false;
+            }
+
+            // Then check current database state
+            const currentData = await this.getConversations();
+
+	    // If this is a new conversation, always save
+            const hasNewConversation = conversations.some(conv =>
+                !currentData.find(c => c.id === conv.id)
+            );
+
+
+            // Check if we have a version conflict
+            const maxRemoteVersion = Math.max(...currentData.map(c => c._version || 0));
+            if (maxRemoteVersion > this.lastKnownVersion) {
+                console.debug('Version conflict detected, merging changes');
+                // Merge the changes
+                const mergedConversations = this.mergeConversations(conversations, currentData);
+                // Update our version tracking
+		this.lastKnownVersion = maxRemoteVersion;
+                this.lastMergedVersion = Date.now();
+                // Save the merged result instead of original
+                await this.saveConversations(mergedConversations);
+                return false; // Skip the original save since we've handled the merge
+            }
+
+	    // Always save if we have a new conversation
+            if (hasNewConversation) {
+                return true;
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error checking for changes:', error);
+            return true; // If check fails, attempt save anyway
+        }
+    }
+
+    private updateLastSavedData(conversations: Conversation[]) {
+	console.debug(`Updating last saved data with ${conversations.length} conversations`);
+        this.lastSavedData = JSON.stringify(conversations);
+    }
+
+    private mergeConversations(local: Conversation[], remote: Conversation[]): Conversation[] {
+        const merged = new Map<string, Conversation>();
+
+        // First, add all local conversations to the map
+        local.forEach(conv => {
+	    const isNewConv = !remote.find(r => r.id === conv.id);
+            merged.set(conv.id, {
+                ...conv,
+		_version: conv._version || this.lastMergedVersion || Date.now(),
+		isNew: isNewConv,
+                isActive: conv.isActive || isNewConv // Ensure new conversations are active
+            });
+        });
+
+        // Then, merge remote conversations, keeping the newer version
+        remote.forEach(conv => {
+            const localConv = merged.get(conv.id);
+            if (!localConv || (conv._version && localConv._version && conv._version > localConv._version)) {
+		if (!localConv || !localConv.isNew) {
+                    merged.set(conv.id, {
+                        ...conv,
+                        _version: conv._version || this.lastMergedVersion || Date.now(),
+			isNew: false,
+			isActive: conv.isActive
+                    });
+                }
+                console.debug(`Merge decision for ${conv.id}:`, { action: localConv?.isNew ? 'kept local' : 'used remote' });
+            }
+        });
+
+        return Array.from(merged.values()).sort((a, b) => {
+	    // Sort by lastAccessedAt, putting new conversations first
+            if (a.isNew && !b.isNew) return -1;
+            if (!a.isNew && b.isNew) return 1;
+
+            const aTime = a.lastAccessedAt || 0;
+            const bTime = b.lastAccessedAt || 0;
+	    return bTime - aTime;
+        });
+    }
+
+    private logMergeResults(mergedConversations: Conversation[]): void {
+        console.debug('Merged conversations:', mergedConversations.map(c => ({ id: c.id, isNew: c.isNew })));
+    }
+
     async saveConversations(conversations: Conversation[]): Promise<void> {
         if (!this.db) throw new Error('Database not initialized');
+
+	// During initialization, just save without checking for changes
+        if (this.initializing) {
+            console.debug('Initial save, skipping change detection');
+            await this._forceSave(conversations);
+            return;
+        }
 
 	// Prevent concurrent saves
         if (this.saveInProgress) {
             console.warn('Save already in progress, skipping');
             return;
         }
-        this.saveInProgress = true;
+        if (!await this.hasDataChanged(conversations)) {
+            console.debug('No data changes detected, skipping save');
+	    return;
+	}
+
+    	this.saveInProgress = true;
+	console.debug('Starting save operation:', { conversationCount: conversations.length });
         
         if (!this.validateConversations(conversations)) {
 	    console.warn('Some conversations failed validation but proceeding with save');
@@ -106,34 +250,66 @@ class ConversationDB implements DB {
  
 	this.logConversationStats(conversations);
 	
-        const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readwrite');
         
         try {
+            // Check if this is a new conversation
+            const currentData = await this.getConversations();
+            const hasNewConversation = conversations.some(conv => 
+                !currentData.find(c => c.id === conv.id)
+            );
+ 
+            if (hasNewConversation) {
+                console.debug('New conversation detected, forcing save');
+                await this._forceSave(conversations);
+                return;
+            }
+		
             // First, backup current state
-            const backupStore = tx.objectStore(BACKUP_STORE_NAME);
+            const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readwrite');
             const store = tx.objectStore(STORE_NAME);
+            const backupStore = tx.objectStore(BACKUP_STORE_NAME);
             
+	    console.log('Starting transaction to save conversations:', conversations.length);
             return new Promise<void>((resolve, reject) => {
                 // Get current state for backup
                 const getRequest = store.get('current');
                 
+		console.debug('Retrieving current state for backup');
                 getRequest.onsuccess = () => {
                     if (getRequest.result) {
+			console.debug('Backing up current state before save');
                         backupStore.put(getRequest.result, 'backup');
                     }
 
 		    // Keep most recent 100 conversations
-                    const conversationsToSave = conversations.slice(-100);
+		    const conversationsToSave = conversations.slice(-100).map(conv => ({
+                        ...conv,
+                        _version: Date.now(),
+                        messages: conv.messages.map(msg => ({
+                            ...msg,
+                            _timestamp: msg._timestamp || Date.now()
+                        }))
+                    }));
+		    console.debug('Preparing to save conversations:', {
+                        count: conversationsToSave.length,
+                        firstId: conversationsToSave[0]?.id,
+                        lastId: conversationsToSave[conversationsToSave.length - 1]?.id
+                    });
+		    this.updateLastSavedData(conversationsToSave);
                     
                     // Save new state
                     const putRequest = store.put(conversationsToSave, 'current');
-
 		    putRequest.onsuccess = () => {
+			console.debug('Save operation completed successfully');
                         resolve();
                     };
 
 		    putRequest.onerror = () => {
                         reject(putRequest.error);
+                    };
+
+		    tx.oncomplete = () => {
+                        console.debug('Transaction completed successfully');
                     };
                 };
 
@@ -149,15 +325,47 @@ class ConversationDB implements DB {
                 };
             });
         } finally {
+	    console.log('Save transaction completed');	
             this.saveInProgress = false;
         }
     }
  
+    private async _forceSave(conversations: Conversation[]): Promise<void> {
+	if (!this.db) {
+            throw new Error('Database not initialized');
+        }
+
+        console.debug('Forcing save of conversations:', conversations.length);
+        const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const backupStore = tx.objectStore(BACKUP_STORE_NAME);
+
+        return new Promise<void>((resolve, reject) => {
+            // Backup current state
+            const getRequest = store.get('current');
+            getRequest.onsuccess = () => {
+                if (getRequest.result) {
+                    backupStore.put(getRequest.result, 'backup');
+                }
+
+                // Force save new state
+                const putRequest = store.put(conversations, 'current');
+                putRequest.onsuccess = () => {
+                    console.debug('Force save completed successfully');
+                    resolve();
+                };
+                putRequest.onerror = () => reject(putRequest.error);
+            };
+            getRequest.onerror = () => reject(getRequest.error);
+        });
+    }
+
     async getConversations(): Promise<Conversation[]> {
         if (!this.db) throw new Error('Database not initialized');
  
         const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readonly');
         const store = tx.objectStore(STORE_NAME);
+	console.log('Starting transaction to get conversations');
         const backupStore = tx.objectStore(BACKUP_STORE_NAME);
 	let recoveredFromBackup = false;
  
@@ -166,6 +374,7 @@ class ConversationDB implements DB {
             
             request.onsuccess = () => {
 		let conversations = request.result || [];
+		console.log('Retrieved conversations from store:', conversations?.length || 0);
 
                 if (Array.isArray(conversations) && conversations.length > 0) {
                     // Filter out invalid conversations
@@ -174,6 +383,7 @@ class ConversationDB implements DB {
                     );
 
                     if (validConversations.length > 0) {
+			console.log('Found valid conversations:', validConversations.length);
                         console.log(`Retrieved ${validConversations.length} valid conversations`);
                         resolve(validConversations);
                         return;
@@ -204,6 +414,8 @@ class ConversationDB implements DB {
                 };
             };
 
+	    request.onerror = () => reject(request.error);
+
             request.onerror = () => {
                 console.error('Error reading conversations:', request.error);
                 reject(request.error);
@@ -211,7 +423,43 @@ class ConversationDB implements DB {
         });
     }
 
-        async repairDatabase(): Promise<void> {
+    async forceReset(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            // Delete the entire database
+            const deleteRequest = indexedDB.deleteDatabase(DB_NAME);
+
+            deleteRequest.onsuccess = async () => {
+                console.log('Database deleted successfully');
+                try {
+                    // Reinitialize the database
+                    await this.init();
+                    resolve();
+                } catch (error) {
+                    reject(error);
+                }
+            };
+
+            deleteRequest.onerror = () => {
+                reject(new Error('Failed to delete database'));
+            };
+
+            deleteRequest.onblocked = () => {
+                reject(new Error('Database deletion blocked'));
+            };
+        });
+    }
+
+    async isAccessible(): Promise<boolean> {
+        if (!this.db) return false;
+        try {
+            await this.getConversations();
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    async repairDatabase(): Promise<void> {
         if (!this.db) throw new Error('Database not initialized');
 
         try {

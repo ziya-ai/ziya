@@ -199,6 +199,21 @@ export const sendPayload = async (
 
 async function getApiResponse(messages: any[], question: string, checkedItems: string[]) {
     const messageTuples: string[][] = [];
+    
+    // Validate that we have files selected
+    console.log('API Request File Selection:', {
+        checkedItemsCount: checkedItems.length,
+        checkedItems,
+        sampleFile: checkedItems[0],
+        hasD3Renderer: checkedItems.includes('frontend/src/components/D3Renderer.tsx')
+    });
+
+    // Log specific file paths we're interested in
+    console.log('Looking for specific files:', {
+        d3Path: 'frontend/src/components/D3Renderer.tsx',
+        checkedItems,
+        sampleFile: checkedItems[0]
+    });
 
     console.log('Messages received in getApiResponse:', messages.map(m => ({
         role: m.role,
@@ -210,6 +225,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
 	// If this is the first message, we won't have any pairs yet
         if (messages.length === 1 && messages[0].role === 'human') {
             console.log('First message in conversation, no history to send');
+	    console.log('Selected files being sent to server:', checkedItems);
             return await fetch('/ziya/stream_log', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -217,7 +233,11 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
                     input: {
                         chat_history: [],
                         question: question,
-                        config: { files: checkedItems },
+			config: {
+                            files: checkedItems,
+                            // Add explicit file list for debugging
+                            fileList: checkedItems.join(', ')
+                        },
                     },
                 }),
             }) as Response;
@@ -253,22 +273,23 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
 	console.log('Current question:', question);
 	console.log('Full chat history:', messageTuples);
 
-        console.log('Sending payload:', JSON.stringify({
-            chat_history: messageTuples,
-            question,
-            config: { files: checkedItems }
-        }, null, 2));
+	const payload = {
+            input: {
+                chat_history: messageTuples,
+                question: question,
+                config: {
+                    files: checkedItems,
+                    // Add explicit file list for debugging
+                    fileList: checkedItems.join(', ')
+                },
+            },
+        };
 
+        console.log('Sending payload to server:', JSON.stringify(payload, null, 2));
         return await fetch('/ziya/stream_log', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                input: {
-                    chat_history: messageTuples,
-                    question: question,
-                    config: { files: checkedItems },
-                },
-            }),
+	    body: JSON.stringify(payload),
         }) as Response;
     } catch (error) {
         console.error('API request failed:', error);

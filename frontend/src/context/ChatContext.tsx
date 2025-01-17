@@ -24,6 +24,7 @@ interface ChatContext {
     loadConversation: (id: string) => void;
     startNewChat: () => void;
     isTopToBottom: boolean;
+    dbError: string | null;
     setIsTopToBottom: Dispatch<SetStateAction<boolean>>;
     scrollToBottom: () => void;
 }
@@ -48,6 +49,9 @@ export function ChatProvider({children}: ChatProviderProps) {
     const [isTopToBottom, setIsTopToBottom] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
     const lastSavedState = useRef<string>('');
+    const pendingSave = useRef<NodeJS.Timeout | null>(null);
+    const messageUpdateCount = useRef(0);
+    const [dbError, setDbError] = useState<string | null>(null);
 
     const scrollToBottom = () => {
         const chatContainer = document.querySelector('.chat-container');
@@ -79,84 +83,107 @@ export function ChatProvider({children}: ChatProviderProps) {
         return shouldUpdate;
     };
 
-    // Add debounce for database updates
-    const debouncedSaveToDb = useCallback(
-        debounce(async (updatedConversations: Conversation[]) => {
+    const saveConversationsWithDebounce = useCallback(async (conversations: Conversation[]) => {
+        if (pendingSave.current) {
+            clearTimeout(pendingSave.current);
+        }
+
+        pendingSave.current = setTimeout(async () => {
             try {
-                await db.saveConversations(updatedConversations);
-                console.log('Persisted conversations to database:',
-                    `Total: ${updatedConversations.length}`);
+                await db.saveConversations(conversations);
+                console.log('Debounced saved conversations to database');
             } catch (error) {
-                console.error('Error persisting conversations:', error);
+                console.error('Failed to save conversations:', error);
+                setDbError(error instanceof Error ? error.message : 'Failed to save conversations');
             }
-        }, 1000),
-        []
-    );
+            pendingSave.current = null;
+        }, 1000); // 1 second debounce
+    }, []);
 
     const addMessageToCurrentConversation = (message: Message) => {
         if (!currentConversationId) return;
 
-	// If this is a human message and we're already processing a response, don't add it
-        if (message.role === 'human' && isStreaming) {
-            console.warn('Attempted to add human message while streaming');
+	const timestamp = Date.now();
+	console.log(`Adding message to conversation ${currentConversationId}:`, message);
+
+	if (message.role === 'human' && isStreaming) {
             return;
         }
+
+	messageUpdateCount.current += 1;
+        const updateId = messageUpdateCount.current;
+
+        console.debug('Message update lifecycle:', {
+            updateId,
+            messageType: message.role,
+            conversationId: currentConversationId,
+	    currentMessageCount: currentMessages.length
+        });
  
 	console.log('Adding message:', {
             role: message.role,
             content: message.content.substring(0, 50)
         });
 
-	const timestamp = Date.now();
-	console.log(`Adding message to conversation ${currentConversationId}:`, message);
-
-        const updateConversations = (prevConversations: Conversation[]): Conversation[] => {
-	    // Find existing conversation
+	const processConversationUpdate = (prevConversations: Conversation[]): Conversation[] => {
+	   // Find existing conversation
            const existingConversation = prevConversations.find(c => c.id === currentConversationId);
-           
-           if (!existingConversation) {
-                // Create new conversation
-                const newConversation: Conversation = {
+
+	   // Get message count safely
+           const getMessageCount = (conv: Conversation | undefined | null): number => {
+               return conv?.messages?.length ?? 0;
+           };
+
+	   const updatedConversations = !existingConversation
+               ? [...prevConversations, {
+                    // Create and add new conversation
                     id: currentConversationId,
 		    title: message.role === 'human'
                        ? message.content.slice(0, 45) + (message.content.length > 45 ? '...' : '')
                        : prevConversations.find(c => c.id === currentConversationId)?.title || 'New Conversation',
                     messages: [message],
-                    lastAccessedAt: timestamp,
+                    lastAccessedAt: Date.now(),
                     isActive: true,
 		    _version: Date.now()
-                };
-		return [...prevConversations, newConversation];
-            }
+	       }]
+	       : prevConversations.map(conv =>
+                   // Update existing conversation
+                   conv.id === currentConversationId
+                       ? { ...conv, messages: [...conv.messages, message], lastAccessedAt: Date.now(), _version: Date.now() }
+                       : conv
+               );
 
-	   // Update existing conversation
-           const updatedConversations = prevConversations.map(conv =>
-               conv.id === currentConversationId
-                   ? {
-                       ...conv,
-                       messages: [...conv.messages, message],
-                       lastAccessedAt: timestamp,
-		       _version: Date.now()
-                     }
-                   : conv
-           );
+	   console.debug('Conversation update processed:', {
+                existingConversationFound: Boolean(existingConversation),
+		updatedConversationCount: prevConversations.length + (existingConversation ? 0 : 1),
+		messageCount: existingConversation?.messages?.length ?? 0 + 1,
+                conversationId: currentConversationId
+            });
 
-           return updatedConversations;
-	};
+	   // Log after state update
+            console.debug('Message update complete:', {
+                updateId,
+                totalMessages: currentMessages.length + 1,
+                conversationId: currentConversationId
+            });
 
-	// Update state first
-        setConversations(prevConversations => {
-	    // Get the updated conversations array
-            const updatedConversations: Conversation[] = updateConversations(prevConversations);
+	    // Immediately save to database
+            console.debug('Saving conversation update:', {
+                conversationId: currentConversationId,
+	        messageCount: getMessageCount(existingConversation) + 1,
+		isNew: !existingConversation
+            });
 
-            // Persist changes after state update
-            if (shouldUpdateState(updatedConversations)) {
-                console.log('Persisting updated conversations:', `Total: ${updatedConversations.length}`);
-                db.saveConversations(updatedConversations).catch(console.error);
-            }
+            db.saveConversations(updatedConversations).catch(error => {
+                console.error('Failed to save conversation:', error);
+                setDbError(error instanceof Error ? error.message : 'Failed to save conversation');
+            });
+
 	    return updatedConversations;
 
-        });
+	};
+
+        setConversations(processConversationUpdate);
 
     };
 
@@ -165,17 +192,28 @@ export function ChatProvider({children}: ChatProviderProps) {
        let pollInterval: NodeJS.Timeout;
        const checkForUpdates = async () => {
            try {
-               const saved = await db.getConversations();
-	       if (saved && shouldUpdateState(saved)) {
-		   const currentConv = saved.find(c => c.id === currentConversationId);
-                   console.log(
+		   const saved = await db.getConversations();
+                   const currentConv = saved.find(c => c.id === currentConversationId);
+
+                   console.log('State sync check:',
+                       {
+                           currentMessagesCount: currentMessages.length,
+			   currentVersion: conversations.find(c => c.id === currentConversationId)?._version,
+                           savedMessagesCount: currentConv?.messages.length,
+                           hasCurrentConversation: Boolean(currentConv),
+                           messageUpdateCount: messageUpdateCount.current
+                       }
+                   );
+
+                   if (saved && shouldUpdateState(saved)) {
+                       console.log(
                        'Updating conversations from storage:',
                        `Current: ${conversations.length}, New: ${saved.length}, `,
                        `CurrentConvId: ${currentConversationId}`,
-                       `Current conv exists: ${Boolean(currentConv)}`
-                   );
-                   setConversations(saved);
-               }
+                       `Current conv exists: ${Boolean(currentConv)}`,
+                       );
+                       setConversations(saved);
+                   }
            } catch (error) {
                console.error('Error syncing conversations:', error);
            }
@@ -185,6 +223,13 @@ export function ChatProvider({children}: ChatProviderProps) {
        pollInterval = setInterval(checkForUpdates, 5000);
        return () => clearInterval(pollInterval);
     }, []);
+
+    // Add effect to verify state update
+    useEffect(() => {
+        console.debug('Conversation state updated:', {
+            currentMessageCount: currentMessages.length
+        });
+    }, [currentMessages.length]);
 
     const startNewChat = () => {
 	const newId = uuidv4();
@@ -229,6 +274,7 @@ export function ChatProvider({children}: ChatProviderProps) {
             try {
                 await db.init();
                 const saved = await db.getConversations();
+		console.log('Database initialized with conversations:', saved);
                 setConversations(saved);
                 setIsInitialized(true);
             } catch (error) {
@@ -236,6 +282,12 @@ export function ChatProvider({children}: ChatProviderProps) {
             }
         };
         initialize();
+	// Add error listener for IndexedDB
+        const request = indexedDB.open('ZiyaDB');
+        request.onerror = (event) => {
+            const error = (event.target as IDBOpenDBRequest).error?.message || 'Unknown IndexedDB error';
+            setDbError(error);
+        };
     }, []);
 
     // Load conversations from storage on mount
@@ -243,16 +295,34 @@ export function ChatProvider({children}: ChatProviderProps) {
         const loadSavedConversations = async () => {
             try {
                 await db.init();
-                const saved = await db.getConversations();
+                console.log('Loading saved conversations...');
+	  	const saved = await db.getConversations();
                 if (saved.length > 0) {
                     console.debug('Loading saved conversations:', saved.length);
                     setConversations(saved);
                 }
+		console.log('Conversations loaded successfully:', saved);
             } catch (error) {
                 console.error('Failed to load conversations:', error);
             }
         };
         loadSavedConversations();
+    }, []);
+
+    // Add effect to monitor database state
+    useEffect(() => {
+        const checkDatabaseState = () => {
+            const dbRequest = indexedDB.open('ZiyaDB');
+            dbRequest.onsuccess = () => {
+                const db = dbRequest.result;
+                console.log('Database state:', {
+                    name: db.name,
+                    version: db.version,
+                    objectStoreNames: Array.from(db.objectStoreNames)
+                });
+            };
+        };
+        checkDatabaseState();
     }, []);
 
     // Keep currentConversationRef in sync
@@ -306,6 +376,7 @@ export function ChatProvider({children}: ChatProviderProps) {
         isTopToBottom,
         setIsTopToBottom,
         scrollToBottom,
+	dbError,
 	isLoadingConversation
     };
 

@@ -14,6 +14,7 @@ interface ConversationProps {
 const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => {
     const {currentMessages, isTopToBottom, isLoadingConversation} = useChatContext();
     
+    const visibilityRef = useRef<boolean>(true);
     // Sort messages to maintain order
     const displayMessages = isTopToBottom ? currentMessages : [...currentMessages].reverse();
 
@@ -21,10 +22,33 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     const renderedCountRef = useRef(0);
 
     useEffect(() => {
+        console.debug('Conversation messages updated:', {
+            messageCount: currentMessages.length,
+            previousCount: renderedCountRef.current,
+            isVisible: visibilityRef.current,
+            displayOrder: isTopToBottom ? 'top-down' : 'bottom-up'
+        });
+
         if (currentMessages.length !== renderedCountRef.current) {
             renderedCountRef.current = currentMessages.length;
             console.log(`Rendered ${currentMessages.length} messages`);
         }
+
+        // Set up visibility observer
+        const observer = new IntersectionObserver(
+            (entries) => {
+                entries.forEach(entry => {
+                    visibilityRef.current = entry.isIntersecting;
+                    console.debug('Conversation visibility changed:', {
+                        isVisible: entry.isIntersecting,
+                        messageCount: currentMessages.length
+                    });
+                });
+            },
+            { threshold: 0.1 }
+        );
+
+        return () => observer.disconnect();
     }, [currentMessages.length]);
 
     // Loading indicator text based on progress
@@ -58,7 +82,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     <Spin size="large" tip={loadingText} />
                 </div>
             )}
-            <div style={{ opacity: isLoadingConversation ? 0.5 : 1 }}>
+            <div 
+                style={{ 
+                    opacity: isLoadingConversation ? 0.5 : 1,
+                    minHeight: '50px' // Ensure visibility detection
+                }}
+                className="conversation-messages-container"
+            >
                 {showProgressiveLoading && (
                     <div style={{
                         position: 'sticky',

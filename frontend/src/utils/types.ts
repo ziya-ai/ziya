@@ -10,6 +10,8 @@ export interface Folders {
 export type Message = {
     content: string;
     role: 'human' | 'assistant';
+    _timestamp?: number;
+    _version?: number;
 };
 
 export interface Conversation {
@@ -18,6 +20,7 @@ export interface Conversation {
     messages: Message[];
     lastAccessedAt: number | null;
     _version?: number;  // Optional version field for tracking changes
+    isNew?: boolean;    // Flag for newly created conversations
     isActive: boolean;
 }
 
