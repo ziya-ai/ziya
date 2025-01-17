@@ -35,6 +35,14 @@ interface FunctionData {
     label?: string;
 }
 
+interface SeriesData {
+    name: string;
+    values: LineData[];
+    pattern?: 'solid' | 'dashed' | 'dotted';
+    axis?: string;
+    color?: string;
+}
+
 interface MultiAxisData {
     x: number[];
     series: {
@@ -62,6 +70,11 @@ interface D3Spec {
        xDomain?: [number, number];
        yDomain?: [number, number];
        grid?: boolean;
+       points?: boolean;
+       multiScale?: boolean;
+       step?: boolean;
+       valueLabels?: boolean;
+       smooth?: boolean;
        interactive?: boolean;
        animation?: boolean | {
            duration?: number;
@@ -70,12 +83,19 @@ interface D3Spec {
        grouped?: boolean;
        cumulative?: boolean;
        tooltip?: boolean;
+       legend?: boolean;
        axes?: {
            [key: string]: {
                label?: string;
                domain?: [number, number];
                scale?: 'linear' | 'log';
            };
+       };
+       yAxis?: {
+           label?: string;
+       };
+       xAxis?: {
+           label?: string;
        };
    };
    title?: string;
@@ -181,8 +201,19 @@ useEffect(() => {
                 setIsLoading(true);
                 setError(null);
 
-                const vizSpec: D3Spec = JSON.parse(spec);
+		// Debug logging
+                console.debug('Rendering D3 visualization with spec:', {
+                    rawSpec: spec,
+                    parsedSpec: typeof spec === 'string' ? JSON.parse(spec) : spec
+                });
 
+                const vizSpec: D3Spec = typeof spec === 'string' ? JSON.parse(spec) : spec;
+
+		if (!vizSpec?.data) {
+                    throw new Error('Invalid or missing data in specification');
+                }
+
+		// Clear existing content
                 d3.select(svgRef.current).selectAll('*').remove();
 
                 const margin = { top: 50, right: 40, bottom: 60, left: 60 };
@@ -284,8 +315,14 @@ useEffect(() => {
         height: number,
         theme: any
     ) => {
+
         const data = vizSpec.data as BarData[];
         const grouped = vizSpec.options?.grouped;
+
+	// Validate data structure
+        if (!data || !Array.isArray(data) || !data.every(d => d.label && typeof d.value === 'number')) {
+            throw new Error('Invalid bar chart data structure');
+        }
 
         let x: d3.ScaleBand<string>;
         let groupX: d3.ScaleBand<string> | null = null;
@@ -440,97 +477,267 @@ useEffect(() => {
         height: number,
         theme: any
     ) => {
+	// Validate data structure for line chart
+	const isMultiSeriesData = (data: any): data is { series: SeriesData[] } => {
+                return data && 
+                       typeof data === 'object' && 
+                       'series' in data && 
+                       Array.isArray(data.series);
+        };
+
+	const isSingleSeriesData = (data: any): data is LineData[] => {
+	    if (!Array.isArray(data)) return false;
+
+	    // Now TypeScript knows data is an array
+	    return data.length > 0 &&
+		   data.every(d => typeof d === 'object' && d !== null &&
+                'date' in d && 'value' in d &&
+                typeof d.value === 'number'
+            );
+        };
+
+	// Handle both single and multi-series data
+        let allSeries: SeriesData[] = [];
+        if (isMultiSeriesData(vizSpec.data)) {
+            allSeries = vizSpec.data.series;
+        } else if (isSingleSeriesData(vizSpec.data)) {
+            allSeries = [{
+                name: 'Value',
+                values: vizSpec.data,
+                pattern: 'solid'
+            }];
+        } else {
+            console.error('Invalid data structure:', {
+		dataType: typeof vizSpec.data,
+		isArray: Array.isArray(vizSpec.data),
+		sample: vizSpec.data
+	    });
+	    throw new Error('Invalid line chart data structure. Expected either an array of data points or a multi-series object.');
+        }
+
+        console.debug('Line chart series:', {
+                    seriesCount: allSeries.length,
+                    sampleSeries: allSeries[0]?.name,
+                    multiScale: vizSpec.options?.multiScale
+        });
+
         const data = vizSpec.data as LineData[];
-        
+
+        // Parse dates properly from YYYY-M format
+        const parseDate = (dateStr: string) => {
+            if (!dateStr) return new Date();
+            const [year, month] = dateStr.split('-').map(Number);
+            return new Date(year, month - 1);
+        };
+
+	// Get all values to determine domains
+        const allDates = allSeries.flatMap(s => s.values.map(d => parseDate(d.date)));
+        const allValues = allSeries.flatMap(s => s.values.map(d => d.value));
+
         const x = d3.scaleTime()
-            .domain(d3.extent(data, d => new Date(d.date)) as [Date, Date])
-            .range([0, width]);
+            .domain(d3.extent(allDates) as [Date, Date])
+	    .range([0, width]);
 
-        const y = d3.scaleLinear()
-            .domain([0, d3.max(data, d => d.value) || 0])
-            .range([height, 0]);
+	// Create scales for each series if multiScale is enabled
+	const yScales = new Map<string, d3.ScaleLinear<number, number>>();
+	if (vizSpec.options?.multiScale) {
+	    allSeries.forEach((series, i) => {
+		const values = series.values.map(d => d.value);
+		yScales.set(series.name, d3.scaleLinear()
+		    .domain([0, d3.max(values) || 0])
+		    .range([height, 0])
+		    .nice());
+	    });
+	} else {
+	    const y = d3.scaleLinear()
+		.domain([0, d3.max(allValues) || 0])
+		.range([height, 0])
+		.nice();
+	    allSeries.forEach(series => yScales.set(series.name, y));
+	}
 
-        // Add grid
+        // Add grid using the first y-scale
         if (vizSpec.options?.grid !== false) {
+            const primaryScale = yScales.values().next().value;
             g.append('g')
                 .attr('class', 'grid')
                 .attr('opacity', 0.1)
                 .call(g => {
-                    d3.axisLeft(y)
+                    d3.axisLeft(primaryScale)
                         .tickSize(-width)
                         .tickFormat(() => '')(g);
                 });
         }
 
-        const line = d3.line<LineData>()
-            .x(d => x(new Date(d.date)))
-            .y(d => y(d.value));
+	// Create color scale for multiple series
+	const colorScale = d3.scaleOrdinal(d3.schemeCategory10)
+	    .domain(allSeries.map(s => s.name));
+
+	// Create line generators for each series
+	const createLine = (series: SeriesData) => {
+	    const line = d3.line<LineData>()
+		.x(d => x(parseDate(d.date)))
+		.y(d => yScales.get(series.name)!(d.value));
+
+	    if (vizSpec.options?.step) {
+		line.curve(d3.curveStepAfter);
+	    } else if (vizSpec.options?.smooth) {
+		line.curve(d3.curveMonotoneX);
+	    } else {
+		// Default to linear interpolation
+		line.curve(d3.curveLinear);
+	    }
+
+	    return line;
+	};
+
+	// Configure x-axis with proper date formatting
+        const xAxis = d3.axisBottom(x)
+               .ticks(data.length)
+               .tickFormat(d => d3.timeFormat('%Y-%m')(d as Date));
 
         const tooltip = createTooltip();
 
-        // Add line path
-        const path = g.append('path')
-            .datum(data)
-            .attr('fill', 'none')
-            .attr('stroke', theme.highlight)
-            .attr('stroke-width', 2)
-            .attr('d', line);
+	// Draw lines for each series
+	allSeries.forEach((series, i) => {
+	    const color = series.color || colorScale(series.name);
+	    const line = createLine(series);
 
-        // Add dots with hover effect
-        g.selectAll('circle')
-            .data(data)
-            .enter()
-            .append('circle')
-            .attr('cx', d => x(new Date(d.date)))
-            .attr('cy', d => y(d.value))
-            .attr('r', 4)
-            .attr('fill', theme.highlight)
-            .on('mouseover', (event, d) => {
-                const color = d3.color(theme.highlight)?.brighter(0.5)?.toString() || theme.highlight;
-                d3.select(event.currentTarget)
-                    .transition()
-                    .duration(200)
-                    .attr('r', 6)
-                    .attr('fill', color);
-                
-                const date = new Date(d.date).toLocaleDateString();
-                tooltip.html(`${date}: ${d.value}`)
-                    .style('visibility', 'visible');
-            })
-            .on('mousemove', (event) => {
-                tooltip.style('top', (event.pageY - 10) + 'px')
-                    .style('left', (event.pageX + 10) + 'px');
-            })
-            .on('mouseout', (event) => {
-                d3.select(event.currentTarget)
-                    .transition()
-                    .duration(200)
-                    .attr('r', 4)
-                    .attr('fill', theme.highlight);
-                tooltip.style('visibility', 'hidden');
-            });
+	    const path = g.append('path')
+		.datum(series.values)
+		.attr('fill', 'none')
+		.attr('stroke', color)
+		.attr('stroke-width', 2)
+		.attr('stroke-dasharray', series.pattern === 'dashed' ? '5,5' :
+					series.pattern === 'dotted' ? '2,2' : 'none')
+		.attr('d', line);
 
-        // Add line animation
-        if (vizSpec.options?.animation !== false) {
-            const totalLength = path.node()?.getTotalLength() || 0;
-            path.attr('stroke-dasharray', `${totalLength} ${totalLength}`)
-                .attr('stroke-dashoffset', totalLength)
-                .transition()
-                .duration(2000)
-                .attr('stroke-dashoffset', 0);
-        }
+	    // Add line animation
+	    if (vizSpec.options?.animation !== false) {
+		const totalLength = path.node()?.getTotalLength() || 0;
+		path.attr('stroke-dasharray', `${totalLength} ${totalLength}`)
+		    .attr('stroke-dashoffset', totalLength)
+		    .transition()
+		    .duration(2000)
+		    .attr('stroke-dashoffset', 0);
+	    }
+
+	    // Add value labels if enabled
+	    if (vizSpec.options?.valueLabels) {
+		g.selectAll(`.value-label-${i}`)
+		    .data(series.values)
+		    .enter()
+		    .append('text')
+		    .attr('class', `value-label-${i}`)
+		    .attr('x', d => x(parseDate(d.date)))
+		    .attr('y', d => yScales.get(series.name)!(d.value) - 10)
+		    .attr('text-anchor', 'middle')
+		    .attr('fill', color)
+		    .style('font-size', '12px')
+		    .style('opacity', 0)
+		    .text(d => d.value.toFixed(1))
+		    .style('opacity', 1);
+	    }
+
+	    // Add points if enabled
+	    if (vizSpec.options?.points) {
+		g.selectAll(`.points-${i}`)
+		    .data(series.values as LineData[])
+		    .enter()
+		    .append('circle')
+		    .attr('class', `points-${i}`)
+		    .attr('cx', d => x(parseDate(d.date)))
+		    .attr('cy', d => yScales.get(series.name)!(d.value))
+		    .attr('r', 4)
+		    .attr('fill', color)
+		    .attr('stroke', theme.background)
+		    .attr('stroke-width', 2)
+		    .on('mouseover', (event, d) => {
+			const brighterColor = d3.color(color)?.brighter(0.5)?.toString() || color;
+			d3.select(event.currentTarget)
+			    .transition()
+			    .duration(200)
+			    .attr('r', 6)
+			    .attr('fill', brighterColor);
+
+			const date = d3.timeFormat('%Y-%m')(parseDate(d.date));
+			tooltip.html(`${series.name}: ${d.value}<br/>${date}`)
+			    .style('visibility', 'visible');
+		    })
+		    .on('mousemove', (event) => {
+                        tooltip.style('top', (event.pageY - 10) + 'px')
+                            .style('left', (event.pageX + 10) + 'px');
+                    })
+                    .on('mouseout', (event) => {
+			d3.select(event.currentTarget)
+			    .transition()
+			    .duration(200)
+			    .attr('r', 4)
+			    .attr('fill', color);
+			tooltip.style('visibility', 'hidden');
+                    });
+	    }
+	});
+
+	// Add legend if enabled
+	if (vizSpec.options?.legend) {
+	    const legend = g.append('g')
+		.attr('class', 'legend')
+		.attr('transform', `translate(${width + 10}, 0)`);
+
+	    allSeries.forEach((series, i) => {
+		const legendItem = legend.append('g')
+		    .attr('transform', `translate(0, ${i * 20})`);
+
+		legendItem.append('line')
+		    .attr('x1', 0)
+		    .attr('x2', 20)
+		    .attr('y1', 10)
+		    .attr('y2', 10)
+		    .attr('stroke', series.color || colorScale(series.name))
+		    .attr('stroke-width', 2)
+		    .attr('stroke-dasharray', series.pattern === 'dashed' ? '5,5' :
+					    series.pattern === 'dotted' ? '2,2' : 'none');
+
+		legendItem.append('text')
+		    .attr('x', 25)
+		    .attr('y', 10)
+		    .attr('dy', '0.35em')
+		    .style('fill', theme.text)
+		    .text(series.name);
+	    });
+	}
 
         // Add axes
         g.append('g')
             .attr('transform', `translate(0,${height})`)
-            .call(d3.axisBottom(x))
+	    .call(xAxis)
             .selectAll('text')
             .attr('fill', theme.text);
 
-        g.append('g')
-            .call(d3.axisLeft(y))
-            .selectAll('text')
-            .attr('fill', theme.text);
+	// Add y-axes
+	if (vizSpec.options?.multiScale) {
+	    Array.from(yScales.entries()).forEach(([name, scale], i) => {
+		const axis = i === 0 ? 
+		    d3.axisLeft(scale) : 
+		    d3.axisRight(scale);
+		    
+		const axisGroup = g.append('g')
+		    .call(axis);
+		    
+		if (i > 0) {
+		    axisGroup.attr('transform', `translate(${width},0)`);
+		}
+		
+		axisGroup.selectAll('text')
+		    .attr('fill', theme.text);
+	    });
+	} else {
+	    g.append('g')
+		.call(d3.axisLeft(yScales.values().next().value))
+		.selectAll('text')
+		.attr('fill', theme.text);
+	}
 
         // Add axis labels
         if (vizSpec.xAxis?.label) {
@@ -736,7 +943,8 @@ useEffect(() => {
 
         const line = d3.line<ScatterData>()
             .x(d => x(d.x))
-            .y(d => y(d.y));
+            .y(d => y(d.y))
+            .defined(d => !isNaN(d.x) && !isNaN(d.y) && isFinite(d.x) && isFinite(d.y));
 
         // Create color scale for multiple functions
         const colorScale = d3.scaleOrdinal<string>()
@@ -747,10 +955,14 @@ useEffect(() => {
 
         functionArray.forEach((fn, index) => {
             const points = generateFunctionPoints(fn.fn, fn.domain, fn.samples || 200);
+	    // Filter out invalid points before drawing
+	    const validPoints = points.filter((p) => {
+                return !isNaN(p.x) && !isNaN(p.y) && isFinite(p.x) && isFinite(p.y);
+            });
             const color = colorScale(index.toString());
 
             const path = g.append('path')
-                .datum(points)
+                .datum(validPoints)
                 .attr('fill', 'none')
                 .attr('stroke', color)
                 .attr('stroke-width', 2)
@@ -766,7 +978,7 @@ useEffect(() => {
             }
 
             // Add function label if provided
-            if (fn.label) {
+            if (fn.label && validPoints.length > 0) {
                 const lastPoint = points[points.length - 1];
                 g.append('text')
                     .attr('x', x(lastPoint.x))
@@ -782,7 +994,7 @@ useEffect(() => {
                 .attr('fill', 'none')
                 .attr('stroke', 'transparent')
                 .attr('stroke-width', 10)
-                .attr('d', line(points))
+                .attr('d', line(validPoints))
                 .on('mouseover', () => {
                     path.attr('stroke-width', 3)
                         .attr('stroke', d3.color(color)?.brighter(0.5)?.toString() || color);
@@ -846,6 +1058,11 @@ useEffect(() => {
     ) => {
         const data = vizSpec.data as MultiAxisData;
         const axes = vizSpec.options?.axes || {};
+
+	// Validate data structure
+        if (!data.x || !Array.isArray(data.x) || !data.series || !Array.isArray(data.series)) {
+            throw new Error('Invalid multi-axis data structure');
+        }
 
         // Create scales for each axis
         const x = d3.scaleLinear()
@@ -1061,7 +1278,6 @@ useEffect(() => {
                 .datum(series.values)
                 .attr('fill', 'none')
                 .attr('stroke', color)
-                .attr('stroke-width', 2)
                 .attr('d', line);
 
             // Add animation
