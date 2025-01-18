@@ -20,8 +20,23 @@ interface WhitespaceMatch {
 const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): string => {
     if (!content) return '';
 
+    // Pre-process content to protect JSX-like content
+    content = content.replace(/^(\s*)<([A-Za-z][A-Za-z0-9]*)\b/gm, (match, space, tag) =>
+        // Protect component tags at start of lines
+        `${space}___PRESERVED_TAG___<${tag}___END_TAG___`
+    ).replace(/^(\s*)<>/gm, (match, space) =>
+        // Protect fragment starts
+        `${space}___PRESERVED_TAG___<>___END_TAG___`
+    ).replace(/(<\/[A-Za-z][A-Za-z0-9]*>)/g, match =>
+        // Protect closing tags
+        `___PRESERVED_TAG___${match}___END_TAG___`
+    ).replace(/(<[A-Za-z][A-Za-z0-9]*\s*\/>)/g, match =>
+        // Protect self-closing tags
+        `___PRESERVED_TAG___${match}___END_TAG___`
+    );
+
     // Preserve Prism token classes while adding our own styling
-    return content
+    content = content
         .replace(/<span class="token ([^"]+)">/g, (match, tokenClass) => {
             // Add our custom class while preserving Prism's token class
             return `<span class="token ${tokenClass} diff-token-${type}">`;
@@ -34,6 +49,12 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
                 return `<span class="ws-marker ${type === 'insert' ? 'ws-add' : 'ws-delete'}">${markers}</span>${match}`;
             }
         );
+
+    content = content.replace(/___PRESERVED_TAG___/g, '')
+                     .replace(/___END_TAG___/g, '');
+
+    return content;
+
 };
 
 const normalizeCompare = (line: string | null | undefined): string => {
@@ -49,10 +70,6 @@ const normalizeCompare = (line: string | null | undefined): string => {
     return content;
 }
 
-const isJsxToken = (text: string): boolean => {
-       // Check if this is a JSX/TSX component or element
-       return /^<[A-Z][^>]*>|^<\/[A-Z][^>]*>|^<[a-z][^>]*>|^<\/[a-z][^>]*>/.test(text);
-};
 
 const visualizeWhitespace = (text: string, changeType: 'ws-add' | 'ws-delete'): string => {
    // Match trailing whitespace only
@@ -138,24 +155,26 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 await loadPrismLanguage(language);
                 if (!window.Prism || content.length <= 1) return;
 
+		let processedContent = content;
+
 		// Handle whitespace-only lines before any processing
-                if (!content.trim()) {
-                    const markers = content.replace(/[ \t]/g, '·');
+                if (!processedContent.trim()) {
+                    const markers = processedContent.replace(/[ \t]/g, '·');
 		    const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
                     setHighlighted(
                         `<span class="token-line">` +
-                        `<span class="ws-marker ${wsClass}">${markers}</span>${content}` +
+                        `<span class="ws-marker ${wsClass}">${markers}</span>${processedContent}` +
                         `</span>`);
                     return;
                 }
 
 		// First get the actual content without the diff marker
-                let code = content;
-                if (content.startsWith('+') || content.startsWith('-')) {
+                let code = processedContent;
+                if (processedContent.startsWith('+') || processedContent.startsWith('-')) {
 		    // Keep the original indentation by preserving all spaces after the marker
-                    const marker = content[0];
-		    console.log('Marker removal:', {marker, beforeSlice: code, afterSlice: content.slice(1)});
-                    code = content.slice(1);  // Remove just the marker
+                    const marker = processedContent[0];
+		    console.log('Marker removal:', {marker, beforeSlice: code, afterSlice: processedContent.slice(1)});
+                    code = processedContent.slice(1);  // Remove just the marker
                 }
 
 		// Handle whitespace before syntax highlighting
@@ -300,13 +319,12 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 	return content; 
     };
 
-    const preserveJsxSyntax = (content: string) => {
-       // Preserve JSX angle brackets and attributes
-       return content.replace(/(<\/?[A-Z][a-zA-Z]*)|(<\/?)([a-z][a-zA-Z]*)/g, (match) => {
-           // Keep the original casing and structure
-           return match;
-       });
-   };
+    const preserveUnpairedBrackets = (str: string) => {
+        // Replace standalone < with HTML entity but leave </ and <word alone
+        return str.replace(/</g, (match, offset, string) => {
+            return /^<[/\w]/.test(string.slice(offset)) ? match : '&lt;';
+        });
+    };
 
     const renderContent = () => (
         <td
@@ -316,7 +334,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                     isLoading ? Object.entries({...baseStyles, ...themeStyles}).map(([k,v]) => `${k}:${v}`).join(';') : ''
 	       }">${preserveTokens(
                    wrapWithLineBreak(
-                       preserveJsxSyntax(lineContent)
+                       preserveUnpairedBrackets(lineContent)
                    ), type)}</div>`
            }}
            colSpan={showLineNumbers ? 1 : 3}

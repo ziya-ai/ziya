@@ -1032,7 +1032,20 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
             }
         }
 
-        // Handle D3.js visualizations
+	// Handle D3.js via Vega-Lite specifications
+        if (token.type === 'code' && isCodeToken(token) && token.lang === 'vega-lite') {
+            try {
+                return (
+                    <div key={index} className="vega-lite-container">
+                        <D3Renderer spec={token.text} />
+                    </div>
+                );
+            } catch (error) {
+                return <pre key={index}><code>Error parsing Vega-Lite spec: {error instanceof Error ? error.message : String(error)}</code></pre>;
+            }
+        }
+
+        // Handle direct D3.js visualizations
         if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
             try {
                 // Parse the D3 specification
@@ -1129,11 +1142,14 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
         // Handle regular text, only if it has content - wrap with pre tags for safety
         if ('text' in token) {
             const text = token.text || '';
-            // Only escape HTML in regular text, not in code blocks
-            const escapedText = token.type === 'code'
-                ? text  // Leave code blocks exactly as they are
-                : text.replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;');
+            // Always escape HTML entities, but preserve existing escaped entities
+	    const escapedText = text
+                .replace(/&/g, '&amp;')  // Must be first to not double-escape other entities
+                .replace(/&amp;(?:amp|lt|gt|quot|apos);/g, '&$1;')  // Fix double-escaped entities
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&apos;');
 
             return text.trim() ?
                 (
