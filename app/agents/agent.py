@@ -48,6 +48,7 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
 def parse_output(message):
     """Parse and sanitize the output from the language model."""
     text = clean_backtick_sequences(message.content)
+    logger.info(f"parse_output received content size: {len(message.content)} chars, returning size: {len(text)} chars")
     return AgentFinish(return_values={"output": text}, log=text)
 
 aws_profile = os.environ.get("ZIYA_AWS_PROFILE")
@@ -133,6 +134,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     logger.debug("Processing files:")
     print_file_tree(files if isinstance(files, list) else files.get("config", {}).get("files", []))
     logger.info(f"Processing files with conversation_id: {conversation_id}")
+
     user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
     for file_path in files:
         full_path = os.path.join(user_codebase_dir, file_path)
@@ -140,16 +142,12 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
         if os.path.isdir(full_path):
             continue
         try:
-            if not is_binary_file(full_path):
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                logger.debug(f"Reading file {full_path}")
-                annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
-                if success:
-                    combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
-                    logger.debug(f"Successfully processed {file_path} with {len(annotated_lines)} lines")
+            # Get annotated content with change tracking
+            annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
+            if success:
+                combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
         except Exception as e:
-            logger.error(f"Error processing {full_path}: {str(e)}", exc_info=True)
+            logger.error(f"Error processing {file_path}: {str(e)}")
 
     print(f"Codebase word count: {len(combined_contents.split()):,}")
     token_count = len(tiktoken.get_encoding("cl100k_base").encode(combined_contents))
@@ -161,32 +159,44 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
 
 llm_with_stop = model.bind(stop=["</tool_input>"])
 
+class AgentInput(BaseModel):
+    question: str
+    config: dict = Field({})
+    chat_history: List[Tuple[str, str]] = Field(..., extra={"widget": {"type": "chat"}})
+    conversation_id: str = Field(default="default", description="Unique identifier for the conversation")
+
 def extract_codebase(x):
     files = x["config"].get("files", [])
     conversation_id = x.get("conversation_id", "default")
     logger.debug(f"Extracting codebase for files: {files}")
     logger.info(f"Processing with conversation_id: {conversation_id}")
 
-
-    # Read all files first, skipping directories
     file_contents = {}
     for file_path in files:
-        # Skip .pyc files and other binary files
-        if file_path.endswith('.pyc') or is_binary_file(file_path):
-            continue
 
-        full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
-        if not os.path.isdir(full_path):
-            try:
-                logger.debug(f"Reading initial content for {file_path}")
-                file_contents[file_path] = TextLoader(full_path).load()[0].page_content
-            except Exception as e:
+        try:
+            full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
+            if os.path.isdir(full_path):
+                logger.debug(f"Skipping directory: {file_path}")
+                continue
+            if is_binary_file(full_path):
+                logger.debug(f"Skipping binary file: {file_path}")
+                continue
+
+            with open(full_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                file_contents[file_path] = content
+                logger.info(f"Successfully loaded {file_path} with {len(content.splitlines())} lines")
+        except (UnicodeDecodeError, IOError) as e:
                 logger.error(f"Error reading file {file_path}: {str(e)}")
                 continue
 
     # Initialize or update file states
     if conversation_id not in file_state_manager.conversation_states:
         file_state_manager.initialize_conversation(conversation_id, file_contents)
+
+    # Update any new files that weren't in the initial state
+    file_state_manager.update_files_in_state(conversation_id, file_contents)
 
     # Get changes since last message
     overall_changes, recent_changes = file_state_manager.format_context_message(conversation_id)
@@ -213,30 +223,63 @@ def extract_codebase(x):
     # Add the codebase content
     result.append(codebase)
 
+    final_string = "\n".join(result)
+    file_markers = [line for line in final_string.split('\n') if line.startswith('File: ')]
+    logger.info(f"Final string assembly:")
+    logger.info(f"Total length: {len(final_string)} chars")
+    logger.info(f"Number of File: markers: {len(file_markers)}")
+    logger.info(f"First 500 chars:\n{final_string[:500]}")
+    logger.info(f"Last 500 chars:\n{final_string[-500:]}")
+
+    # Debug the content at each stage
+    logger.info("Content flow tracking:")
+    logger.info(f"1. Number of files in file_contents: {len(file_contents)}")
+    logger.info(f"2. Number of files in conversation state: {len(file_state_manager.conversation_states.get(conversation_id, {}))}")
+
+    # Check content before joining
+    file_headers = [line for line in codebase.split('\n') if line.startswith('File: ')]
+    logger.info(f"3. Files in codebase string:\n{chr(10).join(file_headers)}")
+
+    logger.info(f"Final assembled context length: {len(result)} sections, {sum(len(s) for s in result)} total characters")
+    file_headers = [line for line in codebase.split('\n') if line.startswith('File: ')]
+    logger.info(f"Number of files in codebase: {len(file_headers)}")
+    if file_headers:
+        logger.info(f"First few files in codebase:\n{chr(10).join(file_headers[:5])}")
+
     if result:
-        return (
-            "\n".join(result)
-        )
+        return final_string
     return codebase
 
+def log_output(x):
+    logger.info(f"Final output size: {len(x.return_values['output'])} chars, first 100 chars: {x.return_values['output'][:100]}")
+    return x
+
+def log_codebase_wrapper(x):
+    codebase = extract_codebase(x)
+    logger.info(f"Codebase before prompt: {len(codebase)} chars")
+    file_count = len([l for l in codebase.split('\n') if l.startswith('File: ')])
+    logger.info(f"Number of files in codebase before prompt: {file_count}")
+    logger.info(f"Files in codebase before prompt:\n{chr(10).join([l for l in codebase.split('\n') if l.startswith('File: ')])}")
+    return codebase
+
+# Define the agent chain
 agent = (
-        {
-            "codebase": lambda x: extract_codebase(x),
-            "question": lambda x: x["question"],
-            "agent_scratchpad": lambda x: format_xml(x["intermediate_steps"]),
-            "chat_history": lambda x: _format_chat_history(x["chat_history"]),
-        }
-        | conversational_prompt
-        | llm_with_stop
-        | parse_output
+    {
+        "codebase": log_codebase_wrapper,
+        "question": lambda x: x["question"],
+        "agent_scratchpad": lambda x: format_xml(x["intermediate_steps"]),
+        "chat_history": lambda x: _format_chat_history(x["chat_history"]),
+    }
+    | conversational_prompt
+    | (lambda x: (
+        logger.info(f"Template population check:") or
+        logger.info(f"System message contains codebase section: {'---------------------------------------' in str(x)}") or
+        logger.info(f"Number of 'File:' markers in system message: {str(x).count('File:')}") or
+        x))
+    | llm_with_stop
+    | parse_output
+    | log_output
 )
-
-
-class AgentInput(BaseModel):
-    question: str
-    config: dict = Field({})
-    chat_history: List[Tuple[str, str]] = Field(..., extra={"widget": {"type": "chat"}})
-    conversation_id: str = Field(default="default", description="Unique identifier for the conversation")
 
 def update_conversation_state(conversation_id: str, file_paths: List[str]) -> None:
     """Update file states after a response has been generated"""
@@ -270,9 +313,14 @@ def update_and_return(input_data: Dict[str, Any]) -> Dict[str, Any]:
                             input_data.get("config", {}).get("files", []))
     return input_data
 
+# Finally create the executor
 agent_executor = AgentExecutor(
-    agent=agent, tools=[], verbose=True, handle_parsing_errors=True, max_iterations=3
-).with_types(input_type=AgentInput)
+    agent=agent,
+    tools=[],
+    verbose=True,
+    handle_parsing_errors=True,
+    max_iterations=3
+).with_types(input_type=AgentInput) | RunnablePassthrough(update_and_return)
 
 # Chain the executor with the state update
 agent_executor = agent_executor | RunnablePassthrough(update_and_return)
