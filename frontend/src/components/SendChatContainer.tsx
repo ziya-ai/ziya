@@ -111,6 +111,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             });
 	} finally {
 	    setIsStreaming(false);
+	    setStreamingConversationId(null);
 	    setIsProcessing(false);
         }
     };

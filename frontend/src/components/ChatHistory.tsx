@@ -14,6 +14,7 @@ export const ChatHistory: React.FC = () => {
         isLoadingConversation,
 	isStreaming,
         streamingConversationId,
+	startNewChat,
         loadConversation,
     } = useChatContext();
     const {isDarkMode} = useTheme();
@@ -22,10 +23,11 @@ export const ChatHistory: React.FC = () => {
 
     // Periodically check for updates when the component is mounted
     useEffect(() => {
-       const checkForUpdates = async () => {
+        let isSubscribed = true;
+        const checkForUpdates = async () => {
            try {
                const saved = await db.getConversations();
-               if (JSON.stringify(saved) !== JSON.stringify(conversations)) {
+	       if (isSubscribed && JSON.stringify(saved) !== JSON.stringify(conversations)) {
                    setConversations(saved);
                }
            } catch (error) {
@@ -34,7 +36,7 @@ export const ChatHistory: React.FC = () => {
        };
 
        const interval = setInterval(checkForUpdates, 2000); // Check every 2 seconds
-       return () => clearInterval(interval);
+       return () => { isSubscribed = false; clearInterval(interval); };
     }, [conversations, setConversations]);
 
     const handleConversationClick = useCallback(async (conversationId: string) => {
@@ -115,15 +117,36 @@ export const ChatHistory: React.FC = () => {
     const handleDeleteConversation = async (e: React.MouseEvent, conversationId: string) => {
         e.stopPropagation();
         try {
-            // Update state
-            const updatedConversations = conversations.filter(conv => conv.id !== conversationId);
-            setConversations(updatedConversations);
-
-            // Persist to IndexedDB
+            console.debug('Deleting conversation:', {
+                id: conversationId,
+                currentActive: conversations.filter(c => c.isActive).length,
+                isCurrentConversation: conversationId === currentConversationId
+            });
+            // first persist to IndexedDB
+	    const updatedConversations = conversations.map(conv => 
+                conv.id === conversationId 
+                    ? { ...conv, isActive: false } 
+                    : conv);
             await db.saveConversations(updatedConversations);
             
+	    console.debug('After marking conversation inactive:', {
+                id: conversationId,
+                newActive: updatedConversations.filter(c => c.isActive).length
+            });
+
+	    // Then update React state
+            setConversations(updatedConversations);
+
+            // If we're deleting the current conversation, start a new one
+            if (conversationId === currentConversationId) {
+                startNewChat();
+            }
+
             message.success('Conversation deleted successfully');
         } catch (error) {
+            // Revert any partial changes
+            const saved = await db.getConversations();
+            setConversations(saved);
             message.error('Failed to delete conversation');
             console.error('Error deleting conversation:', error);
         }
@@ -178,7 +201,7 @@ export const ChatHistory: React.FC = () => {
     return (
         <List
             className="chat-history-list"
-            dataSource={sortedConversations}
+            dataSource={sortedConversations.filter(conv => conv.isActive !== false)}
             renderItem={(conversation) => (
                 <List.Item
                     key={conversation.id}

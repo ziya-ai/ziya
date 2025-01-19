@@ -7,7 +7,7 @@ const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
-    const {streamedContent, isStreaming, currentConversationId, streamingConversationId, addMessageToCurrentConversation} = useChatContext();
+    const {streamedContent, isStreaming, currentConversationId, streamingConversationId, currentMessages} = useChatContext();
 
     const LoadingIndicator = () => (
         <div style={{ 
@@ -54,10 +54,23 @@ export const StreamedContent: React.FC = () => {
         }
     }, [isStreaming]);
 
+    // Add effect to handle conversation switches
+    useEffect(() => {
+        // Force scroll event to trigger re-render
+        const triggerScroll = () => {
+            window.requestAnimationFrame(() => {
+                window.dispatchEvent(new CustomEvent('scroll'));
+                // Force another scroll after a short delay to ensure content is visible
+                setTimeout(() => window.dispatchEvent(new CustomEvent('scroll')), 100);
+            });
+        };
+        triggerScroll();
+    }, [currentConversationId, streamedContent]);
+
     const enableCodeApply = window.enableCodeApply === 'true';
     return (
         <>
-	    {isStreaming && streamingConversationId && streamingConversationId === currentConversationId && (
+            {(isStreaming || (streamedContent && streamingConversationId === currentConversationId)) && (
                 <div className="message assistant">
                     <div className="message-sender" style={{ marginTop: 0 }}>AI:</div>
                     {error && <ErrorDisplay message={error} />}

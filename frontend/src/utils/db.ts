@@ -191,20 +191,24 @@ class ConversationDB implements DB {
         });
 
         // Then, merge remote conversations, keeping the newer version
-        remote.forEach(conv => {
+	for (const conv of remote) {
             const localConv = merged.get(conv.id);
+	    // Skip if local conversation exists and is marked as inactive
+            if (localConv?.isActive === false) {
+                console.debug(`Keeping local inactive state for ${conv.id}`);
+                continue;
+            }
+
+            // Only update if remote version is newer
             if (!localConv || (conv._version && localConv._version && conv._version > localConv._version)) {
-		if (!localConv || !localConv.isNew) {
-                    merged.set(conv.id, {
-                        ...conv,
-                        _version: conv._version || this.lastMergedVersion || Date.now(),
-			isNew: false,
-			isActive: conv.isActive
-                    });
-                }
+                merged.set(conv.id, {
+                    ...conv,
+                    _version: conv._version || this.lastMergedVersion || Date.now(),
+                    isNew: false
+                });
                 console.debug(`Merge decision for ${conv.id}:`, { action: localConv?.isNew ? 'kept local' : 'used remote' });
             }
-        });
+        }
 
         return Array.from(merged.values()).sort((a, b) => {
 	    // Sort by lastAccessedAt, putting new conversations first
@@ -335,7 +339,13 @@ class ConversationDB implements DB {
             throw new Error('Database not initialized');
         }
 
-        console.debug('Forcing save of conversations:', conversations.length);
+	console.debug('Force saving conversations:', {
+            total: conversations.length,
+            active: conversations.filter(c => c.isActive).length,
+            inactive: conversations.filter(c => !c.isActive).length,
+            activeIds: conversations.filter(c => c.isActive).map(c => c.id),
+            inactiveIds: conversations.filter(c => !c.isActive).map(c => c.id)
+        });
         const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readwrite');
         const store = tx.objectStore(STORE_NAME);
         const backupStore = tx.objectStore(BACKUP_STORE_NAME);
@@ -365,7 +375,6 @@ class ConversationDB implements DB {
  
         const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readonly');
         const store = tx.objectStore(STORE_NAME);
-	console.log('Starting transaction to get conversations');
         const backupStore = tx.objectStore(BACKUP_STORE_NAME);
 	let recoveredFromBackup = false;
  
@@ -383,8 +392,6 @@ class ConversationDB implements DB {
                     );
 
                     if (validConversations.length > 0) {
-			console.log('Found valid conversations:', validConversations.length);
-                        console.log(`Retrieved ${validConversations.length} valid conversations`);
                         resolve(validConversations);
                         return;
                     }
