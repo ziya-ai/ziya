@@ -874,17 +874,34 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         }
     }, [token.lang]);
 
-    const getHighlightedCode = () => {
+    const getHighlightedCode = (content: string) => {
         if (!prismInstance || token.lang === undefined) {
-            return token.text;
+            return content;
         }
         try {
             const grammar = window.Prism.languages[token.lang as string] || window.Prism.languages.plaintext;
-            return window.Prism.highlight(token.text, grammar, token.lang);
+            return window.Prism.highlight(content, grammar, token.lang);
         } catch (error) {
             console.warn(`Failed to highlight code for language ${token.lang}:`, error);
-            return token.text;
+            return content;
         }
+    };
+
+    const processContent = (content: string) => {
+        // If content is already HTML with Prism tokens, return it directly
+        if (content.includes('<span class="token')) {
+            return content;
+        }
+
+        // If content contains HTML but not Prism tokens, escape it first
+        if (content.includes('<') || content.includes('>')) {
+            content = content
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        return getHighlightedCode(content);
     };
 
     if (!isLanguageLoaded) {
@@ -918,15 +935,23 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                             textShadow: 'none',
                             color: isDarkMode ? '#e6e6e6' : '#24292e'
                          }} 
-			                     dangerouslySetInnerHTML={{ __html:
-                        (prismInstance && token.lang)
-                            ? prismInstance.highlight(
-                                codeText,
-                                prismInstance.languages[token.lang as keyof typeof prismInstance.languages] ||
-                                prismInstance.languages.plaintext,
-                                token.lang as string
-                            )
-                            : codeText
+                         dangerouslySetInnerHTML={{ __html:
+		         (() => {
+                            // If content already contains Prism tokens, return it directly
+                            if (codeText.includes('<span class="token')) {
+                                return codeText;
+                            }
+                            // Otherwise, highlight it if we can
+                            if (prismInstance && token.lang) {
+                                return prismInstance.highlight(
+                                    codeText,
+                                    prismInstance.languages[token.lang as keyof typeof prismInstance.languages] ||
+                                    prismInstance.languages.plaintext,
+                                    token.lang as string
+                                );
+                            }
+                            return codeText;
+                        })()
                     }}
                 />
             </pre>
