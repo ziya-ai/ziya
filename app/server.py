@@ -1,5 +1,6 @@
 import os
 import time
+import json
 from typing import Dict, Any, List, Tuple, Optional
 
 import tiktoken
@@ -19,7 +20,7 @@ from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalE
 # import pydevd_pycharm
 import uvicorn
 
-from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff
+from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff, PatchApplicationError
 from app.utils.directory_util import get_ignored_patterns
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
@@ -188,12 +189,44 @@ class ApplyChangesRequest(BaseModel):
 class TokenCountRequest(BaseModel):
     text: str
 
+def count_tokens_fallback(text: str) -> int:
+    """Fallback methods for counting tokens when primary method fails."""
+    try:
+        # First try using tiktoken directly with cl100k_base (used by Claude)
+        encoding = tiktoken.get_encoding("cl100k_base")
+        return len(encoding.encode(text))
+    except Exception as e:
+        logger.warning(f"Tiktoken fallback failed: {str(e)}")
+        try:
+            # Simple approximation based on whitespace-split words
+            # Multiply by 1.3 as tokens are typically fewer than words
+            return int(len(text.split()) * 1.3)
+        except Exception as e:
+            logger.error(f"All token counting methods failed: {str(e)}")
+            # Return character count divided by 4 as very rough approximation
+            return int(len(text) / 4)
+
 @app.post('/api/token-count')
 async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
     try:
-        # Use the existing model instance to count tokens
-        token_count = model.get_num_tokens(request.text)
-        logger.info(f"Counted {token_count} tokens for text length {len(request.text)}")
+        token_count = 0
+        method_used = "unknown"
+
+        try:
+            # Try primary method first
+            token_count = model.get_num_tokens(request.text)
+            method_used = "primary"
+        except AttributeError:
+            # If primary method fails, use fallback
+            logger.warning("Primary token counting method unavailable, using fallback")
+            token_count = count_tokens_fallback(request.text)
+            method_used = "fallback"
+        except Exception as e:
+            logger.error(f"Unexpected error in primary token counting: {str(e)}")
+            token_count = count_tokens_fallback(request.text)
+            method_used = "fallback"
+
+        logger.info(f"Counted {token_count} tokens using {method_used} method for text length {len(request.text)}")
         return {"token_count": token_count}
     except Exception as e:
         logger.error(f"Error counting tokens: {str(e)}", exc_info=True)
@@ -216,7 +249,14 @@ async def apply_changes(request: ApplyChangesRequest):
         use_git_to_apply_code_diff(corrected_diff)
         return {'message': 'Changes applied successfully'}
     except Exception as e:
-        logger.error(f"Error applying changes: {str(e)}", exc_info=True)
+        error_msg = str(e)
+        if isinstance(e, PatchApplicationError):
+            details = e.details
+            logger.error(f"Patch application failed:")
+            logger.error(f"  Patch command error: {details.get('patch_error', 'N/A')}")
+            logger.error(f"  Git apply error: {details.get('git_error', 'N/A')}")
+            logger.error(f"  Analysis: {json.dumps(details.get('analysis', {}), indent=2)}")
+        logger.error(f"Error applying changes: {error_msg}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
