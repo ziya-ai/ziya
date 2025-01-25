@@ -1,6 +1,7 @@
 import React, {useEffect, useState, useCallback} from 'react';
 import {Input, Tabs, Tree, TreeDataNode} from 'antd';
 import {useFolderContext} from '../context/FolderContext';
+import {useChatContext} from '../context/ChatContext';
 import {TokenCountDisplay} from "./TokenCountDisplay";
 import union from 'lodash/union';
 import {ChatHistory} from "./ChatHistory";
@@ -26,7 +27,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     } = useFolderContext();
     const [modelId, setModelId] = useState<string>('');
     const {isDarkMode} = useTheme();
-
+    const {currentConversationId} = useChatContext();
 
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [searchValue, setSearchValue] = useState('');
@@ -185,12 +186,19 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
             <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
 	                <Tabs
                 defaultActiveKey="1"
+		destroyInactiveTabPane={false}
 		style={{
                     height: '100%',
                     display: 'flex',
                     flexDirection: 'column',
                     color: isDarkMode ? '#ffffff' : undefined,
                     overflow: 'hidden'
+                }}
+		onChange={(key) => {
+			console.debug('Tab changed:', {
+                            key,
+                            currentConversationId
+                        });
                 }}
                 items={[
                     {

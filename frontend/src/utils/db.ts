@@ -1,11 +1,26 @@
 import { Conversation } from './types';
 import { message } from 'antd';
- 
-const DB_NAME = 'ZiyaDB';
-const DB_VERSION = 1;
+
+declare global {
+    interface Navigator {
+        locks?: {
+            request(name: string, callback: (lock: any) => Promise<any>): Promise<any>;
+        };
+    }
+}
+
+const DB_BASE_NAME = 'ZiyaDB';
+let currentDbName = DB_BASE_NAME;
+let currentVersion = 2;
 const STORE_NAME = 'conversations';
 const BACKUP_STORE_NAME = 'conversationsBackup';
- 
+
+interface DatabaseHealth {
+    isHealthy: boolean;
+    errors: string[];
+    canRecover: boolean;
+}
+
 interface DB {
     db: IDBDatabase | null;
     init(): Promise<void>;
@@ -13,382 +28,315 @@ interface DB {
     getConversations(): Promise<Conversation[]>;
     exportConversations(): Promise<string>;
     importConversations(data: string): Promise<void>;
+    repairDatabase(): Promise<void>;
+    forceReset(): Promise<void>;
+    checkDatabaseHealth(): Promise<DatabaseHealth>;
 }
- 
+
 class ConversationDB implements DB {
     private saveInProgress = false;
     private lastSavedData: string | null = null;
     private lastKnownVersion: number = 0;
+    private connectionAttempts = 0;
+    private _pendingMigrationData: Conversation[] | null = null;
     private initializing = true;
+    private initPromise: Promise<void> | null = null;
 
     db: IDBDatabase | null = null;
- 
+
     async init(): Promise<void> {
-        return new Promise((resolve, reject) => {
-	    console.log('Initializing database...');
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
-	    console.log('Initializing ZiyaDB...');
- 
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => {
-                this.db = request.result;
-		this.initializing = false;
-                resolve();
-		console.log('Database initialized successfully', {
-                    name: this.db.name,
-                    version: this.db.version,
-                    stores: Array.from(this.db.objectStoreNames)
-                });
-            };
- 
-            request.onupgradeneeded = (event) => {
-		console.log('Upgrading database schema...');
-                const db = (event.target as IDBOpenDBRequest).result;
-                
-                // Create main store
-                if (!db.objectStoreNames.contains(STORE_NAME)) {
-                    db.createObjectStore(STORE_NAME);
-                }
-                
-                // Create backup store
-                if (!db.objectStoreNames.contains(BACKUP_STORE_NAME)) {
-                    db.createObjectStore(BACKUP_STORE_NAME);
-                }
-            };
-	    request.onblocked = () => console.error('Database upgrade was blocked');
-            request.onerror = (event) => {
-                const error = request.error?.message || 'Unknown database error';
-                console.error('Database initialization error:', error);
-                reject(new Error(`Database initialization failed: ${error}`));
-            };
-	});
+        if (this.initPromise) return this.initPromise;
+
+        if (navigator.locks) {
+            this.initPromise = navigator.locks.request('ziya-db-init', async lock => {
+                return this._initWithLock();
+            });
+            return this.initPromise;
+        }
+        this.initPromise = this._initWithLock();
+        return this.initPromise;
     }
+
+    private async _initWithLock(): Promise<void> {
+        try {
+            console.debug('Initializing database...');
+            
+            if (this.db) {
+                this.db.close();
+                this.db = null;
+            }
+
+	    // First check existing version
+            const checkRequest = indexedDB.open(currentDbName);
+
+	    return new Promise((resolve, reject) => {
+                checkRequest.onsuccess = () => {
+                    const existingVersion = checkRequest.result.version;
+                    checkRequest.result.close();
+
+                    // Use existing version if it's higher
+                    if (existingVersion > currentVersion) {
+                        currentVersion = existingVersion;
+                    }
+
+                    console.debug('Database version check:', {
+                        existingVersion,
+                        usingVersion: currentVersion
+                    });
+
+		    // Now open with correct version
+                    const dbRequest = indexedDB.open(currentDbName, currentVersion);
+
+                    dbRequest.onerror = () => {
+                        console.error('Database initialization error:', dbRequest.error);
+                        this.initPromise = null;
+                        reject(dbRequest.error);
+                    };
+
+		    dbRequest.onsuccess = () => {
+                        this.db = dbRequest.result;
+
+                        this.db.onversionchange = () => {
+                            this.db?.close();
+                            this.db = null;
+                            this.initPromise = null;
+                        };
+
+                        this.db.onclose = () => {
+                            this.db = null;
+                            this.initPromise = null;
+                        };
+
+                        this.initializing = false;
+                        console.debug('Database initialized successfully:', {
+                            name: this.db.name,
+                            version: this.db.version,
+                            stores: Array.from(this.db.objectStoreNames)
+                        });
+                        resolve();
+                    
+                    };
+
+                dbRequest.onupgradeneeded = (event: IDBVersionChangeEvent) => {
+                    console.debug('Upgrading database schema...');
+                    const db = (event.target as IDBOpenDBRequest).result;
+                    
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME);
+                    }
+                    if (!db.objectStoreNames.contains(BACKUP_STORE_NAME)) {
+                        db.createObjectStore(BACKUP_STORE_NAME);
+                    }
+                };
  
-    async checkDatabaseHealth(): Promise<{
-        isHealthy: boolean;
-        errors: string[];
-        canRecover: boolean;
-    }> {
-        return new Promise((resolve) => {
-            const request = indexedDB.open(DB_NAME);
-            request.onsuccess = () => {
-                const db = request.result;
-                const hasRequiredStores = db.objectStoreNames.contains(STORE_NAME) &&
-                    db.objectStoreNames.contains(BACKUP_STORE_NAME);
-                resolve({
-                    isHealthy: hasRequiredStores,
-                    errors: hasRequiredStores ? [] : ['Missing required object stores'],
-                    canRecover: true
-                });
-            };
-	 });
+                checkRequest.onerror = () => {
+                    console.error('Version check failed:', checkRequest.error);
+                    reject(checkRequest.error);
+	        };
+	      }
+            });
+        } catch (error) {
+            this.initPromise = null;
+            console.error('Database initialization failed:', error);
+            throw error;
+        }
     }
 
     private validateConversations(conversations: Conversation[]): boolean {
         return conversations.every(conv =>
             typeof conv === 'object' &&
-            Boolean(conv.id) && // Allow any non-null ID
-            Boolean(conv.title) && // Allow any non-null title
+            typeof conv.id === 'string' &&
+            conv.id.length > 0 &&
+            typeof conv.title === 'string' &&
             Array.isArray(conv.messages) &&
-            conv.messages.every(msg => 
+            conv.messages.every(msg =>
                 typeof msg === 'object' &&
-		Boolean(msg.content) && // Allow any non-null content
+                typeof msg.content === 'string' &&
+                msg.content.length > 0 &&
                 (msg.role === 'human' || msg.role === 'assistant')
             )
         );
     }
 
-    private logValidationFailure(conv: Conversation): void {
-        console.warn('Validation failed for conversation:', {
-            id: conv.id,
-            title: conv.title,
-            hasMessages: Array.isArray(conv.messages),
-            messageCount: conv.messages?.length,
-            invalidMessages: conv.messages?.filter(msg =>
-                !msg.content || !['human', 'assistant'].includes(msg.role)
-            )
-        });
-    }
-
-    private logConversationStats(conversations: Conversation[]) {
-        console.log('Conversation statistics:');
-        console.log(`Total conversations: ${conversations.length}`);
-        const validCount = conversations.filter(conv => this.validateConversations([conv])).length;
-        console.log(`Valid conversations: ${validCount}`);
-	const invalidCount = conversations.length - validCount;
-        console.log(`Invalid conversations: ${invalidCount}`);
-
-        // Log details of invalid conversations
-        conversations.forEach((conv, index) => {
-            if (!this.validateConversations([conv])) {
-		this.logValidationFailure(conv);
-            }
-        });
-    }
-
-    private lastMergedVersion: number = 0;
-    private async hasDataChanged(conversations: Conversation[]): Promise<boolean> {
-        try {
-            // First check our cached last saved state
-            const newData = JSON.stringify(conversations);
-            if (newData === this.lastSavedData) {
-                console.debug('No changes detected from last save, skipping');
-                return false;
-            }
-
-            // Then check current database state
-            const currentData = await this.getConversations();
-
-	    // If this is a new conversation, always save
-            const hasNewConversation = conversations.some(conv =>
-                !currentData.find(c => c.id === conv.id)
-            );
-
-
-            // Check if we have a version conflict
-            const maxRemoteVersion = Math.max(...currentData.map(c => c._version || 0));
-            if (maxRemoteVersion > this.lastKnownVersion) {
-                console.debug('Version conflict detected, merging changes');
-                // Merge the changes
-                const mergedConversations = this.mergeConversations(conversations, currentData);
-                // Update our version tracking
-		this.lastKnownVersion = maxRemoteVersion;
-                this.lastMergedVersion = Date.now();
-                // Save the merged result instead of original
-                await this.saveConversations(mergedConversations);
-                return false; // Skip the original save since we've handled the merge
-            }
-
-	    // Always save if we have a new conversation
-            if (hasNewConversation) {
-                return true;
-            }
-
-            return true;
-        } catch (error) {
-            console.error('Error checking for changes:', error);
-            return true; // If check fails, attempt save anyway
-        }
-    }
-
-    private updateLastSavedData(conversations: Conversation[]) {
-	console.debug(`Updating last saved data with ${conversations.length} conversations`);
-        this.lastSavedData = JSON.stringify(conversations);
-    }
-
     private mergeConversations(local: Conversation[], remote: Conversation[]): Conversation[] {
         const merged = new Map<string, Conversation>();
 
-        // First, add all local conversations to the map
-        local.forEach(conv => {
-	    const isNewConv = !remote.find(r => r.id === conv.id);
+        // Protect active conversations first
+        const activeConvs = local.filter(conv =>
+            conv.messages &&
+            conv.messages.length > 0 &&
+            conv.isActive !== false
+        );
+
+        console.debug('Merging conversations:', {
+            localCount: local.length,
+            remoteCount: remote.length,
+            activeCount: activeConvs.length,
+            localIds: local.map(c => c.id),
+            remoteIds: remote.map(c => c.id)
+        });
+
+        // Add active conversations first
+        activeConvs.forEach(conv => {
             merged.set(conv.id, {
                 ...conv,
-		_version: conv._version || this.lastMergedVersion || Date.now(),
-		isNew: isNewConv,
-                isActive: conv.isActive || isNewConv // Ensure new conversations are active
+                _version: Date.now(),
+                isActive: true
             });
         });
 
-        // Then, merge remote conversations, keeping the newer version
-	for (const conv of remote) {
-            const localConv = merged.get(conv.id);
-	    // Skip if local conversation exists and is marked as inactive
-            if (localConv?.isActive === false) {
-                console.debug(`Keeping local inactive state for ${conv.id}`);
-                continue;
-            }
-
-            // Only update if remote version is newer
-            if (!localConv || (conv._version && localConv._version && conv._version > localConv._version)) {
+        // Add remaining local conversations
+        local.forEach(conv => {
+            if (!merged.has(conv.id)) {
                 merged.set(conv.id, {
                     ...conv,
-                    _version: conv._version || this.lastMergedVersion || Date.now(),
-                    isNew: false
+                    _version: conv._version || Date.now(),
+                    isActive: conv.isActive !== false
                 });
-                console.debug(`Merge decision for ${conv.id}:`, { action: localConv?.isNew ? 'kept local' : 'used remote' });
             }
-        }
+        });
+
+        // Merge remote conversations
+        remote.forEach(conv => {
+            const existingConv = merged.get(conv.id);
+            if (existingConv) {
+                if (existingConv.isActive === false ||
+                    (existingConv._version && conv._version && existingConv._version > conv._version)) {
+                    return;
+                }
+            }
+            merged.set(conv.id, {
+                ...conv,
+                _version: Math.max(conv._version || 0, existingConv?._version || 0, Date.now()),
+                isActive: existingConv?.isActive !== false
+            });
+        });
 
         return Array.from(merged.values()).sort((a, b) => {
-	    // Sort by lastAccessedAt, putting new conversations first
-            if (a.isNew && !b.isNew) return -1;
-            if (!a.isNew && b.isNew) return 1;
-
-            const aTime = a.lastAccessedAt || 0;
-            const bTime = b.lastAccessedAt || 0;
-	    return bTime - aTime;
+            if (a.isActive && !b.isActive) return -1;
+            if (!a.isActive && b.isActive) return 1;
+            return (b.lastAccessedAt || 0) - (a.lastAccessedAt || 0);
         });
     }
 
-    private logMergeResults(mergedConversations: Conversation[]): void {
-        console.debug('Merged conversations:', mergedConversations.map(c => ({ id: c.id, isNew: c.isNew })));
-    }
-
     async saveConversations(conversations: Conversation[]): Promise<void> {
-        if (!this.db) throw new Error('Database not initialized');
-
-	// During initialization, just save without checking for changes
-        if (this.initializing) {
-            console.debug('Initial save, skipping change detection');
-            await this._forceSave(conversations);
-            return;
+        if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+            try {
+                await this.init();
+            } catch (error) {
+                console.error('Failed to initialize database:', error);
+                throw new Error('Database initialization failed');
+            }
+            if (!this.db) throw new Error('Database not initialized');
         }
 
-	// Prevent concurrent saves
+        if (navigator.locks) {
+            return navigator.locks.request('ziya-db-write', async lock => {
+                return this._saveConversationsWithLock(conversations);
+            });
+        }
+        return this._saveConversationsWithLock(conversations);
+    }
+
+    private async _saveConversationsWithLock(conversations: Conversation[]): Promise<void> {
         if (this.saveInProgress) {
             console.warn('Save already in progress, skipping');
             return;
         }
-        if (!await this.hasDataChanged(conversations)) {
-            console.debug('No data changes detected, skipping save');
-	    return;
-	}
 
-    	this.saveInProgress = true;
-	console.debug('Starting save operation:', { conversationCount: conversations.length });
-        
-        if (!this.validateConversations(conversations)) {
-	    console.warn('Some conversations failed validation but proceeding with save');
-        }
- 
-	this.logConversationStats(conversations);
-	
-        
+        this.saveInProgress = true;
+        let saveCompleted = false;
+
         try {
-            // Check if this is a new conversation
-            const currentData = await this.getConversations();
-            const hasNewConversation = conversations.some(conv => 
-                !currentData.find(c => c.id === conv.id)
-            );
- 
-            if (hasNewConversation) {
-                console.debug('New conversation detected, forcing save');
-                await this._forceSave(conversations);
-                return;
-            }
-		
-            // First, backup current state
-            const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readwrite');
+            console.debug('Starting save operation:', {
+                conversationCount: conversations.length,
+                hasActiveConversations: conversations.some(c => c.messages?.length > 0 && c.isActive !== false)
+            });
+
+            const tx = this.db!.transaction([STORE_NAME], 'readwrite');
             const store = tx.objectStore(STORE_NAME);
-            const backupStore = tx.objectStore(BACKUP_STORE_NAME);
-            
-	    console.log('Starting transaction to save conversations:', conversations.length);
+
             return new Promise<void>((resolve, reject) => {
-                // Get current state for backup
-                const getRequest = store.get('current');
-                
-		console.debug('Retrieving current state for backup');
-                getRequest.onsuccess = () => {
-                    if (getRequest.result) {
-			console.debug('Backing up current state before save');
-                        backupStore.put(getRequest.result, 'backup');
-                    }
+                const conversationsToSave = conversations.map(conv => ({
+                    ...conv,
+                    _version: Date.now(),
+                    messages: conv.messages.map(msg => ({
+                        ...msg,
+                        _timestamp: msg._timestamp || Date.now()
+                    })),
+                    lastAccessedAt: conv.lastAccessedAt || Date.now(),
+                    isActive: conv.isActive !== false
+                }));
 
-		    // Keep most recent 100 conversations
-		    const conversationsToSave = conversations.slice(-100).map(conv => ({
-                        ...conv,
-                        _version: Date.now(),
-                        messages: conv.messages.map(msg => ({
-                            ...msg,
-                            _timestamp: msg._timestamp || Date.now()
-                        }))
-                    }));
-		    console.debug('Preparing to save conversations:', {
-                        count: conversationsToSave.length,
-                        firstId: conversationsToSave[0]?.id,
-                        lastId: conversationsToSave[conversationsToSave.length - 1]?.id
+                const putRequest = store.put(conversationsToSave, 'current');
+
+                putRequest.onsuccess = () => {
+                    console.debug('Save operation completed successfully:', {
+                        savedCount: conversationsToSave.length,
+                        savedIds: conversationsToSave.map(c => c.id)
                     });
-		    this.updateLastSavedData(conversationsToSave);
-                    
-                    // Save new state
-                    const putRequest = store.put(conversationsToSave, 'current');
-		    putRequest.onsuccess = () => {
-			console.debug('Save operation completed successfully');
-                        resolve();
-                    };
-
-		    putRequest.onerror = () => {
-                        reject(putRequest.error);
-                    };
-
-		    tx.oncomplete = () => {
-                        console.debug('Transaction completed successfully');
-                    };
+                    this.lastSavedData = JSON.stringify(conversationsToSave);
+                    saveCompleted = true;
                 };
 
-                getRequest.onerror = () => {
-                    reject(getRequest.error);
+                putRequest.onerror = () => {
+                    console.error('Save operation failed:', putRequest.error);
+                    reject(putRequest.error);
                 };
+
                 tx.oncomplete = () => {
+                    if (!saveCompleted) {
+                        reject(new Error('Transaction completed but save operation did not complete'));
+                        return;
+                    }
                     resolve();
                 };
- 
+
                 tx.onerror = () => {
                     reject(tx.error);
                 };
             });
         } finally {
-	    console.log('Save transaction completed');	
             this.saveInProgress = false;
         }
     }
- 
-    private async _forceSave(conversations: Conversation[]): Promise<void> {
-	if (!this.db) {
-            throw new Error('Database not initialized');
-        }
-
-	console.debug('Force saving conversations:', {
-            total: conversations.length,
-            active: conversations.filter(c => c.isActive).length,
-            inactive: conversations.filter(c => !c.isActive).length,
-            activeIds: conversations.filter(c => c.isActive).map(c => c.id),
-            inactiveIds: conversations.filter(c => !c.isActive).map(c => c.id)
-        });
-        const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const backupStore = tx.objectStore(BACKUP_STORE_NAME);
-
-        return new Promise<void>((resolve, reject) => {
-            // Backup current state
-            const getRequest = store.get('current');
-            getRequest.onsuccess = () => {
-                if (getRequest.result) {
-                    backupStore.put(getRequest.result, 'backup');
-                }
-
-                // Force save new state
-                const putRequest = store.put(conversations, 'current');
-                putRequest.onsuccess = () => {
-                    console.debug('Force save completed successfully');
-                    resolve();
-                };
-                putRequest.onerror = () => reject(putRequest.error);
-            };
-            getRequest.onerror = () => reject(getRequest.error);
-        });
-    }
 
     async getConversations(): Promise<Conversation[]> {
-        if (!this.db) throw new Error('Database not initialized');
- 
-        const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const backupStore = tx.objectStore(BACKUP_STORE_NAME);
-	let recoveredFromBackup = false;
- 
-        return new Promise((resolve, reject) => {
-            const request = store.get('current');
-            
-            request.onsuccess = () => {
-		let conversations = request.result || [];
-		console.log('Retrieved conversations from store:', conversations?.length || 0);
+        if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+            try {
+                await this.init();
+            } catch (error) {
+                console.error('Failed to initialize database:', error);
+                throw new Error('Database initialization failed');
+            }
+            if (!this.db) throw new Error('Database not initialized');
+        }
 
-                if (Array.isArray(conversations) && conversations.length > 0) {
-                    // Filter out invalid conversations
+        if (navigator.locks) {
+            return navigator.locks.request('ziya-db-read', async lock => {
+                return this._getConversationsWithLock();
+            });
+        }
+        return this._getConversationsWithLock();
+    }
+
+    private async _getConversationsWithLock(): Promise<Conversation[]> {
+        const tx = this.db!.transaction([STORE_NAME], 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+
+        return new Promise<Conversation[]>((resolve, reject) => {
+            const request = store.get('current');
+
+            request.onsuccess = () => {
+                const conversations = Array.isArray(request.result) ? request.result : [];
+                console.debug('Retrieved conversations:', {
+                    count: conversations.length,
+                    ids: conversations.map(c => c.id)
+                });
+
+                if (conversations.length > 0) {
                     const validConversations = conversations.filter(conv =>
-                        this.validateConversations([conv])
+                        conv && this.validateConversations([conv])
                     );
 
                     if (validConversations.length > 0) {
@@ -396,48 +344,138 @@ class ConversationDB implements DB {
                         return;
                     }
                 }
-
-                // If we get here, either no conversations or all invalid
-                console.warn('No valid conversations found in main store, attempting backup recovery...');
-
-                // Try to recover from backup
-                const backupRequest = backupStore.get('backup');
-                backupRequest.onsuccess = () => {
-                    const backupConversations = backupRequest.result || [];
-                    const validBackupConversations = backupConversations.filter(conv =>
-                        this.validateConversations([conv])
-                    );
-
-                    if (validBackupConversations.length > 0) {
-                        console.log(`Recovered ${validBackupConversations.length} conversations from backup`);
-                        message.info('Recovered conversations from backup store');
-                        recoveredFromBackup = true;
-                    }
-                    resolve(validBackupConversations);
-                };
-                backupRequest.onerror = () => {
-                    console.error('Failed to recover from backup');
-                    resolve([]);
-                };
+                resolve([]);
             };
 
-	    request.onerror = () => reject(request.error);
-
             request.onerror = () => {
-                console.error('Error reading conversations:', request.error);
                 reject(request.error);
+            };
+        });
+    }
+
+    async exportConversations(): Promise<string> {
+	if (navigator.locks) {
+            return navigator.locks.request('ziya-db-read', async lock => {
+                return this._exportConversations();
+            });
+        }
+        return this._exportConversations();
+    }
+    private async _exportConversations(): Promise<string> {
+        const conversations = await this.getConversations();
+        return JSON.stringify(conversations, null, 2);
+    }
+
+    async importConversations(data: string): Promise<void> {
+	if (navigator.locks) {
+            return navigator.locks.request('ziya-db-write', async lock => {
+                return this._importConversations(data);
+            });
+        }
+        return this._importConversations(data);
+    }
+    private async _importConversations(data: string): Promise<void> {
+        try {
+            const conversations = JSON.parse(data);
+            if (!this.validateConversations(conversations)) {
+                throw new Error('Invalid conversations format');
+            }
+            await this.saveConversations(conversations);
+        } catch (error) {
+            throw new Error(`Import failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    async repairDatabase(): Promise<void> {
+        if (navigator.locks) {
+            return navigator.locks.request('ziya-db-write', async lock => {
+                return this._repairDatabase();
+            });
+        }
+        return this._repairDatabase();
+    }
+    private async _repairDatabase(): Promise<void> {
+        console.debug('Starting database repair...');
+        
+        if (this.db) {
+            this.db.close();
+            this.db = null;
+        }
+        
+        this.initPromise = null;
+        await this.init();
+        
+        const conversations = await this.getConversations();
+        const validConversations = conversations.filter(conv =>
+            this.validateConversations([conv])
+        );
+
+        if (validConversations.length < conversations.length) {
+            await this.saveConversations(validConversations);
+            message.success('Database repaired successfully');
+        }
+    }
+
+    async clearDatabase(): Promise<void> {
+	if (navigator.locks) {
+            return navigator.locks.request('ziya-db-write', async lock => {
+                return this._clearDatabase();
+            });
+        }
+        return this._clearDatabase();
+    }
+
+    private async _clearDatabase(): Promise<void> {
+        if (!this.db) throw new Error('Database not initialized');
+
+        const tx = this.db.transaction([STORE_NAME], 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+
+        return new Promise((resolve, reject) => {
+            const clearRequest = store.clear();
+
+            clearRequest.onsuccess = () => {
+                console.debug('Database cleared successfully');
+                this.lastSavedData = null;
+                this.lastKnownVersion = 0;
+                resolve();
+            };
+
+            clearRequest.onerror = () => {
+                console.error('Error clearing database:', clearRequest.error);
+                reject(clearRequest.error);
+            };
+
+            tx.oncomplete = () => {
+                console.debug('Clear transaction completed');
+            };
+
+            tx.onerror = () => {
+                reject(tx.error);
             };
         });
     }
 
     async forceReset(): Promise<void> {
         return new Promise((resolve, reject) => {
+            // Close existing connection if any
+            if (this.db) {
+                this.db.close();
+                this.db = null;
+            }
+
             // Delete the entire database
-            const deleteRequest = indexedDB.deleteDatabase(DB_NAME);
+            const deleteRequest = indexedDB.deleteDatabase(currentDbName);
 
             deleteRequest.onsuccess = async () => {
                 console.log('Database deleted successfully');
                 try {
+                    // Reset internal state
+                    this.lastSavedData = null;
+                    this.lastKnownVersion = 0;
+                    this.initPromise = null;
+                    this.saveInProgress = false;
+
                     // Reinitialize the database
                     await this.init();
                     resolve();
@@ -456,82 +494,64 @@ class ConversationDB implements DB {
         });
     }
 
-    async isAccessible(): Promise<boolean> {
-        if (!this.db) return false;
-        try {
-            await this.getConversations();
-            return true;
-        } catch (error) {
-            return false;
-        }
-    }
-
-    async repairDatabase(): Promise<void> {
-        if (!this.db) throw new Error('Database not initialized');
+    async checkDatabaseHealth(): Promise<DatabaseHealth> {
+        const health: DatabaseHealth = {
+            isHealthy: false,
+            errors: [],
+            canRecover: true
+        };
 
         try {
-            // Get all conversations
-            const conversations = await this.getConversations();
-
-            // Filter out invalid conversations
-            const validConversations = conversations.filter(conv =>
-                this.validateConversations([conv])
-            );
-
-            if (validConversations.length < conversations.length) {
-                console.log(`Removed ${conversations.length - validConversations.length} invalid conversations`);
-                // Save valid conversations back to database
-                await this.saveConversations(validConversations);
-                message.success('Successfully repaired conversation database');
+            // Check database connection
+            if (!this.db) {
+                try {
+                    await this.init();
+                } catch (error) {
+                    health.errors.push('Failed to initialize database connection');
+                    return health;
+                }
             }
-        } catch (error) {
-            console.error('Error repairing database:', error);
-            message.error('Failed to repair conversation database');
-        }
-    }
 
-    async clearDatabase(): Promise<void> {
-        if (!this.db) throw new Error('Database not initialized');
-
-        const tx = this.db.transaction([STORE_NAME, BACKUP_STORE_NAME], 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const backupStore = tx.objectStore(BACKUP_STORE_NAME);
-
-        return new Promise((resolve, reject) => {
-            store.clear();
-            backupStore.clear();
-
-            tx.oncomplete = () => {
-                console.log('Database cleared successfully');
-                resolve();
-            };
-            tx.onerror = () => {
-                console.error('Error clearing database:', tx.error);
-                reject(tx.error);
-            };
-        });
-    }
-
-    async exportConversations(): Promise<string> {
-        const conversations = await this.getConversations();
-        return JSON.stringify(conversations, null, 2);
-    }
- 
-    async importConversations(data: string): Promise<void> {
-        try {
-            const conversations = JSON.parse(data);
-            if (!this.validateConversations(conversations)) {
-                throw new Error('Invalid conversations format');
+            // Check required stores exist
+            const hasRequiredStores = this.db!.objectStoreNames.contains(STORE_NAME);
+            if (!hasRequiredStores) {
+                health.errors.push('Missing required object stores');
+                return health;
             }
-            await this.saveConversations(conversations);
-        } catch (error) {
-            const errorMessage = error instanceof Error
-                ? error.message
-                : 'Unknown error during import';
 
-            throw new Error(`Import failed: ${errorMessage}`);
+            // Try to read conversations
+            try {
+                const conversations = await this.getConversations();
+                // Check if we can read data
+                if (!Array.isArray(conversations)) {
+                    health.errors.push('Invalid data structure in database');
+                    return health;
+                }
+
+                // Validate conversations
+                const invalidConversations = conversations.filter(
+                    conv => !this.validateConversations([conv])
+                );
+                if (invalidConversations.length > 0) {
+                    health.errors.push(`Found ${invalidConversations.length} invalid conversations`);
+                    health.canRecover = true;
+                }
+            } catch (error) {
+                health.errors.push('Failed to read conversations from database');
+                return health;
+            }
+
+            // If we got here with no errors, database is healthy
+            if (health.errors.length === 0) {
+                health.isHealthy = true;
+            }
+
+            return health;
+        } catch (error) {
+            health.errors.push(`Unexpected error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            return health;
         }
     }
 }
- 
+
 export const db = new ConversationDB();

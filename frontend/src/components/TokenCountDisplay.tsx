@@ -1,5 +1,5 @@
-import React, {useEffect, useState, useCallback} from 'react';
-import {Folders} from "../utils/types";
+import React, {useEffect, useState, useCallback, useMemo, useRef} from 'react';
+import {Folders, Message} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
 import {Tooltip, Spin, message} from "antd";
 import {useChatContext} from "../context/ChatContext";
@@ -39,11 +39,17 @@ export const TokenCountDisplay = () => {
     const [totalTokenCount, setTotalTokenCount] = useState(0);
     const [chatTokenCount, setChatTokenCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
+    const lastMessageCount = useRef<number>(0);
+    const lastMessageContent = useRef<string>('');
 
     const combinedTokenCount = totalTokenCount + chatTokenCount;
 
+    // only calculate tokens when checked files change
     useEffect(() => {
-        if (folders && checkedKeys.length > 0) calculateTotalTokenCount(checkedKeys as string[]);
+	if (folders && checkedKeys.length > 0) {
+            console.debug('Recalculating file tokens due to checked files change');
+            calculateTotalTokenCount(checkedKeys as string[]);
+        }
     }, [checkedKeys]);
 
     const getTokenCountClass = (count: number) => {
@@ -77,6 +83,17 @@ export const TokenCountDisplay = () => {
         setTotalTokenCount(totalTokenCount);
     };
 
+    const hasMessagesChanged = useCallback((messages: Message[]) => {
+        if (messages.length !== lastMessageCount.current) {
+            return true;
+        }
+        const newContent = messages.map(msg => msg.content).join('\n');
+        if (newContent !== lastMessageContent.current) {
+            return true;
+        }
+        return false;
+    }, []);
+
     const updateChatTokens = useCallback(async () => {
         if (currentMessages.length === 0) {
             setChatTokenCount(0);
@@ -88,7 +105,9 @@ export const TokenCountDisplay = () => {
             const allText = currentMessages.map(msg => msg.content).join('\n');
             const tokens = await getTokenCount(allText);
             setChatTokenCount(tokens);
-        } catch (error) {
+            lastMessageCount.current = currentMessages.length;
+            lastMessageContent.current = allText;
+	} catch (error) {
             console.error('Failed to get token count:', error);
             setChatTokenCount(0);
         } finally {
@@ -96,29 +115,18 @@ export const TokenCountDisplay = () => {
         }
     }, [currentMessages]);
 
+    // update chat tokens only when messages change
     useEffect(() => {
-        updateChatTokens();
-    }, [updateChatTokens]);
-
-    // Add effect to calculate initial token count when folders are loaded
-    useEffect(() => {
-        if (folders && checkedKeys.length > 0) {
-            calculateTotalTokenCount(checkedKeys as string[]);
-        }
-    }, [folders]);
-
-
-    // Add debounce effect for token updates
-    useEffect(() => {
-        const timer = setTimeout(() => {
+	if (currentMessages.length > 0 && hasMessagesChanged(currentMessages)) {
+            console.debug('Updating chat tokens due to message changes');
             updateChatTokens();
-        }, 500); // 500ms debounce
-        return () => clearTimeout(timer);
+	} else {
+	    console.debug('Skipping token update - no message changes detected');
+	}
     }, [currentMessages, updateChatTokens]);
 
-    return (
-        <div className="token-display">
-            {isLoading ? <Spin size="small" /> : (
+    const tokenDisplay = useMemo(() => (
+        isLoading ? <Spin size="small" /> : (
                 <>
                     <Tooltip title="Tokens from selected files">
                         <span className="token-count-item">
@@ -139,7 +147,12 @@ export const TokenCountDisplay = () => {
                         </span>
                     </Tooltip>
                 </>
-            )}
+            )
+    ), [isLoading, totalTokenCount, chatTokenCount, combinedTokenCount]);
+ 
+    return (
+        <div className="token-display">
+            {tokenDisplay}
         </div>
     );
 };

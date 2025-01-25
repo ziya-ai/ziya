@@ -7,7 +7,13 @@ const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
-    const {streamedContent, isStreaming, currentConversationId, streamingConversationId, currentMessages} = useChatContext();
+    const {
+        streamedContent, 
+        isStreaming, 
+        currentConversationId, 
+        streamingConversationId,
+        currentMessages
+    } = useChatContext();
 
     const LoadingIndicator = () => (
         <div style={{ 
@@ -66,6 +72,16 @@ export const StreamedContent: React.FC = () => {
         };
         triggerScroll();
     }, [currentConversationId, streamedContent]);
+
+    // Debug when content should be displayed
+    useEffect(() => {
+        console.debug('StreamedContent state:', {
+            hasContent: Boolean(streamedContent),
+            isStreaming,
+            currentConversationId,
+            streamingConversationId
+        });
+    }, [streamedContent, isStreaming, currentConversationId, streamingConversationId]);
 
     const enableCodeApply = window.enableCodeApply === 'true';
     return (

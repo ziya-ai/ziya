@@ -11,6 +11,7 @@ export const ChatHistory: React.FC = () => {
         setCurrentConversationId,
         currentConversationId,
         setConversations,
+	currentMessages,
         isLoadingConversation,
 	isStreaming,
         streamingConversationId,
@@ -20,6 +21,17 @@ export const ChatHistory: React.FC = () => {
     const {isDarkMode} = useTheme();
     const [isRepairing, setIsRepairing] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
+    const [loadError, setLoadError] = useState<string | null>(null);
+
+    // Preserve current conversation when component mounts
+    useEffect(() => {
+        if (currentConversationId && currentMessages.length > 0) {
+            console.debug('Preserving current conversation:', {
+                id: currentConversationId,
+                messageCount: currentMessages.length
+            });
+        }
+    }, []);
 
     // Periodically check for updates when the component is mounted
     useEffect(() => {
@@ -27,8 +39,19 @@ export const ChatHistory: React.FC = () => {
         const checkForUpdates = async () => {
            try {
                const saved = await db.getConversations();
-	       if (isSubscribed && JSON.stringify(saved) !== JSON.stringify(conversations)) {
-                   setConversations(saved);
+	       // Only log and update if there's an actual change
+               const hasChanged = saved.length !== conversations.length ||
+                   JSON.stringify(saved) !== JSON.stringify(conversations);
+
+               if (hasChanged) {
+                   console.debug('Chat history changed:', {
+                       savedCount: saved.length,
+                       currentCount: conversations.length,
+                       reason: saved.length !== conversations.length ? 'length' : 'content'
+                   });
+               }
+               if (isSubscribed) {
+		   if (hasChanged && saved.length > 0) setConversations(saved);
                }
            } catch (error) {
                console.error('Error checking for conversation updates:', error);
@@ -40,8 +63,14 @@ export const ChatHistory: React.FC = () => {
     }, [conversations, setConversations]);
 
     const handleConversationClick = useCallback(async (conversationId: string) => {
-	if (conversationId !== currentConversationId && !isLoadingConversation) {
-            await loadConversation(conversationId);
+	try {
+            setLoadError(null);
+            if (conversationId !== currentConversationId && !isLoadingConversation) {
+                await loadConversation(conversationId);
+                console.debug('Loaded conversation:', conversationId);
+            }
+        } catch (error) {
+            setLoadError(error instanceof Error ? error.message : 'Failed to load conversation');
         }
     }, [currentConversationId, isLoadingConversation, loadConversation]);
 
@@ -198,6 +227,13 @@ export const ChatHistory: React.FC = () => {
         return bTime - aTime;
     });
 
+    console.debug('Rendering chat history:', {
+        totalConversations: conversations.length,
+        sortedConversations: sortedConversations.length,
+        currentId: currentConversationId,
+        currentMessages: currentMessages.length
+    });
+
     return (
         <List
             className="chat-history-list"
@@ -205,7 +241,7 @@ export const ChatHistory: React.FC = () => {
             renderItem={(conversation) => (
                 <List.Item
                     key={conversation.id}
-                    onClick={() => handleConversationClick(conversation.id)} 
+		    onClick={() => conversation.id !== currentConversationId && handleConversationClick(conversation.id)}
                     style={{
 			cursor: 'pointer',
                         backgroundColor: conversation.id === currentConversationId
