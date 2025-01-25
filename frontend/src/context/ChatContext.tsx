@@ -134,6 +134,7 @@ export function ChatProvider({children}: ChatProviderProps) {
                return conv?.messages?.length ?? 0;
            };
 
+	   const isFirstMessage = existingConversation?.messages.length === 0;
 	   const updatedConversations = !existingConversation
                ? [...prevConversations, {
                     // Create and add new conversation
@@ -149,7 +150,13 @@ export function ChatProvider({children}: ChatProviderProps) {
 	       : prevConversations.map(conv =>
                    // Update existing conversation
                    conv.id === currentConversationId
-                       ? { ...conv, messages: [...conv.messages, message], lastAccessedAt: Date.now(), _version: Date.now() }
+		       ? {
+                        ...conv,
+                        messages: [...conv.messages, message],
+                        lastAccessedAt: Date.now(),
+                        _version: Date.now(),
+                        title: isFirstMessage && message.role === 'human' ? message.content.slice(0, 45) + '...' : conv.title
+                       }
                        : conv
                );
 
@@ -174,8 +181,18 @@ export function ChatProvider({children}: ChatProviderProps) {
 		isNew: !existingConversation
             });
 
-            db.saveConversations(updatedConversations).catch(error => {
-                console.error('Failed to save conversation:', error);
+	    // Add detailed logging around the save operation
+            console.debug('Attempting to save conversations:', {
+                conversationId: currentConversationId,
+                messageCount: updatedConversations.find(c => c.id === currentConversationId)?.messages.length,
+                totalConversations: updatedConversations.length,
+                firstMessage: updatedConversations.find(c => c.id === currentConversationId)?.messages[0]?.content.substring(0, 50)
+            });
+            
+            db.saveConversations(updatedConversations).then(() => {
+                console.debug('Database save completed successfully');
+            }).catch(error => {
+                console.error('Database save failed:', error);
                 setDbError(error instanceof Error ? error.message : 'Failed to save conversation');
             });
 
@@ -233,17 +250,34 @@ export function ChatProvider({children}: ChatProviderProps) {
 
     const startNewChat = () => {
 	const newId = uuidv4();
+	const newConversation: Conversation = {
+            id: newId,
+            title: 'New Conversation',
+            messages: [],
+            lastAccessedAt: Date.now(),
+            isActive: true,
+            _version: Date.now()
+        };
+        // First update state
 	setStreamingConversationId(null);
-        setConversations(prevConversations =>
-            prevConversations.map(conv => ({
+	setConversations(prevConversations => {
+            const updatedConversations = prevConversations.map(conv => ({
                 ...conv,
                 isActive: false
-            }))
-        );
-	setCurrentConversationId(newId);
-        setStreamedContent('');
-        setCurrentMessages([]);
-    };
+	    }));
+            return [...updatedConversations, newConversation];
+        });
+        // Then save to database
+        db.saveConversations([...conversations, newConversation])
+            .then(() => {
+                setCurrentConversationId(newId);
+                setStreamedContent('');
+                setCurrentMessages([]);
+            })
+            .catch(error => {
+                console.error('Failed to save new conversation:', error);
+            });
+     };
 
      const loadConversation = async (id: string) => {
         setIsLoadingConversation(true);
@@ -287,6 +321,13 @@ export function ChatProvider({children}: ChatProviderProps) {
         request.onerror = (event) => {
             const error = (event.target as IDBOpenDBRequest).error?.message || 'Unknown IndexedDB error';
             setDbError(error);
+        };
+
+	// Cleanup database connection on unmount
+        return () => {
+            if (db.db) {
+                db.db.close();
+            }
         };
     }, []);
 
