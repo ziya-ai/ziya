@@ -918,16 +918,18 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         );
     }
 
+    // Only escape if the content isn't already escaped
     const codeText = token.text;
     return (
         <ErrorBoundary type="code">
-            <pre style={{
+            <pre 
+	        style={{
                 padding: '16px',
                 borderRadius: '6px',
                 overflow: 'auto',
                 backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                 border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`
-            }}
+                }}
             className={`language-${token.lang || 'plaintext'}`}
             >
                 <code
@@ -937,20 +939,34 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                          }} 
                          dangerouslySetInnerHTML={{ __html:
 		         (() => {
-                            // If content already contains Prism tokens, return it directly
-                            if (codeText.includes('<span class="token')) {
+			        // If it already has Prism tokens or no highlighting needed
+                            if (codeText.includes('<span class="token') || !prismInstance || !token.lang) {
+                                // If content contains unescaped < or > but no HTML entities, escape it
+				if (codeText.match(/<|>/) && !codeText.includes('&lt;') && !codeText.includes('&gt;')) {
+                                    return codeText.replace(/[<>]/g, (char: string) => ({
+                                        '<': '&lt;',
+                                        '>': '&gt;'
+                                    })[char] || char);
+                                }
+                                // Otherwise return as-is
                                 return codeText;
                             }
-                            // Otherwise, highlight it if we can
-                            if (prismInstance && token.lang) {
-                                return prismInstance.highlight(
-                                    codeText,
-                                    prismInstance.languages[token.lang as keyof typeof prismInstance.languages] ||
-                                    prismInstance.languages.plaintext,
-                                    token.lang as string
-                                );
+			    const grammar = prismInstance.languages[token.lang] || prismInstance.languages.plaintext;
+                            try {
+				const codeToHighlight = codeText.match(/<|>/) &&
+                                    !codeText.includes('<') &&
+				    !codeText.includes('&lt;') &&
+                                    !codeText.includes('&gt;') ?
+                                        codeText.replace(/[<>]/g, (char: string) => ({
+                                            '<': '&lt;',
+                                            '>': '&gt;'
+                                        })[char] || char) :
+                                        codeText;
+                                return prismInstance.highlight(codeToHighlight, grammar, token.lang);
+                            } catch (error) {
+                                console.warn(`Highlighting failed for ${token.lang}:`, error);
+                                return codeText;
                             }
-                            return codeText;
                         })()
                     }}
                 />

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, Suspense } from 'react';
 import {FolderTree} from "./FolderTree";
 import {SendChatContainer} from "./SendChatContainer";
 import {StreamedContent} from './StreamedContent';
-import {Button, Tooltip, ConfigProvider, theme } from "antd";
+import {Button, Tooltip, ConfigProvider, theme, message } from "antd";
 import {
     MenuFoldOutlined,
     ExperimentOutlined,
@@ -27,9 +27,14 @@ export const App = () => {
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
 
-    const handleNewChat = () => {
-        startNewChat();
-        setStreamedContent('');
+    const handleNewChat = async () => {
+        try {
+            await startNewChat();
+            setStreamedContent('');
+        } catch (error) {
+            message.error('Failed to create new chat');
+            console.error('Error creating new chat:', error);
+        }
     };
 
     const preserveScrollPosition = (action: () => void) =>    {

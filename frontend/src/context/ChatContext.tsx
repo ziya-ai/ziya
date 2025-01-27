@@ -249,34 +249,40 @@ export function ChatProvider({children}: ChatProviderProps) {
     }, [currentMessages.length]);
 
     const startNewChat = () => {
-	const newId = uuidv4();
-	const newConversation: Conversation = {
-            id: newId,
-            title: 'New Conversation',
-            messages: [],
-            lastAccessedAt: Date.now(),
-            isActive: true,
-            _version: Date.now()
-        };
-        // First update state
-	setStreamingConversationId(null);
-	setConversations(prevConversations => {
-            const updatedConversations = prevConversations.map(conv => ({
-                ...conv,
-                isActive: false
-	    }));
-            return [...updatedConversations, newConversation];
-        });
-        // Then save to database
-        db.saveConversations([...conversations, newConversation])
-            .then(() => {
+	return new Promise<void>((resolve, reject) => {
+            try {
+                const newId = uuidv4();
+                const newConversation: Conversation = {
+                    id: newId,
+                    title: 'New Conversation',
+                    messages: [],
+                    lastAccessedAt: Date.now(),
+                    isActive: true,
+                    _version: Date.now()
+                };
+		// First update the state to include the new conversation
+                setConversations(prevConversations => {
+                    return [...prevConversations, newConversation];
+                });
+                // Then update the database
+                db.saveConversations([...conversations, newConversation])
+                    .then(() => {
+                        // After successful save, update the remaining state
+                        setStreamingConversationId(null);
+                        setStreamedContent('');
+                        setCurrentMessages([]);
+                    })
+                    .catch(error => {
+                        console.error('Failed to save new conversation:', error);
+                    });
+                // Update the current conversation ID immediately
                 setCurrentConversationId(newId);
-                setStreamedContent('');
-                setCurrentMessages([]);
-            })
-            .catch(error => {
-                console.error('Failed to save new conversation:', error);
-            });
+                resolve();
+            } catch (error) {
+                console.error('Failed to create new conversation:', error);
+                reject(error);
+            }
+        });
      };
 
      const loadConversation = async (id: string) => {

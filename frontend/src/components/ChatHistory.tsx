@@ -168,7 +168,11 @@ export const ChatHistory: React.FC = () => {
 
             // If we're deleting the current conversation, start a new one
             if (conversationId === currentConversationId) {
-                startNewChat();
+		try {
+                    await startNewChat();
+                } catch (error) {
+                    console.error('Error creating new chat after deletion:', error);
+                }
             }
 
             message.success('Conversation deleted successfully');
@@ -271,8 +275,7 @@ export const ChatHistory: React.FC = () => {
                         <div style={{ 
                             display: 'flex',
                             alignItems: 'center',
-                            flex: 1
-                        }}>
+			    minWidth: 0}}>
                             <div style={{
                                 flex: 1,
                                 marginRight: '8px',
@@ -299,7 +302,7 @@ export const ChatHistory: React.FC = () => {
                             }} 
                         />
                     )}
-                    <div style={{display: 'flex', alignItems: 'center', flexShrink: 0}}>
+                    <div style={{display: 'flex', alignItems: 'center', flexShrink: 0, marginLeft: 'auto'}}>
                         <Button
                             type="text"
                             icon={<EditOutlined/>}
