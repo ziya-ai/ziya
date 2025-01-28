@@ -532,6 +532,7 @@ span.token-count-total.red { color: #f5222d; }
     margin-bottom: 1em;
     width: 100%;
     overflow: auto;
+    overflow-x: auto !important;
     padding-bottom: 16px;
 }
 
@@ -587,6 +588,26 @@ span.token-count-total.red { color: #f5222d; }
     padding: 0 8px;
     box-sizing: border-box;
     overflow: hidden;
+}
+
+.diff-table.diff-split .diff-code-right .diff-line-insert {
+    background-color: #e6ffec;
+}
+.diff-table.diff-split .diff-code-left .diff-line-insert {
+    background-color: transparent;
+}
+.diff-table.diff-split .diff-code-right .diff-line-delete {
+    background-color: transparent;
+}
+.diff-table.diff-split .diff-code-left .diff-line-delete {
+    background-color: #ffebe9;
+}
+/* Dark theme versions */
+.dark .diff-table.diff-split .diff-code-right .diff-line-insert {
+    background-color: #133214;
+}
+.dark .diff-table.diff-split .diff-code-left .diff-line-delete {
+    background-color: #341414;
 }
 
 /* Code content styles */
@@ -1260,4 +1281,21 @@ body:not(.dark) .token.attr-name {
    background-color: #fff2f0;
    border: 1px solid #ffa39e;
    color: #cf1322;
+}
+
+/* dark theme horizontal scrollbars */
+.dark .diff-container::-webkit-scrollbar {
+    height: 8px;
+    background-color: #1f1f1f;
+}
+.dark .diff-container::-webkit-scrollbar-track {
+    background-color: #1f1f1f;
+    border-radius: 4px;
+}
+.dark .diff-container::-webkit-scrollbar-thumb {
+    background-color: #434343;
+    border-radius: 4px;
+}
+.dark .diff-container::-webkit-scrollbar-thumb:hover {
+    background-color: #525252;
 }
