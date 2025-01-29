@@ -8,38 +8,32 @@ const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 export const StreamedContent: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const {
-        streamedContent, 
-        isStreaming, 
+        streamedContentMap,
+	isStreaming,
         currentConversationId, 
-        streamingConversationId,
+        streamingConversations,
         currentMessages
     } = useChatContext();
 
     const LoadingIndicator = () => (
-        <div style={{ 
-            padding: '20px', 
-            textAlign: 'center',
-            color: 'var(--loading-color, #1890ff)'
-        }} className="loading-indicator">
-            <Space>
-                <RobotOutlined 
-                    style={{ 
-                        fontSize: '24px',
-                        animation: 'pulse 2s infinite'
-                    }} 
-                />
-                <LoadingOutlined spin />
-                <span style={{ 
-                    animation: 'fadeInOut 2s infinite',
-                    display: 'inline-block',
-                    fontSize: '16px',
-                    marginLeft: '8px',
-                    verticalAlign: 'middle'
+	<Space>
+            <RobotOutlined 
+                style={{ 
+                    fontSize: '24px',
+                    animation: 'pulse 2s infinite'
                 }}>
-                    Processing response...
-                </span>
-            </Space>
-        </div>
+		</RobotOutlined>
+            <LoadingOutlined spin />
+            <span style={{
+                animation: 'fadeInOut 2s infinite',
+                display: 'inline-block',
+                fontSize: '16px',
+                marginLeft: '8px',
+                verticalAlign: 'middle'
+            }}>
+                Processing response...
+            </span>
+        </Space>
     );
 
     const ErrorDisplay = ({ message }: { message: string }) => (
@@ -71,32 +65,35 @@ export const StreamedContent: React.FC = () => {
             });
         };
         triggerScroll();
-    }, [currentConversationId, streamedContent]);
+    }, [currentConversationId, streamedContentMap]);
 
     // Debug when content should be displayed
     useEffect(() => {
         console.debug('StreamedContent state:', {
-            hasContent: Boolean(streamedContent),
+	    hasContent: Boolean(streamedContentMap.get(currentConversationId)),
+	    currentContent: streamedContentMap.get(currentConversationId),
             isStreaming,
             currentConversationId,
-            streamingConversationId
+            isStreamingCurrent: streamingConversations.has(currentConversationId)
         });
-    }, [streamedContent, isStreaming, currentConversationId, streamingConversationId]);
+    }, [streamedContentMap, isStreaming, currentConversationId, streamingConversations]);
 
     const enableCodeApply = window.enableCodeApply === 'true';
     return (
         <>
-            {(isStreaming || (streamedContent && streamingConversationId === currentConversationId)) && (
+	    {streamingConversations.has(currentConversationId) && (
                 <div className="message assistant">
-                    <div className="message-sender" style={{ marginTop: 0 }}>AI:</div>
+                    <div className="message-sender">AI:</div>
                     {error && <ErrorDisplay message={error} />}
-                    {!streamedContent ? (
+		    {!streamedContentMap.get(currentConversationId) ? (
                         <LoadingIndicator />
                     ) : (
                         <Suspense fallback={<div>Loading content...</div>}>
                             <MarkdownRenderer
-                                markdown={streamedContent || ''}
-                                enableCodeApply={enableCodeApply}/>
+			        markdown={streamedContentMap.get(currentConversationId) || ''}
+				key={`${currentConversationId}-${streamedContentMap.get(currentConversationId)?.length}`}
+				enableCodeApply={enableCodeApply}
+			    />
                         </Suspense>
                     )}
                 </div>

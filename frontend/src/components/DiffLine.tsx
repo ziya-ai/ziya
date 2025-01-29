@@ -73,11 +73,6 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
          `___PRESERVED_TAG___${match}___END_TAG___`
     );
 
-    if (content.includes('___PRESERVED_TAG___')) {
-        console.log('After JSX protection:', { type, content });
-    }
-
-
     // Handle whitespace-only lines before any other processing
     if (content === '' || content === '\n' || !content.trim()) {
         const markers = content.replace(/[ \t]/g, '·');
@@ -109,18 +104,9 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
             // Add our custom class while preserving Prism's token class
             return `<span class="token ${tokenClass} diff-token-${type}">`;
         });
-    if (content.includes('token')) {
-        console.log('After token processing:', { type, content });
-    }
+
     // Restore case-sensitive names after Prism processing
     content = content.replace(/___PRESERVED_CASE___(.+?)___END_CASE___/g, '$1');
-
-    console.log('After case preservation:', {
-        type,
-        content,
-        hasPreservedCase: content.includes('___PRESERVED_CASE___'),
-        hasEndCase: content.includes('___END_CASE___')
-    });
 
     // Convert whitespace markers back to visible markers
     content = content.replace(/___WS_CHAR___(\s)/g, (_, space) => {
@@ -241,42 +227,68 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
             try {
                 await loadPrismLanguage(language);
                 if (!window.Prism || content.length <= 1) return;
+		console.debug('DiffLine received content:', {content, type, language});
 
-		let processedContent = content;
+
+		 // If already has Prism tokens, use as-is
+                if (content.includes('<span class="token')) {
+                    setHighlighted(content);
+                    return;
+                }
 
 		// Handle whitespace-only lines before any processing
-                if (!processedContent.trim()) {
-                    const markers = processedContent.replace(/[ \t]/g, '·');
+		if (!content.trim()) {
+                const markers = content.replace(/[ \t]/g, '·');
 		    const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
                     setHighlighted(
                         `<span class="token-line">` +
-                        `<span class="ws-marker ${wsClass}">${markers}</span>${processedContent}` +
+                        `<span class="ws-marker ${wsClass}">${markers}</span>${content}` +
                         `</span>`);
                     return;
                 }
 
+		let code = content;
+
 		// First get the actual content without the diff marker
-                let code = processedContent;
-                if (processedContent.startsWith('+') || processedContent.startsWith('-')) {
+                if (content.startsWith('+') || content.startsWith('-')) {
 		    // Keep the original indentation by preserving all spaces after the marker
-                    const marker = processedContent[0];
-		    console.log('Marker removal:', {marker, beforeSlice: code, afterSlice: processedContent.slice(1)});
-                    code = processedContent.slice(1);  // Remove just the marker
+                    const marker = content[0];
+		    console.log('Marker removal:', {marker, beforeSlice: code, afterSlice: content.slice(1)});
+                    code = content.slice(1);  // Remove just the marker
                 }
 
 		// Handle whitespace before syntax highlighting
                 const match = code.match(/\s+$/);
                 if (match) {
                     const trailingWs = match[0];
-                    const markers = Array.from(trailingWs)
+                    const markers = code.trim() && Array.from(trailingWs)
                         .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
                         .join('');
                     code = code.slice(0, -trailingWs.length) + `<span class="ws-marker ${type === 'insert' ? 'ws-add' : 'ws-delete'}">${markers}</span>${trailingWs}`;
                 }
 
+		// escape JSX/HTML or Skip escaping if content is already escaped
+		// note that because of some oddity that i haven't tracked down add and delete lines 
+		// are handled differently, and delete comes to us pre-escaped but add doesn't.
+		// getting this to work overall was pretty touchy so i'm not going to replumb it to unify them as this works
+                // const codeToHighlight = code.includes('&') || type === 'delete' ? code : code.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c] || c);
+		const codeToHighlight = code.includes('&') ? code : code;
+
                 // Highlight the code with Prism
                 const grammar = window.Prism.languages[language] || window.Prism.languages.plaintext;
-                let highlightedCode = window.Prism.highlight(code, grammar, language);
+                let highlightedCode = window.Prism.highlight(codeToHighlight, grammar, language);
+
+                if (highlightedCode.includes('<span class="token')) {
+                    setHighlighted(`${highlightedCode}`);
+                    return;
+                }
+
+                // If highlighting failed or produced no tokens, fallback to escaping
+                const escapedCode = code.replace(/[<>]/g, c => ({
+                    '<': '&lt;',
+                    '>': '&gt;'
+                })[c] || c);
+                setHighlighted(`${escapedCode}`);
 
 		// Handle whitespace-only lines immediately
                 if (!code.trim()) {
@@ -424,8 +436,9 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         <td
            className={`diff-code diff-code-${type}`}
            dangerouslySetInnerHTML={{
-	    __html: `<div class="diff-line-content token-container" style="white-space: pre;"${
-                   isLoading ? ' style="' + Object.entries({...baseStyles, ...themeStyles}).map(([k,v]) => `${k}:${v}`).join(';') + '"' : ''
+           __html: `<div class="diff-line-content token-container" style="white-space: pre;
+                     overflow: ${viewType === 'split' ? 'hidden' : 'auto'};"${
+                     isLoading ? ' style="' + Object.entries({...baseStyles, ...themeStyles}).map(([k,v]) => `${k}:${v}`).join(';') + '"' : ''
                }>${
                    // Handle pre-tokenized content or empty lines
 		   (() => {

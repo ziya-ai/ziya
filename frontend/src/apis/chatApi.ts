@@ -1,4 +1,4 @@
-import { SetStateAction } from 'react';
+import { SetStateAction, Dispatch } from 'react';
 import { createParser } from 'eventsource-parser';
 import { message } from 'antd';
 import { Message } from '../utils/types';
@@ -10,11 +10,6 @@ interface Operation {
     path: string;
     value?: string;
 }
-
-export type SetStreamedContentFunction = ((updater: (prev: string) => string) => void) & {
-    (value: string): void;
-    (value: SetStateAction<string>): void;
-};
 
 const isValidMessage = (message: any) => {
     if (!message || typeof message !== 'object') return false;
@@ -59,10 +54,11 @@ export const sendPayload = async (
     conversationId: string,
     question: string,
     messages: Message[],
-    setStreamedContent: SetStreamedContentFunction,
+    setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>,
     setIsStreaming: (streaming: boolean) => void,
     checkedItems: string[], 
     addMessageToConversation: (message: Message) => void,
+    removeStreamingConversation: (id: string) => void,
     onStreamComplete?: (content: string) => void
 ) => {
     try {
@@ -73,7 +69,7 @@ export const sendPayload = async (
             content: m.content.substring(0, 50)
         })));
 
-	let finalContent = '';
+	let currentContent = '';
 	setIsStreaming(true);
 	let response = await getApiResponse(messages, question, checkedItems);
         
@@ -101,7 +97,6 @@ export const sendPayload = async (
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
-	let currentContent = '';
 	let errorOccurred = false;
         const parser = createParser(onParse);
 
@@ -125,10 +120,12 @@ export const sendPayload = async (
                         if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
                             const newContent = op.value || '';
                             if (!newContent) continue;
-
-			    finalContent += newContent;
                             currentContent += newContent;
-			    setStreamedContent(() => currentContent);
+			    setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
                         } else {
                             continue;
                         }
@@ -161,7 +158,7 @@ export const sendPayload = async (
 	try {
             await readStream();
 	    // After successful streaming, update with final content
-            if (currentContent && !errorOccurred) {
+	    if (currentContent && !errorOccurred) {
                 onStreamComplete?.(currentContent);
 		// Add AI response to conversation
                 const aiMessage: Message = {
@@ -169,7 +166,7 @@ export const sendPayload = async (
                     content: currentContent
                 };
                 addMessageToConversation(aiMessage);
-                return currentContent;
+		removeStreamingConversation(conversationId);
             }
         } catch (error) {
 	    // Type guard for DOMException
@@ -179,9 +176,7 @@ export const sendPayload = async (
             throw error;
 	} finally {
 	    setIsStreaming(false);
-            if (finalContent && !errorOccurred) {
-                return finalContent;
-            }
+            return !errorOccurred && currentContent ? currentContent : '';
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);

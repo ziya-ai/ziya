@@ -22,7 +22,7 @@ const SyntaxTest = React.lazy(() => import("./SyntaxTest"));
 const ApplyDiffTest = React.lazy(() => import("./ApplyDiffTest"));
 
 export const App = () => {
-    const {streamedContent, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContent} = useChatContext();
+    const {streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap} = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
@@ -30,7 +30,7 @@ export const App = () => {
     const handleNewChat = async () => {
         try {
             await startNewChat();
-            setStreamedContent('');
+	    setStreamedContentMap(new Map());
         } catch (error) {
             message.error('Failed to create new chat');
             console.error('Error creating new chat:', error);

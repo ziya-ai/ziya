@@ -2,7 +2,8 @@ import React, {useEffect, useRef, Suspense, memo} from "react";
 import {useChatContext} from '../context/ChatContext';
 import {EditSection} from "./EditSection";
 import {RetrySection} from "./RetrySection";
-import {Spin} from 'antd';
+import {Space, Spin} from 'antd';
+import {LoadingOutlined, RobotOutlined} from "@ant-design/icons";
 
 // Lazy load the MarkdownRenderer
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
@@ -12,7 +13,12 @@ interface ConversationProps {
 }
 
 const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => {
-    const {currentMessages, isTopToBottom, isLoadingConversation} = useChatContext();
+    const {currentMessages, 
+	   isTopToBottom, 
+	   isLoadingConversation,
+           currentConversationId,
+           streamingConversations
+    } = useChatContext();
     
     const visibilityRef = useRef<boolean>(true);
     // Sort messages to maintain order
@@ -132,9 +138,29 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         </div>
                     </div>
                 ))}
+
+		{/* Show streaming indicator if this conversation is streaming */}
+                    {streamingConversations.has(currentConversationId) && (
+                        <div className="message assistant">
+                            <div className="message-sender">AI:</div>
+                            <div style={{
+                                padding: '20px',
+                                textAlign: 'center',
+                                color: 'var(--loading-color, #1890ff)'
+                            }} className="loading-indicator">
+                                <Space>
+                                    <RobotOutlined style={{ fontSize: '24px', animation: 'pulse 2s infinite' }} />
+                                    <LoadingOutlined spin />
+                                    <span style={{ animation: 'fadeInOut 2s infinite', display: 'inline-block', fontSize: '16px', marginLeft: '8px', verticalAlign: 'middle' }}>
+                                        Processing response...
+                                    </span>
+                                </Space>
+                            </div>
+                        </div>
+                    )}
+                </div>
             </div>
-        </div>
     );
-});
+}); 
 
 export default Conversation;

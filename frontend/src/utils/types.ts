@@ -19,6 +19,7 @@ export interface Conversation {
     title: string;
     messages: Message[];
     lastAccessedAt: number | null;
+    hasUnreadResponse?: boolean;
     _version?: number;  // Optional version field for tracking changes
     isNew?: boolean;    // Flag for newly created conversations
     isActive: boolean;

@@ -22,13 +22,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         setQuestion,
         isStreaming,
         setIsStreaming,
-        streamedContent,
+	addMessageToConversation,
+        streamedContentMap,
+        setStreamedContentMap,
         currentMessages,
-        addMessageToCurrentConversation,
-        setStreamedContent,
         currentConversationId,
-	streamingConversationId,
-        setStreamingConversationId
+	streamingConversations,
+        addStreamingConversation,
+        removeStreamingConversation,
     } = useChatContext();
 
     const {checkedKeys} = useFolderContext();
@@ -44,8 +45,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
     const handleSendPayload = async () => {
 
-	// Don't allow sending if we're already streaming
-        if (isStreaming) {
+	// Don't allow sending if we're already streaming in this conversation
+	if (streamingConversations.has(currentConversationId)) {
             console.warn('Attempted to send while streaming');
             return;
         }
@@ -58,9 +59,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         }
 
         setQuestion('');
-        setIsStreaming(true);
-	setStreamedContent('');
-	setStreamingConversationId(currentConversationId);
+	setStreamedContentMap(new Map());
 
 	// Debug log the selected files state
         console.log('Current file selection state:', {
@@ -75,34 +74,38 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             role: 'human'
         };
 
-	// Add message and wait for state to update
-        await new Promise<void>(resolve => {
-	    setStreamedContent('');
-            addMessageToCurrentConversation(newHumanMessage);
-            // Use a small timeout to ensure state has updated
-            setTimeout(resolve, 0);
+	// Add the human message immediately
+        addMessageToConversation(newHumanMessage);
+
+	// Clear streamed content and add the human message immediately
+	setStreamedContentMap(new Map());
+
+        console.log('Added human message:', {
+            content: newHumanMessage.content,
+            currentMessages: currentMessages.length
         });
+
+        // Include the new message in messages for the API
+        const messagesWithNew = [...currentMessages];
+	addStreamingConversation(currentConversationId);
 
         try {
 	    // Get latest messages after state update
-            const updatedMessages = [...currentMessages, newHumanMessage];
 	    const selectedFiles = convertKeysToStrings(checkedKeys);
             const result = await sendPayload(
                 currentConversationId,
                 question,
-                updatedMessages,
-                setStreamedContent,
+		messagesWithNew,
+                setStreamedContentMap,
                 setIsStreaming,
 		selectedFiles,
-                addMessageToCurrentConversation
+		addMessageToConversation,
+                removeStreamingConversation
             );
 
             // Get the final streamed content
-            const finalContent = streamedContent || result;
+	    const finalContent = streamedContentMap.get(currentConversationId) || result;
 
-            if (finalContent) {
-		console.log('Received AI response, adding to conversation');
-            }
         } catch (error) {
             console.error('Error sending message:', error);
             message.error({
@@ -110,8 +113,6 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 duration: 5
             });
 	} finally {
-	    setIsStreaming(false);
-	    setStreamingConversationId(null);
 	    setIsProcessing(false);
         }
     };
@@ -134,15 +135,19 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             />
             <Button
                 onClick={handleSendPayload}
-		disabled={
-		    isStreaming || isProcessing || 
-                    isQuestionEmpty(question) || 
-		    currentMessages[currentMessages.length - 1]?.role === 'human'}
+		disabled={Boolean(
+                    // Only block if streaming in THIS conversation
+	            streamingConversations.has(currentConversationId) ||
+                    // Or if the question is empty
+                    isQuestionEmpty(question) ||
+                    // Or if the last message in this conversation was from human
+                    currentMessages[currentMessages.length - 1]?.role === 'human'
+                )}
                 type="primary"
                 icon={<SendOutlined/>}
                 style={{marginLeft: '10px'}}
             >
-                {isStreaming ? 'Sending...' : 'Send'}
+		{streamingConversations.has(currentConversationId) ? 'Sending...' : 'Send'}
             </Button>
         </div>
     );

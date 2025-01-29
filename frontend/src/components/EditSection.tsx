@@ -15,9 +15,10 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
     const {
         currentMessages,
         currentConversationId,
-        addMessageToCurrentConversation,
-        setStreamedContent,
-        setIsStreaming
+        addMessageToConversation,
+        setIsStreaming,
+	setStreamedContentMap,
+	removeStreamingConversation
     } = useChatContext();
     
     const [isEditing, setIsEditing] = useState(false);
@@ -35,7 +36,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
             content: editedMessage,
             role: 'human'
         };
-        addMessageToCurrentConversation(updatedMessage);
+        addMessageToConversation(updatedMessage);
         setIsEditing(false);
     };
 
@@ -53,10 +54,11 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
                 currentConversationId,
                 editedMessage,
 		currentMessages,
-                setStreamedContent,
+                setStreamedContentMap,
                 setIsStreaming,
                 convertKeysToStrings(checkedKeys),
-		addMessageToCurrentConversation
+		addMessageToConversation,
+		removeStreamingConversation
             );
 
             // Get the final streamed content
@@ -67,7 +69,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
                     content: finalContent,
                     role: 'assistant'
                 };
-                addMessageToCurrentConversation(newAIMessage);
+                addMessageToConversation(newAIMessage);
             }
         } catch (error) {
             console.error('Error sending message:', error);
@@ -104,4 +106,5 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
             )}
         </div>
     );
-};
+}
+

@@ -75,6 +75,7 @@ body.dark {
 .chat-container {
   height: calc(100vh - var(--header-height) - 30px); 
   overflow-y: auto;
+  overflow-x: hidden;
   position: relative;
   left: var(--folder-panel-width);
   width: calc(100% - var(--folder-panel-width) - 40px);
@@ -1284,18 +1285,23 @@ body:not(.dark) .token.attr-name {
 }
 
 /* dark theme horizontal scrollbars */
-.dark .diff-container::-webkit-scrollbar {
+.dark .diff-container::-webkit-scrollbar,
+.dark .chat-container::-webkit-scrollbar {
+
     height: 8px;
     background-color: #1f1f1f;
 }
-.dark .diff-container::-webkit-scrollbar-track {
+.dark .diff-container::-webkit-scrollbar-track,
+.dark .chat-container::-webkit-scrollbar-track {
     background-color: #1f1f1f;
     border-radius: 4px;
 }
-.dark .diff-container::-webkit-scrollbar-thumb {
+.dark .diff-container::-webkit-scrollbar-thumb. 
+.dark .chat-container::-webkit-scrollbar-thumb {
     background-color: #434343;
     border-radius: 4px;
 }
 .dark .diff-container::-webkit-scrollbar-thumb:hover {
     background-color: #525252;
 }
+

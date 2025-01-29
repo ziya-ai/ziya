@@ -1,6 +1,13 @@
 import React, {useState, useCallback, useEffect} from 'react';
 import {List, Button, Input, message, Modal} from 'antd';
-import {DeleteOutlined, EditOutlined, DownloadOutlined, UploadOutlined, LoadingOutlined, SettingOutlined} from '@ant-design/icons';
+import {
+    DeleteOutlined,
+    EditOutlined,
+    DownloadOutlined,
+    UploadOutlined,
+    LoadingOutlined,
+    CheckCircleOutlined
+} from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
 import {useTheme} from '../context/ThemeContext';
 import { db } from '../utils/db';
@@ -11,11 +18,10 @@ export const ChatHistory: React.FC = () => {
         setCurrentConversationId,
         currentConversationId,
         setConversations,
-	currentMessages,
+        currentMessages,
         isLoadingConversation,
-	isStreaming,
-        streamingConversationId,
-	startNewChat,
+        streamingConversations,
+        startNewChat,
         loadConversation,
     } = useChatContext();
     const {isDarkMode} = useTheme();
@@ -37,33 +43,33 @@ export const ChatHistory: React.FC = () => {
     useEffect(() => {
         let isSubscribed = true;
         const checkForUpdates = async () => {
-           try {
-               const saved = await db.getConversations();
-	       // Only log and update if there's an actual change
-               const hasChanged = saved.length !== conversations.length ||
-                   JSON.stringify(saved) !== JSON.stringify(conversations);
+            try {
+                const saved = await db.getConversations();
+                // Only log and update if there's an actual change
+                const hasChanged = saved.length !== conversations.length ||
+                    JSON.stringify(saved) !== JSON.stringify(conversations);
 
-               if (hasChanged) {
-                   console.debug('Chat history changed:', {
-                       savedCount: saved.length,
-                       currentCount: conversations.length,
-                       reason: saved.length !== conversations.length ? 'length' : 'content'
-                   });
-               }
-               if (isSubscribed) {
-		   if (hasChanged && saved.length > 0) setConversations(saved);
-               }
-           } catch (error) {
-               console.error('Error checking for conversation updates:', error);
-           }
-       };
+                if (hasChanged) {
+                    console.debug('Chat history changed:', {
+                        savedCount: saved.length,
+                        currentCount: conversations.length,
+                        reason: saved.length !== conversations.length ? 'length' : 'content'
+                    });
+                }
+                if (isSubscribed) {
+                    if (hasChanged && saved.length > 0) setConversations(saved);
+                }
+            } catch (error) {
+                console.error('Error checking for conversation updates:', error);
+            }
+        };
 
-       const interval = setInterval(checkForUpdates, 2000); // Check every 2 seconds
-       return () => { isSubscribed = false; clearInterval(interval); };
+        const interval = setInterval(checkForUpdates, 2000);
+        return () => { isSubscribed = false; clearInterval(interval); };
     }, [conversations, setConversations]);
 
     const handleConversationClick = useCallback(async (conversationId: string) => {
-	try {
+        try {
             setLoadError(null);
             if (conversationId !== currentConversationId && !isLoadingConversation) {
                 await loadConversation(conversationId);
@@ -125,7 +131,7 @@ export const ChatHistory: React.FC = () => {
             // Update state first
             const updatedConversations = conversations.map(conv =>
                 conv.id === conversationId ? {...conv, title: newTitle} : conv
-	    );
+            );
             
             // Persist to IndexedDB before updating state
             await db.saveConversations(updatedConversations);
@@ -152,23 +158,23 @@ export const ChatHistory: React.FC = () => {
                 isCurrentConversation: conversationId === currentConversationId
             });
             // first persist to IndexedDB
-	    const updatedConversations = conversations.map(conv => 
+            const updatedConversations = conversations.map(conv => 
                 conv.id === conversationId 
                     ? { ...conv, isActive: false } 
                     : conv);
             await db.saveConversations(updatedConversations);
             
-	    console.debug('After marking conversation inactive:', {
+            console.debug('After marking conversation inactive:', {
                 id: conversationId,
                 newActive: updatedConversations.filter(c => c.isActive).length
             });
 
-	    // Then update React state
+            // Then update React state
             setConversations(updatedConversations);
 
             // If we're deleting the current conversation, start a new one
             if (conversationId === currentConversationId) {
-		try {
+                try {
                     await startNewChat();
                 } catch (error) {
                     console.error('Error creating new chat after deletion:', error);
@@ -185,45 +191,6 @@ export const ChatHistory: React.FC = () => {
         }
     };
 
-    const handleRepairDatabase = async () => {
-        Modal.confirm({
-            title: 'Repair Database',
-            content: 'This will attempt to repair the conversation database by removing corrupted entries. Continue?',
-            okText: 'Yes',
-            cancelText: 'No',
-            onOk: async () => {
-                setIsRepairing(true);
-                try {
-                    await db.repairDatabase();
-                    // Reload conversations after repair
-                    const repairedConversations = await db.getConversations();
-                    setConversations(repairedConversations);
-                    message.success('Database repair completed successfully');
-                } catch (error) {
-                    message.error('Failed to repair database');
-                    console.error('Database repair error:', error);
-                } finally {
-                    setIsRepairing(false);
-                }
-            }
-        });
-    };
-
-    const handleClearDatabase = () => {
-        Modal.confirm({
-            title: 'Clear Database',
-            content: 'This will permanently delete all conversations. This action cannot be undone. Continue?',
-            okText: 'Yes',
-            okType: 'danger',
-            cancelText: 'No',
-            onOk: async () => {
-                await db.clearDatabase();
-                setConversations([]);
-                message.success('Database cleared successfully');
-            }
-        });
-    };
-
     // Sort conversations by lastAccessedAt
     const sortedConversations = [...conversations].sort((a, b) => {
         const aTime = a.lastAccessedAt ?? 0;
@@ -231,23 +198,19 @@ export const ChatHistory: React.FC = () => {
         return bTime - aTime;
     });
 
-    console.debug('Rendering chat history:', {
-        totalConversations: conversations.length,
-        sortedConversations: sortedConversations.length,
-        currentId: currentConversationId,
-        currentMessages: currentMessages.length
-    });
-
     return (
         <List
             className="chat-history-list"
+	    style={{ 
+	        width: '100%'
+	    }}
             dataSource={sortedConversations.filter(conv => conv.isActive !== false)}
             renderItem={(conversation) => (
                 <List.Item
                     key={conversation.id}
-		    onClick={() => conversation.id !== currentConversationId && handleConversationClick(conversation.id)}
+                    onClick={() => conversation.id !== currentConversationId && handleConversationClick(conversation.id)}
                     style={{
-			cursor: 'pointer',
+                        cursor: 'pointer',
                         backgroundColor: conversation.id === currentConversationId
                             ? (isDarkMode ? '#177ddc' : '#e6f7ff')
                             : 'transparent',
@@ -256,89 +219,125 @@ export const ChatHistory: React.FC = () => {
                         padding: '8px',
                         borderRadius: '4px',
                         display: 'flex',
-                        justifyContent: 'space-between',
                         alignItems: 'flex-start',
                         width: '100%',
                         boxSizing: 'border-box',
                         pointerEvents: isLoadingConversation ? 'none' : 'auto'
                     }}
                 >
-                    {editingId === conversation.id ? (
-                        <Input
-                            defaultValue={conversation.title}
-                            onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
-                            onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
-                            style={{ width: '100%' }}
-                            onClick={(e) => e.stopPropagation()}
-                        />
-                    ) : (
-                        <div style={{ 
-                            display: 'flex',
-                            alignItems: 'center',
-			    minWidth: 0}}>
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+			width: '100%',
+			position: 'relative',
+			flex: 1,
+                    }}>
+		        <div style={{ flex: 1, minWidth: 0 }}>
+                        {editingId === conversation.id ? (
+                            <Input
+                                defaultValue={conversation.title}
+                                onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
+                                onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
+                                style={{ width: '100%' }}
+                                onClick={(e) => e.stopPropagation()}
+                            />
+                        ) : (
                             <div style={{
-                                flex: 1,
-                                marginRight: '8px',
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap'
+                                whiteSpace: 'nowrap',
+				paddingRight: '20px' // space for action buttons
                             }}>
-                                {conversation.title}
-                                {isStreaming && conversation.id === streamingConversationId && (
-                                    <span style={{ 
-                                        marginLeft: '8px', 
-                                        fontSize: '12px', 
-                                        color: isDarkMode ? '#177ddc' : '#1890ff' 
-                                    }}>(receiving response...)</span>
-                                )}
-                            </div>
+                                {(() => {
+                                    console.debug('[ChatHistory] Rendering conversation:', {
+                                        id: conversation.id,
+                                        title: conversation.title,
+                                        isStreaming: streamingConversations.has(conversation.id),
+                                        currentStreaming: Array.from(streamingConversations),
+                                        isCurrent: conversation.id === currentConversationId
+                                    });
+                                    return <>
+                                        {conversation.title}
+                                        {Boolean(streamingConversations.has(conversation.id)) && (
+                                            <span style={{
+                                                marginLeft: '8px',
+                                                fontSize: '12px',
+                                                color: isDarkMode ? '#177ddc' : '#1890ff'
+                                            }}>(receiving response...)</span>
+                                        )}
+					{conversation.hasUnreadResponse && conversation.id !== currentConversationId && !streamingConversations.has(conversation.id) && (
+                                            <CheckCircleOutlined
+                                                style={{
+                                                    marginLeft: '8px',
+                                                    fontSize: '12px',
+                                                    color: isDarkMode ? '#49aa19' : '#52c41a',
+                                                    opacity: 0.8
+                                                }}
+						title="New response"
+                                            />
+                                        )}
+                                    </>;
+                                })()}
+			   </div>
+                        )}
+                        {Boolean(streamingConversations.has(conversation.id)) && (
+                            <LoadingOutlined
+                                style={{
+                                    marginLeft: '4px',
+				    height: '100%',
+                                    color: isDarkMode ? '#177ddc' : '#1890ff',
+				    verticalAlign: 'middle'
+                                }}
+                            />
+                        )}
+                        <div style={{
+			    display: 'flex', 
+			    alignItems: 'center', 
+			    flexShrink: 0, 
+			    position: 'absolute',
+			    right: 0,
+			    top: 0
+			}}>
+                            <Button
+                                type="text"
+                                icon={<EditOutlined/>}
+                                onClick={(e) => handleEditClick(e, conversation.id)}
+                                style={{marginRight: '4px'}}
+                            />
+                            <Button
+                                type="text"
+                                icon={<DeleteOutlined/>}
+                                onClick={(e) => handleDeleteConversation(e, conversation.id)}
+                            />
                         </div>
-                    )}
-                    {isStreaming && conversation.id === streamingConversationId && (
-                        <LoadingOutlined 
-                            style={{ 
-                                marginLeft: '8px',
-                                color: isDarkMode ? '#177ddc' : '#1890ff'
-                            }} 
-                        />
-                    )}
-                    <div style={{display: 'flex', alignItems: 'center', flexShrink: 0, marginLeft: 'auto'}}>
-                        <Button
-                            type="text"
-                            icon={<EditOutlined/>}
-                            onClick={(e) => handleEditClick(e, conversation.id)}
-                            style={{marginRight: '4px'}}
-                        />
-                        <Button
-                            type="text"
-                            icon={<DeleteOutlined/>}
-                            onClick={(e) => handleDeleteConversation(e, conversation.id)}
-                        />
+			</div>
                     </div>
                 </List.Item>
             )}
             footer={
                 <>
-                <div className="chat-history-footer">
-                    <Button icon={<DownloadOutlined />} onClick={exportConversations}>
-                        Export
-                    </Button>
-                    <Button
-                        icon={<UploadOutlined />}
-                        onClick={() => {
-                            const input = document.createElement('input');
-                            input.type = 'file';
-                            input.accept = '.json';
-                            input.onchange = (e) => {
-                                const target = e.target as HTMLInputElement;
-                                if (target && target.files) {
-                                    importConversations({ target } as React.ChangeEvent<HTMLInputElement>);
-                                }
-                            };
-			    input.click();}}>
-                        Import
-		    </Button>
-                </div>
+                    <div className="chat-history-footer">
+                        <Button icon={<DownloadOutlined />} onClick={exportConversations}>
+                            Export
+                        </Button>
+                        <Button
+                            icon={<UploadOutlined />}
+                            onClick={() => {
+                                const input = document.createElement('input');
+                                input.type = 'file';
+                                input.accept = '.json';
+                                input.onchange = (e) => {
+                                    const target = e.target as HTMLInputElement;
+                                    if (target && target.files) {
+                                        importConversations({ target } as React.ChangeEvent<HTMLInputElement>);
+                                    }
+                                };
+                                input.click();
+                            }}
+                        >
+                            Import
+                        </Button>
+                    </div>
                 </>
             }
         />

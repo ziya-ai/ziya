@@ -15,9 +15,10 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
     const {
         currentMessages,
         currentConversationId,
-        addMessageToCurrentConversation,
-        setStreamedContent,
-        setIsStreaming
+        addMessageToConversation,
+        setIsStreaming,
+	setStreamedContentMap,
+	removeStreamingConversation
     } = useChatContext();
     
     const {checkedKeys} = useFolderContext();
@@ -25,17 +26,18 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
     const handleRetry = async () => {
         const lastHumanMessage = currentMessages[index];
         setIsStreaming(true);
-        setStreamedContent('');
+	setStreamedContentMap(new Map());
 
         try {
             const result = await sendPayload(
                 currentConversationId,
                 lastHumanMessage.content,
 		currentMessages,
-                setStreamedContent,
+                setStreamedContentMap,
                 setIsStreaming,
                 convertKeysToStrings(checkedKeys),
-		addMessageToCurrentConversation
+		addMessageToConversation,
+		removeStreamingConversation
             );
 
             if (result) {
@@ -43,7 +45,7 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
                     content: result,
                     role: 'assistant'
                 };
-                addMessageToCurrentConversation(newAIMessage);
+                addMessageToConversation(newAIMessage);
             }
         } catch (error) {
             console.error('Error retrying message:', error);

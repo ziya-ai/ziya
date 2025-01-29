@@ -12,6 +12,7 @@ interface FolderContextType {
   setSearchValue: React.Dispatch<React.SetStateAction<string>>;
   expandedKeys: React.Key[];
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>;
+  getFolderTokenCount: (path: string, folderData: Folders) => number;
 }
 
 const FolderContext = createContext<FolderContextType | undefined>(undefined);
@@ -28,6 +29,35 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
   });
+
+  const getFolderTokenCount = (path: string, folderData: Folders): number => {
+ 
+    let current: Folders | undefined = folderData;
+    const parts = path.split('/');
+    let totalTokens = 0;
+
+    let currentPath = '';
+    for (const part of parts) {
+      if (!current) {
+        break;
+      }
+      const node = current[part];
+      if (node) {
+        if (!node.children) {
+          // It's a file
+	  const fileTokens = node.token_count || 0;
+          totalTokens += fileTokens;
+        } else {
+          // It's a directory
+          current = node.children;
+        }
+      } else {
+        break;
+      }
+    }
+
+    return totalTokens;
+  };
 
   // Save expanded folders whenever they change
   useEffect(() => {
@@ -120,6 +150,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   return (
     <FolderContext.Provider value={{
       folders,
+      getFolderTokenCount,
       treeData,
       checkedKeys,
       setCheckedKeys,

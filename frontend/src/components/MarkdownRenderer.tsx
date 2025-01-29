@@ -16,6 +16,7 @@ import { useTheme } from '../context/ThemeContext';
 
 import type * as PrismType from 'prismjs';
 
+export type RenderPath = 'full' | 'prismOnly' | 'diffOnly' | 'raw';
 
 declare global {
     interface Window {
@@ -603,7 +604,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     {hunks.map((hunk, index) => {
                         const previousHunk = index > 0 ? hunks[index - 1] : null;
                         const showEllipsis = displayMode === 'pretty' && previousHunk &&
-                            (hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines) > 1);
+				Math.abs(hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines)) > 1;
                         return (
                             <React.Fragment key={hunk.content}>
                                 {showEllipsis && <tr><td colSpan={viewType === 'split' ? 4 : 3} className="diff-ellipsis">...</td></tr>}
@@ -851,19 +852,52 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
     const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
+    const [debugInfo, setDebugInfo] = useState<any>({});
+
+    // Get the effective language for highlighting
+    const getEffectiveLang = (rawLang: string | undefined): string => {
+        if (!rawLang) return 'plaintext';
+        if (rawLang === 'typescript jsx') return 'tsx';
+        return rawLang;
+    };
+
+    // Normalize the language identifier
+    const normalizedLang = useMemo(() => {
+        if (!token.lang) return 'plaintext';
+        // Map 'typescript jsx' to 'tsx' since we know tsx highlighting works
+        if (token.lang === 'typescript jsx') {
+            return 'tsx';
+        }
+        return token.lang;
+    }, [token.lang]);
 
     useEffect(() => {
         if (token.lang !== undefined && !prismInstance) {
 	    const loadLanguage = async () => {
                 setIsLanguageLoaded(false);
                 try {
+		    console.debug('CodeBlock language info:', {
+                        originalLang: token.lang,
+			effectiveLang: getEffectiveLang(token.lang),
+                        tokenType: token.type,
+                        prismLoaded: Boolean(window.Prism),
+                        availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
+                        tokenContent: token.text.substring(0, 100) + '...'
+                    });
                     // Load language and get Prism instance
-                    await loadPrismLanguage(token.lang || 'plaintext');
+                    await loadPrismLanguage(normalizedLang);
                     setPrismInstance(window.Prism);
+		    const effectiveLang = getEffectiveLang(token.lang);
+		    setDebugInfo({
+                        loadedLang: token.lang,
+                        prismAvailable: Boolean(window.Prism),
+                        languagesAfterLoad: window.Prism ? Object.keys(window.Prism.languages) : [],
+			grammarAvailable: window.Prism?.languages[effectiveLang] ? true : false
+                    });
                 } catch (error: unknown) {
                     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-	            setLoadError(`Error loading language ${token.lang}: ${errorMessage}`);
-                    console.error(`Error loading language ${token.lang}:`, error);
+	            setLoadError(`Error loading language ${normalizedLang}: ${errorMessage}`);
+                    console.error(`Error loading language ${normalizedLang}:`, error);
 		} finally {
                     setIsLanguageLoaded(true);
                 }
@@ -872,17 +906,25 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         } else {
             setIsLanguageLoaded(true);
         }
-    }, [token.lang]);
+    }, [normalizedLang]);
 
     const getHighlightedCode = (content: string) => {
         if (!prismInstance || token.lang === undefined) {
             return content;
         }
+
+	const effectiveLang = getEffectiveLang(token.lang);
+
         try {
-            const grammar = window.Prism.languages[token.lang as string] || window.Prism.languages.plaintext;
-            return window.Prism.highlight(content, grammar, token.lang);
+	    console.debug('Highlighting attempt:', {
+                effectiveLang,
+                hasGrammar: Boolean(window.Prism.languages[effectiveLang]),
+                contentPreview: content.substring(0, 50)
+            });
+            const grammar = window.Prism.languages[effectiveLang] || window.Prism.languages.plaintext;
+            return window.Prism.highlight(content, grammar, effectiveLang);
         } catch (error) {
-            console.warn(`Failed to highlight code for language ${token.lang}:`, error);
+            console.warn(`Failed to highlight code for language ${normalizedLang}:`, error);
             return content;
         }
     };
@@ -930,42 +972,36 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                 border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`
                 }}
-            className={`language-${token.lang || 'plaintext'}`}
+            className={`language-${normalizedLang}`}
             >
                 <code
                         style={{
                             textShadow: 'none',
                             color: isDarkMode ? '#e6e6e6' : '#24292e'
                          }} 
-                         dangerouslySetInnerHTML={{ __html:
-		         (() => {
-			        // If it already has Prism tokens or no highlighting needed
-                            if (codeText.includes('<span class="token') || !prismInstance || !token.lang) {
-                                // If content contains unescaped < or > but no HTML entities, escape it
-				if (codeText.match(/<|>/) && !codeText.includes('&lt;') && !codeText.includes('&gt;')) {
-                                    return codeText.replace(/[<>]/g, (char: string) => ({
-                                        '<': '&lt;',
-                                        '>': '&gt;'
-                                    })[char] || char);
-                                }
-                                // Otherwise return as-is
-                                return codeText;
-                            }
+			 dangerouslySetInnerHTML={{ __html: (() => {
+                         // If already has Prism tokens, return as-is
+                         if (codeText.includes('<span class="token')) {
+                             return codeText;
+                         }
+ 
+			 // Decode HTML entities before highlighitng
+                         const decodedText = token.lang !== 'diff' ?
+		             codeText.replace(/&(amp|lt|gt|quot|apos);/g, (match, entity) =>
+                                 ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[entity]) :
+                             codeText;
+ 
+                         // If no Prism instance or no language specified, just escape HTML
+                         if (!prismInstance || !token.lang) {
+			     return decodedText;
+                         }
 			    const grammar = prismInstance.languages[token.lang] || prismInstance.languages.plaintext;
                             try {
-				const codeToHighlight = codeText.match(/<|>/) &&
-                                    !codeText.includes('<') &&
-				    !codeText.includes('&lt;') &&
-                                    !codeText.includes('&gt;') ?
-                                        codeText.replace(/[<>]/g, (char: string) => ({
-                                            '<': '&lt;',
-                                            '>': '&gt;'
-                                        })[char] || char) :
-                                        codeText;
+				const codeToHighlight = decodedText;
                                 return prismInstance.highlight(codeToHighlight, grammar, token.lang);
                             } catch (error) {
                                 console.warn(`Highlighting failed for ${token.lang}:`, error);
-                                return codeText;
+				return decodedText;
                             }
                         })()
                     }}
@@ -1109,7 +1145,11 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
 
         if (token.type === 'code' && isCodeToken(token)) {
             // Regular code blocks (non-diff)
-	    return <CodeBlock key={index} token={token as TokenWithText} index={index} />;
+	    const decodedToken = {
+                ...token,
+                text: token.text.replace(/&(amp|lt|gt|quot|apos);/g, (match, entity) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[entity])
+            };
+            return <CodeBlock key={index} token={decodedToken} index={index} />;
         }
 
         // Handle tables specially
@@ -1186,7 +1226,7 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
             // Always escape HTML entities, but preserve existing escaped entities
 	    const escapedText = text
                 .replace(/&/g, '&amp;')  // Must be first to not double-escape other entities
-                .replace(/&amp;(?:amp|lt|gt|quot|apos);/g, '&$1;')  // Fix double-escaped entities
+		.replace(/&amp;(amp|lt|gt|quot|apos);/g, '&$1;')  // Fix double-escaped entities
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
@@ -1209,6 +1249,7 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
 interface MarkdownRendererProps {
     markdown: string;
     enableCodeApply: boolean;
+    renderPath?: RenderPath;
 }
 
 // Configure marked options
