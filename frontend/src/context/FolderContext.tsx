@@ -7,6 +7,7 @@ interface FolderContextType {
   folders: Folders | undefined;
   treeData: TreeDataNode[];
   checkedKeys: React.Key[];
+  setTreeData: React.Dispatch<React.SetStateAction<TreeDataNode[]>>;
   setCheckedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>;
   searchValue: string;
   setSearchValue: React.Dispatch<React.SetStateAction<string>>;
@@ -151,6 +152,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     <FolderContext.Provider value={{
       folders,
       getFolderTokenCount,
+      setTreeData,
       treeData,
       checkedKeys,
       setCheckedKeys,

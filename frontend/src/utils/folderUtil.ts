@@ -2,7 +2,7 @@ import {Folders} from "./types";
 import {TreeDataNode} from "antd";
 
 export const convertToTreeData = (folders: Folders, parentKey = ''): TreeDataNode[] => {
-    return Object.entries(folders).map(([key, value]) => {
+    return Object.entries(folders).sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase())).map(([key, value]) => {
         const currentKey = parentKey ? `${parentKey}/${key}` : key;
         const title = `${key} (${value.token_count.toLocaleString()} tokens)`;
         const node: TreeDataNode = {

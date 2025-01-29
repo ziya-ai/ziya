@@ -1,13 +1,14 @@
 import React, {useEffect, useState, useCallback} from 'react';
-import {Input, Tabs, Tree, TreeDataNode} from 'antd';
+import {Input, Tabs, Tree, TreeDataNode, Button, message} from 'antd';
 import {useFolderContext} from '../context/FolderContext';
+import {Folders} from '../utils/types';
 import {useChatContext} from '../context/ChatContext';
 import {TokenCountDisplay} from "./TokenCountDisplay";
 import union from 'lodash/union';
 import {ChatHistory} from "./ChatHistory";
 import {useTheme} from '../context/ThemeContext';
-
-
+import { ReloadOutlined } from '@ant-design/icons';
+import { convertToTreeData } from '../utils/folderUtil';
 const {TabPane} = Tabs;
 
 const {Search} = Input;
@@ -20,6 +21,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const {
         folders,
         treeData,
+	setTreeData,
         checkedKeys,
         setCheckedKeys,
 	expandedKeys,
@@ -28,7 +30,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const [modelId, setModelId] = useState<string>('');
     const {isDarkMode} = useTheme();
     const {currentConversationId} = useChatContext();
-
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
@@ -57,6 +59,40 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     useEffect(() => {
         fetchModelId();
     }, [fetchModelId]);
+
+    const refreshFolders = async () => {
+        setIsRefreshing(true);
+        try {
+            const response = await fetch('/api/folders?refresh=true');
+            if (!response.ok) {
+                throw new Error('Failed to refresh folders');
+            }
+	    const data: Folders = await response.json();
+
+            // Sort the tree data recursively
+            const sortTreeData = (nodes: TreeDataNode[]): TreeDataNode[] => {
+		return nodes.sort((a, b) =>
+                    String(a.title).toLowerCase()
+                        .localeCompare(String(b.title).toLowerCase())
+                )
+                    .map(node => ({
+                        ...node,
+                        children: node.children ? sortTreeData(node.children) : undefined
+                    }));
+            };
+
+	    const sortedData = sortTreeData(convertToTreeData(data));
+	    console.debug('Refreshed and sorted folder structure:', { nodeCount: sortedData.length });
+
+            setTreeData(sortedData);
+            message.success('Folder structure refreshed');
+        } catch (err) {
+            console.error('Failed to refresh folders:', err);
+            message.error('Failed to refresh folders');
+        } finally {
+            setIsRefreshing(false);
+        }
+    };
 
     const filterTreeData = (data: TreeDataNode[], searchValue: string): {
         filteredData: TreeDataNode[],
@@ -224,6 +260,15 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                     allowClear
                                 />
                                 {folders ? (
+				    <>
+                                    <Button
+                                        icon={<ReloadOutlined spin={isRefreshing} />}
+                                        onClick={refreshFolders}
+                                        style={{ marginBottom: 8 }}
+                                        loading={isRefreshing}
+                                    >
+                                        Refresh Files
+                                    </Button>
                                     <Tree
                                         checkable
                                         onExpand={onExpand}
@@ -242,6 +287,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                         }}
                                         className={isDarkMode ? 'dark' : ''}
                                     />
+				    </>
                                 ) : (
                                     <div>Loading Folders...</div>
                                 )}
