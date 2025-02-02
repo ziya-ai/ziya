@@ -12,27 +12,31 @@ export const StreamedContent: React.FC = () => {
 	isStreaming,
         currentConversationId, 
         streamingConversations,
-        currentMessages
+        currentMessages,
+	isTopToBottom
     } = useChatContext();
 
     const LoadingIndicator = () => (
 	<Space>
-            <RobotOutlined 
-                style={{ 
-                    fontSize: '24px',
-                    animation: 'pulse 2s infinite'
-                }}>
-		</RobotOutlined>
-            <LoadingOutlined spin />
-            <span style={{
-                animation: 'fadeInOut 2s infinite',
-                display: 'inline-block',
-                fontSize: '16px',
-                marginLeft: '8px',
-                verticalAlign: 'middle'
-            }}>
-                Processing response...
-            </span>
+	    <div style={{
+                padding: '20px',
+                textAlign: 'center',
+                color: 'var(--loading-color, #1890ff)',
+                width: '100%', 
+		order: isTopToBottom ? 0 : -1  // Place at top if bottom-up view
+            }} className="loading-indicator">
+            <Space>
+                <RobotOutlined style={{ fontSize: '24px', animation: 'pulse 2s infinite' }} />
+                <LoadingOutlined spin />
+                <span style={{
+                    animation: 'fadeInOut 2s infinite',
+                    display: 'inline-block',
+                    fontSize: '16px',
+                    marginLeft: '8px',
+                    verticalAlign: 'middle'
+                }}>Processing response...</span>
+            </Space>
+        </div>
         </Space>
     );
 
@@ -80,7 +84,11 @@ export const StreamedContent: React.FC = () => {
 
     const enableCodeApply = window.enableCodeApply === 'true';
     return (
-        <>
+        <div style={{
+            display: 'flex',
+            // In bottom-up view, reverse the order of elements
+            flexDirection: isTopToBottom ? 'column' : 'column-reverse'
+        }}>
 	    {streamingConversations.has(currentConversationId) && (
                 <div className="message assistant">
                     <div className="message-sender">AI:</div>
@@ -98,6 +106,6 @@ export const StreamedContent: React.FC = () => {
                     )}
                 </div>
             )}
-        </>
+        </div>
     );
 };

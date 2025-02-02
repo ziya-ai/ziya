@@ -125,6 +125,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 onChange={(e) => setQuestion(e.target.value)}
                 placeholder="Enter your question.."
                 autoComplete="off"
+		autoSize={{ minRows: 1, maxRows: 6 }}
                 className="input-textarea"
                 onPressEnter={(event) => {
 		    if (!event.shiftKey && !isQuestionEmpty(question)) {

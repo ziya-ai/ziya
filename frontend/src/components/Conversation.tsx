@@ -139,25 +139,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     </div>
                 ))}
 
-		{/* Show streaming indicator if this conversation is streaming */}
-                    {streamingConversations.has(currentConversationId) && (
-                        <div className="message assistant">
-                            <div className="message-sender">AI:</div>
-                            <div style={{
-                                padding: '20px',
-                                textAlign: 'center',
-                                color: 'var(--loading-color, #1890ff)'
-                            }} className="loading-indicator">
-                                <Space>
-                                    <RobotOutlined style={{ fontSize: '24px', animation: 'pulse 2s infinite' }} />
-                                    <LoadingOutlined spin />
-                                    <span style={{ animation: 'fadeInOut 2s infinite', display: 'inline-block', fontSize: '16px', marginLeft: '8px', verticalAlign: 'middle' }}>
-                                        Processing response...
-                                    </span>
-                                </Space>
-                            </div>
-                        </div>
-                    )}
                 </div>
             </div>
     );

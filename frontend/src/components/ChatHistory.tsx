@@ -172,16 +172,30 @@ export const ChatHistory: React.FC = () => {
             // Then update React state
             setConversations(updatedConversations);
 
-            // If we're deleting the current conversation, start a new one
+            // If we're deleting the current conversation, start a new one if no others remain
             if (conversationId === currentConversationId) {
-                try {
-                    await startNewChat();
-                } catch (error) {
-                    console.error('Error creating new chat after deletion:', error);
-                }
+		// Get remaining active conversations sorted by lastAccessedAt
+                const remainingActiveConversations = updatedConversations
+                    .filter(c => c.isActive)
+                    .sort((a, b) => {
+                        const aTime = a.lastAccessedAt ?? 0;
+                        const bTime = b.lastAccessedAt ?? 0;
+                        return bTime - aTime; // Sort in descending order (most recent first)
+                    });
+
+                if (remainingActiveConversations.length === 0) {
+                    try {
+                        await startNewChat();
+                    } catch (error) {
+                        console.error('Error creating new chat after deletion:', error);
+                    }
+                } else {
+                    // Load the first remaining active conversation
+                    await loadConversation(remainingActiveConversations[0].id); 
+		}
             }
 
-            message.success('Conversation deleted successfully');
+            message.success('Conversation deleted');
         } catch (error) {
             // Revert any partial changes
             const saved = await db.getConversations();
@@ -230,6 +244,7 @@ export const ChatHistory: React.FC = () => {
                         alignItems: 'center',
 			width: '100%',
 			position: 'relative',
+			minWidth: 0,
 			flex: 1,
                     }}>
 		        <div style={{ flex: 1, minWidth: 0 }}>
@@ -242,11 +257,12 @@ export const ChatHistory: React.FC = () => {
                                 onClick={(e) => e.stopPropagation()}
                             />
                         ) : (
-                            <div style={{
+			    <div className="chat-history-title" style={{
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
                                 whiteSpace: 'nowrap',
-				paddingRight: '20px' // space for action buttons
+				maxWidth: '100%',
+				paddingRight: '65px' // space for action buttons
                             }}>
                                 {(() => {
                                     console.debug('[ChatHistory] Rendering conversation:', {
@@ -265,7 +281,9 @@ export const ChatHistory: React.FC = () => {
                                                 color: isDarkMode ? '#177ddc' : '#1890ff'
                                             }}>(receiving response...)</span>
                                         )}
-					{conversation.hasUnreadResponse && conversation.id !== currentConversationId && !streamingConversations.has(conversation.id) && (
+					{conversation.hasUnreadResponse &&
+                                         conversation.id !== currentConversationId &&
+                                         !streamingConversations.has(conversation.id) && (
                                             <CheckCircleOutlined
                                                 style={{
                                                     marginLeft: '8px',
@@ -290,24 +308,25 @@ export const ChatHistory: React.FC = () => {
                                 }}
                             />
                         )}
-                        <div style={{
+                        <div className="chat-history-actions" style={{
+                            padding: '0 4px',
 			    display: 'flex', 
-			    alignItems: 'center', 
-			    flexShrink: 0, 
+			    gap: '2px',
 			    position: 'absolute',
 			    right: 0,
-			    top: 0
+			    top: 0,
 			}}>
                             <Button
                                 type="text"
                                 icon={<EditOutlined/>}
                                 onClick={(e) => handleEditClick(e, conversation.id)}
-                                style={{marginRight: '4px'}}
+				style={{ display: 'flex', alignItems: 'center', height: '24px', padding: '0 4px' }}
                             />
                             <Button
                                 type="text"
                                 icon={<DeleteOutlined/>}
                                 onClick={(e) => handleDeleteConversation(e, conversation.id)}
+				style={{ display: 'flex', alignItems: 'center', height: '24px', padding: '0 4px' }}
                             />
                         </div>
 			</div>

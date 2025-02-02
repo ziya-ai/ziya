@@ -84,7 +84,23 @@ export const App = () => {
     const togglePanel = () => {
         preserveScrollPosition(() => setIsPanelCollapsed(!isPanelCollapsed));
     };
-    
+
+    // in top-down mode autoscroll to end
+    useEffect(() => {
+        if (isTopToBottom) {
+            const chatContainer = document.querySelector('.chat-container');
+            if (!chatContainer) return;
+            const scrollToBottom = () => {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            };
+            // Scroll on initial render and when messages change
+            scrollToBottom();
+            // Add a small delay to ensure content is rendered
+            const timeoutId = setTimeout(scrollToBottom, 100);
+            return () => clearTimeout(timeoutId);
+        }
+    }, [isTopToBottom, currentMessages, streamedContentMap]);
+
     const toggleDirection = () => {
         setIsTopToBottom(prev => !prev);
     };
@@ -106,25 +122,26 @@ export const App = () => {
     const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
 
     const chatContainerContent = isTopToBottom ? (
-        <>
-            <Suspense fallback={<div>Loading conversation...</div>}>
-                <Conversation key="conv" enableCodeApply={enableCodeApply}/>
-            </Suspense>
-            <div style={{
-                position: 'relative',
-                display: 'flex',
-                flexDirection: 'column'
-            }}>
+        <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+            <div style={{ flex: 1, overflow: 'auto', width: '100%',
+	                  maxWidth: '100%', overflowX: 'hidden' }}>
+                <Suspense fallback={<div>Loading conversation...</div>}>
+                    <Conversation key="conv" enableCodeApply={enableCodeApply}/>
+                </Suspense>
                 <StreamedContent key="stream"/>
-                <SendChatContainer/>
             </div>
-        </>
+            <SendChatContainer fixed={true}/>
+        </div>
     ) : (
         <div className="chat-content-with-fixed-input">
             <SendChatContainer fixed={true}/>
             <StreamedContent key="stream" />
-            <div className="bottom-up-content" ref={bottomUpContentRef}>
-                <Conversation key="conv" enableCodeApply={enableCodeApply} />
+	    <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <div className="bottom-up-content" ref={bottomUpContentRef}>
+                    <Suspense fallback={<div>Loading conversation...</div>}>
+                        <Conversation key="conv" enableCodeApply={enableCodeApply} />
+                    </Suspense>
+                </div>
             </div>
         </div>
     );

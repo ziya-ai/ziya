@@ -44,6 +44,7 @@ body {
 
 :root {
   --folder-panel-width: 30vw;
+  --folder-panel-max-width: 450px;
   --header-height: 60px;
 }
 
@@ -75,10 +76,11 @@ body.dark {
 .chat-container {
   height: calc(100vh - var(--header-height) - 30px); 
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: hidden !important;
+  max-width: 100%;
   position: relative;
-  left: var(--folder-panel-width);
-  width: calc(100% - var(--folder-panel-width) - 40px);
+  left: min(var(--folder-panel-width), var(--folder-panel-max-width));
+  width: calc(100% - min(var(--folder-panel-width), var(--folder-panel-max-width)) - 40px);
   padding: 0;
   border: 1p solid #ccc;
   border-radius: 6px;
@@ -88,8 +90,12 @@ body.dark {
   transition: background-color 0.3s ease, border-color 0.3s ease, left 0.3s ease, width 0.3s ease;
 }
 
-.chat-context-with-fixed-input {
+.chat-content-with-fixed-input {
   border: none;
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  flex-direction: column;
   outline: none;
 }
 
@@ -123,10 +129,10 @@ body.dark {
 /* Panel toggle button */
 .panel-toggle {
   position: fixed;
-  left: calc(var(--folder-panel-width) - 1px);
-  top: 50vh;
-  transform: translateY(-50%);
+  left: min(calc(var(--folder-panel-width) - 1px), calc(var(--folder-panel-max-width) - 1px));
+  top: 50%;
   z-index: 3;
+  transform: translateY(-50%);
   transition: left 0.3s ease;
   margin-left: 0;
   border-radius: 4px;
@@ -134,6 +140,8 @@ body.dark {
   padding: 0;
   width: 24px;
   height: 24px;
+  display: flex;
+  align-items: center;
 }
 
 .panel-toggle::before {
@@ -166,7 +174,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 }
 
 .panel-toggle.collapsed {
-  left: 0;
+  left: -1px;
 }
 
 /* Loading overlay styling */
@@ -340,7 +348,8 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   left: 0;
   top: 0;
   bottom: 0;
-  width: var(--folder-panel-width);
+  width: min(var(--folder-panel-width), var(--folder-panel-max-width));
+  max-width: var(--folder-panel-max-width);
   box-sizing: border-box;
   height: calc(100vh - var(--header-height));
   overflow: hidden;
@@ -499,7 +508,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   position: fixed;
   z-index: 11;
   bottom: 0;
-  width: var(--folder-panel-width);
+  width: min(var(--folder-panel-width), var(--folder-panel-max-width));
   padding: 8px;
   background-color: #f5f5f5;
   border-top: 1px solid #e8e8e8;
@@ -1114,6 +1123,7 @@ body:not(.dark) .token.attr-name {
 }
 
 .ws-marker {
+    color: #8a2be2;
     position: absolute;
     pointer-events: none;
 }
@@ -1284,24 +1294,83 @@ body:not(.dark) .token.attr-name {
    color: #cf1322;
 }
 
-/* dark theme horizontal scrollbars */
+/* dark theme scrollbars */
+.dark .chat-container::-webkit-scrollbar,
 .dark .diff-container::-webkit-scrollbar,
-.dark .chat-container::-webkit-scrollbar {
-
-    height: 8px;
+.dark .chat-history-list::-webkit-scrollbar,
+.dark ::-webkit-scrollbar,
+.dark .ant-list::-webkit-scrollbar,
+.dark .ant-list-items::-webkit-scrollbar {
+    widtht: 8px;
     background-color: #1f1f1f;
 }
 .dark .diff-container::-webkit-scrollbar-track,
-.dark .chat-container::-webkit-scrollbar-track {
+.dark .chat-container::-webkit-scrollbar-track,
+.dark .chat-history-list::-webkit-scrollbar-track,
+.dark .ant-list::-webkit-scrollbar-track,
+.dark .folder-tree-panel::-webkit-scrollbar-track, 
+.dark .ant-list-items::-webkit-scrollbar-track {
     background-color: #1f1f1f;
     border-radius: 4px;
 }
-.dark .diff-container::-webkit-scrollbar-thumb. 
-.dark .chat-container::-webkit-scrollbar-thumb {
+.dark .diff-container::-webkit-scrollbar-thumb,
+.dark .chat-container::-webkit-scrollbar-thumb, 
+.dark .chat-history-list::-webkit-scrollbar-thumb,
+.dark .ant-list-items::-webkit-scrollbar-thumb,
+.dark .ant-list::-webkit-scrollbar-thumb,
+.dark .folder-tree-panel::-webkit-scrollbar-thumb {
     background-color: #434343;
     border-radius: 4px;
+    border: 2px solid #1f1f1f;
+    min-height: 40px;
 }
-.dark .diff-container::-webkit-scrollbar-thumb:hover {
+.dark .chat-container::-webkit-scrollbar-thumb:hover,
+.dark .diff-container::-webkit-scrollbar-thumb:hover, 
+.dark .chat-history-list::-webkit-scrollbar-thumb:hover,
+.dark .ant-list-items::-webkit-scrollbar-thumb:hover,
+.dark .ant-list::-webkit-scrollbar-thumb:hover,
+.dark .folder-tree-panel::-webkit-scrollbar-thumb:hover {
     background-color: #525252;
 }
 
+/* Firefox scrollbar styles */
+.dark .diff-container,
+.dark .chat-container,
+.dark .chat-history-list,
+.dark .ant-list-items,
+.dark .ant-list,
+.dark .folder-tree-panel {
+    scrollbar-color: #434343 #1f1f1f;
+    scrollbar-width: thin;
+}
+
+/* Chat History responsive styles */
+.chat-history-actions {
+    display: flex;
+    gap: 2px;
+    align-items: center;
+    position: absolute;
+    right: 0;
+    top: 0;
+    background: transparent;
+    height: 24px;
+    width: 60px;
+}
+
+/* narrow screen handler */
+@media screen and (max-width: 250px), (max-width: 300px) and (min-width: 0ch) {
+    .chat-history-actions {
+        display: none;
+    }
+
+    .chat-history-title {
+        padding-right: 8px !important;
+    }
+}
+/* Container width-based hiding of actions */
+.chat-history-list .ant-list-item {
+    min-width: 0;
+}
+.chat-history-list .ant-list-item:has(> div[style*="width"] > div > .chat-history-title:first-child:nth-last-child(1):not(:only-child)) {
+    max-width: 180px;  /* Approximately 20 characters in typical font */
+}

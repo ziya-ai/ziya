@@ -75,23 +75,11 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
 
     // Handle whitespace-only lines before any other processing
     if (content === '' || content === '\n' || !content.trim()) {
-        const markers = content.replace(/[ \t]/g, '·');
+        const markers = content.replace(/[ \t]/g, '\u2591');
         return `___PRESERVED_TAG___<span class="ws-marker ${
             type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : ''
         }">${markers}</span>___END_TAG___${content}`;
     }
-
-    // Handle trailing whitespace
-    content = content.replace(/([\s]+)$/gm, (match, spaces) => {
-        const id = preservedWhitespace.length;
-        const markers = spaces.replace(/ /g, '·').replace(/\t/g, '→');
-        preservedWhitespace.push(
-            `___PRESERVED_TAG___<span class="ws-marker ${
-                type === 'insert' ? 'ws-add' : 'ws-delete'
-            }">${markers}</span>___END_TAG___`
-        );
-        return `___WS_${id}___${spaces}`;
-    });
 
     // Handle consecutive whitespace markers
     content = content.replace(/(\s+)$/gm, (match) => {
@@ -110,7 +98,7 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
 
     // Convert whitespace markers back to visible markers
     content = content.replace(/___WS_CHAR___(\s)/g, (_, space) => {
-        const marker = space === ' ' ? '·' : '→';
+        const marker = space === ' ' ? '\u2591' : '→';
         return `<span class="ws-marker ${type === 'insert' ? 'ws-add' : 'ws-delete'}">${marker}</span>${space}`;
     });
 
@@ -165,7 +153,7 @@ const visualizeWhitespace = (text: string, changeType: 'ws-add' | 'ws-delete'): 
 
    // Create the visual markers
    const markers = Array.from(trailingWs)
-       .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
+       .map(c => c === ' ' ? '\u2591' : (c === '\t' ? '→' : c))
        .join('');
 
    // Keep the actual whitespace and overlay the markers (put markers first to avoid tab displacement)
@@ -238,7 +226,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 
 		// Handle whitespace-only lines before any processing
 		if (!content.trim()) {
-                const markers = content.replace(/[ \t]/g, '·');
+                const markers = content.replace(/[ \t]/g, '\u2591');
 		    const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
                     setHighlighted(
                         `<span class="token-line">` +
@@ -255,16 +243,6 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                     const marker = content[0];
 		    console.log('Marker removal:', {marker, beforeSlice: code, afterSlice: content.slice(1)});
                     code = content.slice(1);  // Remove just the marker
-                }
-
-		// Handle whitespace before syntax highlighting
-                const match = code.match(/\s+$/);
-                if (match) {
-                    const trailingWs = match[0];
-                    const markers = code.trim() && Array.from(trailingWs)
-                        .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
-                        .join('');
-                    code = code.slice(0, -trailingWs.length) + `<span class="ws-marker ${type === 'insert' ? 'ws-add' : 'ws-delete'}">${markers}</span>${trailingWs}`;
                 }
 
 		// escape JSX/HTML or Skip escaping if content is already escaped
@@ -295,7 +273,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                     const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
                     highlightedCode = highlightedCode.replace(/^(\s+)/, (spaces) => {
                         const markers = Array.from(spaces)
-                            .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
+                            .map(c => c === ' ' ? '\u2591' : (c === '\t' ? '→' : c))
                             .join('');
                         return `<span class="ws-marker ${wsClass}">${markers}</span>${spaces}`;
                     });
@@ -350,7 +328,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                             let processedCode = highlightedCode.replace(/^(<span class="token-line">)?(\s+)/, (match, span, spaces) => {
                                 if (!spaces) return match;
                                 const markers = Array.from(spaces)
-                                    .map(c => c === ' ' ? '·' : (c === '\t' ? '→' : c))
+                                    .map(c => c === ' ' ? '\u2591' : (c === '\t' ? '→' : c))
                                     .join('');
                                 const prefix = span || '';
                                 return `${prefix}<span class="ws-marker ${changeType}">${markers}</span>${spaces}`;
@@ -366,7 +344,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                                 const beforeWs = code.slice(0, index);
 
 				// First tokenize the code
-                                setHighlighted(visualizeWhitespace(processCode(code), changeType));
+				setHighlighted(visualizeWhitespace(processCode(code), changeType));
                                 return;
                             }
 
@@ -435,25 +413,32 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
     const renderContent = () => (
         <td
            className={`diff-code diff-code-${type}`}
-           dangerouslySetInnerHTML={{
-           __html: `<div class="diff-line-content token-container" style="white-space: pre;
-                     overflow: ${viewType === 'split' ? 'hidden' : 'auto'};"${
-                     isLoading ? ' style="' + Object.entries({...baseStyles, ...themeStyles}).map(([k,v]) => `${k}:${v}`).join(';') + '"' : ''
-               }>${
-                   // Handle pre-tokenized content or empty lines
-		   (() => {
-                       // Preserve existing tokenization if present
-                       if (lineContent.includes('<span class="token')) {
-                           return lineContent;
-                       }
-                       // Otherwise process normally
-                       return !lineContent.trim() ? lineContent :
-                           preserveTokens(preserveUnpairedBrackets(lineContent), type);
-                   })()
-               }</div>`
-           }}
-           colSpan={showLineNumbers ? 1 : 3}
-        />
+	   >
+             <div
+                 className="diff-line-content token-container"
+                 style={{
+                     whiteSpace: 'pre',
+                     overflow: viewType === 'split' ? 'hidden' : 'auto',
+                     ...(isLoading ? {...baseStyles, ...themeStyles} : {})
+                 }}
+                 dangerouslySetInnerHTML={{
+                     __html: (() => {
+                         // First check for trailing whitespace
+                         const match = lineContent.match(/\s+$/);
+                         if (match) {
+                             const trailingWs = match[0];
+                             const baseText = lineContent.slice(0, -trailingWs.length);
+                             return `${baseText}<span class="ws-marker ${
+                                 type === 'insert' ? 'ws-add' : 'ws-delete'
+                             }">${'\u2591'.repeat(trailingWs.length)}</span>${trailingWs}`;
+                         }
+ 
+                         // If no trailing whitespace, just return the content
+                         return lineContent;
+                     })()
+                 }}
+             />
+         </td>
     );
 
     if (viewType === 'split') {
