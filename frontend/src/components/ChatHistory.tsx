@@ -282,7 +282,7 @@ export const ChatHistory: React.FC = () => {
                                             }}>(receiving response...)</span>
                                         )}
 					{conversation.hasUnreadResponse &&
-                                         !streamingConversations.has(conversation.id) && (
+					 conversation.id !== currentConversationId && (
                                             <CheckCircleOutlined
                                                 style={{
                                                     marginLeft: '8px',

@@ -136,7 +136,7 @@ export function ChatProvider({children}: ChatProviderProps) {
                         ? {
                             ...conv,
                             messages: [...conv.messages, message],
-			    hasUnreadResponse: message.role === 'assistant' && conv.id !== currentConversationId,
+			    hasUnreadResponse: message.role === 'assistant',
                             lastAccessedAt: Date.now(),
                             _version: Date.now(),
                             title: isFirstMessage && message.role === 'human' ? message.content.slice(0, 45) + '...' : conv.title
