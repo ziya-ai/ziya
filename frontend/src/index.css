@@ -486,31 +486,27 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 }
 
 .token-display {
-  display: flex;
-  gap: 20px;
-  justify-content: space-between;
-  padding: 8px 20px;
-  align-items: center;
-  font-size: 14px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
-  border-bottom: 1px solid #e8e8e8;
+  background-color: inherit;
+  transition: background-color 0.3s ease;
+  z-index: 1;
 }
 
-.token-count-item {
-  color: #666;
-  font-weight: 500;
-  flex: 1;
-  text-align: center;
+.dark .token-display {
+  background-color: #141414;
 }
 
-.token-count-total {
-  font-weight: bold;
-  padding-left: 8px;
+.dark .token-summary {
+  background-color: #141414;
+  border-color: #303030;
 }
 
-.token-label {
-  font-size: 12px;
-  color: #888;
+.token-summary {
+  border-color: #303030;
+  transition: all 0.3s ease;
+}
+
+.token-summary .ant-typography {
+  color: inherit;
 }
 
 .model-id-display {
@@ -538,12 +534,13 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   border-top-color: #303030;
 }
 
-span.token-count-total.green { color: #52c41a; }
-span.token-count-total.orange { color: #faad14; }
-span.token-count-total.red { color: #f5222d; }
+.dark .token-summary .ant-progress-bg {
+  background-color: #177ddc;
+}
 
-.token-count-total .token-label { color: inherit; opacity: 0.8; }
-
+.dark .token-summary {
+  border-bottom-color: #303030;
+}
 
 .diff-container {
     border: 1px solid #e8e8e8;

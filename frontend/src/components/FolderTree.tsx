@@ -7,7 +7,7 @@ import {TokenCountDisplay} from "./TokenCountDisplay";
 import union from 'lodash/union';
 import {ChatHistory} from "./ChatHistory";
 import {useTheme} from '../context/ThemeContext';
-import { ReloadOutlined } from '@ant-design/icons';
+import {ReloadOutlined, FolderOutlined, MessageOutlined} from '@ant-design/icons';
 import { convertToTreeData } from '../utils/folderUtil';
 const {TabPane} = Tabs;
 
@@ -219,86 +219,97 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     );
 
     return (
-            <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
-	                <Tabs
+        <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
+	    <TokenCountDisplay/>
+            <Tabs
                 defaultActiveKey="1"
-		destroyInactiveTabPane={false}
-		style={{
+                destroyInactiveTabPane={false}
+                style={{
                     height: '100%',
                     display: 'flex',
                     flexDirection: 'column',
                     color: isDarkMode ? '#ffffff' : undefined,
-                    overflow: 'hidden'
-                }}
-		onChange={(key) => {
-			console.debug('Tab changed:', {
-                            key,
-                            currentConversationId
-                        });
+                    overflow: 'hidden',
+		    margin: '0 -8px'
                 }}
                 items={[
                     {
                         key: '1',
-                        label: 'File Explorer',
+			label: (
+                            <span>
+                                <FolderOutlined style={{ marginRight: 8 }} />
+                                File Explorer
+                            </span>
+                        ),
                         children: (
                             <>
-                                <TokenCountDisplay/>
-	                        <div style={{
+                                <div style={{
                                     display: 'flex',
                                     flexDirection: 'column',
                                     height: '100%',
                                     overflow: 'hidden',
-                                    position: 'relative'
+				    padding: '0 8px'
                                 }}>
-                                <Search
-                                    style={{
-                                        marginBottom: 8,
-                                        backgroundColor: isDarkMode ? '#1f1f1f' : undefined,
-                                    }}
-                                    placeholder="Search folders"
-                                    onChange={onSearch}
-                                    allowClear
-                                />
-                                {folders ? (
-				    <>
-                                    <Button
-                                        icon={<ReloadOutlined spin={isRefreshing} />}
-                                        onClick={refreshFolders}
-                                        style={{ marginBottom: 8 }}
-                                        loading={isRefreshing}
-                                    >
-                                        Refresh Files
-                                    </Button>
-                                    <Tree
-                                        checkable
-                                        onExpand={onExpand}
-                                        expandedKeys={expandedKeys}
-                                        autoExpandParent={autoExpandParent}
-                                        onCheck={onCheck}
-                                        checkedKeys={checkedKeys}
-                                        treeData={filteredTreeData}
-                                        titleRender={titleRender}
-				        style={{
-                                            background: 'transparent',
-                                            color: isDarkMode ? '#ffffff' : '#000000',
-					    height: 'calc(100% - 40px)',
-                                            overflow: 'auto',
-                                            position: 'relative'
-                                        }}
-                                        className={isDarkMode ? 'dark' : ''}
-                                    />
-				    </>
-                                ) : (
-                                    <div>Loading Folders...</div>
-                                )}
-				</div>
+                                    <div style={{
+                                        flex: 1,
+                                        overflowY: 'auto',
+                                        overflowX: 'hidden'
+                                    }}>
+                                        <Search
+                                            style={{
+                                                marginBottom: 8,
+                                                backgroundColor: isDarkMode ? '#1f1f1f' : undefined,
+                                            }}
+                                            placeholder="Search folders"
+                                            onChange={onSearch}
+                                            allowClear
+                                        />
+                                        {folders ? (
+                                            <>
+                                                <Button
+                                                    icon={<ReloadOutlined spin={isRefreshing}/>}
+                                                    onClick={refreshFolders}
+                                                    style={{marginBottom: 8}}
+                                                    loading={isRefreshing}
+                                                >
+                                                    Refresh Files
+                                                </Button>
+                                                <Tree
+                                                    checkable
+                                                    onExpand={onExpand}
+                                                    expandedKeys={expandedKeys}
+                                                    autoExpandParent={autoExpandParent}
+                                                    onCheck={onCheck}
+                                                    checkedKeys={checkedKeys}
+                                                    treeData={filteredTreeData}
+                                                    titleRender={titleRender}
+                                                    style={{
+                                                        background: 'transparent',
+                                                        color: isDarkMode ? '#ffffff' : '#000000',
+                                                        height: 'calc(100% - 40px)',
+                                                        overflow: 'auto',
+                                                        position: 'relative'
+                                                    }}
+                                                    className={isDarkMode ? 'dark' : ''}
+                                                />
+                                            </>
+                                        ) : (
+                                            <div>Loading Folders...</div>
+                                        )}
+                                    </div>
+                                </div>
                             </>
-                        ),
+                        )
                     },
                     {
                         key: '2',
-                        label: 'Chat History',
-                        children: <ChatHistory/>,
+			label: (
+                            <span>
+                                <MessageOutlined style={{ marginRight: 8 }} />
+                                Chat History
+                            </span>
+                        ),
+                        children: <ChatHistory/>
                     }
                 ]}
             />

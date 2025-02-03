@@ -1,12 +1,14 @@
 import React, {useEffect, useState, useCallback, useMemo, useRef} from 'react';
 import {Folders, Message} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
-import {Tooltip, Spin, message} from "antd";
+import {Tooltip, Spin, Progress, Typography, message, ProgressProps} from "antd";
+import { useTheme } from '../context/ThemeContext';
+import { InfoCircleOutlined } from '@ant-design/icons';
 import {useChatContext} from "../context/ChatContext";
 
 const TOKEN_LIMIT = 160000;
-const WARNING_THRESHOLD = 120000;
-const DANGER_THRESHOLD = 160000;
+const WARNING_THRESHOLD = 100000;  // Lower threshold to account for overhead
+const DANGER_THRESHOLD = 140000;   // Lower threshold to account for overhead
 
 const getTokenCount = async (text: string): Promise<number> => {
     try {
@@ -33,44 +35,56 @@ const getTokenCount = async (text: string): Promise<number> => {
 
 export const TokenCountDisplay = () => {
 
-    const {folders, checkedKeys} = useFolderContext();
+    const {folders, checkedKeys, getFolderTokenCount} = useFolderContext();
     const {currentMessages} = useChatContext();
 
     const [totalTokenCount, setTotalTokenCount] = useState(0);
     const [chatTokenCount, setChatTokenCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
+    const { isDarkMode } = useTheme();
     const lastMessageCount = useRef<number>(0);
     const lastMessageContent = useRef<string>('');
-
+    const [tokenDetails, setTokenDetails] = useState<{[key: string]: number}>({}); 
     const combinedTokenCount = totalTokenCount + chatTokenCount;
 
     // only calculate tokens when checked files change
     useEffect(() => {
 	if (folders && checkedKeys.length > 0) {
             console.debug('Recalculating file tokens due to checked files change');
-            calculateTotalTokenCount(checkedKeys as string[]);
-        }
-    }, [checkedKeys]);
+	    let total = 0;
+            const details: {[key: string]: number} = {};
 
-    const getTokenCountClass = (count: number) => {
-        if (count >= DANGER_THRESHOLD) return 'token-count-total red';
-        if (count >= WARNING_THRESHOLD) return 'token-count-total orange';
-        return 'token-count-total green';
+            // Use getFolderTokenCount for each checked path
+            checkedKeys.forEach(key => {
+                const path = String(key);
+		if (!folders) {
+		    setTokenDetails({});
+                    return;
+                }
+                const tokens = getFolderTokenCount(path, folders);
+                if (tokens > 0) {
+                    details[path] = tokens;
+                    total += tokens;
+                }
+            });
+            console.debug('Token count details:', details);
+            setTokenDetails(details);
+            setTotalTokenCount(total);
+        } else {
+	    setTokenDetails({});
+            setTotalTokenCount(0);
+        } 
+    }, [checkedKeys, folders, getFolderTokenCount]);
+
+    const getTokenColor = (count: number): string => {
+        if (count >= DANGER_THRESHOLD) return '#ff4d4f';  // Red
+        if (count >= WARNING_THRESHOLD) return '#faad14'; // Orange
+        return '#52c41a';  // Green
     };
-
-    const getFolderTokenCount = (filePath: string, folders: Folders): number => {
-
-        let segments = filePath.split('/');
-        let lastNode;
-        for (const segment of segments) {
-            if (folders[segment] && folders[segment].children) {
-                folders = folders[segment].children!;
-            } else {
-                lastNode = folders[segment];
-            }
-        }
-        return lastNode ? lastNode.token_count : 0;
-    };
+    const getTokenStyle = (count: number) => ({
+        color: getTokenColor(count),
+        fontWeight: 'bold'
+    });
 
     const calculateTotalTokenCount = (checked: string[]) => {
 	if (!folders) return;
@@ -83,16 +97,15 @@ export const TokenCountDisplay = () => {
         setTotalTokenCount(totalTokenCount);
     };
 
+    const previousMessagesRef = useRef<string>('');
     const hasMessagesChanged = useCallback((messages: Message[]) => {
-        if (messages.length !== lastMessageCount.current) {
-            return true;
-        }
-        const newContent = messages.map(msg => msg.content).join('\n');
-        if (newContent !== lastMessageContent.current) {
+	const messagesContent = messages.map(msg => msg.content).join('\n');
+        if (messagesContent !== previousMessagesRef.current) {
+            previousMessagesRef.current = messagesContent;
             return true;
         }
         return false;
-    }, []);
+    }, [previousMessagesRef]);
 
     const updateChatTokens = useCallback(async () => {
         if (currentMessages.length === 0) {
@@ -124,35 +137,84 @@ export const TokenCountDisplay = () => {
 	    console.debug('Skipping token update - no message changes detected');
 	}
     }, [currentMessages, updateChatTokens]);
-
+    const getProgressStatus = (count: number): ProgressProps['status'] => {
+        if (count >= DANGER_THRESHOLD) return 'exception';
+        if (count >= WARNING_THRESHOLD) return 'normal';
+        return 'success';
+    };
     const tokenDisplay = useMemo(() => (
-        isLoading ? <Spin size="small" /> : (
-                <>
-                    <Tooltip title="Tokens from selected files">
-                        <span className="token-count-item">
-                            <span className="token-label">File Tokens:</span>{' '}
-                            {totalTokenCount.toLocaleString()}
-                        </span>
+	<div className="token-summary" style={{
+            backgroundColor: 'inherit',
+	    padding: '4px',
+	    borderBottom: '1px solid',
+            borderBottomColor: isDarkMode ? '#303030' : '#e8e8e8',
+            transition: 'all 0.3s ease',
+	    minHeight: '70px',
+            boxSizing: 'border-box',
+	    position: 'relative'
+        }}>
+	{isLoading && (
+                <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.1)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1,
+                    transition: 'all 0.3s ease'
+                }}>
+                    <Spin size="small" />
+                </div>
+            )}
+            <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                opacity: isLoading ? 0.5 : 1,
+                transition: 'opacity 0.3s ease'
+            }}>
+                <Typography.Text strong style={{ fontSize: '12px', marginBottom: '2px' }}>
+                    Token Estimates
+                </Typography.Text>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                    <Tooltip title="Tokens from selected files" mouseEnterDelay={0.5}>
+                        <span>Files: <span style={getTokenStyle(totalTokenCount)}>
+                            {totalTokenCount.toLocaleString()}</span></span>
                     </Tooltip>
-                    <Tooltip title="Tokens from chat history">
-                        <span className="token-count-item">
-                            <span className="token-label">Chat Tokens:</span>{' '}
-                            {chatTokenCount.toLocaleString()}
-                        </span>
+		    <Tooltip title="Tokens from chat history" mouseEnterDelay={0.5}>
+                        <span>Chat: <span style={getTokenStyle(chatTokenCount)}>
+                            {chatTokenCount.toLocaleString()}</span></span>
                     </Tooltip>
-                    <Tooltip title="Combined tokens (files + chat)">
-		        <span className={getTokenCountClass(combinedTokenCount)}>
-                            <span className="token-label">Total Tokens:</span>{' '}
-                            {combinedTokenCount.toLocaleString()} / {TOKEN_LIMIT.toLocaleString()}
-                        </span>
+                    <Tooltip title="Combined tokens (files + chat)" mouseEnterDelay={0.5}>
+                        <span>Total: <span style={getTokenStyle(combinedTokenCount)}>
+                            {combinedTokenCount.toLocaleString()}</span></span>
                     </Tooltip>
-                </>
-            )
+                </div>
+		<Tooltip title={`${combinedTokenCount.toLocaleString()} of ${TOKEN_LIMIT.toLocaleString()} tokens used`} mouseEnterDelay={0.5}>
+                    <div>
+                        <Progress
+                            percent={Math.round((combinedTokenCount / TOKEN_LIMIT) * 100)}
+                            size="small"
+                            status={getProgressStatus(combinedTokenCount)}
+                            showInfo={false}
+                            strokeWidth={4}
+                            style={{ margin: '4px 0', transition: 'all 0.3s ease' }}
+                        />
+                    </div>
+                </Tooltip>
+            </div>
+        </div>
     ), [isLoading, totalTokenCount, chatTokenCount, combinedTokenCount]);
  
     return (
-        <div className="token-display">
-            {tokenDisplay}
-        </div>
+	<>
+	    <div className="token-display" style={{ padding: '0 8px' }}>
+                {tokenDisplay}
+	    </div>
+        </>
     );
 };
