@@ -182,8 +182,6 @@ export function ChatProvider({children}: ChatProviderProps) {
 
                 db.saveConversations([...conversations, newConversation])
                     .then(() => {
-                        setStreamingConversations(new Set());
-			setStreamedContentMap(new Map());
                         setCurrentMessages([]);
                     })
                     .catch(error => {

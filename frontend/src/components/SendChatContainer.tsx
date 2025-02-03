@@ -4,7 +4,7 @@ import {sendPayload} from "../apis/chatApi";
 import {Message} from "../utils/types";
 import {convertKeysToStrings} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
-import {Button, Input, message} from 'antd';
+import {Button, Input, message, Tooltip} from 'antd';
 import {SendOutlined} from "@ant-design/icons";
 
 const {TextArea} = Input;
@@ -51,9 +51,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             return;
         }
 
-	// Check if the last message was from a human
+	// Check if the last message was from a human and we're still streaming
         const lastMessage = currentMessages[currentMessages.length - 1];
-        if (lastMessage?.role === 'human') {
+        if (lastMessage?.role === 'human'  && streamingConversations.has(currentConversationId)) {
             console.warn('Cannot send another human message before AI response');
             return;
         }
@@ -135,18 +135,18 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 }}
             />
             <Button
+	        type="primary"
                 onClick={handleSendPayload}
-		disabled={Boolean(
-                    // Only block if streaming in THIS conversation
-	            streamingConversations.has(currentConversationId) ||
-                    // Or if the question is empty
-                    isQuestionEmpty(question) ||
-                    // Or if the last message in this conversation was from human
-                    currentMessages[currentMessages.length - 1]?.role === 'human'
-                )}
-                type="primary"
+		disabled={isQuestionEmpty(question) || streamingConversations.has(currentConversationId)}
                 icon={<SendOutlined/>}
                 style={{marginLeft: '10px'}}
+		title={
+                    streamingConversations.has(currentConversationId)
+                        ? "Waiting for AI response..."
+                        : currentMessages[currentMessages.length - 1]?.role === 'human'
+                        ? "AI response may have failed - click Send to retry"
+                        : "Send message"
+                }
             >
 		{streamingConversations.has(currentConversationId) ? 'Sending...' : 'Send'}
             </Button>

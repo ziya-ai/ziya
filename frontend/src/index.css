@@ -299,6 +299,15 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   border: 1px solid #303030;
 }
 
+.message.human.needs-response {
+    border-left: 3px solid #faad14;
+}
+.dark .message.human.needs-response {
+    border-left: 3px solid #d48806;
+    background-color: #262626;
+    opacity: 0.9;
+}
+
 .message-sender {
   font-weight: bold;
   padding: 0 11px;

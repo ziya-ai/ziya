@@ -89,7 +89,10 @@ export const StreamedContent: React.FC = () => {
             // In bottom-up view, reverse the order of elements
             flexDirection: isTopToBottom ? 'column' : 'column-reverse'
         }}>
-	    {streamingConversations.has(currentConversationId) && (
+	      {streamingConversations.has(currentConversationId) &&
+              !currentMessages.some(msg => msg.role === 'assistant' &&
+				    msg.content === streamedContentMap.get(currentConversationId)) && (
+
                 <div className="message assistant">
                     <div className="message-sender">AI:</div>
                     {error && <ErrorDisplay message={error} />}
