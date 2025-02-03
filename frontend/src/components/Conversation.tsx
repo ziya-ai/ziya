@@ -15,9 +15,7 @@ interface ConversationProps {
 const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => {
     const {currentMessages, 
 	   isTopToBottom, 
-	   isLoadingConversation,
-           currentConversationId,
-           streamingConversations
+	   isLoadingConversation
     } = useChatContext();
     
     const visibilityRef = useRef<boolean>(true);

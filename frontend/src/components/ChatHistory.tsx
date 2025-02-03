@@ -274,7 +274,7 @@ export const ChatHistory: React.FC = () => {
                                     });
                                     return <>
                                         {conversation.title}
-                                        {Boolean(streamingConversations.has(conversation.id)) && (
+					{streamingConversations.has(conversation.id) && (
                                             <span style={{
                                                 marginLeft: '8px',
                                                 fontSize: '12px',
@@ -282,7 +282,6 @@ export const ChatHistory: React.FC = () => {
                                             }}>(receiving response...)</span>
                                         )}
 					{conversation.hasUnreadResponse &&
-                                         conversation.id !== currentConversationId &&
                                          !streamingConversations.has(conversation.id) && (
                                             <CheckCircleOutlined
                                                 style={{
