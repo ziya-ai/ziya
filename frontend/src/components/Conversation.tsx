@@ -18,6 +18,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     const {currentMessages, 
 	   isTopToBottom, 
 	   isLoadingConversation,
+	   addStreamingConversation,
 	   streamingConversations,
            currentConversationId,
 	   setIsStreaming,
@@ -116,6 +117,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     size="small"
 		    onClick={async () => {
                         const message = currentMessages[index];
+			addStreamingConversation(currentConversationId);
 			try {
                             await sendPayload(
                                 currentConversationId,
@@ -128,6 +130,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 removeStreamingConversation
                             );
                         } catch (error) {
+			    removeStreamingConversation(currentConversationId);
                             console.error('Error retrying message:', error);
                         }
                     }}

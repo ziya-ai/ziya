@@ -3,9 +3,9 @@ import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {Message} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
-import {Button, Tooltip} from "antd";
+import {Button, Tooltip, Space} from "antd";
 import { convertKeysToStrings } from '../utils/types';
-import {RedoOutlined} from "@ant-design/icons";
+import {RedoOutlined, LoadingOutlined} from "@ant-design/icons";
 
 interface RetrySectionProps {
     index: number;
@@ -18,7 +18,8 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
         addMessageToConversation,
         setIsStreaming,
 	setStreamedContentMap,
-	removeStreamingConversation
+	removeStreamingConversation,
+	streamingConversations
     } = useChatContext();
     
     const {checkedKeys} = useFolderContext();
@@ -55,11 +56,19 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
     };
 
     return (
-        <Tooltip title="Retry">
+	<Tooltip title={streamingConversations.has(currentConversationId) ? "Waiting for response..." : "Retry"}>
             <Button
-                icon={<RedoOutlined />}
+	        icon={streamingConversations.has(currentConversationId) ? <LoadingOutlined /> : <RedoOutlined />}
                 onClick={handleRetry}
                 size="small"
+		disabled={streamingConversations.has(currentConversationId)}
+                type={streamingConversations.has(currentConversationId) ? 'default' : 'primary'}
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    minWidth: '120px'
+                }}
             />
         </Tooltip>
     );
