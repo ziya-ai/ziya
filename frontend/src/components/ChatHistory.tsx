@@ -257,13 +257,34 @@ export const ChatHistory: React.FC = () => {
                                 onClick={(e) => e.stopPropagation()}
                             />
                         ) : (
-			    <div className="chat-history-title" style={{
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-				maxWidth: '100%',
-				paddingRight: '65px' // space for action buttons
+                            <div style={{
+                                position: 'relative',
+                                width: '100%',
+				paddingLeft: conversation.hasUnreadResponse &&
+                                           conversation.id !== currentConversationId ?
+                                           '24px' : '0' // Only add padding when there's a checkmark
                             }}>
+			        {conversation.hasUnreadResponse &&
+                                 conversation.id !== currentConversationId && (
+                                    <CheckCircleOutlined
+                                        style={{
+                                            position: 'absolute',
+                                            left: '4px',
+                                            top: '50%',
+                                            transform: 'translateY(-50%)',
+                                            fontSize: '12px',
+                                            color: isDarkMode ? '#49aa19' : '#52c41a',
+					    zIndex: 1
+                                        }}
+                                    />
+                                )}
+                                <div className="chat-history-title" style={{
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'normal',
+                                    maxWidth: '100%',
+                                    paddingRight: '65px' // space for action buttons
+                                }}>
                                 {(() => {
                                     console.debug('[ChatHistory] Rendering conversation:', {
                                         id: conversation.id,
@@ -275,37 +296,22 @@ export const ChatHistory: React.FC = () => {
                                     return <>
                                         {conversation.title}
 					{streamingConversations.has(conversation.id) && (
-                                            <span style={{
-                                                marginLeft: '8px',
+                                            <div style={{
                                                 fontSize: '12px',
-                                                color: isDarkMode ? '#177ddc' : '#1890ff'
-                                            }}>(receiving response...)</span>
-                                        )}
-					{conversation.hasUnreadResponse &&
-					 conversation.id !== currentConversationId && (
-                                            <CheckCircleOutlined
-                                                style={{
-                                                    marginLeft: '8px',
-                                                    fontSize: '12px',
-                                                    color: isDarkMode ? '#49aa19' : '#52c41a',
-                                                    opacity: 0.8
-                                                }}
-						title="New response"
-                                            />
+                                                color: isDarkMode ? '#177ddc' : '#1890ff',
+                                                marginTop: '4px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '4px'
+                                            }}>
+                                                <LoadingOutlined />
+                                                Receiving response...
+                                            </div>
                                         )}
                                     </>;
                                 })()}
+				</div>
 			   </div>
-                        )}
-                        {Boolean(streamingConversations.has(conversation.id)) && (
-                            <LoadingOutlined
-                                style={{
-                                    marginLeft: '4px',
-				    height: '100%',
-                                    color: isDarkMode ? '#177ddc' : '#1890ff',
-				    verticalAlign: 'middle'
-                                }}
-                            />
                         )}
                         <div className="chat-history-actions" style={{
                             padding: '0 4px',
