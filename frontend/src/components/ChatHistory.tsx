@@ -46,18 +46,29 @@ export const ChatHistory: React.FC = () => {
             try {
                 const saved = await db.getConversations();
                 // Only log and update if there's an actual change
-                const hasChanged = saved.length !== conversations.length ||
-                    JSON.stringify(saved) !== JSON.stringify(conversations);
-
+		const hasChanged = saved.some(savedConv => {
+                    const existingConv = conversations.find(conv => conv.id === savedConv.id);
+                    // If conversation doesn't exist or versions don't match
+                    return !existingConv ||
+                           (savedConv._version || 0) > (existingConv._version || 0);
+                });
                 if (hasChanged) {
-                    console.debug('Chat history changed:', {
-                        savedCount: saved.length,
-                        currentCount: conversations.length,
-                        reason: saved.length !== conversations.length ? 'length' : 'content'
+		    let mergedConversations = conversations.map(conv => {
+                        const savedConv = saved.find(s => s.id === conv.id);
+                        // Keep current conversation if it's being edited or is more recent
+                        if (conv.id === currentConversationId && editingId === conv.id) {
+                            return conv;
+                        }
+                        return savedConv || conv;
                     });
-                }
-                if (isSubscribed) {
-                    if (hasChanged && saved.length > 0) setConversations(saved);
+                    
+                    // Add any new conversations that don't exist locally
+		    mergedConversations = [...mergedConversations, ...saved.filter(savedConv =>
+                       !mergedConversations.some(conv => conv.id === savedConv.id)
+                    )];
+		    // Sort by last accessed time
+                    mergedConversations.sort((a, b) => (b.lastAccessedAt || 0) - (a.lastAccessedAt || 0));
+                    setConversations(mergedConversations);
                 }
             } catch (error) {
                 console.error('Error checking for conversation updates:', error);

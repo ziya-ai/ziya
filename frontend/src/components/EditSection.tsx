@@ -17,6 +17,9 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
         currentConversationId,
         addMessageToConversation,
         setIsStreaming,
+	setConversations,
+        streamingConversations,
+	addStreamingConversation,
 	setStreamedContentMap,
 	removeStreamingConversation
     } = useChatContext();
@@ -31,12 +34,19 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
     };
     
     const handleSave = () => {
-        // Only update the message content without regenerating response
-        const updatedMessage: Message = {
-            content: editedMessage,
-            role: 'human'
-        };
-        addMessageToConversation(updatedMessage);
+	// Create a new array with the edited message
+        const updatedMessages = currentMessages.map((msg, i) => {
+            if (i === index) {
+                return {
+                    ...msg,
+                    content: editedMessage,
+                    _timestamp: Date.now()  // Update timestamp to mark as modified
+                };
+            }
+            return msg;
+        });
+        // Update all messages to preserve the conversation
+        updatedMessages.forEach(msg => addMessageToConversation(msg));
         setIsEditing(false);
     };
 
@@ -47,8 +57,27 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
 
     const handleSubmit = async () => {
         setIsEditing(false);
-        setIsStreaming(true);
 
+	// Clear any existing streamed content
+        setStreamedContentMap(new Map());
+
+	// Create truncated message array up to and including edited message
+        const truncatedMessages = currentMessages.slice(0, index + 1);
+
+        // Update the edited message
+        truncatedMessages[index] = {
+            ...truncatedMessages[index],
+            content: editedMessage,
+            _timestamp: Date.now()
+        };
+        // Set conversation to just the truncated messages
+        setConversations(prev => prev.map(conv =>
+            conv.id === currentConversationId
+                ? { ...conv, messages: truncatedMessages }
+                : conv
+        ));
+
+	addStreamingConversation(currentConversationId);
         try {
             const result = await sendPayload(
                 currentConversationId,
@@ -73,7 +102,8 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
             }
         } catch (error) {
             console.error('Error sending message:', error);
-        } finally {
+            removeStreamingConversation(currentConversationId);
+      	} finally {
             setIsStreaming(false);
         }
     };
