@@ -90,13 +90,18 @@ export const App = () => {
         if (isTopToBottom) {
             const chatContainer = document.querySelector('.chat-container');
             if (!chatContainer) return;
-            const scrollToBottom = () => {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
+	    const scrollToBottom = (smooth = false) => {
+                requestAnimationFrame(() => {
+                    chatContainer.scrollTo({
+                        top: chatContainer.scrollHeight,
+                        behavior: smooth ? 'smooth' : 'auto'
+                    });
+                });
             };
             // Scroll on initial render and when messages change
             scrollToBottom();
-            // Add a small delay to ensure content is rendered
-            const timeoutId = setTimeout(scrollToBottom, 100);
+            // Add a small delay for smooth scroll after content renders
+            const timeoutId = setTimeout(() => scrollToBottom(true), 50);
             return () => clearTimeout(timeoutId);
         }
     }, [isTopToBottom, currentMessages, streamedContentMap]);
@@ -169,7 +174,8 @@ export const App = () => {
                 <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
                     <h2 style={{
                         color: isDarkMode ? '#fff' : '#000',
-                        transition: 'color 0.3s ease'
+                        transition: 'color 0.3s ease',
+			transform: 'translateZ(0)' // force GPU accel
                     }}>
                         <div style={{ position: 'absolute', left: '10px', display: 'flex', gap: '10px' }}>
                             <Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
@@ -197,7 +203,9 @@ export const App = () => {
             <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
                 <FolderTree isPanelCollapsed={isPanelCollapsed}/>
                 <div className="chat-container">
-		{chatContainerContent}
+		    <div className="chat-content-stabilizer">
+		        {chatContainerContent}
+                    </div>
                 </div>
             </div>
         </ConfigProvider>

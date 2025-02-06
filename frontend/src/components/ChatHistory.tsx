@@ -292,7 +292,7 @@ export const ChatHistory: React.FC = () => {
                                 <div className="chat-history-title" style={{
                                     overflow: 'hidden',
                                     textOverflow: 'ellipsis',
-                                    whiteSpace: 'normal',
+                                    whiteSpace: 'nowrap',
                                     maxWidth: '100%',
                                     paddingRight: '65px' // space for action buttons
                                 }}>

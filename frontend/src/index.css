@@ -74,7 +74,9 @@ body.dark {
 
 /* Chat Container */
 .chat-container {
+  contain: paint;
   height: calc(100vh - var(--header-height) - 30px); 
+  transform: trnaslateZ(0);
   overflow-y: auto;
   overflow-x: hidden !important;
   max-width: 100%;
@@ -88,6 +90,12 @@ body.dark {
   margin: 20px 0;
   margin-left: 20px;
   transition: background-color 0.3s ease, border-color 0.3s ease, left 0.3s ease, width 0.3s ease;
+}
+
+.chat-content-stabilizer {
+  transform: translateZ(0);  /* Force GPU acceleration */
+  backface-visibility: hidden;
+  perspective: 1000px;
 }
 
 .chat-content-with-fixed-input {
@@ -315,16 +323,21 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 /* Input Container */
 .input-container {
-  position: relative;
+  position: sticky;
+  transform: translateZ(0);  /* Force GPU acceleration */
+  bottom: 0;
   display: flex;
   flex: 1;
   flex-direction: row;
   width: calc(100% - 40px);
   margin-left: 10px;
   margin-right: 20px;
+  padding: 10px 0;
   box-sizing: border-box;
   transition: left 0.3s ease, width 0.3s ease;
   column-gap: 10px;
+  background-color: inherit;
+  z-index: 2;
 }
 
 .panel-collapsed .input-container {
@@ -543,6 +556,8 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 }
 
 .diff-container {
+    display: flex;
+    flex-direction: column;
     border: 1px solid #e8e8e8;
     border-radius: 6px;
     margin-bottom: 1em;
@@ -550,6 +565,10 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     overflow: auto;
     overflow-x: auto !important;
     padding-bottom: 16px;
+}
+
+.dark .diff-container {
+    border-color: #30363d;
 }
 
 /* Table structure */
@@ -769,6 +788,8 @@ body:not(.dark) .token.attr-name {
     -webkit-user-select: text;
     -moz-user-select: text;
     table-layout: fixed !important;
+    transform: translateZ(0);
+    will-change: transform;
 }
 
 /* Ensure code content is selectable but line numbers aren't */
@@ -965,10 +986,12 @@ body:not(.dark) .token.attr-name {
   padding: 8px;
   background-color: #fafafa;
   width: 100%;
-  align-items: center;
   margin-bottom: 0;
   box-sizing: border-box;
   color: #000000;
+  height: 48px;
+  display: flex;
+  align-items: center;
   border-bottom: 1px solid #e1e4e8;
 }
 
@@ -978,14 +1001,22 @@ body:not(.dark) .token.attr-name {
   color: #ffffff;
 }
 
-.diff-container {
-    border: 1px solid #e1e4e8;
-    border-radius: 6px;
-    overflow: hidden;
+
+.diff-header {
+    height: 24px;
+    padding: 8px 12px;
+    background-color: inherit;
 }
 
-.dark .diff-container {
-    border-color: #30363d;
+.diff-header > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 100%;
+}
+
+.diff-header b {
+    margin-right: auto;
 }
 
 .dark .diff-view-controls .ant-radio-button-wrapper {

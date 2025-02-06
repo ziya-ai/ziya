@@ -707,15 +707,16 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 color: currentTheme.content.color
             }}
         >
-            <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '4px',
-                padding: '4px 8px'
-            }}>
-                <b>{
-                    file.type === 'delete'
+	    <div className="diff-header">
+                <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    height: '32px',
+                    boxSizing: 'border-box'
+                }}>
+                    <b>{
+                        file.type === 'delete'
                         ? `Delete: ${file.oldPath}`
                         : file.type === 'add'
                         ? `Create: ${file.newPath}`
@@ -727,7 +728,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         filePath={file.newPath || file.oldPath}
                         enabled={window.enableCodeApply === 'true'}
                     />
-                }
+                }</div>
             </div>
 	    <div className="diff-view">
 	        <div className="diff-content">

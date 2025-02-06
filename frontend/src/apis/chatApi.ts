@@ -23,31 +23,68 @@ const cleanMessages = (messages: any[]) => {
         .map(msg => ({ ...msg, content: msg.content.trim() }));
 };
 
-const handleStreamError = async (response: Response) => {
-    const errorData = await response.json();
-    const errorMessage = errorData.detail || 'An unknown error occurred';
-    
-    message.error({
-        content: errorMessage,
-        duration: 10
-    });
+const isStreamingError = (error: any): boolean => {
+    return error instanceof Error && (
+        error.message.includes('validationException') ||
+        error.message.includes('Input is too long')
+    );
+};
+
+const handleStreamError = async (response: Response): Promise<never> => {
+    let errorMessage: string = 'An unknown error occurred';
+
+    // Try to get detailed error message from response
+    try {
+        const errorData = await response.json();
+        errorMessage = errorData.detail || errorMessage;
+    } catch (e) {
+        // If we can't parse the response, keep the default error message
+        console.warn('Could not parse error response:', e);
+    }
+
+    if (response.status === 413) {
+	errorMessage = 'Selected content is too large for the model. Please reduce the number of files.';
+	message.error({
+            content: errorMessage,
+            duration: 10
+        });
+    } else if (response.status === 401) {
+        errorMessage = 'Authentication failed. Please refresh your AWS credentials.';
+        message.error({
+            content: errorMessage,
+            duration: 10,
+            key: 'auth-error'
+        });
+    } else {
+
+        message.error({
+            content: errorMessage,
+            duration: 10
+        });
+    }
+    // Always throw error to stop the streaming process
+    throw new Error(errorMessage);
 };
 
 const createEventSource = (url: string, body: any): EventSource => {
-    const params = new URLSearchParams();
-    params.append('data', JSON.stringify(body));
-    const eventSource = new EventSource(`${url}?${params}`);
-
-    // Add error handling for the EventSource
-    eventSource.onerror = (error) => {
+    try {
+        const params = new URLSearchParams();
+        params.append('data', JSON.stringify(body));
+        const eventSource = new EventSource(`${url}?${params}`);
+        eventSource.onerror = (error) => {
+            console.error('EventSource error:', error);
+            eventSource.close();
+        };
         eventSource.close();
         message.error({
             content: 'Connection to server lost. Please try again.',
             duration: 5
-        });
-    };
-
-    return eventSource;
+	});
+        return eventSource;
+    } catch (error) {
+        console.error('Error creating EventSource:', error);
+        throw error;
+    }
 };
 
 export const sendPayload = async (
@@ -61,7 +98,9 @@ export const sendPayload = async (
     removeStreamingConversation: (id: string) => void,
     onStreamComplete?: (content: string) => void
 ) => {
+    let eventSource: EventSource | undefined;
     try {
+	eventSource = undefined;
 	let hasError = false;
 
 	console.log('Messages received in sendPayload:', messages.map(m => ({
@@ -81,19 +120,28 @@ export const sendPayload = async (
                 // Retry the request once
                 let retryResponse = await getApiResponse(messages, question, checkedItems);
                 if (!retryResponse.ok) {
-                    await handleStreamError(retryResponse);
-                    return;
+                    throw await handleStreamError(retryResponse);
                 }
                 response = retryResponse;
+            } else if (response.status === 401) {
+                // Handle auth failure explicitly
+                throw await handleStreamError(response);
             } else {
-                await handleStreamError(response);
-                return;
+		// Handle other errors
+                throw await handleStreamError(response);
             }
         }
 
         if (!response.body) {
             throw new Error('No body in response');
         }
+
+	// Set up cleanup on unmount or error
+        const cleanup = () => {
+            if (eventSource) eventSource.close();
+            setIsStreaming(false);
+            removeStreamingConversation(conversationId);
+        };
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
@@ -103,14 +151,17 @@ export const sendPayload = async (
         function onParse(event) {
             if (event.type === 'event') {
                 try {
-                   const data = JSON.parse(event.data);
-		   // Check if this is an error event first
-                    if (data.event === 'error') {
+                    const data = JSON.parse(event.data);
+		    // Check for any type of error response
+                    if (data.error || data.event === 'error') {
                         errorOccurred = true;
                         message.error({
-                            content: data.detail || 'An error occurred during processing',
-                            duration: 5
+			    content: data.detail || 'An error occurred during processing',
+                            duration: 10,
+                            key: data.error || 'stream-error'
                         });
+                        setIsStreaming(false);
+                        removeStreamingConversation(conversationId);
                         return;
                     }
 
@@ -180,14 +231,20 @@ export const sendPayload = async (
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
-	// Only show error message if it's not an auth/service error (which is already handled)
-        if (!(error instanceof Error && error.message.includes('401'))) {
+	if (eventSource && eventSource instanceof EventSource) eventSource.close();
+	// Clear streaming state
+        setIsStreaming(false);
+        removeStreamingConversation(conversationId);
+        // Show error message if not already shown
+        if (!(error instanceof Error && error.message.includes('AWS credential error'))) {
             message.error({
-                content: error instanceof Error ? error.message : 'An unknown error occurred',
+                content: error instanceof Error ? error.message : 'An unknown error occurred. Please try again.',
+		key: 'stream-error',
                 duration: 5,
             });
         }
     } finally {
+	if (eventSource && eventSource instanceof EventSource) eventSource.close();
         return '';
     }
 };

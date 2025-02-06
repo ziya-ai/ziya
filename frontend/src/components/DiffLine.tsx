@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { loadPrismLanguage } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
 
@@ -202,6 +202,8 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
     const [highlighted, setHighlighted] = useState(content);
     const [isLoading, setIsLoading] = useState(true);
     const { isDarkMode } = useTheme();
+    const lastGoodRenderRef = useRef<string | null>(null);
+    const contentRef = useRef<HTMLDivElement | null>(null);
 
     // Debug logging only for lines with generic JSX
     useEffect(() => {
@@ -220,7 +222,12 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 
 		 // If already has Prism tokens, use as-is
                 if (content.includes('<span class="token')) {
-                    setHighlighted(content);
+		    if (contentRef.current) {
+			lastGoodRenderRef.current = content;
+			setHighlighted(content);
+                        contentRef.current.innerHTML = content;
+                    }
+                    setIsLoading(false);
                     return;
                 }
 
@@ -228,10 +235,15 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 		if (!content.trim()) {
                 const markers = content.replace(/[ \t]/g, '\u2591');
 		    const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
-                    setHighlighted(
+                    const rendered =
                         `<span class="token-line">` +
                         `<span class="ws-marker ${wsClass}">${markers}</span>${content}` +
-                        `</span>`);
+                        `</span>`;
+		    if (contentRef.current && rendered !== lastGoodRenderRef.current) {
+                        lastGoodRenderRef.current = rendered;
+			setHighlighted(rendered);
+                        contentRef.current.innerHTML = rendered;
+                    }
                     return;
                 }
 
@@ -257,6 +269,10 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 let highlightedCode = window.Prism.highlight(codeToHighlight, grammar, language);
 
                 if (highlightedCode.includes('<span class="token')) {
+		    if (contentRef.current) {
+                        contentRef.current.innerHTML = highlightedCode;
+                        lastGoodRenderRef.current = highlightedCode;
+                    }
                     setHighlighted(`${highlightedCode}`);
                     return;
                 }
@@ -266,7 +282,12 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                     '<': '&lt;',
                     '>': '&gt;'
                 })[c] || c);
-                setHighlighted(`${escapedCode}`);
+		const rendered = `${escapedCode}`;
+		if (contentRef.current && rendered !== lastGoodRenderRef.current) {
+                    lastGoodRenderRef.current = rendered;
+		    setHighlighted(rendered);
+                    contentRef.current.innerHTML = rendered;
+                }
 
 		// Handle whitespace-only lines immediately
                 if (!code.trim()) {
@@ -282,7 +303,11 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 	     	// Wrap the highlighted code in a span to preserve Prism classes
                 highlightedCode = `<span class="token-line">${highlightedCode}</span>`;
                 
-                setHighlighted(highlightedCode);
+		if (contentRef.current) {
+                    contentRef.current.innerHTML = highlightedCode;
+                    lastGoodRenderRef.current = highlightedCode;
+                }
+                setIsLoading(false);
 
                 // Check for whitespace-only differences in insert/delete lines
                 if (type === 'insert' || type === 'delete') {
@@ -344,7 +369,11 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                                 const beforeWs = code.slice(0, index);
 
 				// First tokenize the code
-				setHighlighted(visualizeWhitespace(processCode(code), changeType));
+				const rendered = visualizeWhitespace(processCode(code), changeType);
+                                if (contentRef.current) {
+                                    contentRef.current.innerHTML = rendered;
+                                    lastGoodRenderRef.current = rendered;
+                                }
                                 return;
                             }
 
@@ -357,10 +386,16 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 }
 
                 // Default case: just return highlighted code with marker
-                setHighlighted(highlightedCode);
+		if (contentRef.current) {
+                    contentRef.current.innerHTML = highlightedCode;
+                    lastGoodRenderRef.current = highlightedCode;
+                }
+                setIsLoading(false);
             } catch (error) {
                 console.error(`Failed to highlight ${language}:`, error);
-                setHighlighted(content);
+		if (lastGoodRenderRef.current && contentRef.current) {
+                    contentRef.current.innerHTML = lastGoodRenderRef.current;
+                }
             } finally {
                 setIsLoading(false);
             }
@@ -397,8 +432,6 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                '#24292e'
     };
 
-    const lineContent = isLoading ? content : highlighted;
-
     const wrapWithLineBreak = (content: string) => {
 	return content; 
     };
@@ -416,25 +449,25 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 	   >
              <div
                  className="diff-line-content token-container"
+		 ref={contentRef}
                  style={{
                      whiteSpace: 'pre',
                      overflow: viewType === 'split' ? 'hidden' : 'auto',
                      ...(isLoading ? {...baseStyles, ...themeStyles} : {})
                  }}
-                 dangerouslySetInnerHTML={{
-                     __html: (() => {
-                         // First check for trailing whitespace
-                         const match = lineContent.match(/\s+$/);
+		 dangerouslySetInnerHTML={{
+                     __html: lastGoodRenderRef.current || (() => {
+                         const match = content.match(/\s+$/);
                          if (match) {
                              const trailingWs = match[0];
-                             const baseText = lineContent.slice(0, -trailingWs.length);
+                             const baseText = content.slice(0, -trailingWs.length);
                              return `${baseText}<span class="ws-marker ${
                                  type === 'insert' ? 'ws-add' : 'ws-delete'
                              }">${'\u2591'.repeat(trailingWs.length)}</span>${trailingWs}`;
                          }
  
                          // If no trailing whitespace, just return the content
-                         return lineContent;
+                         return content;
                      })()
                  }}
              />

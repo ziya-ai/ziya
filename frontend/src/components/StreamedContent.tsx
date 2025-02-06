@@ -95,19 +95,25 @@ export const StreamedContent: React.FC = () => {
 
                 <div className="message assistant">
                     <div className="message-sender">AI:</div>
-                    {error && <ErrorDisplay message={error} />}
-		    {!streamedContentMap.get(currentConversationId) ? (
-                        <LoadingIndicator />
-                    ) : (
-                        <Suspense fallback={<div>Loading content...</div>}>
+		    <Suspense fallback={<div>Loading content...</div>}>
+                        {error ? (
+                            <ErrorDisplay message={error} />
+                        ) : (
                             <MarkdownRenderer
-			        markdown={streamedContentMap.get(currentConversationId) || ''}
-				key={`${currentConversationId}-${streamedContentMap.get(currentConversationId)?.length}`}
-				enableCodeApply={enableCodeApply}
-			    />
-                        </Suspense>
-                    )}
+                                markdown={streamedContentMap.get(currentConversationId) || ''}
+                                enableCodeApply={enableCodeApply}
+                            />
+                        )}
+                    </Suspense>
                 </div>
+            )}
+
+	    {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
+	    {streamingConversations.has(currentConversationId) &&
+              // Only show loading indicator if we don't have any streamed content yet
+              (!streamedContentMap.has(currentConversationId) ||
+               streamedContentMap.get(currentConversationId) === '') && (
+                <LoadingIndicator />
             )}
         </div>
     );
