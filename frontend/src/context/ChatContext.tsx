@@ -19,7 +19,7 @@ interface ChatContext {
     addStreamingConversation: (id: string) => void;
     removeStreamingConversation: (id: string) => void;
     setCurrentConversationId: (id: string) => void;
-    addMessageToConversation: (message: Message) => void;
+    addMessageToConversation: (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => void;
     currentMessages: Message[];
     loadConversation: (id: string) => void;
     startNewChat: () => void;
@@ -65,6 +65,7 @@ export function ChatProvider({children}: ChatProviderProps) {
     const addStreamingConversation = (id: string) => {
         setStreamingConversations(prev => {
             const next = new Set(prev);
+	    console.log('Adding to streaming set:', { id, currentSet: Array.from(prev) });
             next.add(id);
 	    setStreamedContentMap(prev => new Map(prev).set(id, ''));
             setIsStreaming(true);
@@ -73,15 +74,16 @@ export function ChatProvider({children}: ChatProviderProps) {
     };
 
     const removeStreamingConversation = (id: string) => {
+	console.log('Removing from streaming set:', { id, currentSet: Array.from(streamingConversations) });
         setStreamingConversations(prev => {
             const next = new Set(prev);
-            next.delete(id);
-            return next;
+	    next.delete(id);
 	    setStreamedContentMap(prev => {
                 const next = new Map(prev);
                 next.delete(id);
                 return next;
             });
+            return next;
         });
     };
 
@@ -122,29 +124,41 @@ export function ChatProvider({children}: ChatProviderProps) {
         }, 1000);
     }, []);
 
-    const addMessageToConversation = (message: Message) => {
-        if (!currentConversationId) return;
+    const addMessageToConversation = (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
+        const conversationId = targetConversationId || currentConversationId;
+        if (!conversationId) return;
 
         messageUpdateCount.current += 1;
         setConversations(prevConversations => {
-            const existingConversation = prevConversations.find(c => c.id === currentConversationId);
+            const existingConversation = prevConversations.find(c => c.id === conversationId);
             const isFirstMessage = existingConversation?.messages.length === 0;
-
+	    console.log('Message processing:', {
+                messageRole: message.role,
+                targetConversationId: conversationId,
+		currentConversationId,
+		isNonCurrentConversation
+            });
+	    const shouldMarkUnread = message.role === 'assistant' && isNonCurrentConversation;
+	    console.log('Message add check:', {
+                willMarkUnread: shouldMarkUnread,
+                reason: shouldMarkUnread ? 'AI message to non-current conversation' : 'Not marking unread'
+            });
             const updatedConversations = existingConversation
-                ? prevConversations.map(conv =>
-                    conv.id === currentConversationId
-                        ? {
+                ? prevConversations.map(conv => {
+                    if (conv.id === conversationId) {
+                        return {
                             ...conv,
                             messages: [...conv.messages, message],
-			    hasUnreadResponse: message.role === 'assistant' && conv.id !== currentConversationId,
+			    hasUnreadResponse: shouldMarkUnread,
                             lastAccessedAt: Date.now(),
                             _version: Date.now(),
                             title: isFirstMessage && message.role === 'human' ? message.content.slice(0, 45) + '...' : conv.title
-                        }
-                        : conv
-                )
+                        };
+                    }
+                    return conv;
+                })
                 : [...prevConversations, {
-                    id: currentConversationId,
+                    id: conversationId,
                     title: message.role === 'human'
                         ? message.content.slice(0, 45) + (message.content.length > 45 ? '...' : '')
                         : 'New Conversation',
@@ -154,6 +168,15 @@ export function ChatProvider({children}: ChatProviderProps) {
                     _version: Date.now(),
                     hasUnreadResponse: false
                 }];
+
+            console.log('After update:', {
+                updatedConversation: updatedConversations.find(c => c.id === conversationId),
+                allConversations: updatedConversations.map(c => ({
+                    id: c.id,
+                    hasUnreadResponse: c.hasUnreadResponse,
+                    isCurrent: c.id === currentConversationId
+                }))
+            });
 
             db.saveConversations(updatedConversations).catch(error => {
                 console.error('Failed to save conversations:', error);
@@ -218,6 +241,12 @@ export function ChatProvider({children}: ChatProviderProps) {
             // Set the current conversation ID after updating state
             await new Promise(resolve => setTimeout(resolve, 50));
             setCurrentConversationId(conversationId);
+	    console.log('Current conversation changed:', {
+                from: currentConversationId,
+                to: conversationId,
+                streamingConversations: Array.from(streamingConversations),
+                hasStreamingContent: Array.from(streamedContentMap.keys())
+            });
         } finally {
             setIsLoadingConversation(false);
         }
@@ -259,6 +288,13 @@ export function ChatProvider({children}: ChatProviderProps) {
 
     useEffect(() => {
         currentConversationRef.current = currentConversationId;
+	console.log('Current conversation ref updated:', {
+            id: currentConversationId,
+            streamingConversations: Array.from(streamingConversations),
+            hasStreamingContent: Array.from(streamedContentMap.keys()),
+            activeConversations: conversations.filter(c => c.isActive).map(c => c.id),
+            streamingToOther: streamingConversations.has(currentConversationId)
+        });
     }, [currentConversationId]);
 
     useEffect(() => {

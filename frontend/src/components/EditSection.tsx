@@ -46,7 +46,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
             return msg;
         });
         // Update all messages to preserve the conversation
-        updatedMessages.forEach(msg => addMessageToConversation(msg));
+        updatedMessages.forEach(msg => addMessageToConversation(msg, currentConversationId));
         setIsEditing(false);
     };
 
@@ -82,6 +82,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
             const result = await sendPayload(
                 currentConversationId,
                 editedMessage,
+		streamingConversations.has(currentConversationId),
 		currentMessages,
                 setStreamedContentMap,
                 setIsStreaming,
@@ -98,7 +99,7 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
                     content: finalContent,
                     role: 'assistant'
                 };
-                addMessageToConversation(newAIMessage);
+                addMessageToConversation(newAIMessage, currentConversationId);
             }
         } catch (error) {
             console.error('Error sending message:', error);

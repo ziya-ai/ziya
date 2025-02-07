@@ -75,7 +75,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         };
 
 	// Add the human message immediately
-        addMessageToConversation(newHumanMessage);
+	addMessageToConversation(newHumanMessage, currentConversationId);
 
 	// Clear streamed content and add the human message immediately
 	setStreamedContentMap(new Map());
@@ -88,13 +88,15 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         // Include the new message in messages for the API
         const messagesWithNew = [...currentMessages];
 	addStreamingConversation(currentConversationId);
+	const targetConversationId = currentConversationId;
 
         try {
 	    // Get latest messages after state update
 	    const selectedFiles = convertKeysToStrings(checkedKeys);
             const result = await sendPayload(
-                currentConversationId,
+                targetConversationId,
                 question,
+		streamingConversations.has(currentConversationId),
 		messagesWithNew,
                 setStreamedContentMap,
                 setIsStreaming,

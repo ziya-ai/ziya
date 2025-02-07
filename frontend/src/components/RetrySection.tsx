@@ -33,6 +33,7 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
             const result = await sendPayload(
                 currentConversationId,
                 lastHumanMessage.content,
+		streamingConversations.has(currentConversationId),
 		currentMessages,
                 setStreamedContentMap,
                 setIsStreaming,
@@ -46,7 +47,7 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
                     content: result,
                     role: 'assistant'
                 };
-                addMessageToConversation(newAIMessage);
+                addMessageToConversation(newAIMessage, currentConversationId);
             }
         } catch (error) {
             console.error('Error retrying message:', error);

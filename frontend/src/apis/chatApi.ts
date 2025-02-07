@@ -90,11 +90,12 @@ const createEventSource = (url: string, body: any): EventSource => {
 export const sendPayload = async (
     conversationId: string,
     question: string,
+    isStreamingToCurrentConversation: boolean,
     messages: Message[],
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>,
     setIsStreaming: (streaming: boolean) => void,
     checkedItems: string[], 
-    addMessageToConversation: (message: Message) => void,
+    addMessageToConversation: (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => void,
     removeStreamingConversation: (id: string) => void,
     onStreamComplete?: (content: string) => void
 ) => {
@@ -216,7 +217,9 @@ export const sendPayload = async (
                     role: 'assistant',
                     content: currentContent
                 };
-                addMessageToConversation(aiMessage);
+
+		const isNonCurrentConversation = !isStreamingToCurrentConversation;
+                addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
 		removeStreamingConversation(conversationId);
             }
         } catch (error) {

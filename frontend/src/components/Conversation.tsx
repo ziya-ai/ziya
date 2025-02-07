@@ -86,16 +86,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         const nextMessage = nextIndex < currentMessages.length ? currentMessages[nextIndex] : null;
         const hasNextMessage = nextIndex < currentMessages.length;
 
-	console.debug('Retry button check:', {
-            index,
-            isLastMessage,
-	    hasNextMessage,
-            role: message.role,
-	    nextMessageRole: nextMessage?.role,
-            isStreaming: streamingConversations.has(currentConversationId),
-            totalMessages: displayMessages.length
-	});
-
         // Show retry if this is a human message and either:
         // 1. It's the last message, or
         // 2. The next message isn't from the assistant
@@ -122,6 +112,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             await sendPayload(
                                 currentConversationId,
                                 message.content,
+				streamingConversations.has(currentConversationId),
                                 currentMessages,
                                 setStreamedContentMap,
                                 setIsStreaming,
@@ -195,17 +186,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
 					(actualIndex === currentMessages.length - 1 ||
                                          (hasNextMessage && nextMessage?.role !== 'assistant'));
 
-                    console.debug(`Message state [${isTopToBottom ? 'top-down' : 'bottom-up'}]:`, {
-                        index,
-                        role: msg.role,
-			actualIndex,
-                        nextActualIndex,
-                        nextMessageRole: nextMessage?.role,
-                        isLastMessage,
-                        isStreaming: streamingConversations.has(currentConversationId),
-                        needsResponse,
-                        totalMessages: displayMessages.length
-                    });
 		        return <div
                             key={index}
                             className={`message ${msg.role}${
