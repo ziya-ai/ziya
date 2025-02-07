@@ -1,4 +1,4 @@
-import React, {createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback} from 'react';
+import React, {createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo} from 'react';
 import {Conversation, Message} from "../utils/types";
 import {v4 as uuidv4} from "uuid";
 import { db } from '../utils/db';
@@ -226,7 +226,7 @@ export function ChatProvider({children}: ChatProviderProps) {
             // First update conversations in memory
             setConversations(prevConversations => {
                 const updatedConversations = prevConversations.map(conv =>
-                    conv.id === conversationId
+                    conv.id === currentConversationId
                         ? { ...conv, hasUnreadResponse: false }
                         : conv);
                 
@@ -318,7 +318,7 @@ export function ChatProvider({children}: ChatProviderProps) {
         }
     }, [currentConversationId]);
 
-    const value = {
+    const value = useMemo(() => ({
         question,
         setQuestion,
 	streamedContentMap,
@@ -341,7 +341,25 @@ export function ChatProvider({children}: ChatProviderProps) {
         scrollToBottom,
         dbError,
         isLoadingConversation
-    };
+    }), [
+        question,
+        streamedContentMap,
+        isStreaming,
+        streamingConversations,
+        conversations,
+        currentConversationId,
+        currentMessages,
+        isTopToBottom,
+        dbError,
+        isLoadingConversation,
+        setQuestion,
+        setStreamedContentMap,
+        addStreamingConversation,
+        removeStreamingConversation,
+        setConversations,
+        setIsStreaming,
+        setCurrentConversationId
+    ]);
 
     return <chatContext.Provider value={value}>{children}</chatContext.Provider>;
 }

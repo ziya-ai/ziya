@@ -1,4 +1,4 @@
-import React, {useState, useCallback, useEffect} from 'react';
+import React, {useState, useCallback, useEffect, memo} from 'react';
 import {List, Button, Input, message, Modal} from 'antd';
 import {
     DeleteOutlined,
@@ -10,7 +10,146 @@ import {
 } from '@ant-design/icons';
 import {useChatContext} from '../context/ChatContext';
 import {useTheme} from '../context/ThemeContext';
+import {Conversation} from '../utils/types';
 import { db } from '../utils/db';
+
+interface ChatHistoryItemProps {
+    conversation: Conversation;
+    isLoadingConversation: boolean;
+    currentConversationId: string;
+    streamingConversations: Set<string>;
+    isDarkMode: boolean;
+    onConversationClick: (id: string) => void;
+    onEdit: (e: React.MouseEvent, id: string) => void;
+    onDelete: (e: React.MouseEvent, id: string) => void;
+    editingId: string | null;
+    onTitleChange: (id: string, title: string) => void;
+    onTitleBlur: (id: string, title: string) => void;
+}
+
+const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
+    conversation,
+    isLoadingConversation,
+    currentConversationId,
+    streamingConversations,
+    isDarkMode,
+    onConversationClick,
+    onEdit,
+    onDelete,
+    editingId,
+    onTitleChange,
+    onTitleBlur
+}) => {
+    return (
+        <List.Item
+            onClick={() => conversation.id !== currentConversationId && onConversationClick(conversation.id)}
+            style={{
+                cursor: 'pointer',
+                backgroundColor: conversation.id === currentConversationId
+                    ? (isDarkMode ? '#177ddc' : '#e6f7ff')
+                    : 'transparent',
+                color: conversation.id === currentConversationId && isDarkMode ? '#ffffff' : undefined,
+                opacity: isLoadingConversation ? 0.5 : 1,
+                padding: '8px',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'flex-start',
+                width: '100%',
+                boxSizing: 'border-box',
+                pointerEvents: isLoadingConversation ? 'none' : 'auto'
+            }}
+        >
+            <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                width: '100%',
+                position: 'relative',
+                minWidth: 0,
+                flex: 1,
+            }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                    {editingId === conversation.id ? (
+                        <Input
+                            defaultValue={conversation.title}
+                            onPressEnter={(e) => onTitleChange(conversation.id, e.currentTarget.value)}
+                            onBlur={(e) => onTitleBlur(conversation.id, e.currentTarget.value)}
+                            style={{ width: '100%' }}
+                            onClick={(e) => e.stopPropagation()}
+                        />
+                    ) : (
+                        <div style={{
+                            position: 'relative',
+                            width: '100%',
+                            paddingLeft: conversation.hasUnreadResponse &&
+                                       conversation.id !== currentConversationId ?
+                                       '24px' : '0'
+                        }}>
+                            {conversation.hasUnreadResponse &&
+                             conversation.id !== currentConversationId && (
+                                <CheckCircleOutlined
+                                    style={{
+                                        position: 'absolute',
+                                        left: '4px',
+                                        top: '50%',
+                                        transform: 'translateY(-50%)',
+                                        fontSize: '12px',
+                                        color: isDarkMode ? '#49aa19' : '#52c41a',
+                                        zIndex: 1
+                                    }}
+                                />
+                            )}
+                            <div className="chat-history-title" style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                maxWidth: '100%',
+                                paddingRight: '65px'
+                            }}>
+                                {conversation.title}
+                                {streamingConversations.has(conversation.id) && (
+                                    <div style={{
+                                        fontSize: '12px',
+                                        color: isDarkMode ? '#177ddc' : '#1890ff',
+                                        marginTop: '4px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '4px'
+                                    }}>
+                                        <LoadingOutlined />
+                                        Receiving response...
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                    <div className="chat-history-actions" style={{
+                        padding: '0 4px',
+                        display: 'flex',
+                        gap: '2px',
+                        position: 'absolute',
+                        right: 0,
+                        top: 0,
+                    }}>
+                        <Button
+                            type="text"
+                            icon={<EditOutlined />}
+                            onClick={(e) => onEdit(e, conversation.id)}
+                            style={{ display: 'flex', alignItems: 'center', height: '24px', padding: '0 4px' }}
+                        />
+                        <Button
+                            type="text"
+                            icon={<DeleteOutlined />}
+                            onClick={(e) => onDelete(e, conversation.id)}
+                            style={{ display: 'flex', alignItems: 'center', height: '24px', padding: '0 4px' }}
+                        />
+                    </div>
+                </div>
+            </div>
+        </List.Item>
+    );
+});
+
+ChatHistoryItem.displayName = 'ChatHistoryItem';
 
 export const ChatHistory: React.FC = () => {
     const {
@@ -226,128 +365,22 @@ export const ChatHistory: React.FC = () => {
     return (
         <List
             className="chat-history-list"
-	    style={{ 
-	        width: '100%'
-	    }}
-            dataSource={sortedConversations.filter(conv => conv.isActive !== false)}
-            renderItem={(conversation) => (
-                <List.Item
-                    key={conversation.id}
-                    onClick={() => conversation.id !== currentConversationId && handleConversationClick(conversation.id)}
-                    style={{
-                        cursor: 'pointer',
-                        backgroundColor: conversation.id === currentConversationId
-                            ? (isDarkMode ? '#177ddc' : '#e6f7ff')
-                            : 'transparent',
-                        color: conversation.id === currentConversationId && isDarkMode ? '#ffffff' : undefined,
-                        opacity: isLoadingConversation ? 0.5 : 1,
-                        padding: '8px',
-                        borderRadius: '4px',
-                        display: 'flex',
-                        alignItems: 'flex-start',
-                        width: '100%',
-                        boxSizing: 'border-box',
-                        pointerEvents: isLoadingConversation ? 'none' : 'auto'
-                    }}
-                >
-                    <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-			width: '100%',
-			position: 'relative',
-			minWidth: 0,
-			flex: 1,
-                    }}>
-		        <div style={{ flex: 1, minWidth: 0 }}>
-                        {editingId === conversation.id ? (
-                            <Input
-                                defaultValue={conversation.title}
-                                onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
-                                onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
-                                style={{ width: '100%' }}
-                                onClick={(e) => e.stopPropagation()}
-                            />
-                        ) : (
-                            <div style={{
-                                position: 'relative',
-                                width: '100%',
-				paddingLeft: conversation.hasUnreadResponse &&
-                                           conversation.id !== currentConversationId ?
-                                           '24px' : '0' // Only add padding when there's a checkmark
-                            }}>
-			        {conversation.hasUnreadResponse &&
-                                 conversation.id !== currentConversationId && (
-                                    <CheckCircleOutlined
-                                        style={{
-                                            position: 'absolute',
-                                            left: '4px',
-                                            top: '50%',
-                                            transform: 'translateY(-50%)',
-                                            fontSize: '12px',
-                                            color: isDarkMode ? '#49aa19' : '#52c41a',
-					    zIndex: 1
-                                        }}
-                                    />
-                                )}
-                                <div className="chat-history-title" style={{
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                    maxWidth: '100%',
-                                    paddingRight: '65px' // space for action buttons
-                                }}>
-                                {(() => {
-                                    console.debug('[ChatHistory] Rendering conversation:', {
-                                        id: conversation.id,
-                                        title: conversation.title,
-                                        isStreaming: streamingConversations.has(conversation.id),
-                                        currentStreaming: Array.from(streamingConversations),
-                                        isCurrent: conversation.id === currentConversationId
-                                    });
-                                    return <>
-                                        {conversation.title}
-					{streamingConversations.has(conversation.id) && (
-                                            <div style={{
-                                                fontSize: '12px',
-                                                color: isDarkMode ? '#177ddc' : '#1890ff',
-                                                marginTop: '4px',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '4px'
-                                            }}>
-                                                <LoadingOutlined />
-                                                Receiving response...
-                                            </div>
-                                        )}
-                                    </>;
-                                })()}
-				</div>
-			   </div>
-                        )}
-                        <div className="chat-history-actions" style={{
-                            padding: '0 4px',
-			    display: 'flex', 
-			    gap: '2px',
-			    position: 'absolute',
-			    right: 0,
-			    top: 0,
-			}}>
-                            <Button
-                                type="text"
-                                icon={<EditOutlined/>}
-                                onClick={(e) => handleEditClick(e, conversation.id)}
-				style={{ display: 'flex', alignItems: 'center', height: '24px', padding: '0 4px' }}
-                            />
-                            <Button
-                                type="text"
-                                icon={<DeleteOutlined/>}
-                                onClick={(e) => handleDeleteConversation(e, conversation.id)}
-				style={{ display: 'flex', alignItems: 'center', height: '24px', padding: '0 4px' }}
-                            />
-                        </div>
-			</div>
-                    </div>
-                </List.Item>
+	    style={{ width: '100%' }}
+	    dataSource={sortedConversations.filter(conv => conv.isActive !== false)}
+	    renderItem={(conversation) => (
+                <ChatHistoryItem
+                    conversation={conversation}
+                    isLoadingConversation={isLoadingConversation}
+                    currentConversationId={currentConversationId}
+                    streamingConversations={streamingConversations}
+                    isDarkMode={isDarkMode}
+                    onConversationClick={handleConversationClick}
+                    onEdit={handleEditClick}
+                    onDelete={handleDeleteConversation}
+                    editingId={editingId}
+                    onTitleChange={handleTitleChange}
+                    onTitleBlur={handleTitleBlur}
+                />
             )}
             footer={
                 <>

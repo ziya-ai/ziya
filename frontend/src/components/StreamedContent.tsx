@@ -71,17 +71,6 @@ export const StreamedContent: React.FC = () => {
         triggerScroll();
     }, [currentConversationId, streamedContentMap]);
 
-    // Debug when content should be displayed
-    useEffect(() => {
-        console.debug('StreamedContent state:', {
-	    hasContent: Boolean(streamedContentMap.get(currentConversationId)),
-	    currentContent: streamedContentMap.get(currentConversationId),
-            isStreaming,
-            currentConversationId,
-            isStreamingCurrent: streamingConversations.has(currentConversationId)
-        });
-    }, [streamedContentMap, isStreaming, currentConversationId, streamingConversations]);
-
     const enableCodeApply = window.enableCodeApply === 'true';
     return (
         <div style={{

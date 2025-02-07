@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, memo, useState} from "react";
+import React, {useEffect, useRef, memo, useState, useCallback} from "react";
 import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {Message} from "../utils/types";
@@ -42,6 +42,10 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     }, [question]);
 
     const [isProcessing, setIsProcessing] = useState(false);
+    const handleQuestionChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        setQuestion(e.target.value);
+    }, [setQuestion]);
+    const isDisabled = isQuestionEmpty(question) || streamingConversations.has(currentConversationId);
 
     const handleSendPayload = async () => {
 
@@ -124,7 +128,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             <TextArea
                 ref={textareaRef}
                 value={question}
-                onChange={(e) => setQuestion(e.target.value)}
+		onChange={handleQuestionChange}
                 placeholder="Enter your question.."
                 autoComplete="off"
 		autoSize={{ minRows: 1, maxRows: 6 }}
@@ -139,7 +143,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             <Button
 	        type="primary"
                 onClick={handleSendPayload}
-		disabled={isQuestionEmpty(question) || streamingConversations.has(currentConversationId)}
+		disabled={isDisabled}
                 icon={<SendOutlined/>}
                 style={{marginLeft: '10px'}}
 		title={
