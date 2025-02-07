@@ -12,7 +12,8 @@ from langchain_aws import ChatBedrock
 from langchain_community.document_loaders import TextLoader
 from langchain_core.agents import AgentFinish
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.outputs import Generation
+from langchain_core.runnables import RunnablePassthrough, Runnable
 from pydantic import BaseModel, Field
 
 from app.agents.prompts import conversational_prompt
@@ -47,9 +48,31 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
 
 def parse_output(message):
     """Parse and sanitize the output from the language model."""
-    text = clean_backtick_sequences(message.content)
-    logger.info(f"parse_output received content size: {len(message.content)} chars, returning size: {len(text)} chars")
-    return AgentFinish(return_values={"output": text}, log=text)
+    try:
+        # Get the content based on the object type
+        content = None
+        if hasattr(message, 'text'):
+            content = message.text
+        elif hasattr(message, 'content'):
+            content = message.content
+        else:
+            content = str(message)
+    finally:
+        if content:
+            # Check if this is an error message
+            try:
+                error_data = json.loads(content)
+                if error_data.get('error') == 'validation_error':
+                    logger.info(f"Detected validation error in output: {content}")
+                    return AgentFinish(return_values={"output": content}, log=content)
+            except json.JSONDecodeError:
+                pass
+            # If not an error, clean and return the content
+            text = clean_backtick_sequences(content)
+            # Log using the same content we extracted
+            logger.info(f"parse_output received content size: {len(content)} chars, returning size: {len(text)} chars")
+            return AgentFinish(return_values={"output": text}, log=text)
+        return AgentFinish(return_values={"output": ""}, log="")
 
 aws_profile = os.environ.get("ZIYA_AWS_PROFILE")
 if aws_profile:
@@ -80,7 +103,7 @@ model = ChatBedrock(
 )
 
 # Create a wrapper class that adds retries
-class RetryingChatBedrock:
+class RetryingChatBedrock(Runnable):
     def __init__(self, model):
         self.model = model
 
@@ -94,36 +117,60 @@ class RetryingChatBedrock:
         # Delegate any unknown attributes to the underlying model
         return getattr(self.model, name)
 
-    async def _with_retries(self, func, *args, **kwargs):
+    async def _handle_stream_error(self, e: Exception):
+        """Handle stream errors by yielding an error message."""
+        yield Generation(
+            text=json.dumps({
+                "error": "validation_error",
+                "detail": "Selected content is too large for the model. Please reduce the number of files."
+            })
+        )
+        return
+
+    async def _handle_validation_error(self, e: Exception):
+        """Handle validation errors by yielding an error message."""
+        error_chunk = Generation(
+            text=json.dumps({"error": "validation_error", "detail": str(e)})
+        )
+        yield error_chunk
+    def _is_streaming(self, func) -> bool:
+        """Check if this is a streaming operation."""
+        return hasattr(func, '__name__') and func.__name__ == 'astream'
+
+    def invoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
+        return self.model.invoke(input, config, **kwargs)
+
+    async def ainvoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
+        return await self.model.ainvoke(input, config, **kwargs)
+
+    async def astream(self, input: Any, config: Optional[Dict] = None, stream_mode: bool = True, **kwargs):
         max_retries = 3
         retry_delay = 1
-        last_error = None
 
         for attempt in range(max_retries):
             try:
-                result = func(*args, **kwargs)
-                if hasattr(result, '__await__'):
-                    return await result
-                return result
-            except botocore.exceptions.EventStreamError as e:
-                if "modelStreamErrorException" in str(e) and attempt < max_retries - 1:
-                    delay = retry_delay * (2 ** attempt)
-                    logger.info(f"Stream error, retrying in {delay} seconds (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(delay)
-                    continue
-                last_error = e
-            except Exception as e:
-                last_error = e
+                if stream_mode:
+                    async for chunk in self.model.astream(input, config, **kwargs):
+                        if isinstance(chunk, dict) and "error" in chunk:
+                            yield Generation(text=json.dumps(chunk))
+                        else:
+                            yield chunk
+                else:
+                    # Get complete response at once
+                    result = await self.model.ainvoke(input, config, **kwargs)
+                    yield result
                 break
+            except (botocore.exceptions.EventStreamError, ExceptionGroup) as e:
+                error_message = str(e)
+                if "validationException" in str(e):
+                    logger.error(f"Validation error from AWS: {str(e)}")
+                    yield Generation(text=json.dumps({
+                        "error": "validation_error",
+                        "detail": "Selected content is too large for the model. Please reduce the number of files."
+                    }))
+                    return
+            raise e
 
-        if last_error:
-            raise last_error
-
-    async def __call__(self, *args, **kwargs):
-        return await self._with_retries(self.model.invoke, *args, **kwargs)
-
-    async def astream(self, *args, **kwargs):
-        return await self._with_retries(self.model.astream, *args, **kwargs)
 
 model = RetryingChatBedrock(model)
 

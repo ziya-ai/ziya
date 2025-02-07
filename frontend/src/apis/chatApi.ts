@@ -11,6 +11,12 @@ interface Operation {
     value?: string;
 }
 
+interface ErrorResponse {
+    error: string;
+    detail: string;
+    event?: string;
+}
+
 const isValidMessage = (message: any) => {
     if (!message || typeof message !== 'object') return false;
     if (!message.content || typeof message.content !== 'string') return false;
@@ -31,6 +37,7 @@ const isStreamingError = (error: any): boolean => {
 };
 
 const handleStreamError = async (response: Response): Promise<never> => {
+    console.log("Handling stream error:", response.status);
     let errorMessage: string = 'An unknown error occurred';
 
     // Try to get detailed error message from response
@@ -43,12 +50,14 @@ const handleStreamError = async (response: Response): Promise<never> => {
     }
 
     if (response.status === 413) {
+	console.log("Content too large error detected");
 	errorMessage = 'Selected content is too large for the model. Please reduce the number of files.';
 	message.error({
             content: errorMessage,
             duration: 10
         });
     } else if (response.status === 401) {
+	console.log("Authentication error");
         errorMessage = 'Authentication failed. Please refresh your AWS credentials.';
         message.error({
             content: errorMessage,
@@ -56,7 +65,6 @@ const handleStreamError = async (response: Response): Promise<never> => {
             key: 'auth-error'
         });
     } else {
-
         message.error({
             content: errorMessage,
             duration: 10
@@ -112,9 +120,11 @@ export const sendPayload = async (
 	let currentContent = '';
 	setIsStreaming(true);
 	let response = await getApiResponse(messages, question, checkedItems);
+        console.log("Initial API response:", response.status, response.statusText);
         
         if (!response.ok) {
             if (response.status === 503) {
+		console.log("Service unavailable, attempting retry");
                 await handleStreamError(response);
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -125,9 +135,11 @@ export const sendPayload = async (
                 }
                 response = retryResponse;
             } else if (response.status === 401) {
+		console.log("Authentication error");
                 // Handle auth failure explicitly
                 throw await handleStreamError(response);
             } else {
+		console.log("Other error:", response.status);
 		// Handle other errors
                 throw await handleStreamError(response);
             }
@@ -144,6 +156,7 @@ export const sendPayload = async (
             removeStreamingConversation(conversationId);
         };
 
+        console.log("Setting up stream reader for response");
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
 	let errorOccurred = false;
@@ -151,18 +164,39 @@ export const sendPayload = async (
 
         function onParse(event) {
             if (event.type === 'event') {
+		// Received SSE Event
                 try {
                     const data = JSON.parse(event.data);
-		    // Check for any type of error response
+		    // Check for errors in either direct response or nested in operations
+		    let errorData: ErrorResponse | null = null;
+
                     if (data.error || data.event === 'error') {
-                        errorOccurred = true;
-                        message.error({
-			    content: data.detail || 'An error occurred during processing',
-                            duration: 10,
-                            key: data.error || 'stream-error'
+                        errorData = data;
+                    }
+                    if (data.ops && Array.isArray(data.ops)) {
+                        for (const op of data.ops) {
+                            if (op.op === 'add' && op.value && typeof op.value.output === 'string') {
+                                try {
+                                    const outputData = JSON.parse(op.value.output);
+				    if (outputData && typeof outputData === 'object' && 'error' in outputData) {
+			                errorData = outputData;
+                                        break;
+                                    }
+                                } catch (e) {} // Not JSON or not an error
+                            }
+                        }
+                    }
+		    if (errorData) {
+			console.log('Processing SSE Error Event');
+                        const response = new Response(JSON.stringify(errorData), {
+                            status: errorData.error === 'validation_error' ? 413 : 500
                         });
-                        setIsStreaming(false);
-                        removeStreamingConversation(conversationId);
+                        handleStreamError(response)
+                            .catch(error => {
+                                errorOccurred = true;
+                                removeStreamingConversation(conversationId);
+                                throw error;
+                            });
                         return;
                     }
 
@@ -195,11 +229,24 @@ export const sendPayload = async (
                     const { done, value } = await reader.read();
                     if (done) break;
                     if (errorOccurred) break;
-
                     const chunk = decoder.decode(value);
-                    if (chunk) {
-                        parser.feed(chunk);
-                    }
+                    if (!chunk) continue;
+                    // Try to parse the chunk as JSON to check for validation error
+                    try {
+                        const jsonData = JSON.parse(chunk);
+                        if (jsonData.error === 'validation_error') {
+		            const response = new Response(chunk, { status: 413 });
+			    try {
+                                throw await handleStreamError(response);
+                            } catch (error) {
+                                errorOccurred = true;
+                                removeStreamingConversation(conversationId);
+                                throw error;
+                            }
+                            break;
+                        }
+                    } catch (e) {} // Ignore parse errors for non-JSON chunks
+		    parser.feed(chunk);
                 } catch (error) {
                     console.error('Error reading stream:', error);
                     break;
@@ -208,9 +255,25 @@ export const sendPayload = async (
         }
 
 	try {
+            console.log("Starting stream read...");
             await readStream();
 	    // After successful streaming, update with final content
 	    if (currentContent && !errorOccurred) {
+		console.log("Stream completed successfully");
+
+		// Check if the content is an error message
+                try {
+                    const errorData = JSON.parse(currentContent);
+		    console.log("Parsed final content:", errorData);
+                    if (errorData.error === 'validation_error') {
+                        message.error({
+                            content: errorData.detail,
+                            duration: 10
+                        });
+                        return '';
+                    }
+                } catch (e) {} // Not JSON or not an error
+
                 onStreamComplete?.(currentContent);
 		// Add AI response to conversation
                 const aiMessage: Message = {
@@ -234,6 +297,14 @@ export const sendPayload = async (
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
+	// Type guard for Error objects
+        if (error instanceof Error) {
+            console.error('Error details:', {
+                name: error.name,
+                message: error.message,
+                stack: error.stack
+            });
+        }
 	if (eventSource && eventSource instanceof EventSource) eventSource.close();
 	// Clear streaming state
         setIsStreaming(false);
@@ -257,6 +328,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
     
     // Validate that we have files selected
     console.log('API Request File Selection:', {
+	endpoint: '/ziya/stream_log',
         checkedItemsCount: checkedItems.length,
         checkedItems,
         sampleFile: checkedItems[0],
@@ -281,7 +353,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         if (messages.length === 1 && messages[0].role === 'human') {
             console.log('First message in conversation, no history to send');
 	    console.log('Selected files being sent to server:', checkedItems);
-            return await fetch('/ziya/stream_log', {
+	    const response = await fetch('/ziya/stream_log', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -295,7 +367,11 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
                         },
                     },
                 }),
-            }) as Response;
+            });
+	    if (!response.ok) {
+                throw await handleStreamError(response);
+            }
+            return response;
         }
  
         // For subsequent messages, build the history pairs
@@ -341,11 +417,15 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         };
 
         console.log('Sending payload to server:', JSON.stringify(payload, null, 2));
-        return await fetch('/ziya/stream_log', {
+        const response = await fetch('/ziya/stream_log', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
 	    body: JSON.stringify(payload),
-        }) as Response;
+        });
+	if (!response.ok) {
+            throw await handleStreamError(response);
+        }
+        return response;
     } catch (error) {
         console.error('API request failed:', error);
         throw error;

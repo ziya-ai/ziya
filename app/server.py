@@ -15,7 +15,8 @@ from app.agents.agent import agent_executor
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
-
+from botocore.exceptions import EventStreamError
+from starlette.responses import StreamingResponse
 
 # import pydevd_pycharm
 import uvicorn
@@ -35,13 +36,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.exception_handler(EventStreamError)
+async def eventstream_exception_handler(request: Request, exc: EventStreamError):
+    error_message = str(exc)
+    if "validationException" in error_message:
+        return JSONResponse(
+            status_code=413,  # Request Entity Too Large
+            headers={"Content-Type": "application/json"},
+            content={
+                "error": "validation_error",
+                "detail": "Selected content is too large for the model. Please reduce the number of files.",
+                "original_error": error_message
+            }
+        )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 413:  # Entity Too Large
+        return JSONResponse(
+            status_code=413,
+            headers={"Content-Type": "application/json"},
+            content={
+                "error": "validation_error",
+                "detail": exc.detail
+            }
+        )
+    raise exc
+
 @app.exception_handler(CredentialRetrievalError)
 async def credential_exception_handler(request: Request, exc: CredentialRetrievalError):
     # Pass through the original error message which may contain helpful authentication instructions
     error_message = str(exc)
     return JSONResponse(
         status_code=401,
-        content={"detail": f"AWS credential error: {error_message}"}
+        content={"detail": f"AWS credential error: {error_message}"},
+        headers={"WWW-Authenticate": "Bearer"}
     )
 
 
@@ -51,7 +81,8 @@ async def boto_client_exception_handler(request: Request, exc: ClientError):
     if "ExpiredTokenException" in error_message or "InvalidIdentityTokenException" in error_message:
         return JSONResponse(
             status_code=401,
-            content={"detail": "AWS credentials have expired. Please refresh your credentials."}
+            content={"detail": "AWS credentials have expired. Please refresh your credentials."},
+            headers={"WWW-Authenticate": "Bearer"}
         )
     elif "ServiceUnavailableException" in error_message:
         return JSONResponse(
@@ -65,8 +96,33 @@ async def boto_client_exception_handler(request: Request, exc: ClientError):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    error_message = str(exc)
+    status_code = 500
+    error_type = "unknown_error"
+    try:
+        # Check if this is a streaming error
+        if isinstance(exc, EventStreamError):
+            if "validationException" in error_message:
+                status_code = 413
+                error_type = "validation_error"
+                error_message = "Selected content is too large for the model. Please reduce the number of files."
+        elif isinstance(exc, ExceptionGroup):
+            # Handle nested exceptions
+            for e in exc.exceptions:
+                if isinstance(e, EventStreamError) and "validationException" in str(e):
+                    status_code = 413
+                    error_type = "validation_error"
+                    error_message = "Selected content is too large for the model. Please reduce the number of files."
+                    break
+        logger.error(f"Exception handler: type={error_type}, status={status_code}, message={error_message}")
+
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": error_type, "detail": error_message}
+        )
+    except Exception as e:
+        logger.error(f"Error in exception handler: {str(e)}", exc_info=True)
+        raise
 
 app.mount("/static", StaticFiles(directory="../templates/static"), name="static")
 app.mount("/testcases", StaticFiles(directory="../templates/testcases"), name="testcases")
@@ -74,6 +130,56 @@ templates = Jinja2Templates(directory="../templates")
 
 # Add a route for the frontend
 add_routes(app, agent_executor, disabled_endpoints=["playground"], path="/ziya")
+# Override the stream endpoint with our error handling
+@app.post("/ziya/stream")
+async def stream_endpoint(body: dict):
+    try:
+        logger.info("Starting stream endpoint with body size: %d", len(str(body)))
+        # Define the streaming response with proper error handling
+        async def error_handled_stream():
+            try:
+                # Create the iterator inside the error handling context
+                iterator = agent_executor.astream_log(body, {})
+                async for chunk in iterator:
+                    logger.info("Processing chunk: %s",
+                              chunk if isinstance(chunk, dict) else chunk[:200] + "..." if len(chunk) > 200 else chunk)
+                    if isinstance(chunk, dict) and "error" in chunk:
+                        # Format error as SSE message
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        logger.info("Sent error message: %s", error_msg)
+                        return
+                    else:
+                        try:
+                            yield chunk
+                            await response.flush()
+                        except EventStreamError as e:
+                            if "validationException" in str(e):
+                                error_msg = {
+                                    "error": "validation_error",
+                                    "detail": "Selected content is too large for the model. Please reduce the number of files."
+                                }
+                                yield f"data: {json.dumps(error_msg)}\n\n"
+                                await response.flush()
+                                logger.info("Sent EventStreamError message: %s", error_msg)
+                                return
+            except EventStreamError as e:
+                if "validationException" in str(e):
+                    error_msg = {
+                        "error": "validation_error",
+                        "detail": "Selected content is too large for the model. Please reduce the number of files."
+                    }
+                    yield f"data: {json.dumps(error_msg)}\n\n"
+                    await response.flush()
+                    return
+                raise
+        return StreamingResponse(error_handled_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+    except Exception as e:
+        logger.error(f"Error in stream endpoint: {str(e)}")
+        error_msg = {"error": "stream_error", "detail": str(e)}
+        logger.error(f"Sending error response: {error_msg}")
+        logger.error(f"Sending error response: {error_msg}")
+        return StreamingResponse(iter([f"data: {json.dumps(error_msg)}\n\n"]), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+        
 
 
 @app.get("/")

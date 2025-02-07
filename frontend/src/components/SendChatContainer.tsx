@@ -85,6 +85,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 	setStreamedContentMap(new Map());
 
         console.log('Added human message:', {
+            id: currentConversationId,
             content: newHumanMessage.content,
             currentMessages: currentMessages.length
         });
@@ -100,26 +101,65 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             const result = await sendPayload(
                 targetConversationId,
                 question,
-		streamingConversations.has(currentConversationId),
-		messagesWithNew,
+                streamingConversations.has(currentConversationId),
+                messagesWithNew,
                 setStreamedContentMap,
                 setIsStreaming,
-		selectedFiles,
-		addMessageToConversation,
+                selectedFiles,
+                addMessageToConversation,
                 removeStreamingConversation
             );
-
+            // Check if result is an error response
+            if (typeof result === 'string' && result.includes('"error":"validation_error"')) {
+                try {
+                    const errorData = JSON.parse(result);
+                    if (errorData.error === 'validation_error') {
+                        message.error({
+                            content: errorData.detail,
+                            duration: 5,
+                            key: 'validation-error'
+                        });
+                        return;
+                    }
+                } catch (e) {
+                    console.error('Error parsing error response:', e);
+                }
+            }
             // Get the final streamed content
-	    const finalContent = streamedContentMap.get(currentConversationId) || result;
-
+            const finalContent = streamedContentMap.get(currentConversationId) || result;
+            if (finalContent) {
+		// Check if result is an error response
+                try {
+                    const errorData = JSON.parse(finalContent);
+                    if (errorData.error === 'validation_error') {
+                        message.error(errorData.detail || 'Selected content is too large. Please reduce the number of files.');
+                        return;
+                    }
+                } catch (e) {} // Not JSON or not an error response
+                const aiMessage: Message = {
+                    content: finalContent,
+                    role: 'assistant'
+                };
+                addMessageToConversation(aiMessage, currentConversationId);
+            }
         } catch (error) {
             console.error('Error sending message:', error);
+	    // Check if this is a validation error
+            if (error instanceof Error && error.message.includes('validationException')) {
+                message.error({
+                    content: 'Selected content is too large for the model. Please reduce the number of files.',
+                    duration: 10
+                });
+            }
             message.error({
                 content: 'Failed to send message. Please try again.',
+                key: 'send-error',
                 duration: 5
             });
-	} finally {
-	    setIsProcessing(false);
+        } finally {
+            setIsProcessing(false);
+            setIsStreaming(false);
+            removeStreamingConversation(currentConversationId);
         }
     };
 
@@ -145,7 +185,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 onClick={handleSendPayload}
 		disabled={isDisabled}
                 icon={<SendOutlined/>}
-                style={{marginLeft: '10px'}}
+		style={{ marginLeft: '10px' }}
 		title={
                     streamingConversations.has(currentConversationId)
                         ? "Waiting for AI response..."
