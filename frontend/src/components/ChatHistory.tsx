@@ -232,7 +232,13 @@ export const ChatHistory: React.FC = () => {
 
     const exportConversations = async () => {
         try {
+	    console.debug('Starting conversation export');
             const data = await db.exportConversations();
+	    console.debug('Export data received:', {
+                dataSize: data.length,
+                conversationCount: JSON.parse(data).length,
+                timestamp: new Date().toISOString()
+            });
             const blob = new Blob([data], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -252,16 +258,33 @@ export const ChatHistory: React.FC = () => {
     const importConversations = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (file) {
+	    console.debug('Starting import of file:', {
+                name: file.name,
+                size: file.size,
+                type: file.type
+            });
+
             const reader = new FileReader();
             reader.onload = async (e) => {
                 try {
                     const content = e.target?.result as string;
+		    console.debug('File content loaded, attempting to parse');
+
+                    // Validate JSON format
+                    const parsedContent = JSON.parse(content);
+                    if (!Array.isArray(parsedContent)) {
+                        throw new Error('Invalid import format - expected array of conversations');
+                    }
+
+                    console.debug('Importing conversations:', {
+                        count: parsedContent.length
+                    });
                     await db.importConversations(content);
                     const newConversations = await db.getConversations();
                     setConversations(newConversations);
                     message.success('Conversations imported successfully');
                 } catch (error) {
-                    console.error('Import error:', error);
+		    console.error('Failed to import conversations:', error);
                     message.error(error instanceof Error ? error.message : 'Failed to import conversations');
                 }
             };

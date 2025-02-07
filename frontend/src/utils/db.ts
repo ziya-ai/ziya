@@ -329,10 +329,6 @@ class ConversationDB implements DB {
 
             request.onsuccess = () => {
                 const conversations = Array.isArray(request.result) ? request.result : [];
-                console.debug('Retrieved conversations:', {
-                    count: conversations.length,
-                    ids: conversations.map(c => c.id)
-                });
 
                 if (conversations.length > 0) {
                     const validConversations = conversations.filter(conv =>
@@ -362,8 +358,25 @@ class ConversationDB implements DB {
         return this._exportConversations();
     }
     private async _exportConversations(): Promise<string> {
-        const conversations = await this.getConversations();
-        return JSON.stringify(conversations, null, 2);
+	if (!this.db) {
+            throw new Error('Database not initialized');
+        }
+        try {
+            const tx = this.db.transaction([STORE_NAME], 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.get('current');
+            return new Promise((resolve, reject) => {
+                request.onsuccess = () => {
+                    const conversations = Array.isArray(request.result) ? request.result : [];
+                    // Only export active conversations
+                    const activeConversations = conversations.filter(conv => conv.isActive !== false);
+                    resolve(JSON.stringify(activeConversations, null, 2));
+                };
+                request.onerror = () => reject(request.error);
+            });
+        } catch (error) {
+            throw new Error(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
     }
 
     async importConversations(data: string): Promise<void> {
@@ -375,14 +388,60 @@ class ConversationDB implements DB {
         return this._importConversations(data);
     }
     private async _importConversations(data: string): Promise<void> {
+	if (!this.db) {
+            throw new Error('Database not initialized');
+        }
         try {
-            const conversations = JSON.parse(data);
-            if (!this.validateConversations(conversations)) {
-                throw new Error('Invalid conversations format');
+	    // Parse and validate the imported data
+            const importedData = JSON.parse(data);
+            if (!Array.isArray(importedData)) {
+                throw new Error('Invalid import format - expected array');
             }
-            await this.saveConversations(conversations);
+	    // Validate each conversation
+            const validConversations = importedData.filter(conv =>
+                this.validateConversations([conv])
+            );
+            if (validConversations.length === 0) {
+                throw new Error('No valid conversations found in import file');
+            }
+            console.debug('Importing conversations:', {
+                total: importedData.length,
+                valid: validConversations.length
+            });
+            // Get existing conversations
+            const existingConversations = await this.getConversations();
+            // Merge conversations, keeping existing ones if IDs conflict
+            const mergedConversations = [...existingConversations];
+            for (const importedConv of validConversations) {
+                const existingIndex = mergedConversations.findIndex(c => c.id === importedConv.id);
+                if (existingIndex === -1) {
+                    // New conversation
+                    mergedConversations.push({
+                        ...importedConv,
+                        _version: Date.now(),
+                        isActive: true
+                    });
+                }
+            }
+	    // Start a transaction
+            const tx = this.db.transaction([STORE_NAME], 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            return new Promise((resolve, reject) => {
+                const request = store.put(mergedConversations, 'current');
+
+                request.onsuccess = () => {
+                    console.debug('Successfully saved imported conversations:', {
+                        count: mergedConversations.length,
+                        ids: mergedConversations.map(c => c.id)
+                    });
+                    resolve();
+                };
+
+                request.onerror = () => reject(request.error);
+            });
         } catch (error) {
-            throw new Error(`Import failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+	    console.error('Import error:', error);
+            throw new Error(error instanceof Error ? error.message : 'Failed to import conversations');
         }
     }
 
