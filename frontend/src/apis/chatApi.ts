@@ -49,17 +49,30 @@ const handleStreamError = async (response: Response): Promise<never> => {
         console.warn('Could not parse error response:', e);
     }
 
-    if (response.status === 413) {
-	console.log("Content too large error detected");
-	errorMessage = 'Selected content is too large for the model. Please reduce the number of files.';
-	message.error({
+    // Handle different response status codes
+    switch (response.status) {
+        case 413:
+            console.log("Content too large error detected");
+            errorMessage = 'Selected content is too large for the model. Please reduce the number of files.';
+            break;
+        case 401:
+            console.log("Authentication error");
+            errorMessage = 'Authentication failed. Please check your credentials.';
+            break;
+        case 503:
+            console.log("Service unavailable");
+            errorMessage = 'Service is temporarily unavailable. Please try again in a moment.';
+            break;
+        default:
+            errorMessage = 'An unexpected error occurred. Please try again.';
+    }
+    message.error({
             content: errorMessage,
-            duration: 10
-        });
-    } else if (response.status === 401) {
-	console.log("Authentication error");
-        errorMessage = 'Authentication failed. Please refresh your AWS credentials.';
-        message.error({
+	    duration: 10,
+            key: `error-${response.status}`
+    });
+    if (response.status === 401) {
+        message.info({
             content: errorMessage,
             duration: 10,
             key: 'auth-error'
@@ -310,12 +323,12 @@ export const sendPayload = async (
         setIsStreaming(false);
         removeStreamingConversation(conversationId);
         // Show error message if not already shown
-        if (!(error instanceof Error && error.message.includes('AWS credential error'))) {
-            message.error({
-                content: error instanceof Error ? error.message : 'An unknown error occurred. Please try again.',
-		key: 'stream-error',
-                duration: 5,
-            });
+	if (error instanceof Error) {
+                // Let the server's error message through
+                const errorMsg = error.message;
+                if (!errorMsg.includes('AWS credential error')) {
+                    message.error({ content: errorMsg, key: 'stream-error', duration: 10 });
+		}
         }
     } finally {
 	if (eventSource && eventSource instanceof EventSource) eventSource.close();

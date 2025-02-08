@@ -144,18 +144,17 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             }
         } catch (error) {
             console.error('Error sending message:', error);
-	    // Check if this is a validation error
-            if (error instanceof Error && error.message.includes('validationException')) {
+	    removeStreamingConversation(currentConversationId);
+            // Only show generic error if not handled by streaming error system
+            if (!(error instanceof Error &&
+                  (error.message.includes('validation_error') ||
+                   error.message.includes('credential')))) {
                 message.error({
-                    content: 'Selected content is too large for the model. Please reduce the number of files.',
-                    duration: 10
+                    content: 'Failed to send message. Please try again.',
+                    key: 'send-error',
+                    duration: 5
                 });
-            }
-            message.error({
-                content: 'Failed to send message. Please try again.',
-                key: 'send-error',
-                duration: 5
-            });
+	    }
         } finally {
             setIsProcessing(false);
             setIsStreaming(false);
