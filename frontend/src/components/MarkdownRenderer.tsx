@@ -784,6 +784,47 @@ const isCodeToken = (token: TokenWithText): token is TokenWithText & { lang?: st
     return token.type === 'code' && 'text' in token;
 };
 
+interface DiffTokenProps {
+    token: TokenWithText;
+    index: number;
+    enableCodeApply: boolean;
+    isDarkMode: boolean;
+}
+
+const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
+    const isDiffValid = useMemo(() => {
+        if (!token.text.trim().startsWith('diff --git')) {
+            return false;
+        }
+        try {
+            const files = parseDiff(token.text);
+            return files && files.length > 0;
+        } catch (e) {
+            return false;
+        }
+    }, [token.text]);
+    if (isDiffValid) {
+        return (
+            <DiffViewWrapper
+                token={token}
+                index={index}
+                enableCodeApply={enableCodeApply}
+            />
+        );
+    } else {
+        // Return regular code block if not a valid diff
+        return (
+            <pre style={{
+                padding: '16px',
+                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                color: isDarkMode ? '#e6e6e6' : '#24292e',
+                borderRadius: '6px',
+                overflow: 'auto'
+            }}><code>{token.text}</code></pre>
+        );
+    }
+});
+
 interface DiffViewWrapperProps {
     token: TokenWithText;
     enableCodeApply: boolean;
@@ -1017,38 +1058,14 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
     return tokens.map((token, index) => {
         if (token.type === 'code' && isCodeToken(token) && token.lang === 'diff') {
             try {
-                console.debug(`Processing diff token:`, { type: token.type, lang: token.lang, text: token.text.substring(0, 100) });
-                // Only attempt to parse as diff if it starts with 'diff --git'
-                if (token.text.trim().startsWith('diff --git')) {
-		    console.debug('Found diff --git marker, attempting to parse');
-                    const files = parseDiff(token.text);
-		    console.debug('Parsed files:', files);
-                    if (files && files.length > 0) {
-			console.debug('Successfully parsed diff files:', files.length);
-                        return (
-                            <DiffViewWrapper
-                                key={index}
-                                token={token}
-                                index={index}
-                                enableCodeApply={enableCodeApply}
-                            />
-                        );
-                    }
-		    console.debug('No files parsed from diff');
-                } else {
-                    console.debug('Diff token does not start with "diff --git"');
-                }
-                // If not a valid diff or doesn't start with diff marker, render as regular code
                 return (
-                    <pre key={index} style={{
-                        padding: '16px',
-                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                        color: isDarkMode ? '#e6e6e6' : '#24292e',
-                        borderRadius: '6px',
-                        overflow: 'auto'
-                    }}>
-                        <code>{token.text}</code>
-                    </pre>
+                    <DiffToken
+                        key={index}
+                        token={token}
+                        index={index}
+                        enableCodeApply={enableCodeApply}
+                        isDarkMode={isDarkMode}
+                    />
                 );
             } catch (error) {
                 console.error('Error parsing diff:', error, '\nDiff content:', token.text);
