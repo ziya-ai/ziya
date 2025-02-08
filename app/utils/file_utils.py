@@ -5,11 +5,17 @@ from app.utils.logging_utils import logger
 BINARY_EXTENSIONS = {
     '.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
     '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
-    '.woff', '.woff2', '.ttf', '.eot'
+    '.woff', '.woff2', '.ttf', '.eot', '.zip'
 }
  
 def is_binary_file(file_path: str) -> bool:
-    """Check if a file is binary based on extension or content."""
+    """Check if a file is binary based on extension or content.
+    
+    Args:
+        file_path (str): Path to the file to check
+    Returns:
+        bool: True if the file is binary, False otherwise
+    """
     try:
         # Check if path is a directory first
         if os.path.isdir(file_path):

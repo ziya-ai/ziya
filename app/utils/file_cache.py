@@ -52,6 +52,7 @@ class FileStateCache:
     def __init__(self):
         self.thread_id = threading.get_ident()
         self._manager = ThreadStateManager()
+        self._state = self._manager.get_thread_state(self.thread_id)
         logger.info(f"FileStateCache initialized for thread {self.thread_id}")
 
     def get_baseline_state(self, file_path: str) -> Optional[str]:
@@ -65,7 +66,6 @@ class FileStateCache:
         Check if a file has been modified externally.
         Returns True if the file has changed.
         """
-        thread_state = self._manager.get_thread_state(self.thread_id)
         full_path = os.path.join(base_dir, file_path)
         logger.info(f"Thread {self.thread_id} checking {file_path}")
         try:
@@ -86,7 +86,7 @@ class FileStateCache:
             if not file_state:
                 # First time this thread sees the file
                 logger.debug(f"First time seeing {file_path} in thread {self.thread_id}, initializing new state")
-                self._state[file_path] = FileState(
+                file_state = FileState(
                     baseline_content=current_content,
                     current_content=current_content,
                     last_checked=datetime.now(),
