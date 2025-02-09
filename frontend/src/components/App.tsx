@@ -21,6 +21,38 @@ const PrismTest = React.lazy(() => import("./PrismTest"));
 const SyntaxTest = React.lazy(() => import("./SyntaxTest"));
 const ApplyDiffTest = React.lazy(() => import("./ApplyDiffTest"));
 
+// Error boundary component to catch extension context errors
+class ExtensionErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean}> {
+    constructor(props: {children: React.ReactNode}) {
+        super(props);
+        this.state = { hasError: false };
+    }
+    static getDerivedStateFromError(error: Error) {
+        // Only update state for extension context errors
+        if (error.message.includes('Extension context invalidated')) {
+            return { hasError: true };
+        }
+        // Let other errors propagate normally
+        throw error;
+    }
+    componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+        // Log extension context errors silently
+        if (error.message.includes('Extension context invalidated')) {
+            console.debug('Extension context error suppressed:', {
+                error: error.message,
+                component: errorInfo.componentStack
+            });
+        }
+    }
+    render() {
+        if (this.state.hasError) {
+            // Render nothing for extension errors - they're usually transient
+            return null;
+        }
+        return this.props.children;
+    }
+}
+
 export const App = () => {
     const {streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap} = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
@@ -152,6 +184,7 @@ export const App = () => {
     );
 
     return (
+	<ExtensionErrorBoundary>
         <ConfigProvider
             theme={{
                 algorithm: themeAlgorithm,
@@ -209,5 +242,6 @@ export const App = () => {
                 </div>
             </div>
         </ConfigProvider>
+	</ExtensionErrorBoundary>
     );
 };

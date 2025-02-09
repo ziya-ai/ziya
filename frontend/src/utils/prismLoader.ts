@@ -56,7 +56,7 @@ interface PrismStatic {
 
 let prismInstance: PrismStatic | null = null;
 let initializationPromise: Promise<PrismStatic | null> | null = null;
-
+let loadingPromises: { [key: string]: Promise<void> | undefined } = {};
 
 const loadPrismCore = async (): Promise<PrismStatic | null> => {
   if (!prismInstance) {
@@ -100,6 +100,16 @@ const loadPrismCore = async (): Promise<PrismStatic | null> => {
 }
  
 export const loadPrismLanguage = async (language: string): Promise<void> => {
+  // If we're already loading this language, return the existing promise
+  const existingPromise = loadingPromises[language];
+  if (existingPromise) {
+      return existingPromise;
+  }
+  // If the language is already loaded, return immediately
+  if (loadedLanguages.has(language)) {
+      return Promise.resolve();
+  }
+
   const prism = await loadPrismCore();
   if (!prism) {
     const error = new Error('Failed to load Prism core');
@@ -107,11 +117,6 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
     return;
   }
  
-  // Skip if already loaded
-  if (loadedLanguages.has(language)) {
-    return;
-  }
-
   // Special handling for "typescript jsx" format
   if (language.includes(' ')) {
     const normalized = language.replace(' ', '-');
@@ -128,114 +133,117 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
     console.debug(`Language ${mappedLanguage} already loaded`);
     return;
   }
- 
-  console.debug(`Loading ${mappedLanguage} (mapped from ${language})`); 
 
-  try {
-    // Always ensure core languages are loaded first
-    if (!window.Prism?.languages?.javascript || 
-        Object.keys(window.Prism?.languages?.javascript || {}).length === 0) {
-      await import('prismjs/components/prism-clike');
-      await import('prismjs/components/prism-javascript');
-    }
-
-    // Handle TypeScript-specific dependencies
-    switch (mappedLanguage) {
-      case 'jsx': {
-        // Ensure markup and javascript are loaded first
-        await Promise.all([
-          import('prismjs/components/prism-markup'),
-          import('prismjs/components/prism-javascript')
-        ]);
-        await import('prismjs/components/prism-jsx');
-	if (!window.Prism.languages.jsx) {
-          window.Prism.languages.jsx = window.Prism.languages.extend('markup', window.Prism.languages.javascript);
-        }
-        break;
-      }
-      case 'typescript':
-        if (!window.Prism?.languages?.typescript || 
-            Object.keys(window.Prism?.languages?.typescript || {}).length === 0) {
-          await import('prismjs/components/prism-typescript');
-        }
-        break;
-      case 'csharp':{
-        await import('prismjs/components/prism-clike');
-        await import('prismjs/components/prism-csharp');
-        break;
-      }
-      case 'javascript': {
-	await import('prismjs/components/prism-jsx');
-        break;
-      }
-      case 'clike': {
-        if (!window.Prism?.languages?.clike) {
-          await import('prismjs/components/prism-clike');
-        }
-        break;
-      }
-      case 'typsecript jsx':
-      case 'tsx': {
-        // Load all required dependencies for TSX
-        await Promise.all([
-          import('prismjs/components/prism-markup'),
-          import('prismjs/components/prism-javascript'),
-          import('prismjs/components/prism-typescript'),
-          import('prismjs/components/prism-jsx')
-        ]);
-
-        // Configure TSX grammar by extending TypeScript and JSX
-        if (window.Prism && !window.Prism.languages.tsx) {
-          window.Prism.languages.tsx = window.Prism.languages.extend('typescript', window.Prism.languages.jsx);
-          loadedLanguages.add('typescript jsx'); // Mark both versions as loaded
-        }
-        break;
-      }
-      case 'typescript': {
-        if (!prism.languages.typescript || Object.keys(prism.languages.typescript).length === 0) {
-          await import('prismjs/components/prism-typescript');
-        }
-        break;
-      }
-      case 'python': {
-        // Python-specific dependencies
-        if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
-          await import('prismjs/components/prism-clike');
-        }
-        await import('prismjs/components/prism-markup-templating');
-        await import('prismjs/components/prism-python');
-        loadedLanguages.add('python');
-        break;
-      }
-      default:
+  // Create a loading promise for this language
+    loadingPromises[language] = (async () => {
+        console.debug(`Loading ${mappedLanguage} (mapped from ${language})`);
         try {
-          // Load other languages directly
-          await import(/* webpackChunkName: "prism-lang.[request]" */ `prismjs/components/prism-${mappedLanguage}`);
-          if (!window.Prism?.languages?.[mappedLanguage]) {
-
-            throw new Error(`Language ${mappedLanguage} (${language}) failed to load`);
-          }
-        } catch (error) {
-          console.warn(`Failed to load language ${mappedLanguage}:`, error);
+            // Always ensure core languages are loaded first
+            if (!window.Prism?.languages?.javascript ||
+                Object.keys(window.Prism?.languages?.javascript || {}).length === 0) {
+                await import('prismjs/components/prism-clike');
+                await import('prismjs/components/prism-javascript');
+            }
+            // Handle TypeScript-specific dependencies
+            switch (mappedLanguage) {
+            case 'jsx': {
+                // Ensure markup and javascript are loaded first
+                await Promise.all([
+                    import('prismjs/components/prism-markup'),
+                    import('prismjs/components/prism-javascript')
+                ]);
+                await import('prismjs/components/prism-jsx');
+		if (!window.Prism.languages.jsx) {
+                    window.Prism.languages.jsx = window.Prism.languages.extend('markup', window.Prism.languages.javascript);
+                }
+                break;
+            }
+            case 'typescript':
+                if (!window.Prism?.languages?.typescript ||
+                    Object.keys(window.Prism?.languages?.typescript || {}).length === 0) {
+                    await import('prismjs/components/prism-typescript');
+                }
+                break;
+            case 'csharp':{
+                await import('prismjs/components/prism-clike');
+                await import('prismjs/components/prism-csharp');
+                break;
+            }
+            case 'javascript': {
+		await import('prismjs/components/prism-jsx');
+                break;
+            }
+            case 'clike': {
+                if (!window.Prism?.languages?.clike) {
+                    await import('prismjs/components/prism-clike');
+                }
+                break;
+            }
+            case 'typsecript jsx':
+            case 'tsx': {
+                // Load all required dependencies for TSX
+                await Promise.all([
+                    import('prismjs/components/prism-markup'),
+                    import('prismjs/components/prism-javascript'),
+                    import('prismjs/components/prism-typescript'),
+                    import('prismjs/components/prism-jsx')
+                ]);
+                // Configure TSX grammar by extending TypeScript and JSX
+                if (window.Prism && !window.Prism.languages.tsx) {
+                    window.Prism.languages.tsx = window.Prism.languages.extend('typescript', window.Prism.languages.jsx);
+                    loadedLanguages.add('typescript jsx'); // Mark both versions as loaded
+                }
+                break;
+            }
+            case 'typescript': {
+                if (!prism.languages.typescript || Object.keys(prism.languages.typescript).length === 0) {
+                    await import('prismjs/components/prism-typescript');
+                }
+                break;
+            }
+            case 'python': {
+                // Python-specific dependencies
+                if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
+                    await import('prismjs/components/prism-clike');
+                }
+                await import('prismjs/components/prism-markup-templating');
+                await import('prismjs/components/prism-python');
+                loadedLanguages.add('python');
+                break;
+            }
+            default:
+                try {
+                    // Load other languages directly
+                    await import(/* webpackChunkName: "prism-lang.[request]" */ `prismjs/components/prism-${mappedLanguage}`);
+                    if (!window.Prism?.languages?.[mappedLanguage]) {
+                        throw new Error(`Language ${mappedLanguage} (${language}) failed to load`);
+		    }
+		} catch (error) {
+                    console.warn(`Failed to load language ${mappedLanguage}:`, error);
+		    throw error;
+                }
+                break;
+            }
+	    // Mark both the original language and its mapped version as loaded
+            loadedLanguages.add(language);
+            if (mappedLanguage !== language) {
+                loadedLanguages.add(mappedLanguage);
+            }
+        } catch (error: any) {
+            console.error(`Failed to load language: ${mappedLanguage} (${language})`, error);
+            // Set up plaintext fallback
+            if (!prism || !prism.languages.plaintext) {
+                prism.languages.plaintext = {
+                    text: /[\s\S]+/
+                };
+            }
+        } finally {
+            // Clean up the loading promise
+            delete loadingPromises[language];
         }
-        break;
-    }
-
-    if (!window.Prism?.languages?.[mappedLanguage]) {
-      console.warn(`Language ${mappedLanguage} did not load properly`);
-      return;
-    }
  
-    loadedLanguages.add(language);
-  } catch (error: any) {
-    console.error(`Failed to load language: ${mappedLanguage} (${language})`, error);
-    // Set up plaintext fallback
-    if (!prism || !prism.languages.plaintext) {
-      prism.languages.plaintext = {
-        text: /[\s\S]+/
-      };
-    }
-  }
+    })();
+    return loadingPromises[language];
 };
 
 console.debug('Prism loader initialized');

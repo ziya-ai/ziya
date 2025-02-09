@@ -201,21 +201,27 @@ export function ChatProvider({children}: ChatProviderProps) {
                     hasUnreadResponse: false
                 };
 
-                setConversations(prevConversations => [...prevConversations, newConversation]);
+		// Clear unread flag from current conversation before creating new one
+                const updatedConversations = conversations.map(conv =>
+                    conv.id === currentConversationId
+                        ? { ...conv, hasUnreadResponse: false }
+                        : conv
+                );
 
-                db.saveConversations([...conversations, newConversation])
+		db.saveConversations([...updatedConversations, newConversation])
                     .then(() => {
+                        setConversations([...updatedConversations, newConversation]);
                         setCurrentMessages([]);
+                        setCurrentConversationId(newId);
+                        resolve();
                     })
                     .catch(error => {
                         console.error('Failed to save new conversation:', error);
+                        reject(error);
                     });
-
-                setCurrentConversationId(newId);
-                resolve();
             } catch (error) {
-                console.error('Failed to create new conversation:', error);
-                reject(error);
+                console.error('Failed to save new conversation:', error);
+		reject(error);
             }
         });
     };

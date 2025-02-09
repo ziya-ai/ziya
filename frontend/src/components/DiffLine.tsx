@@ -44,33 +44,19 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
     });
     }
 
-    // Pre-process content to protect JSX-like content
-    // First protect case-sensitive component names and type parameters
-    content = content.replace(
-        /(<\/?)([A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*(?:<[A-Z][A-Za-z0-9]*(?:,\s*[A-Z][A-Za-z0-9]*)*>)?)/g,
-        (match, prefix, name) =>
-            `${prefix}___PRESERVED_CASE___${name}___END_CASE___`
+    // First protect complete JSX elements
+    content = content.replace(/<([A-Z][A-Za-z0-9]*)[^>]*>[^<]*<\/\1>/g, match =>
+        `___PRESERVED_JSX___${match}___END_JSX___`
     );
-    // Then protect the rest of JSX content
+    // Then protect self-closing JSX elements
+    content = content.replace(/<[A-Z][A-Za-z0-9]*[^>]*\/>/g, match =>
+        `___PRESERVED_JSX___${match}___END_JSX___`
+    );
+    // Finally protect any remaining JSX fragments or components
     const preservedWhitespace: string[] = [];
-    content = content.replace(/^(\s*)<>/gm, (match, space) =>
-         // Protect fragment starts
-         `${space}___PRESERVED_TAG___<>___END_TAG___`
-    ).replace(/^(\s*)<([A-Za-z][A-Za-z0-9]*)/gm, (match, space, tag) =>
-        // Protect component tags at start of lines
-        `${space}___PRESERVED_TAG___<${tag}___END_TAG___`
-    ).replace(/(<\/[A-Za-z][A-Za-z0-9]*>)/g, match =>
-         // Protect closing tags
-         `___PRESERVED_TAG___${match}___END_TAG___`
-    ).replace(/(<[A-Za-z][A-Za-z0-9]*\s*\/>)/g, match =>
-         // Protect self-closing tags
-        `___PRESERVED_TAG___${match}___END_TAG___`
-    ).replace(/(<[A-Za-z][A-Za-z0-9]*(?:\s+(?:[^>]|(?!>))*)?)/g, match =>
-        // Protect any remaining component tags with attributes
-        `___PRESERVED_TAG___${match}___END_TAG___`
-    ).replace(/(<[A-Za-z][A-Za-z0-9]*>)/g, match =>
-        // Protect simple wrapped tags
-         `___PRESERVED_TAG___${match}___END_TAG___`
+    content = content.replace(
+        /<(?:>|\/?>|[A-Z][A-Za-z0-9]*(?:\s+[^>]*)?\/?>)/g,
+        match => `___PRESERVED_JSX___${match}___END_JSX___`
     );
 
     // Handle whitespace-only lines before any other processing
@@ -109,8 +95,18 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
 
     content = content.replace(/___PRESERVED_TAG___/g, '')
                      .replace(/___END_TAG___/g, '');
+    
+    content = content
+        // Restore JSX elements
+        .replace(/___PRESERVED_JSX___(.*?)___END_JSX___/g, '$1')
+        // Handle any remaining content
+        .replace(/[<>]/g, match => ({
+            '<': '&lt;',
+            '>': '&gt;'
+        })[match] || match);
 
     return content;
+
 
 };
 
@@ -126,41 +122,6 @@ const normalizeCompare = (line: string | null | undefined): string => {
 
     return content;
 }
-
-
-const visualizeWhitespace = (text: string, changeType: 'ws-add' | 'ws-delete'): string => {
-   console.log('visualizeWhitespace called:', {
-       text,
-       changeType,
-       caller: new Error().stack
-   });
-   // Match trailing whitespace only
-   const match = text.match(/[ \t]+$/);
-   if (!match) {
-       return text;
-   }
-
-   // Check if we're inside a JSX/HTML tag
-  const openBracket = text.lastIndexOf('<');
-  const closeBracket = text.lastIndexOf('>');
-  if (openBracket > closeBracket) {
-      // We're inside an unclosed tag, don't mark whitespace
-      return text;
-  }
-
-   const trailingWs = match[0];
-   const baseText = text.slice(0, -trailingWs.length);
-
-   // Create the visual markers
-   const markers = Array.from(trailingWs)
-       .map(c => c === ' ' ? '\u2591' : (c === '\t' ? '→' : c))
-       .join('');
-
-   // Keep the actual whitespace and overlay the markers (put markers first to avoid tab displacement)
-   const visibleMarkers = `___PRESERVED_TAG___<span class="ws-marker ${changeType}">${markers}</span>___END_TAG___${trailingWs}`;
-   // Return the base text followed by both spans
-   return `${baseText}${visibleMarkers}`;
-};
 
 const compareLines = (line1: string, line2: string): boolean => {
     if (!line1?.trim() || !line2?.trim()) return false;
@@ -202,47 +163,69 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
     const [highlighted, setHighlighted] = useState(content);
     const [isLoading, setIsLoading] = useState(true);
     const { isDarkMode } = useTheme();
+    const languageLoadedRef = useRef(false);
     const lastGoodRenderRef = useRef<string | null>(null);
     const contentRef = useRef<HTMLDivElement | null>(null);
 
-    // Debug logging only for lines with generic JSX
-    useEffect(() => {
-        if (content.match(/<[A-Z][A-Za-z]*<[A-Z][A-Za-z]*>/)) {
-            console.log('Generic JSX line:', { content, type, language });
+    const visualizeWhitespace = (text: string): string => {
+        // For completely empty or whitespace-only lines
+        if (!text.trim()) {
+            const markers = text.replace(/[ \t]/g, c => c === ' ' ? '\u2591' : '→');
+            const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
+	    return `<span class="token-line">` +
+                   `<span class="ws-marker ${wsClass}">${markers}</span>${text}` +
+                   `</span>`;
         }
-    }, [content, type, language]);
+        // For trailing whitespace
+	const match = text.match(/^(.*?)([ \t]+)$/);
+        if (match) {
+	    const [_, baseText, trailingWs] = match;
+            // Create the visual markers
+            const markers = Array.from(trailingWs)
+                .map(c => c === ' ' ? '\u2591' : (c === '\t' ? '→' : c))
+                .join('');
+	    // Only apply markers if we're not inside a JSX/HTML tag
+            if (language === 'jsx' || language === 'tsx') {
+                const openBracket = baseText.lastIndexOf('<');
+                const closeBracket = baseText.lastIndexOf('>');
+                if (openBracket > closeBracket) {
+                    return text;  // Inside a tag, don't mark whitespace
+                }
+            }
+            const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
+            return `${baseText}<span class="ws-marker ${wsClass}">${markers}</span>${trailingWs}`;
+        }
+        return text;
+    };
 
     useEffect(() => {
         const highlightCode = async () => {
             try {
-                await loadPrismLanguage(language);
+		if (!languageLoadedRef.current)
+                    await loadPrismLanguage(language);
                 if (!window.Prism || content.length <= 1) return;
-		console.debug('DiffLine received content:', {content, type, language});
 
-
-		 // If already has Prism tokens, use as-is
+		// If already has Prism tokens, use as-is
                 if (content.includes('<span class="token')) {
 		    if (contentRef.current) {
 			lastGoodRenderRef.current = content;
 			setHighlighted(content);
+			languageLoadedRef.current = true;
                         contentRef.current.innerHTML = content;
                     }
                     setIsLoading(false);
                     return;
                 }
 
-		// Handle whitespace-only lines before any processing
-		if (!content.trim()) {
-                const markers = content.replace(/[ \t]/g, '\u2591');
-		    const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
-                    const rendered =
-                        `<span class="token-line">` +
-                        `<span class="ws-marker ${wsClass}">${markers}</span>${content}` +
-                        `</span>`;
-		    if (contentRef.current && rendered !== lastGoodRenderRef.current) {
-                        lastGoodRenderRef.current = rendered;
-			setHighlighted(rendered);
+		// Handle whitespace-only lines before any other processing
+                if (!content.trim()) {
+                    const rendered = visualizeWhitespace(content);
+                    if (contentRef.current) {
                         contentRef.current.innerHTML = rendered;
+                        lastGoodRenderRef.current = rendered;
+                    }
+                    if (rendered !== highlighted) {
+                        setHighlighted(rendered);
                     }
                     return;
                 }
@@ -268,6 +251,11 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 const grammar = window.Prism.languages[language] || window.Prism.languages.plaintext;
                 let highlightedCode = window.Prism.highlight(codeToHighlight, grammar, language);
 
+		// Apply whitespace visualization after syntax highlighting
+                highlightedCode = visualizeWhitespace(highlightedCode);
+
+
+
                 if (highlightedCode.includes('<span class="token')) {
 		    if (contentRef.current) {
                         contentRef.current.innerHTML = highlightedCode;
@@ -285,7 +273,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 		const rendered = `${escapedCode}`;
 		if (contentRef.current && rendered !== lastGoodRenderRef.current) {
                     lastGoodRenderRef.current = rendered;
-		    setHighlighted(rendered);
+		    setHighlighted(visualizeWhitespace(rendered));
                     contentRef.current.innerHTML = rendered;
                 }
 
@@ -369,7 +357,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                                 const beforeWs = code.slice(0, index);
 
 				// First tokenize the code
-				const rendered = visualizeWhitespace(processCode(code), changeType);
+				const rendered = visualizeWhitespace(processCode(code));
                                 if (contentRef.current) {
                                     contentRef.current.innerHTML = rendered;
                                     lastGoodRenderRef.current = rendered;
@@ -378,7 +366,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                             }
 
                             // If no trailing whitespace, just highlight normally
-			    setHighlighted(visualizeWhitespace(processCode(code), changeType));
+			    setHighlighted(visualizeWhitespace(processCode(code)));
 
                             return;
                         }
@@ -402,7 +390,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         };
 
         highlightCode();
-        return () => {};
+	return () => { languageLoadedRef.current = false; };
     }, [content, language, type, oldLineNumber, newLineNumber]);
 
     // Define base styles that work for both light and dark modes
@@ -455,20 +443,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                      overflow: viewType === 'split' ? 'hidden' : 'auto',
                      ...(isLoading ? {...baseStyles, ...themeStyles} : {})
                  }}
-		 dangerouslySetInnerHTML={{
-                     __html: lastGoodRenderRef.current || (() => {
-                         const match = content.match(/\s+$/);
-                         if (match) {
-                             const trailingWs = match[0];
-                             const baseText = content.slice(0, -trailingWs.length);
-                             return `${baseText}<span class="ws-marker ${
-                                 type === 'insert' ? 'ws-add' : 'ws-delete'
-                             }">${'\u2591'.repeat(trailingWs.length)}</span>${trailingWs}`;
-                         }
- 
-                         // If no trailing whitespace, just return the content
-                         return content;
-                     })()
+		 dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content)
                  }}
              />
          </td>

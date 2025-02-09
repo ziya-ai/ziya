@@ -66,23 +66,6 @@ const handleStreamError = async (response: Response): Promise<never> => {
         default:
             errorMessage = 'An unexpected error occurred. Please try again.';
     }
-    message.error({
-            content: errorMessage,
-	    duration: 10,
-            key: `error-${response.status}`
-    });
-    if (response.status === 401) {
-        message.info({
-            content: errorMessage,
-            duration: 10,
-            key: 'auth-error'
-        });
-    } else {
-        message.error({
-            content: errorMessage,
-            duration: 10
-        });
-    }
     // Always throw error to stop the streaming process
     throw new Error(errorMessage);
 };
@@ -192,25 +175,21 @@ export const sendPayload = async (
                                 try {
                                     const outputData = JSON.parse(op.value.output);
 				    if (outputData && typeof outputData === 'object' && 'error' in outputData) {
-			                errorData = outputData;
-                                        break;
-                                    }
+					const response = new Response(JSON.stringify(outputData), {
+					    status: outputData.error === 'validation_error' ? 413 : 500
+					});
+					message.error({
+					    content: outputData.detail || 'An error occurred',
+					    duration: 10,
+					    key: 'stream-error'
+					});
+					errorOccurred = true;
+					removeStreamingConversation(conversationId);
+					break;
+				    }
                                 } catch (e) {} // Not JSON or not an error
-                            }
-                        }
-                    }
-		    if (errorData) {
-			console.log('Processing SSE Error Event');
-                        const response = new Response(JSON.stringify(errorData), {
-                            status: errorData.error === 'validation_error' ? 413 : 500
-                        });
-                        handleStreamError(response)
-                            .catch(error => {
-                                errorOccurred = true;
-                                removeStreamingConversation(conversationId);
-                                throw error;
-                            });
-                        return;
+			    }
+			}
                     }
 
                     // Process operations if present
