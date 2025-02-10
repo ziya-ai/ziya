@@ -353,7 +353,7 @@ async def apply_changes(request: ApplyChangesRequest):
         #corrected_diff = correct_git_diff(request.diff, file_path)
         #logger.info(f"corrected diff content: \n{corrected_diff}")
         use_git_to_apply_code_diff(request.diff)
-        return {'message': 'Changes applied successfully'}
+        return {'status': 'success', 'message': 'Changes applied successfully'}
     except Exception as e:
         error_msg = str(e)
         if isinstance(e, PatchApplicationError):
@@ -362,9 +362,42 @@ async def apply_changes(request: ApplyChangesRequest):
             logger.error(f"  Patch command error: {details.get('patch_error', 'N/A')}")
             logger.error(f"  Git apply error: {details.get('git_error', 'N/A')}")
             logger.error(f"  Analysis: {json.dumps(details.get('analysis', {}), indent=2)}")
-        logger.error(f"Error applying changes: {error_msg}")
-        raise HTTPException(status_code=500, detail=str(e))
 
+            status = details.get('status', 'error')
+            if status == 'success':
+                return JSONResponse(status_code=200, content={
+                    'status': 'success',
+                    'message': 'Changes applied successfully',
+                    'details': details
+                })
+            elif status == 'partial':
+                return JSONResponse(status_code=207, content={
+                    'status': 'partial',
+                    'message': str(e),
+                    'details': details
+                })
+            elif status == 'error':
+                error_type = details.get('type', 'unknown')
+                if error_type == 'no_hunks':
+                    status_code = 400  # Bad Request
+                elif error_type == 'invalid_count':
+                    status_code = 500  # Internal Server Error
+                else:
+                    status_code = 422  # Unprocessable Entity
+
+                raise HTTPException(status_code=status_code, detail={
+                    'status': 'error',
+                    'message': str(e),
+                    'details': details
+                })
+        logger.error(f"Error applying changes: {error_msg}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'status': 'error',
+                'message': f"Unexpected error: {str(e)}"
+            }
+        )
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

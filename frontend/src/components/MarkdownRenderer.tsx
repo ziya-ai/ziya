@@ -764,13 +764,65 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             });
             if (response.ok) {
                 setIsApplied(true);
-                message.success(`Changes applied to ${filePath}`);
-            } else {
-                message.error('Failed to apply changes');
+		const data = await response.json();
+                if (data.status === 'success') {
+                    message.success(`Changes applied successfully to ${filePath}`);
+                } else if (data.status === 'partial') {
+                    // Show partial success with details
+                    message.warning({
+                        content: (
+                            <div>
+                                <p>{data.message}</p>
+                                <p>{data.details?.summary}</p>
+                                {data.details?.hunks && (
+                                    <ul style={{ marginTop: '8px', paddingLeft: '20px' }}>
+                                        {data.details.hunks.filter(h => h.status === 'failed').map((hunk, i) => (
+                                            <li key={i}>Failed at line {hunk.start_line}: {hunk.reason}</li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        ),
+                        duration: 10  // Show for 10 seconds since there's more to read
+                    });
+                }
+            } else if (response.status === 207) {
+                // Handle partial success
+                const data = await response.json();
+                message.warning({
+                    content: (
+                        <div>
+                            <p>Some changes were applied successfully:</p>
+                            <p>{data.details?.summary}</p>
+                        </div>
+                    ),
+                    duration: 5
+                });
+                setIsApplied(true);  // Still mark as applied since some changes succeeded
+            }
+            else {
+		// Try to parse error response for more details
+                try {
+                    const errorData = await response.json();
+                    message.error({
+                        content: (
+                            <div>
+                                <p>{errorData.detail?.message || errorData.detail || 'Failed to apply changes'}</p>
+                                {errorData.detail?.summary && <p>{errorData.detail.summary}</p>}
+                            </div>
+                        ),
+                        duration: 5
+                    });
+                } catch (parseError) {
+                    message.error('Failed to apply changes');
+                }
             }
         } catch (error) {
             console.error('Error applying changes:', error);
-            message.error('Error applying changes');
+	    message.error({
+                content: 'Error applying changes: ' + (error instanceof Error ? error.message : String(error)),
+                duration: 5
+            });
         }
     };
     return enabled ? <Button onClick={handleApplyChanges} disabled={isApplied} icon={<CheckOutlined />}>Apply Changes (beta)</Button> : null;
