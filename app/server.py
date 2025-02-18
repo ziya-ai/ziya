@@ -350,9 +350,7 @@ async def apply_changes(request: ApplyChangesRequest):
             raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
 
         file_path = os.path.join(user_codebase_dir, request.filePath)
-        #corrected_diff = correct_git_diff(request.diff, file_path)
-        #logger.info(f"corrected diff content: \n{corrected_diff}")
-        use_git_to_apply_code_diff(request.diff)
+        use_git_to_apply_code_diff(request.diff, file_path)
         return {'status': 'success', 'message': 'Changes applied successfully'}
     except Exception as e:
         error_msg = str(e)

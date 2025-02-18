@@ -7,6 +7,9 @@ from typing import Dict, Optional, Union, List, Tuple, Any
 import whatthepatch
 import re
 from app.utils.logging_utils import logger
+import difflib
+
+MIN_CONFIDENCE = 0.80 # what confidence level we cut off forced diff apply after fuzzy match
 
 class PatchApplicationError(Exception):
     """Custom exception for patch application failures"""
@@ -15,12 +18,29 @@ class PatchApplicationError(Exception):
         self.details = details
 
 def clean_input_diff(diff_content: str) -> str:
-    """Initial cleanup of diff content before parsing."""
+    """
+    Initial cleanup of diff content before parsing, with strict hunk enforcement:
+      - Once we've read old_count '-' lines and new_count '+' lines, we end the hunk
+        and ignore extra '-'/'+' lines until the next hunk or file header.
+      - Skips lines referencing '++ b/tests/...' in a hunk.
+      - Preserves original logic for skipping content after triple backticks, decoding '\\n', etc.
+
+    This typically resolves leftover lines in:
+      - 'function_collision' (extra blank line at end)
+      - 'single_line_replace' (keeping the old line)
+
+    Because once we’ve consumed the declared minus/plus lines, further minus/plus lines
+    can't sneak into the final patch.
+    """
+
     logger.debug(diff_content)
+
+    result_lines = []
 
     # Remove any content after triple backticks
     if '```' in diff_content:
         diff_content = diff_content.split('```')[0]
+
     # Handle escaped newlines
     if '\\n' in diff_content:
         try:
@@ -30,7 +50,120 @@ def clean_input_diff(diff_content: str) -> str:
             diff_content = diff_content.encode().decode('unicode_escape')
         except Exception as e:
             logger.warning(f"Failed to decode escaped newlines: {e}")
-    return diff_content
+
+    # Split into lines for processing
+    lines = diff_content.splitlines()
+
+    # Track the current file and hunk state
+    current_file = None
+    in_hunk = False
+    skip_until_next_file = False
+
+    # For the strict hunk approach
+    old_count = 0
+    new_count = 0
+    minus_seen = 0
+    plus_seen = 0
+
+    def reset_hunk_state():
+        nonlocal in_hunk, old_count, new_count, minus_seen, plus_seen
+        in_hunk = False
+        old_count = 0
+        new_count = 0
+        minus_seen = 0
+        plus_seen = 0
+
+    import re
+
+    for line in lines:
+        # Reset skip flag on new file header
+        if line.startswith('diff --git'):
+            skip_until_next_file = False
+            current_file = None
+            reset_hunk_state()
+            result_lines.append(line)
+            continue
+
+        # Track file paths
+        if line.startswith('--- '):
+            parts = line.split(' ', 1)
+            if len(parts) > 1:
+                current_file = parts[1]
+            else:
+                current_file = None
+            result_lines.append(line)
+            continue
+
+        if line.startswith('+++ '):
+            result_lines.append(line)
+            continue
+
+        # Hunk header
+        if line.startswith('@@'):
+            # Close out any prior hunk
+            reset_hunk_state()
+            in_hunk = True
+            skip_until_next_file = False
+
+            result_lines.append(line)  # Keep the hunk header
+
+            # Parse the line to find old_count/new_count
+            match = re.match(r'^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@', line)
+            if match:
+                old_count = int(match.group(1)) if match.group(1) else 1
+                new_count = int(match.group(2)) if match.group(2) else 1
+
+            continue
+
+        # If we're in a hunk and see a line referencing '++ b/tests/...', skip
+        if in_hunk and line.startswith('++ b/tests/'):
+            skip_until_next_file = True
+            continue
+
+        if skip_until_next_file:
+            # We skip lines until next file/hunk
+            continue
+
+        # If we're inside a hunk, apply the strict approach
+        if in_hunk:
+            # Check if we've already read all minus and plus lines
+            done_minus = (minus_seen >= old_count)
+            done_plus = (plus_seen >= new_count)
+
+            if line.startswith('-'):
+                if not done_minus:
+                    minus_seen += 1
+                    result_lines.append(line)
+                else:
+                    # We have enough minus lines => ignore it
+                    logger.debug(f"[clean_input_diff] ignoring extra '-' line: {line.rstrip()}")
+                continue
+
+            if line.startswith('+'):
+                if not done_plus:
+                    plus_seen += 1
+                    result_lines.append(line)
+                else:
+                    # We have enough plus lines => ignore it
+                    logger.debug(f"[clean_input_diff] ignoring extra '+' line: {line.rstrip()}")
+                continue
+
+            if line.startswith(' '):
+                # context lines are always okay
+                result_lines.append(line)
+                continue
+
+            # If we get here and it's not -, +, or space => presumably hunk is done
+            reset_hunk_state()
+            result_lines.append(line)
+            continue
+
+        # If not in a hunk, just pass the line along
+        result_lines.append(line)
+
+    # End of loop
+    return '\n'.join(result_lines)
+
 
 def normalize_diff(diff_content: str) -> str:
     """
@@ -67,22 +200,29 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
     if not diff_lines:
         return False
 
-    logger.debug("Analyzing diff lines for new file creation:")
-    for i, line in enumerate(diff_lines[:5]):
-        logger.debug(f"Line {i}: {line}")
+    logger.debug(f"Analyzing diff lines for new file creation ({len(diff_lines)} lines):")
+    for i, line in enumerate(diff_lines[:10]):
+        logger.debug(f"Line {i}: {line[:100]}")  # Log first 100 chars of each line
 
-    patterns = {
-        'git_new': diff_lines[0].startswith('diff --git') and 'b/dev/null' not in diff_lines[0],
-        'new_mode': any(line == 'new file mode 100644' for line in diff_lines[:3]),
-        'null_source': any(line == '--- /dev/null' for line in diff_lines[:4]),
-        'new_target': any(line.startswith('+++ b/') for line in diff_lines[:4]),
-        'zero_hunk': any('@@ -0,0 +1,' in line for line in diff_lines),
-        'dev_null_source': any('diff --git a/dev/null b/' in line for line in diff_lines[:1])
-    }
+    # Look for any indication this is a new file
+    for i, line in enumerate(diff_lines[:10]):
+        # Case 1: Standard git diff new file
+        if line.startswith('@@ -0,0'):
+            logger.debug("Detected new file from zero hunk marker")
+            return True
+            
+        # Case 2: Empty source file indicator
+        if line == '--- /dev/null':
+            logger.debug("Detected new file from /dev/null source")
+            return True
+            
+        # Case 3: New file mode
+        if 'new file mode' in line:
+            logger.debug("Detected new file from mode marker")
+            return True
 
-    logger.debug(f"New file patterns detected: {patterns}")
-    return patterns['dev_null_source'] or (patterns['new_mode'] and patterns['null_source'])
-
+    logger.debug("No new file indicators found")
+    return False
 def create_new_file(git_diff: str, base_dir: str) -> None:
     """Create a new file from a git diff."""
     logger.info(f"Processing new file diff with length: {len(git_diff)} bytes")
@@ -91,8 +231,13 @@ def create_new_file(git_diff: str, base_dir: str) -> None:
         # Parse the diff content
         diff_lines = git_diff.splitlines()
 
+        # Find the file path line
+        file_path = None
+        for line in diff_lines:
+            if line.startswith('diff --git'):
+                file_path = line.split(' b/')[-1]
+                break
         # Extract the file path from the diff --git line
-        file_path = diff_lines[0].split(' b/')[-1]
         full_path = os.path.join(base_dir, file_path)
 
         # Create directory if it doesn't exist
@@ -100,11 +245,13 @@ def create_new_file(git_diff: str, base_dir: str) -> None:
 
         # Extract the content (everything after the @@ line)
         content_lines = []
-        for i, line in enumerate(diff_lines):
-            if line.startswith('@@'):
-                content_lines = [l[1:] for l in diff_lines[i+1:] if l.startswith('+')]
-                break
 
+        in_content = False
+        for line in diff_lines:
+            if in_content and line.startswith('+'):
+                content_lines.append(line[1:])
+            elif line.startswith('@@'):
+                in_content = True
         # Write the content
         content = '\n'.join(content_lines)
         with open(full_path, 'w', encoding='utf-8') as f:
@@ -113,7 +260,7 @@ def create_new_file(git_diff: str, base_dir: str) -> None:
                 f.write('\n')
         logger.info(f"Successfully created new file: {file_path}")
     except Exception as e:
-        logger.error(f"Error creating new file: {str(e)}")
+        logger.error(f"Error creating new file: {str(e)}, diff content: {git_diff[:200]}")
         raise
 
 def inspect_line_content(file_path: str, line_number: int, context: int = 5) -> Dict[str, Any]:
@@ -279,10 +426,9 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
     
     try:
 
-        # Debug: Log the diff at various stages
-        logger.info("Original diff:")
-        logger.info(git_diff)
-        
+        # Clean up the diff content first
+        cleaned_diff = clean_input_diff(git_diff)
+
         # Extract headers from original diff
         diff_lines = git_diff.splitlines()
         headers = []
@@ -293,7 +439,7 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
                 break
 
         # Check for new file creation
-        if is_new_file_creation(cleaned_diff.splitlines()):
+        if is_new_file_creation(diff_lines):
             logger.info(f"Detected new file creation for {original_file_path}")
             return cleaned_diff
 
@@ -344,7 +490,6 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
                 result.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@")
                 result.extend(hunk[1:])
             normalized_diff = '\n'.join(result) + '\n'
-            logger.debug(f"Normalized diff:\n{normalized_diff}")
             logger.info(f"Successfully normalized diff")
             return normalized_diff
 
@@ -370,13 +515,20 @@ def apply_system_patch(diff_content: str, target_dir: str) -> bool:
         if isinstance(diff_content, bytes):
             diff_content = diff_content.decode('utf-8')
         result = subprocess.run(
-            ['patch', '-p1', '--forward', '--ignore-whitespace'],
+            ['patch', '-p1', '--forward', '--ignore-whitespace', '--verbose'],
             input=diff_content,
             cwd=target_dir,
             capture_output=True,
             text=True,
             timeout=10
         )
+
+        logger.debug(f"Patch command output: stdout={result.stdout}, stderr={result.stderr}")
+
+        # If any hunks were successfully applied, we need to modify the diff
+        if result and 'Hunk #1 succeeded' in result.stderr:
+            logger.debug("Some hunks succeeded, extracting remaining hunks")
+            git_diff = extract_remaining_hunks(git_diff, patch_result.stderr)
         logger.info(f"Patch stdout: {result.stdout}")
         logger.info(f"Patch stderr: {result.stderr}")
         success = result.returncode == 0
@@ -489,308 +641,11 @@ def prepare_unified_diff(diff_content: str) -> str:
 
     return '\n'.join(result)
 
-def apply_diff_with_difflib(file_path: str, diff_content: str) -> None:
+
+def remove_reject_file_if_exists(file_path: str):
     """
-    Apply changes using difflib when patch command fails.
-    Uses fuzzy matching for line positions while maintaining structural integrity.
-
-    Args:
-        file_path: Path to the file to modify
-        diff_content: Git diff content to apply
+    Remove .rej file if it exists, to clean up after partial patch attempts.
     """
-    import difflib
-    import re
-    from typing import List, Dict, Any, Tuple
-
-    class DiffMatchConfig:
-        """Configuration for controlling how aggressively to match diffs"""
-        MIN_CONFIDENCE = 0.65  # Minimum ratio to accept a match
-        MAX_LINE_DISTANCE = 10  # Maximum lines to search away from expected position
-        REQUIRE_EXACT_INDENT = False  # Require matching indentation
-        ALLOW_PARTIAL_CONTEXT = False  # Allow matching with incomplete context
-        MIN_CONTEXT_LINES = 2  # Minimum number of context lines required
-        MAX_REWRITE_SIZE = 80  # Maximum number of lines that can be rewritten in one hunk
-
-    def find_best_match(needle: List[str], haystack: List[str],
-                       start_pos: int,
-                       context_lines: int = 3,
-                       expected_indent: Optional[int] = None,
-                       hunk_size: int = 0) -> int:
-        """
-        Find the best matching position for a chunk of code using fuzzy matching.
-        Returns the best matching line number (0-based).
-        """
-        if not needle or not haystack:
-            return start_pos
-
-        if hunk_size > DiffMatchConfig.MAX_REWRITE_SIZE:
-            raise ValueError(f"Hunk size {hunk_size} exceeds maximum allowed size {DiffMatchConfig.MAX_REWRITE_SIZE}")
-
-        if len(needle) < DiffMatchConfig.MIN_CONTEXT_LINES and not DiffMatchConfig.ALLOW_PARTIAL_CONTEXT:
-            raise ValueError(f"Insufficient context lines ({len(needle)} < {DiffMatchConfig.MIN_CONTEXT_LINES})")
-
-        # Create a matcher object
-        matcher = difflib.SequenceMatcher(None)
-        best_ratio = 0
-        best_pos = start_pos
-
-        # Limit search range to configured distance
-        search_start = max(0, start_pos - DiffMatchConfig.MAX_LINE_DISTANCE)
-        search_end = min(len(haystack), start_pos + DiffMatchConfig.MAX_LINE_DISTANCE)
-
-        # Convert needle to string for matching
-        needle_str = '\n'.join(needle)
-
-        def check_indentation(window_lines: List[str]) -> bool:
-            if not DiffMatchConfig.REQUIRE_EXACT_INDENT or expected_indent is None:
-                return True
-            try:
-                window_indent = len(window_lines[0]) - len(window_lines[0].lstrip())
-                return window_indent == expected_indent
-            except (IndexError, AttributeError):
-                return False
-
-        if len(needle) < DiffMatchConfig.MIN_CONTEXT_LINES and not DiffMatchConfig.ALLOW_PARTIAL_CONTEXT:
-            raise ValueError(f"Insufficient context lines: {len(needle)} < {DiffMatchConfig.MIN_CONTEXT_LINES}")
-
-        # Look for best match within reasonable range
-        for i in range(search_start, search_end):
-            # Get a window of lines the same size as needle
-            window = haystack[i:i + len(needle)]
-            window_str = '\n'.join(window)
-
-            matcher.set_seqs(needle_str, window_str)
-            if not check_indentation(window):
-                continue
-
-            ratio = matcher.ratio()
-
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_pos = i
-
-            # If we find an excellent match, stop searching
-            if ratio > 0.95:
-                break
-        # If our best match isn't confident enough, raise an error
-        if best_ratio < DiffMatchConfig.MIN_CONFIDENCE:
-            logger.warning(f"Low confidence match for hunk (ratio: {best_ratio:.2f})")
-            return -1
-
-        return best_pos
-
-    # Parse the diff to extract changes
-    diff_lines = diff_content.splitlines()
-    hunks = []  # List to store all hunks
-    current_hunk: Dict[str, Any] = {}
-    current_lines: List[str] = []
-    in_hunk = False
-
-    def save_current_hunk() -> None:
-        if current_hunk and (current_hunk.get('old') or current_hunk.get('new')):
-            # Include some context lines in the hunk
-            # Clean up any duplicate context lines
-            if current_hunk.get('context_before') and current_hunk.get('old'):
-                while (current_hunk['context_before'] and current_hunk['old'] and 
-                       current_hunk['context_before'][-1] == current_hunk['old'][0]):
-                    current_hunk['old'].pop(0)
-                    current_hunk['new'].pop(0)
-            
-            hunks.append({
-                'start_line': current_hunk['start_line'],
-                'old_lines': current_hunk['old'],
-                'old_lines': current_hunk['old'],
-                'new_lines': current_hunk['new'],
-                'context_before': current_hunk.get('context_before', []),
-                'context_after': current_hunk.get('context_after', [])
-            })
-
-    context_lines: List[str] = []
-    for line in diff_lines:
-        if line.startswith('@@'):
-            if in_hunk:
-                save_current_hunk()
-
-            # Parse hunk header
-            match = re.match(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
-            if not match:
-                logger.warning(f"Invalid hunk header: {line}")
-                continue
-            # Start new hunk
-            in_hunk = True
-            current_hunk = {
-                'start_line': int(match.group(1)),
-                'old': [],
-                'new': [],
-                'context_before': [line.rstrip('\n') for line in context_lines[-3:]] 
-                                if context_lines else [],
-                'context_after': []
-            }
-            context_lines = []
-
-        # Handle hunk content
-        elif in_hunk:
-            if line.startswith(' '):  # Context line
-                current_hunk['old'].append(line[1:].rstrip('\n'))
-                current_hunk['new'].append(line[1:].rstrip('\n'))
-                context_lines.append(line[1:])
-            elif line.startswith('-'):  # Removal
-                current_hunk['old'].append(line[1:].rstrip('\n'))
-            elif line.startswith('+'):  # Addition
-                current_hunk['new'].append(line[1:])
-            elif not line.strip():  # Empty line within hunk
-                current_hunk['old'].append('')
-                current_hunk['new'].append('')
-                context_lines.append('')
-            else:  # End of hunk
-                in_hunk = False
-                current_hunk['context_after'] = context_lines[:3]
-                save_current_hunk()
-                current_hunk = {}
-        else:
-            # Keep track of context lines between hunks
-            if line.startswith(' '):
-                context_lines.append(line[1:].rstrip('\n'))
-
-    # Save the last hunk if we have one
-    if in_hunk:
-        current_hunk['context_after'] = context_lines[:3]
-        save_current_hunk()
-
-    # Read the current file
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            current_lines = f.readlines()
-    except FileNotFoundError:
-        current_lines = []
-
-    # Strip line endings for comparison but keep original lines
-    stripped_lines = [line.rstrip('\n') for line in current_lines]
-
-    # Apply hunks in order
-    result_lines = current_lines[:]
-    last_end = 0
-    hunk_results = []
-    for hunk in hunks:
-        # Find the best matching position for this hunk
-        context_to_match = (hunk['context_before'] +
-                          hunk['old_lines'][:2] +
-                          hunk['old_lines'][-2:] +
-                          hunk['context_after'])
-
-        suggested_start = max(last_end, hunk['start_line'] - 1)
-        
-        # Calculate expected indentation from the original lines
-        expected_indent = None
-        if hunk['old_lines']:
-            expected_indent = len(hunk['old_lines'][0]) - len(hunk['old_lines'][0].lstrip())
-
-        try:
-            match_pos = find_best_match(
-                context_to_match,
-                stripped_lines,
-                suggested_start,
-                expected_indent=expected_indent,
-                hunk_size=len(hunk['new_lines'])
-            )
-
-
-            if match_pos == -1:
-                hunk_results.append({
-                    'status': 'failed',
-                    'reason': 'low_confidence',
-                    'start_line': hunk['start_line']
-                })
-                continue
-
-            actual_start = match_pos
-
-            # Verify that we're not overlapping with previous changes
-            if actual_start < last_end:
-                actual_start = last_end
-            
-            # Calculate the exact range to replace
-            old_lines_count = len(hunk['old_lines'])
-            new_lines = hunk['new_lines']
-
-            # Apply the changes
-            new_lines_with_endings = [
-                line if line.endswith('\n') else line + '\n'
-                for line in new_lines
-            ]
-
-            # Update the file content
-            # Only replace the exact number of lines we're changing
-            if old_lines_count > 0:
-                result_lines[actual_start:actual_start + old_lines_count] = new_lines_with_endings
-            else:
-                # For pure additions, insert at the position
-                result_lines[actual_start:actual_start] = new_lines_with_endings
-            last_end = actual_start + len(new_lines_with_endings)
-
-            hunk_results.append({
-                'status': 'success',
-                'line': actual_start + 1
-            })
-
-        except ValueError as e:
-            hunk_results.append({
-                'status': 'failed',
-                'reason': 'error',
-                'error': str(e),
-                'start_line': hunk['start_line']
-            })
-            continue
-
-    # Write the changes back to the file
-    success_count = sum(1 for result in hunk_results if result['status'] == 'success')
-    total_hunks = len(hunk_results)
-
-    try:
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.writelines(result_lines)
-
-        status_message = (
-            f"Applied {success_count}/{total_hunks} hunks successfully. "
-            f"Details: {json.dumps(hunk_results, indent=2)}"
-        )
-        if total_hunks == 0:
-            raise PatchApplicationError("No hunks to apply", {
-                'status': 'error',
-                'type': 'no_hunks',
-                'summary': "No hunks found in diff"
-            })
-        elif success_count == 0:
-            raise PatchApplicationError("Failed to apply any hunks", {
-                'status': 'error',
-                'type': 'complete_failure',
-                'hunks': hunk_results,
-                'summary': f"0/{total_hunks} hunks applied"
-            })
-            logger.warning(f"Partial success: {status_message}")
-            raise PatchApplicationError("Partial success applying changes", {
-                'status': 'partial',
-                'type': 'partial_success',
-                'hunks': hunk_results,
-                'summary': f"{success_count}/{total_hunks} hunks applied"
-            })
-        elif success_count == total_hunks:
-            logger.info(f"Complete success: {status_message}")
-            return {'status': 'success', 'hunks': hunk_results, 'summary': f"{success_count}/{total_hunks} hunks applied"}
-        else:
-            # This shouldn't happen, but let's catch it just in case
-            raise PatchApplicationError("Invalid hunk count", {
-                'status': 'error',
-                'type': 'invalid_count',
-                'hunks': hunk_results,
-                'summary': f"Success count {success_count} exceeds total hunks {total_hunks}"
-            })
-
-    except Exception as e:
-        logger.error(f"Error writing changes to {file_path}: {str(e)}")
-        raise
-
-    # Clean up any .rej files
     rej_file = file_path + '.rej'
     if os.path.exists(rej_file):
         try:
@@ -799,7 +654,372 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> None:
         except OSError as e:
             logger.warning(f"Could not remove reject file {rej_file}: {e}")
 
-def use_git_to_apply_code_diff(git_diff: str) -> None:
+class PatchApplicationError(Exception):
+    pass
+
+def apply_diff_with_difflib(file_path: str, diff_content: str) -> None:
+    """
+    Forced-hybrid approach that also throws PatchApplicationError if we cannot
+    match a chunk with at least minimal confidence or if the minus lines do not match
+    in strict mode. No silent fails.
+
+    1) Read 'file_path' lines.
+    2) parse hunks with parse_unified_diff_exact_plus(diff_content, file_path)
+    3) For each hunk, do Phase A or Phase B, forcibly remove old_count lines.
+    4) If we can't match, raise PatchApplicationError.
+    5) Write result back to 'file_path'.
+    """
+
+    # 1) read the original lines
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            original_lines = f.readlines()
+    except FileNotFoundError:
+        original_lines = []
+
+    # 2) apply forced-hybrid logic with error throwing
+    final_lines = apply_diff_with_difflib_hybrid_forced(file_path, diff_content, original_lines)
+
+    # 3) write result
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.writelines(final_lines)
+
+    logger.info(f"Successfully applied forced-hybrid diff (with exceptions on mismatch) to {file_path}.")
+
+
+def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, original_lines: list[str]) -> list[str]:
+    # parse hunks
+    hunks = parse_unified_diff_exact_plus(diff_content, file_path)
+    stripped_original = [ln.rstrip('\n') for ln in original_lines]
+
+
+    offset = 0
+    for hunk_idx, h in enumerate(hunks, start=1):
+        old_start = h['old_start']
+        old_count = h['old_count']
+        new_lines = h['new_lines']
+        old_block = h['old_block']
+
+        logger.debug(f"\n--- Hunk #{hunk_idx} => -{old_start},{old_count} +{h['new_start']},{h['new_count']}, new_lines={len(new_lines)}")
+
+        # Phase A: strict check
+        remove_pos = (old_start - 1) + offset
+        remove_pos = clamp(remove_pos, 0, len(stripped_original))
+        strict_ok = False
+
+        # see if we have enough lines
+        if remove_pos + old_count <= len(stripped_original):
+            file_slice = stripped_original[remove_pos : remove_pos + old_count]
+            # Compare to the first old_count lines from old_block
+            if len(old_block) >= old_count:
+                old_block_minus = old_block[:old_count]  # The lines we think are removed
+                if file_slice == old_block_minus:
+                    strict_ok = True
+                    logger.debug(f"Hunk #{hunk_idx}: strict match at pos={remove_pos}")
+                else:
+                    logger.debug(f"Hunk #{hunk_idx}: strict match failed at pos={remove_pos}")
+            else:
+                logger.debug(f"Hunk #{hunk_idx}: old_block is smaller than old_count => strict match not possible")
+
+        if not strict_ok:
+            # Phase B: fuzzy
+            logger.debug(f"Hunk #{hunk_idx}: Attempting fuzzy near line {remove_pos}")
+            best_pos, best_ratio = find_best_chunk_position(stripped_original, old_block, remove_pos)
+            if best_ratio < MIN_CONFIDENCE:
+                # Raise error if ratio is too low
+                msg = (f"Hunk #{hunk_idx} => low confidence match (ratio={best_ratio:.2f}) near {remove_pos}, "
+                       f"can't safely apply chunk. Failing.")
+                logger.error(msg)
+                raise PatchApplicationError(msg)
+            logger.debug(f"Hunk #{hunk_idx}: fuzzy best pos={best_pos}, ratio={best_ratio:.2f}")
+            remove_pos = best_pos
+
+        # forcibly remove old_count lines at remove_pos
+        remove_pos = clamp(remove_pos, 0, len(stripped_original))
+        end_remove = remove_pos + old_count
+        if end_remove > len(stripped_original):
+            # Means we can't remove old_count lines => partial mismatch => raise
+            msg = (f"Hunk #{hunk_idx} => not enough lines to remove. "
+                   f"Wanted to remove {old_count} at pos={remove_pos}, but file len={len(stripped_original)}. Failing.")
+            logger.error(msg)
+            raise PatchApplicationError(msg)
+
+        logger.debug(f"Hunk #{hunk_idx}: Removing lines {remove_pos}:{end_remove} from file")
+        for i in range(remove_pos, end_remove):
+            logger.debug(f"  - {stripped_original[i]!r}")
+        del stripped_original[remove_pos : end_remove]
+
+        # Insert new_lines
+        logger.debug(f"Hunk #{hunk_idx}: Inserting {len(new_lines)} lines at pos={remove_pos}")
+        for i, ln in enumerate(new_lines):
+            logger.debug(f"  + {ln!r}")
+            stripped_original.insert(remove_pos + i, ln)
+
+        net_change = len(new_lines) - old_count
+        offset += net_change
+
+    # done all hunks
+    final_lines = [ln + '\n' for ln in stripped_original]
+    return final_lines
+
+def strip_leading_dotslash(rel_path: str) -> str:
+    """
+    Remove leading '../' or './' segments from the relative path
+    so it matches patch lines that are always 'frontend/...', not '../frontend/...'.
+    """
+    import re
+    # Repeatedly strip leading '../' or './'
+    pattern = re.compile(r'^\.\.?/')
+    while pattern.match(rel_path):
+        rel_path = rel_path[rel_path.index('/')+1:]
+    return rel_path
+
+def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[dict]:
+    """
+    Same logic: we gather old_block and new_lines. If we can't parse anything, we return an empty list.
+    The calling code might handle that or raise an error if no hunks are found.
+    """
+    import re
+    lines = diff_content.splitlines()
+    hunks = []
+    current_hunk = None
+    in_hunk = False
+    skip_file = True
+
+    # fixme: import ziya project directory if specified on invocation cli
+    rel_path = os.path.relpath(target_file, os.getcwd())
+    rel_path = strip_leading_dotslash(rel_path)
+
+    def close_hunk():
+        nonlocal current_hunk, in_hunk
+        if current_hunk:
+            hunks.append(current_hunk)
+        current_hunk = None
+        in_hunk = False
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        logger.debug(f"parse_unified_diff_exact_plus => line[{i}]: {line!r}")
+
+        if line.startswith('diff --git'):
+            if f' b/{rel_path}' in line:
+                skip_file = False
+            else:
+                skip_file = True
+            close_hunk()
+            i += 1
+            continue
+
+        if skip_file:
+            i += 1
+            continue
+
+        if line.startswith(('--- ', '+++ ')):
+            i += 1
+            continue
+
+        if line.startswith('@@ '):
+            close_hunk()
+            match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
+            if match:
+                old_start = int(match.group(1))
+                old_count = int(match.group(2)) if match.group(2) else 1
+                new_start = int(match.group(3))
+                new_count = int(match.group(4)) if match.group(4) else 1
+                current_hunk = {
+                    'old_start': old_start,
+                    'old_count': old_count,
+                    'new_start': new_start,
+                    'new_count': new_count,
+                    'old_block': [],
+                    'new_lines': []
+                }
+                in_hunk = True
+            i += 1
+            continue
+
+        if in_hunk and current_hunk:
+            if line.startswith('-'):
+                text = line[1:].rstrip('\n')
+                current_hunk['old_block'].append(text)
+            elif line.startswith('+'):
+                text = line[1:].rstrip('\n')
+                current_hunk['new_lines'].append(text)
+            else:
+                # context => belongs to both old_block & new_lines
+                text = line[1:].rstrip('\n') if line.startswith(' ') else line.rstrip('\n')
+                current_hunk['old_block'].append(text)
+                current_hunk['new_lines'].append(text)
+        i += 1
+
+    close_hunk()
+    logger.debug(f"parse_unified_diff_exact_plus => found {len(hunks)} hunks for file {rel_path}")
+    return hunks
+
+
+def find_best_chunk_position(file_lines: list[str], old_block: list[str], approximate_line: int) -> tuple[int, float]:
+    """
+    Return (best_pos, best_ratio). If best_ratio < MIN_CONFIDENCE, we raise or handle outside.
+    """
+    block_str = '\n'.join(old_block)
+    file_len = len(file_lines)
+    block_len = len(old_block)
+
+    # search +/- 20 lines
+    search_start = max(0, approximate_line - 20)
+    search_end   = min(file_len - block_len + 1, approximate_line + 20)
+    if search_end < search_start:
+        search_start = 0
+        search_end = max(0, file_len - block_len + 1)
+
+    best_pos = approximate_line
+    best_ratio = 0.0
+    import difflib
+    matcher = difflib.SequenceMatcher(None)
+
+    for pos in range(search_start, search_end + 1):
+        window = file_lines[pos:pos+block_len]
+        window_str = '\n'.join(window)
+        matcher.set_seqs(block_str, window_str)
+        ratio = matcher.ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_pos = pos
+        if best_ratio > 0.98:
+            break
+
+    logger.debug(f"find_best_chunk_position => best ratio={best_ratio:.2f} at pos={best_pos}, approximate_line={approximate_line}")
+    return best_pos, best_ratio
+
+
+def clamp(value: int, low: int, high: int) -> int:
+    """Simple clamp utility to ensure we stay in range."""
+    return max(low, min(high, value))
+
+class HunkData:
+    """
+    Stores data for a single hunk in the unified diff: header, start_line, old_lines, new_lines, etc.
+    Also includes optional context fields if needed (context_before, context_after).
+    """
+    def __init__(self, header='', start_line=1, old_lines=None, new_lines=None,
+                 context_before=None, context_after=None):
+        self.header = header
+        self.start_line = start_line
+        self.old_lines = old_lines or []
+        self.new_lines = new_lines or []
+        self.context_before = context_before or []
+        self.context_after = context_after or []
+
+    def __repr__(self):
+        return (f"<HunkData start_line={self.start_line} "
+                f"old={len(self.old_lines)} new={len(self.new_lines)}>")
+
+
+##########################################################
+# 2) FIND SECTION BOUNDS
+##########################################################
+
+def parse_unified_diff(diff_content: str) -> List[HunkData]:
+    # ...
+    # Return a list of HunkData. Or use your existing parser logic:
+    lines = diff_content.splitlines()
+    hunks: List[HunkData] = []
+    in_hunk = False
+    current_hunk = None
+
+    for line in lines:
+        if line.startswith(('diff --git', 'index ', 'new file mode', '--- ', '+++ ')):
+            continue
+        if line.startswith('@@'):
+            # close old hunk if any
+            if in_hunk and current_hunk:
+                hunks.append(current_hunk)
+            current_hunk = HunkData(header=line, start_line=1)
+            match = re.match(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+            if match:
+                current_hunk.start_line = int(match.group(1))
+            else:
+                logger.warning(f"Invalid hunk header: {line}")
+            in_hunk = True
+            continue
+
+        if in_hunk and current_hunk:
+            if line.startswith('+'):
+                current_hunk.new_lines.append(line[1:])
+            elif line.startswith('-'):
+                current_hunk.old_lines.append(line[1:])
+            else:
+                # Context line
+                content = line[1:] if line.startswith(' ') else line
+                current_hunk.old_lines.append(content)
+                current_hunk.new_lines.append(content)
+        else:
+            # Lines outside hunks
+            pass
+
+    if in_hunk and current_hunk:
+        hunks.append(current_hunk)
+
+    return hunks
+
+class PatchApplicationError(Exception):
+    def __init__(self, msg, details=None):
+        super().__init__(msg)
+        self.details = details or {}
+
+
+
+def find_section_bounds(
+    pos: int,
+    lines: List[str],
+    is_header: bool = False,
+    hunk_header: str = ''
+) -> Tuple[int, int, Optional[str]]:
+    """
+    This reproduces the logic in your snippet for scanning backward or forward
+    to find function definitions, used to identify the nearest “section” or function.
+    """
+    logger.debug(f"[find_section_bounds] pos={pos}, total lines={len(lines)}")
+
+    if not lines:
+        logger.debug("Empty file, return trivial bounds.")
+        return 0, 0, None
+
+    # Basic fallback if we can’t find anything
+    if pos >= len(lines):
+        pos = len(lines) - 1
+
+    # For demonstration, we search backward for “def ”
+    start = pos
+    while start >= 0 and not lines[start].lstrip().startswith('def '):
+        start -= 1
+    if start < 0:
+        # No function found, fallback
+        return 0, len(lines), None
+
+    # That’s presumably the start of the function
+    section_name = extract_function_name(lines[start])
+    end = start + 1
+    while end < len(lines) and not lines[end].lstrip().startswith('def '):
+        end += 1
+
+    logger.debug(f"[find_section_bounds] Found function {section_name}, range={start}-{end}")
+    return start, end, section_name
+
+
+def extract_function_name(line: str) -> str:
+    """
+    Helper to parse 'def something(...)' from a line and return 'something'.
+    """
+    line = line.strip()
+    if not line.startswith('def '):
+        return ''
+    # e.g., def foo(bar):
+    after_def = line[4:].split('(')[0]
+    return after_def.strip()
+
+def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
     """
     Apply a git diff to the user's codebase.
     Main entry point for patch application.
@@ -807,6 +1027,10 @@ def use_git_to_apply_code_diff(git_diff: str) -> None:
     logger.info("Starting diff application process...")
     logger.debug("Original diff content:")
     logger.debug(git_diff)
+
+    # Correct the diff using existing functionality
+    if file_path:
+        git_diff = correct_git_diff(git_diff, file_path)
 
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
     if not user_codebase_dir:
@@ -823,7 +1047,10 @@ def use_git_to_apply_code_diff(git_diff: str) -> None:
             file_path = os.path.join(user_codebase_dir, path)
             break
 
-    if not file_path:
+    # Correct the diff using existing functionality
+    if file_path:
+        git_diff = correct_git_diff(git_diff, file_path)
+    else:
         raise ValueError("Could not determine target file path")
 
     # Handle new file creation
@@ -833,18 +1060,26 @@ def use_git_to_apply_code_diff(git_diff: str) -> None:
 
     try:
         # Try system patch first
+        logger.debug("About to run patch command with:")
+        logger.debug(f"CWD: {user_codebase_dir}")
+        logger.debug(f"Input length: {len(git_diff)} bytes")
         patch_result = subprocess.run(
-            ['patch', '-p1', '--forward', '--ignore-whitespace'],
+            ['patch', '-p1', '--forward', '--ignore-whitespace', '-i', '-'],
             input=git_diff,
             cwd=user_codebase_dir,
             capture_output=True,
             text=True,
             timeout=10
         )
+        logger.debug("Patch command completed with:")
+        logger.debug(f"stdout: {patch_result.stdout}")
+        logger.debug(f"stderr: {patch_result.stderr}")
 
         if patch_result.returncode == 0:
             logger.info("System patch succeeded")
             return
+        elif patch_result.returncode == 2:  # Patch failed but gave output
+            logger.warning("System patch failed but provided output")
 
         # If patch fails, try git apply
         logger.warning("System patch failed, trying git apply...")
@@ -868,6 +1103,9 @@ def use_git_to_apply_code_diff(git_diff: str) -> None:
                 logger.info("Git apply succeeded")
                 return
 
+            if 'patch does not apply' not in git_result.stderr:
+                git_diff = extract_remaining_hunks(git_diff, git_result.stderr)
+
             # If both patch and git apply fail, try difflib
             logger.warning("Git apply failed, trying difflib...")
             try:
@@ -886,7 +1124,33 @@ def use_git_to_apply_code_diff(git_diff: str) -> None:
         finally:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
-
     except Exception as e:
         logger.error(f"Error applying patch: {str(e)}")
         raise
+
+def extract_remaining_hunks(git_diff: str, patch_output: str) -> str:
+    """Extract hunks that weren't successfully applied."""
+    logger.debug("Extracting remaining hunks from diff")
+    
+    # Parse the original diff into hunks
+    lines = git_diff.splitlines()
+    hunks = []
+    current_hunk = []
+    
+    for line in lines:
+        if line.startswith('@@'):
+            if current_hunk:
+                hunks.append(current_hunk)
+            current_hunk = [line]
+        elif current_hunk is not None:
+            current_hunk.append(line)
+            
+    if current_hunk:
+        hunks.append(current_hunk)
+        
+    # Filter out successfully applied hunks
+    remaining_hunks = [hunk for i, hunk in enumerate(hunks, 1)
+                      if f'Hunk #{i} succeeded' not in patch_output]
+    
+    return '\n'.join(sum(remaining_hunks, []))
+

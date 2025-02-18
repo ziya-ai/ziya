@@ -1192,26 +1192,105 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
             }
         }
 
-        // Handle direct D3.js visualizations
-        if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
-            try {
-                // Parse the D3 specification
-                const spec = JSON.parse(token.text);
-                return (
-                    <div key={index} className="d3-visualization-container" style={{
-                        margin: '1em 0',
-                        padding: '1em',
-                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f8f9fa',
-                        borderRadius: '6px',
-                        overflow: 'auto'
-                    }}>
-                        <D3Renderer spec={token.text} />
-                    </div>
-                );
-            } catch (error) {
-                return <pre key={index}><code>Error parsing D3 specification: {error instanceof Error ? error.message : String(error)}</code></pre>;
-            }
+	// Handle direct D3.js visualizations
+if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
+    try {
+	let renderFunction: Function | undefined;
+        // First, normalize line endings and clean up whitespace
+        let cleanSpec = token.text.replace(/\r\n/g, '\n')
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => {
+                // Keep lines that aren't just comments
+                return !line.trim().startsWith('//') && line.trim() !== '';
+            })
+            .join('\n')
+            .replace(/\/\*[\s\S]*?\*\//g, ''); // Remove multi-line comments
+
+        // Add render function if it's missing
+        if (!cleanSpec.includes('"render"') && !cleanSpec.includes('render:')) {
+            const baseSpec = JSON.parse(cleanSpec);
+            baseSpec.renderer = 'd3';
+            baseSpec.render = function(container, d3) {
+                console.error('Default render function called - you need to provide a render implementation');
+            };
+            cleanSpec = JSON.stringify(baseSpec, null, 2);
         }
+
+        console.debug('Cleaned spec:', cleanSpec);
+
+        let rawSpec;
+        try {
+            console.debug('Original spec text:', cleanSpec.slice(0, 100) + '...');
+
+            // Use Function constructor to safely evaluate D3 spec
+            const evalFunction = new Function(`
+                try {
+		    const spec = (function() { return ${cleanSpec}; })();
+                    console.debug('Initial eval:', {
+                        hasRender: typeof spec.render === 'function',
+                        keys: Object.keys(spec)
+                    });
+                    if (typeof spec.render === 'function') {
+		        renderFunction = spec.render;
+                        const boundRender = function(container, d3) {
+                            const context = {
+                                ...this,
+                                ...spec,
+                                groups: spec.groups || [],
+                                nodes: spec.nodes || [],
+                                links: spec.links || [],
+				styles: spec.styles || {}
+                            };
+                            console.debug('Render context:', context);
+                            return renderFunction.call(context, container, d3);
+                        };
+			spec.render = boundRender;
+                    }
+                    return spec;
+                } catch (err) {
+                    console.error('Error in spec evaluation:', err);
+                    throw err;
+                }
+            `);
+
+            rawSpec = evalFunction();
+
+            console.debug('Final processed spec:', {
+                hasRender: typeof rawSpec.render === 'function',
+                hasGroups: Array.isArray(rawSpec.groups),
+                hasNodes: Array.isArray(rawSpec.nodes),
+                keys: Object.keys(rawSpec)
+            });
+
+        } catch (evalError) {
+            console.error('Error evaluating D3 spec:', evalError, '\nClean spec:', cleanSpec);
+            throw new Error('Invalid D3 specification format');
+        }
+
+        const spec = {
+            ...rawSpec,
+            renderer: 'd3'
+        };
+	if (renderFunction || rawSpec.render) {
+            spec.render = renderFunction || rawSpec.render;
+        }
+
+        return (
+            <div key={index} className="d3-visualization-container" style={{
+                margin: '1em 0',
+                padding: '1em',
+                backgroundColor: isDarkMode ? '#1f1f1f' : '#f8f9fa',
+                borderRadius: '6px',
+                overflow: 'auto'
+            }}>
+                <D3Renderer spec={spec} type="d3" />
+            </div>
+        );
+    } catch (error) {
+        return <pre key={index}><code>Error parsing D3 specification: {error instanceof Error ? error.message : String(error)}</code></pre>;
+    }
+}
 
         if (token.type === 'code' && isCodeToken(token)) {
             // Regular code blocks (non-diff)
