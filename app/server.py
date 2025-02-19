@@ -125,7 +125,7 @@ async def general_exception_handler(request: Request, exc: Exception):
         raise
 
 app.mount("/static", StaticFiles(directory="../templates/static"), name="static")
-app.mount("/testcases", StaticFiles(directory="../templates/testcases"), name="testcases")
+app.mount("/testcases", StaticFiles(directory="../tests/frontend/testcases"), name="testcases")
 templates = Jinja2Templates(directory="../templates")
 
 # Add a route for the frontend

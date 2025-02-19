@@ -1,0 +1,5 @@
+from typing import Callable, TypeVar, ParamSpec, Awaitable
+
+class Example:
+    def method(self):
+        pass
