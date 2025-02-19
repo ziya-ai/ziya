@@ -53,10 +53,15 @@ class ExtensionErrorBoundary extends React.Component<{children: React.ReactNode}
     }
 }
 
+const PANEL_COLLAPSED_KEY = 'ZIYA_PANEL_COLLAPSED';
+
 export const App = () => {
     const {streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap} = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
-    const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
+    const [isPanelCollapsed, setIsPanelCollapsed] = useState(() => {
+        const saved = localStorage.getItem(PANEL_COLLAPSED_KEY);
+        return saved ? JSON.parse(saved) : false;
+    });
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
 
     const handleNewChat = async () => {
@@ -114,7 +119,11 @@ export const App = () => {
     };
 
     const togglePanel = () => {
-        preserveScrollPosition(() => setIsPanelCollapsed(!isPanelCollapsed));
+        preserveScrollPosition(() => {
+            const newState = !isPanelCollapsed;
+            setIsPanelCollapsed(newState);
+            localStorage.setItem(PANEL_COLLAPSED_KEY, JSON.stringify(newState));
+        });
     };
 
     // in top-down mode autoscroll to end

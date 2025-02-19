@@ -1,0 +1,6 @@
+{
+    "target_file": "tests/diff_regression_tests.py",
+    "description": "Creating a new file with multiple functions and embedded diff-like content",
+    "date_added": "2024-01-17",
+    "issue_reference": "new_file_creation_bug"
+}

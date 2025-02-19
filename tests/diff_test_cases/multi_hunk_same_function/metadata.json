@@ -1,0 +1,5 @@
+{
+    "target_file": "test.py",
+    "description": "Multiple hunks modifying the same function",
+    "date_added": "2024-01-17"
+}

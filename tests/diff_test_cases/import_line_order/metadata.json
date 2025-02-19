@@ -1,0 +1,6 @@
+{
+    "target_file": "frontend/src/components/MarkdownRenderer.tsx",
+    "description": "Test inserting an import line between existing imports",
+    "date_added": "2024-01-25",
+    "issue_reference": "import_line_order_bug"
+}

@@ -171,7 +171,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         // For completely empty or whitespace-only lines
         if (!text.trim()) {
             const markers = text.replace(/[ \t]/g, c => c === ' ' ? '\u2591' : '→');
-            const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
+            const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : 'ws-normal';
 	    return `<span class="token-line">` +
                    `<span class="ws-marker ${wsClass}">${markers}</span>${text}` +
                    `</span>`;
@@ -220,7 +220,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 		// Handle whitespace-only lines before any other processing
                 if (!content.trim()) {
                     const rendered = visualizeWhitespace(content);
-                    if (contentRef.current) {
+		    if (contentRef.current && rendered !== lastGoodRenderRef.current) {
                         contentRef.current.innerHTML = rendered;
                         lastGoodRenderRef.current = rendered;
                     }
@@ -434,7 +434,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
     const renderContent = () => (
         <td
            className={`diff-code diff-code-${type}`}
-	   >
+        >
              <div
                  className="diff-line-content token-container"
 		 ref={contentRef}
@@ -443,7 +443,9 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                      overflow: viewType === 'split' ? 'hidden' : 'auto',
                      ...(isLoading ? {...baseStyles, ...themeStyles} : {})
                  }}
-		 dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content)
+		 dangerouslySetInnerHTML={{ 
+		     __html: lastGoodRenderRef.current || 
+		     visualizeWhitespace(content || ' ')
                  }}
              />
          </td>

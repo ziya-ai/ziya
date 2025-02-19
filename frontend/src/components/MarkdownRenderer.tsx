@@ -1,22 +1,73 @@
 import React, { useState, useEffect, memo, useMemo, Suspense, useCallback } from 'react';
-import { parseDiff, Diff, Hunk, tokenize, RenderToken, HunkProps } from 'react-diff-view';
+import 'prismjs/themes/prism.css';
+import { Button, message, Radio, Space, Spin, RadioChangeEvent } from 'antd';
+import * as d3 from 'd3';
+import { marked } from 'marked';
+import type { Diff } from 'react-diff-view';
+import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
-import { marked, Tokens } from 'marked';
-import { Button, message, Radio, Space, Spin, RadioChangeEvent } from 'antd';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import * as Viz from '@viz-js/viz';
 import { D3Renderer } from './D3Renderer';
-import { CheckOutlined, CodeOutlined } from '@ant-design/icons';
+import { CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined,
+         CheckCircleOutlined, CloseCircleOutlined, CheckOutlined } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
 import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
-
-
 import { useTheme } from '../context/ThemeContext';
-
 import type * as PrismType from 'prismjs';
 
+// Define the status interface
+interface HunkStatus {
+    applied: boolean;
+    reason: string;
+}
+
+const hunkStatuses = new WeakMap<object, HunkStatus>();
+
 export type RenderPath = 'full' | 'prismOnly' | 'diffOnly' | 'raw';
+
+// Define the Change types to match react-diff-view's internal types
+type ChangeType = 'normal' | 'insert' | 'delete';
+
+interface BaseChange {
+    content: string;
+    type: ChangeType;
+    isInsert?: boolean;
+    isDelete?: boolean;
+    isNormal?: boolean;
+    lineNumber?: number;
+    oldLineNumber?: number;
+    newLineNumber?: number;
+}
+
+// Define our own Hunk interface to match react-diff-view's structure
+interface BaseHunk {
+    content: string;
+    oldStart: number;
+    oldLines: number;
+    newStart: number;
+    newLines: number;
+    changes: BaseChange[];
+    isPlain?: boolean;
+    oldLineNumber?: number;
+    newLineNumber?: number;
+}
+
+// Define the status interface
+interface HunkStatus {
+    applied: boolean;
+    reason: string;
+}
+
+// Define our extended hunk type that includes status
+interface ExtendedHunk extends BaseHunk {
+    status?: HunkStatus;
+}
+
+// Type guard to check if a hunk is extended
+const isExtendedHunk = (hunk: BaseHunk): hunk is ExtendedHunk =>
+    'status' in hunk;
 
 declare global {
     interface Window {
@@ -66,17 +117,6 @@ interface ErrorBoundaryState {
 
 type ErrorType = 'graphviz' | 'code' | 'unknown';
 
-type DiffChange = {
-    type: 'delete' | 'insert' | 'context';
-    content: string;
-    isDelete?: boolean;
-    isInsert?: boolean;
-    isNormal?: boolean;
-    lineNumber?: number | null;
-    oldLineNumber?: number | null;
-    newLineNumber?: number | null;
-};
- 
 class ErrorBoundary extends React.Component<
     ErrorBoundaryProps,
     ErrorBoundaryState> {
@@ -431,6 +471,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [parsedFiles, setParsedFiles] = useState<any[]>([]);
     const [parseError, setParseError] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>(initialDisplayMode as DisplayMode);
+    const [statusUpdateCounter, setStatusUpdateCounter] = useState(0);
 
     // detect language from file path
     const detectLanguage = (filePath: string): string => {
@@ -602,12 +643,54 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 </colgroup>
                 <tbody>
                     {hunks.map((hunk, index) => {
-                        const previousHunk = index > 0 ? hunks[index - 1] : null;
-                        const showEllipsis = displayMode === 'pretty' && previousHunk &&
-				Math.abs(hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines)) > 1;
+                        const previousHunk = index > 0 ? (hunks[index - 1] as ExtendedHunk) : null;
+                        const linesBetween = previousHunk ?
+                            hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines) : 0;
+                        const showEllipsis = displayMode === 'pretty' && 
+                            previousHunk;
+                        const ellipsisText = linesBetween <= 0 ? '...' :
+                            linesBetween === 1 ? 
+                                '... (1 line)' : 
+                `... (${linesBetween} lines)`;
+
+        // Get hunk status if available
+        const hunkStatus = hunkStatuses.get(hunk) && {
+            applied: false,
+            reason: 'Not attempted'
+        }
+
                         return (
                             <React.Fragment key={hunk.content}>
-                                {showEllipsis && <tr><td colSpan={viewType === 'split' ? 4 : 3} className="diff-ellipsis">...</td></tr>}
+                                {/* Only show line count if there are lines between hunks */}
+				{showEllipsis && (
+				    <tr>
+					<td
+					    colSpan={viewType === 'split' ? 4 : 3}
+					    className="diff-ellipsis"
+					    style={{
+						display: 'flex',
+						justifyContent: 'space-between',
+						alignItems: 'center',
+						padding: '4px 8px'
+					    }}
+					>
+					    <span>{ellipsisText}</span>
+					    {hunkStatus && (
+					        <span style={{
+						    color: hunkStatus.applied ? '#52c41a' : '#ff4d4f',
+						    display: 'flex',
+						    alignItems: 'center',
+						    gap: '4px'
+					        }}>
+                                            {hunkStatus.applied ?
+                                                <><CheckCircleOutlined /> Applied</> :
+                                                <><CloseCircleOutlined /> Failed: {hunkStatus.reason}</>
+                                            }
+					        </span>
+					    )}
+					</td>
+				    </tr>
+				)}
                                 {renderContent(hunk, filePath)}
                             </React.Fragment>
                         );
@@ -709,6 +792,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         >
 	    <div className="diff-header">
                 <div style={{
+	            position: 'sticky',
+		    left: 0,
+		    right: 0,
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
@@ -730,7 +816,12 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     />
                 }</div>
             </div>
-	    <div className="diff-view">
+	    <div className="diff-view" style={{
+                position: 'relative',
+                width: '100%',
+                overflowX: 'auto',
+                overflowY: 'hidden'
+            }}>
 	        <div className="diff-content">
                     {renderHunks(
                         file.hunks,
@@ -745,6 +836,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
 const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, enabled }) => {
     const [isApplied, setIsApplied] = useState(false);
+    const forceUpdate = useCallback(() => setIsApplied(current => current), []);
+
+    const triggerDiffUpdate = () => {
+	window.dispatchEvent(new Event('hunkStatusUpdate'));
+    };
 
     const handleApplyChanges = async () => {
         // Clean the diff content - stop at first triple backtick
@@ -762,52 +858,75 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     filePath 
                 }),
             });
-            if (response.ok) {
+            if (response.ok || response.status === 207) {
                 setIsApplied(true);
-		const data = await response.json();
+                const data = await response.json();
                 if (data.status === 'success') {
+                    // Update hunk statuses for successful application
+                    const files = parseDiff(cleanDiff);
+                    files.forEach(file => {
+                        file.hunks.forEach(hunk => {
+                            hunkStatuses.set(hunk, {
+                                applied: true,
+                                reason: 'Successfully applied'
+                            });
+                        });
+                    });
+                    triggerDiffUpdate();
+
                     message.success(`Changes applied successfully to ${filePath}`);
                 } else if (data.status === 'partial') {
-                    // Show partial success with details
+                    parseDiff(cleanDiff).forEach(file => {
+                        file.hunks.forEach((hunk, index) => {
+                            const statusData = data.details.hunks[index];
+                            hunkStatuses.set(hunk, {
+                                applied: statusData.status === 'success',
+                                reason: statusData.reason || 'Unknown error'
+                            });
+                        }); 
+		    });
+                    triggerDiffUpdate();
+ 
+		    // Show partial success message
                     message.warning({
                         content: (
                             <div>
                                 <p>{data.message}</p>
                                 <p>{data.details?.summary}</p>
-                                {data.details?.hunks && (
-                                    <ul style={{ marginTop: '8px', paddingLeft: '20px' }}>
-                                        {data.details.hunks.filter(h => h.status === 'failed').map((hunk, i) => (
-                                            <li key={i}>Failed at line {hunk.start_line}: {hunk.reason}</li>
-                                        ))}
-                                    </ul>
+				{data.details?.hunks && (
+                                    <div>
+                                        <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
+                                            {data.details.hunks.map((hunk, i) => (
+                                                <li key={i}>
+						    {hunk.status === 'failed' ?
+                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} /> :
+                                                        <CheckCircleOutlined style={{ color: '#52c41a', marginRight: '8px' }} />
+                                                    }
+                                                    {hunk.status === 'failed' ? 
+                                                        `Failed at line ${hunk.start_line}: ${hunk.reason}` :
+                                                        `Successfully applied hunk at line ${hunk.start_line}`
+                                                    }
+                                                </li>
+                                            ))}
+                                        </ul>
+                                </div>
                                 )}
                             </div>
                         ),
                         duration: 10  // Show for 10 seconds since there's more to read
                     });
+                    setIsApplied(true);  // Mark as applied for partial success
                 }
-            } else if (response.status === 207) {
-                // Handle partial success
-                const data = await response.json();
-                message.warning({
-                    content: (
-                        <div>
-                            <p>Some changes were applied successfully:</p>
-                            <p>{data.details?.summary}</p>
-                        </div>
-                    ),
-                    duration: 5
-                });
-                setIsApplied(true);  // Still mark as applied since some changes succeeded
-            }
-            else {
-		// Try to parse error response for more details
+            } else {
                 try {
                     const errorData = await response.json();
                     message.error({
                         content: (
                             <div>
-                                <p>{errorData.detail?.message || errorData.detail || 'Failed to apply changes'}</p>
+			        <p>
+                                    <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
+                                    {errorData.detail?.message || errorData.detail || 'Failed to apply changes'}
+                                </p>
                                 {errorData.detail?.summary && <p>{errorData.detail.summary}</p>}
                             </div>
                         ),
@@ -817,15 +936,24 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     message.error('Failed to apply changes');
                 }
             }
-        } catch (error) {
+        } catch (error: unknown) {
             console.error('Error applying changes:', error);
-	    message.error({
+            message.error({
                 content: 'Error applying changes: ' + (error instanceof Error ? error.message : String(error)),
                 duration: 5
             });
         }
     };
-    return enabled ? <Button onClick={handleApplyChanges} disabled={isApplied} icon={<CheckOutlined />}>Apply Changes (beta)</Button> : null;
+
+    return enabled ? (
+        <Button
+            onClick={handleApplyChanges} 
+            disabled={isApplied} 
+            icon={<CheckOutlined />}
+        >
+            Apply Changes (beta)
+        </Button>
+    ) : null;
 };
 
 const hasText = (token: any): token is TokenWithText => {
@@ -887,6 +1015,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>('pretty');
+    const [statusUpdateCounter, setStatusUpdateCounter] = useState(0);
 
     // Ensure window settings are synced with initial state
     useEffect(() => {
@@ -894,6 +1023,13 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
             window.diffViewType = viewType;
         }
     }, [token]);
+
+    // Listen for status updates
+    useEffect(() => {
+        const handleStatusUpdate = () => setStatusUpdateCounter(c => c + 1);
+        window.addEventListener('hunkStatusUpdate', handleStatusUpdate);
+        return () => window.removeEventListener('hunkStatusUpdate', handleStatusUpdate);
+    }, []);
 
     if (!hasText(token)) {
         return null;
@@ -925,6 +1061,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
                         diff={token.text}
                         viewType={viewType}
                         initialDisplayMode={displayMode}
+                        key={statusUpdateCounter}  // Force re-render on status updates
                         showLineNumbers={showLineNumbers}
                     />
                 )}
@@ -1192,101 +1329,45 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
             }
         }
 
-	// Handle direct D3.js visualizations
+
+// Handle direct D3.js visualizations
 if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
     try {
-	let renderFunction: Function | undefined;
-        // First, normalize line endings and clean up whitespace
-        let cleanSpec = token.text.replace(/\r\n/g, '\n')
-            .split('\n')
-            .map(line => line.trim())
-            .filter(line => {
-                // Keep lines that aren't just comments
-                return !line.trim().startsWith('//') && line.trim() !== '';
-            })
-            .join('\n')
-            .replace(/\/\*[\s\S]*?\*\//g, ''); // Remove multi-line comments
-
-        // Add render function if it's missing
-        if (!cleanSpec.includes('"render"') && !cleanSpec.includes('render:')) {
-            const baseSpec = JSON.parse(cleanSpec);
-            baseSpec.renderer = 'd3';
-            baseSpec.render = function(container, d3) {
-                console.error('Default render function called - you need to provide a render implementation');
-            };
-            cleanSpec = JSON.stringify(baseSpec, null, 2);
-        }
-
-        console.debug('Cleaned spec:', cleanSpec);
-
-        let rawSpec;
-        try {
-            console.debug('Original spec text:', cleanSpec.slice(0, 100) + '...');
-
-            // Use Function constructor to safely evaluate D3 spec
-            const evalFunction = new Function(`
-                try {
-		    const spec = (function() { return ${cleanSpec}; })();
-                    console.debug('Initial eval:', {
-                        hasRender: typeof spec.render === 'function',
-                        keys: Object.keys(spec)
-                    });
-                    if (typeof spec.render === 'function') {
-		        renderFunction = spec.render;
-                        const boundRender = function(container, d3) {
-                            const context = {
-                                ...this,
-                                ...spec,
-                                groups: spec.groups || [],
-                                nodes: spec.nodes || [],
-                                links: spec.links || [],
-				styles: spec.styles || {}
-                            };
-                            console.debug('Render context:', context);
-                            return renderFunction.call(context, container, d3);
-                        };
-			spec.render = boundRender;
-                    }
-                    return spec;
-                } catch (err) {
-                    console.error('Error in spec evaluation:', err);
-                    throw err;
-                }
-            `);
-
-            rawSpec = evalFunction();
-
-            console.debug('Final processed spec:', {
-                hasRender: typeof rawSpec.render === 'function',
-                hasGroups: Array.isArray(rawSpec.groups),
-                hasNodes: Array.isArray(rawSpec.nodes),
-                keys: Object.keys(rawSpec)
-            });
-
-        } catch (evalError) {
-            console.error('Error evaluating D3 spec:', evalError, '\nClean spec:', cleanSpec);
-            throw new Error('Invalid D3 specification format');
-        }
-
-        const spec = {
-            ...rawSpec,
-            renderer: 'd3'
-        };
-	if (renderFunction || rawSpec.render) {
-            spec.render = renderFunction || rawSpec.render;
-        }
-
-        return (
-            <div key={index} className="d3-visualization-container" style={{
-                margin: '1em 0',
-                padding: '1em',
-                backgroundColor: isDarkMode ? '#1f1f1f' : '#f8f9fa',
-                borderRadius: '6px',
-                overflow: 'auto'
+        // Create a container with unique ID
+        const containerId = `d3-viz-${Date.now()}`;
+        const SpinnerComponent = () => (
+            <div style={{
+                padding: '20px',
+                textAlign: 'center',
+                backgroundColor: isDarkMode ? '#141414' : '#f0f2f5',
+                border: '1px solid ' + (isDarkMode ? '#303030' : '#d9d9d9'),
+                borderRadius: '4px',
+                margin: '10px 0'
             }}>
-                <D3Renderer spec={spec} type="d3" />
+                <Spin tip="Preparing visualization..." />
             </div>
         );
+
+
+        // Return the spinner immediately
+        const containerElement = (
+            <div key={index}>
+                <div id={containerId}>
+                    <SpinnerComponent />
+                </div>
+            </div>
+        );
+
+        return (
+            <D3Renderer
+                key={index}
+                spec={token.text}
+                width={800}
+                height={400}
+            />
+        );
+
+        return containerElement;
     } catch (error) {
         return <pre key={index}><code>Error parsing D3 specification: {error instanceof Error ? error.message : String(error)}</code></pre>;
     }

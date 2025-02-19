@@ -17,6 +17,9 @@ interface FolderTreeProps {
     isPanelCollapsed: boolean;
 }
 
+const ACTIVE_TAB_KEY = 'ZIYA_ACTIVE_TAB';
+const DEFAULT_TAB = '1'; // File Explorer tab
+
 export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const {
         folders,
@@ -31,6 +34,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const {isDarkMode} = useTheme();
     const {currentConversationId} = useChatContext();
     const [isRefreshing, setIsRefreshing] = useState(false);
+    const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || DEFAULT_TAB);
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
@@ -45,6 +49,11 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
             setExpandedKeys([]);
         }
     }, [searchValue, treeData]);
+
+    // Save active tab whenever it changes
+    useEffect(() => {
+        localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
+    }, [activeTab]);
 
         const fetchModelId = useCallback(async () => {
         try {
@@ -221,7 +230,8 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     return (
         <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
 	    <TokenCountDisplay/>
-            <Tabs
+            <Tabs 
+                activeKey={activeTab}
                 defaultActiveKey="1"
                 destroyInactiveTabPane={false}
                 style={{
@@ -232,6 +242,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                     overflow: 'hidden',
 		    margin: '0 -8px'
                 }}
+                onChange={setActiveTab}
                 items={[
                     {
                         key: '1',
@@ -281,7 +292,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                                     autoExpandParent={autoExpandParent}
                                                     onCheck={onCheck}
                                                     checkedKeys={checkedKeys}
-                                                    treeData={filteredTreeData}
+                                                treeData={searchValue ? filteredTreeData : treeData}
                                                     titleRender={titleRender}
                                                     style={{
                                                         background: 'transparent',

@@ -27,6 +27,7 @@ interface ChatContext {
     dbError: string | null;
     setIsTopToBottom: Dispatch<SetStateAction<boolean>>;
     scrollToBottom: () => void;
+    setDisplayMode: (conversationId: string, mode: 'raw' | 'pretty') => void;
 }
 
 const chatContext = createContext<ChatContext | undefined>(undefined);
@@ -324,6 +325,23 @@ export function ChatProvider({children}: ChatProviderProps) {
         }
     }, [currentConversationId]);
 
+    const setDisplayMode = (conversationId: string, mode: 'raw' | 'pretty') => {
+        setConversations(prev => {
+            const updated = prev.map(conv => {
+                if (conv.id === conversationId) {
+                    return {
+                        ...conv,
+                        displayMode: mode,
+                        _version: Date.now()
+                    };
+                }
+                return conv;
+            });
+            db.saveConversations(updated).catch(console.error);
+            return updated;
+        });
+    };
+
     const value = useMemo(() => ({
         question,
         setQuestion,
@@ -345,6 +363,7 @@ export function ChatProvider({children}: ChatProviderProps) {
         isTopToBottom,
         setIsTopToBottom,
         scrollToBottom,
+        setDisplayMode,
         dbError,
         isLoadingConversation
     }), [

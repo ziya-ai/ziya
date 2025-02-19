@@ -1,13 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Tag, Space, Typography, Alert, Divider, Tabs, Button, Spin, message } from 'antd';
+import { Card, Tag, Space, Typography, Alert, Divider, Tabs, Button, Spin, message, Radio } from 'antd';
 import { useTheme } from '../context/ThemeContext';
 import MarkdownRenderer from './MarkdownRenderer';
+import { RenderPath } from './MarkdownRenderer';
 import { DiffTestRunner } from '../utils/diffTestRunner';
 import { diffTestSuites } from '../utils/diffTestCases';
 import { DiffTestReport } from '../utils/diffTestTypes';
 
 const { Title, Text } = Typography;
 const { TabPane } = Tabs;
+
+const renderPathOptions = [
+    { label: 'Full Pipeline', value: 'full' },
+    { label: 'Prism Only', value: 'prismOnly' },
+    { label: 'Diff Only', value: 'diffOnly' },
+    { label: 'Raw', value: 'raw' }
+];
 
 interface TestCase {
     id: string;
@@ -33,6 +41,7 @@ const DiffTestView: React.FC = () => {
     const [validationResults, setValidationResults] = useState<Record<string, boolean>>({});
     const [testReport, setTestReport] = useState<DiffTestReport | null>(null);
     const [isRunningTests, setIsRunningTests] = useState(false);
+    const [renderPath, setRenderPath] = useState<RenderPath>('full');
 
     const runAllTests = async () => {
         setIsRunningTests(true);
@@ -140,14 +149,14 @@ const DiffTestView: React.FC = () => {
             <Space direction="vertical" style={{ width: '100%', marginBottom: '16px' }}>
                 <Title level={3}>Diff Rendering Test Cases</Title>
                 <Space>
-                    <Button 
-                        type="primary" 
+                    <Button
+                        type="primary"
                         onClick={runAllTests}
                         loading={isRunningTests}
                     >
                         Run All Tests
                     </Button>
-                    <Button 
+                    <Button
                         onClick={() => setValidationResults({})}
                         disabled={Object.keys(validationResults).length === 0}
                     >
@@ -171,6 +180,19 @@ const DiffTestView: React.FC = () => {
                         showIcon
                         style={{ margin: '16px' }}
                     />
+
+                    <Card style={{ margin: '16px' }}>
+                        <Space direction="vertical">
+                            <Text strong>Render Pipeline Control</Text>
+                            <Radio.Group 
+                                options={renderPathOptions} 
+                                onChange={e => setRenderPath(e.target.value)} 
+                                value={renderPath}
+                                optionType="button"
+                                buttonStyle="solid"
+                            />
+                        </Space>
+                    </Card>
 
                     {testReport && (
                         <Alert
@@ -255,6 +277,7 @@ const DiffTestView: React.FC = () => {
                                         <MarkdownRenderer
                                             markdown={`\`\`\`diff\n${testCase.diff}\n\`\`\``}
                                             enableCodeApply={false}
+                                            renderPath={renderPath}
                                         />
                                     </div>
                                     {testCase.sourceContent && (

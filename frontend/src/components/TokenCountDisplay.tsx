@@ -36,8 +36,7 @@ const getTokenCount = async (text: string): Promise<number> => {
 export const TokenCountDisplay = () => {
 
     const {folders, checkedKeys, getFolderTokenCount} = useFolderContext();
-    const {currentMessages} = useChatContext();
-
+    const {currentMessages, currentConversationId, isStreaming} = useChatContext();
     const [totalTokenCount, setTotalTokenCount] = useState(0);
     const [chatTokenCount, setChatTokenCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
@@ -99,9 +98,10 @@ export const TokenCountDisplay = () => {
 
     const previousMessagesRef = useRef<string>('');
     const hasMessagesChanged = useCallback((messages: Message[]) => {
-	const messagesContent = messages.map(msg => msg.content).join('\n');
+	const messagesContent = messages.length > 0 ? messages.map(msg => msg.content).join('\n') : '';
         if (messagesContent !== previousMessagesRef.current) {
             previousMessagesRef.current = messagesContent;
+	    console.debug('Messages changed:', { length: messages.length, content: messagesContent.slice(0, 100) });
             return true;
         }
         return false;
@@ -110,6 +110,11 @@ export const TokenCountDisplay = () => {
     const updateChatTokens = useCallback(async () => {
         if (currentMessages.length === 0) {
             setChatTokenCount(0);
+	    lastMessageCount.current = 0;
+            lastMessageContent.current = '';
+            previousMessagesRef.current = '';
+            console.debug('Skipping token count update - no messages');
+            setIsLoading(false);
             return;
         }
 
@@ -128,15 +133,29 @@ export const TokenCountDisplay = () => {
         }
     }, [currentMessages]);
 
-    // update chat tokens only when messages change
+    // update chat tokens only when messages or conversation change
     useEffect(() => {
-	if (currentMessages.length > 0 && hasMessagesChanged(currentMessages)) {
-            console.debug('Updating chat tokens due to message changes');
+	console.debug('Conversation or messages changed:', {
+            conversationId: currentConversationId,
+            messageCount: currentMessages.length,
+	    isStreaming
+        });
+        if (!currentConversationId || currentMessages.length === 0) {
+            console.debug('Resetting token count - empty conversation');
+            setChatTokenCount(0);
+            lastMessageCount.current = 0;
+            lastMessageContent.current = '';
+	    previousMessagesRef.current = '';
+            return;
+        }
+        
+        // Only update tokens if we have messages
+        if (hasMessagesChanged(currentMessages)) {
+            console.debug('Updating chat tokens for conversation:', currentConversationId);
             updateChatTokens();
-	} else {
-	    console.debug('Skipping token update - no message changes detected');
-	}
-    }, [currentMessages, updateChatTokens]);
+        }
+    }, [currentMessages, updateChatTokens, currentConversationId, hasMessagesChanged, isStreaming]);
+
     const getProgressStatus = (count: number): ProgressProps['status'] => {
         if (count >= DANGER_THRESHOLD) return 'exception';
         if (count >= WARNING_THRESHOLD) return 'normal';

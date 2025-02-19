@@ -3,7 +3,7 @@ import 'prismjs/plugins/show-invisibles/prism-show-invisibles';
 import 'prismjs/components/prism-core';
  
 // Track loaded languages to avoid duplicate loading
-const loadedLanguages = new Set<string>();
+const loadedLanguages = new Set(['plaintext']); // Mark plaintext as loaded by default
  
 // Map of common file extensions to Prism language names
 const languageMap: { [key: string]: string } = {
@@ -61,7 +61,6 @@ let loadingPromises: { [key: string]: Promise<void> | undefined } = {};
 const loadPrismCore = async (): Promise<PrismStatic | null> => {
   if (!prismInstance) {
     if (!initializationPromise) {
-      console.debug('Initializing Prism core...');
       initializationPromise = (async () => {
         try {
           // First, load Prism core
@@ -72,7 +71,10 @@ const loadPrismCore = async (): Promise<PrismStatic | null> => {
 
             // Initialize core properties
             instance.languages = instance.languages || {};
-            instance.languages.plaintext = { text: /[\s\S]+/ };
+            // Initialize plaintext grammar if not already present
+            if (!instance.languages.plaintext) {
+              instance.languages.plaintext = { text: /[\s\S]+/ };
+            }
 
             // Make Prism globally available
             (window as any).Prism = instance;
@@ -83,8 +85,6 @@ const loadPrismCore = async (): Promise<PrismStatic | null> => {
             await import('prismjs/components/prism-markup');
             await import('prismjs/components/prism-markup-templating');
             await import('prismjs/components/prism-javascript');
-
-	    console.debug('Prism core initialized successfully');
             return instance;
           }
           return null;
@@ -98,6 +98,9 @@ const loadPrismCore = async (): Promise<PrismStatic | null> => {
   }
   return prismInstance;
 }
+
+// Track attempted language loads to prevent duplicate attempts
+const attemptedLoads = new Set<string>();
  
 export const loadPrismLanguage = async (language: string): Promise<void> => {
   // If we're already loading this language, return the existing promise
@@ -105,8 +108,23 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
   if (existingPromise) {
       return existingPromise;
   }
-  // If the language is already loaded, return immediately
-  if (loadedLanguages.has(language)) {
+
+  // Map the language name to its Prism.js equivalent if needed
+  const mappedLanguage = languageMap[language] || language;
+
+  // Special handling for plaintext - it's always available
+  if (mappedLanguage === 'plaintext') {
+    return Promise.resolve();
+  }
+
+  // Check if we've already attempted to load this language
+  if (attemptedLoads.has(mappedLanguage)) {
+    return Promise.resolve();
+  }
+
+  // Check if either the original language or mapped language is already loaded
+  if (loadedLanguages.has(language) || loadedLanguages.has(mappedLanguage)) {
+      console.debug(`Skipping already loaded language: ${mappedLanguage}`);
       return Promise.resolve();
   }
 
@@ -124,19 +142,11 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
     return;
   }
 
-  // Map the language name to its Prism.js equivalent if needed
-  const mappedLanguage = languageMap[language] || language;
-
-  // Skip if already loaded and initialized
-  if (window.Prism?.languages?.[mappedLanguage] && 
-      Object.keys(window.Prism.languages[mappedLanguage]).length > 0) {
-    console.debug(`Language ${mappedLanguage} already loaded`);
-    return;
-  }
+  attemptedLoads.add(mappedLanguage);
+  console.debug(`Loading language: ${mappedLanguage}`);
 
   // Create a loading promise for this language
     loadingPromises[language] = (async () => {
-        console.debug(`Loading ${mappedLanguage} (mapped from ${language})`);
         try {
             // Always ensure core languages are loaded first
             if (!window.Prism?.languages?.javascript ||
@@ -212,7 +222,7 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                 break;
             }
             default:
-                try {
+              if (mappedLanguage !== 'plaintext') try {
                     // Load other languages directly
                     await import(/* webpackChunkName: "prism-lang.[request]" */ `prismjs/components/prism-${mappedLanguage}`);
                     if (!window.Prism?.languages?.[mappedLanguage]) {
@@ -234,7 +244,7 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
             // Set up plaintext fallback
             if (!prism || !prism.languages.plaintext) {
                 prism.languages.plaintext = {
-                    text: /[\s\S]+/
+                text: /[\s\S]+/
                 };
             }
         } finally {
@@ -246,8 +256,6 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
     return loadingPromises[language];
 };
 
-console.debug('Prism loader initialized');
- 
 // Helper to check if a language is loaded
 export const isLanguageLoaded = (language: string): boolean => {
   const mappedLanguage = languageMap[language] || language;

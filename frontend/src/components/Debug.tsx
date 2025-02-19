@@ -20,6 +20,7 @@ import { useFolderContext } from '../context/FolderContext';
 // Lazy load test components
 const PrismTest = React.lazy(() => import('./PrismTest'));
 const SyntaxTest = React.lazy(() => import('./SyntaxTest'));
+const VegaLiteTest = React.lazy(() => import("./VegaLiteTest"));
 const ApplyDiffTest = React.lazy(() => import('./ApplyDiffTest'));
 const DiffTestView = React.lazy(() => import('./DiffTestView'));
 const D3Test = React.lazy(() => import('./D3Test'));
@@ -138,8 +139,25 @@ export const Debug: React.FC = () => {
                         description={dbError}
                         type="error"
                         showIcon
-                        style={{ marginBottom: 16 }}
-                    />
+			style={{ marginBottom: 16 }}
+                            action={
+                                <Button
+                                    danger
+                                    type="primary"
+                                    onClick={async () => {
+                                        try {
+                                            await db.repairDatabase();
+                                            message.success('Database reset complete - reloading page');
+                                            window.location.reload();
+                                        } catch (error) {
+                                            message.error('Reset failed - please reload the page manually');
+                                        }
+                                    }}
+                                >
+                                    Nuclear Reset (Emergency Recovery)
+                                </Button>
+                            }
+                        />
                 )}
                 <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }}>
                     <Typography.Title level={4}>System Status</Typography.Title>
@@ -218,7 +236,15 @@ export const Debug: React.FC = () => {
                     <TabPane 
                         tab={<><ExperimentOutlined /> D3 Visualization</>} 
                         key="d3"
+                        forceRender={true}
                     >
+                        <Alert
+                            message="D3 Visualization Debug"
+                            description="Testing D3 rendering capabilities"
+                            type="info"
+                            showIcon
+                            style={{ marginBottom: 16 }}
+                        />
                         <Suspense fallback={<div>Loading D3 tests...</div>}>
                             <D3Test />
                         </Suspense>
@@ -239,6 +265,12 @@ export const Debug: React.FC = () => {
                             <SyntaxTest />
                         </Suspense>
                     </TabPane>
+		    <TabPane
+                         tab={<><ExperimentOutlined /> Vega-Lite Gallery</>}
+                         key="vega"
+                     >
+                         <VegaLiteTest />
+                     </TabPane>
                     <TabPane 
                         tab={<><DiffOutlined /> Apply Diff</>}
                         key="applydiff"

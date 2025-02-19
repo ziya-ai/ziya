@@ -1,6 +1,6 @@
 import { BaseType, Selection } from 'd3';
 import { D3RenderPlugin, D3Node, D3Link, D3Style } from '../../types/d3';
-interface NetworkDiagramSpec {
+export interface NetworkDiagramSpec {
     width: number;
     height: number;
     nodes: D3Node[];
@@ -13,22 +13,41 @@ interface NetworkDiagramSpec {
     styles?: {
         [key: string]: D3Style;
     };
-}
-function isNetworkDiagramSpec(spec: any): spec is NetworkDiagramSpec {
+};
+
+const isNetworkDiagramSpec = (spec: any): spec is NetworkDiagramSpec => {
     return (
         typeof spec === 'object' &&
+        !spec.render && // Don't handle specs with direct render functions
+        spec.type === 'network' &&
         Array.isArray(spec.nodes) &&
         Array.isArray(spec.links) &&
-        spec.nodes.every((n: any) => typeof n.id === 'string' && typeof n.x === 'number' && typeof n.y === 'number')
+        spec.nodes.length > 0 &&
+        spec.links.length > 0 &&
+        spec.nodes.every((n: any) => typeof n.id === 'string' && n.id) &&
+        spec.links.every((l: any) => typeof l.source === 'string' && typeof l.target === 'string')
     );
-}
+};
+
 export const networkDiagramPlugin: D3RenderPlugin = {
     name: 'network-diagram',
     priority: 1,
     canHandle: isNetworkDiagramSpec,
     render: (container: HTMLElement, d3: any, spec: any) => {
+        console.debug('Network diagram plugin rendering:', spec);
         if (!isNetworkDiagramSpec(spec)) {
             throw new Error('Invalid network diagram specification');
+        }
+
+        function isNetworkDiagramSpec(spec: any): spec is NetworkDiagramSpec {
+            return (
+                typeof spec === 'object' &&
+                spec.type === 'network' &&
+                Array.isArray(spec.nodes) &&
+                Array.isArray(spec.links) &&
+                spec.nodes.every((n: any) => typeof n.id === 'string') &&
+                spec.links.every((l: any) => typeof l.source === 'string' && typeof l.target === 'string')
+            );
         }
         console.debug('Network diagram render:', {
             nodeCount: spec.nodes.length,
@@ -75,5 +94,3 @@ export const networkDiagramPlugin: D3RenderPlugin = {
         }
     }
 };
-// Export type for use in other plugins or components
-export type { NetworkDiagramSpec };

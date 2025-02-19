@@ -34,6 +34,7 @@ module.exports = {
           },
         },
       }),
+    },
     splitChunks: {
       chunks: 'all',
       maxInitialRequests: Infinity,

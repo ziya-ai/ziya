@@ -1,0 +1,6 @@
+{
+    "target_file": "frontend/src/components/MarkdownRenderer.tsx",
+    "description": "Add language loading cache to prevent reloading on every render",
+    "date_added": "2024-01-25",
+    "issue_reference": "language_loading_optimization"
+}
