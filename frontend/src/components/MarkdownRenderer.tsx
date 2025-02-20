@@ -1,6 +1,6 @@
 import React, { useState, useEffect, memo, useMemo, Suspense, useCallback } from 'react';
 import 'prismjs/themes/prism.css';
-import { Button, message, Radio, Space, Spin, RadioChangeEvent } from 'antd';
+import { Button, message, Radio, Space, Spin, RadioChangeEvent, Tooltip } from 'antd';
 import * as d3 from 'd3';
 import { marked } from 'marked';
 import type { Diff } from 'react-diff-view';
@@ -8,10 +8,13 @@ import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
+import 'prismjs/themes/prism-tomorrow.css';
+import 'prismjs/themes/prism-tomorrow.css';
 import * as Viz from '@viz-js/viz';
-import { D3Renderer } from './D3Renderer';
 import { CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined,
-         CheckCircleOutlined, CloseCircleOutlined, CheckOutlined } from '@ant-design/icons';
+         CheckCircleOutlined, CloseCircleOutlined, 
+         InfoCircleOutlined, CheckOutlined } from '@ant-design/icons';
+import { D3Renderer } from './D3Renderer';
 import 'prismjs/themes/prism.css';
 import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
@@ -21,6 +24,12 @@ import type * as PrismType from 'prismjs';
 interface HunkStatus {
     applied: boolean;
     reason: string;
+}
+
+interface HunkResult {
+    index: number;
+    status: 'success' | 'failed';
+    reason?: string;
 }
 
 const hunkStatuses = new WeakMap<object, HunkStatus>();
@@ -473,6 +482,71 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [displayMode, setDisplayMode] = useState<DisplayMode>(initialDisplayMode as DisplayMode);
     const [statusUpdateCounter, setStatusUpdateCounter] = useState(0);
 
+    // diff apply success detail on ellipses / status bar
+    const HunkStatusIndicators = ({ results }: { results: HunkResult[] }) => {
+        if (!results.length) return null;
+
+        return (
+            <div style={{
+                display: 'flex',
+                gap: '4px',
+                alignItems: 'center',
+                marginLeft: '12px'
+            }}>
+                {results.map((result, idx) => (
+                    <Tooltip
+                        key={idx}
+                        title={result.status === 'success' ?
+                            `Hunk #${idx + 1} applied successfully` :
+                            `Hunk #${idx + 1} failed: ${result.reason || 'Application failed'}`
+                        }
+                    >
+                        {result.status === 'success' ? (
+                            <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                        ) : (
+                            <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                        )}
+                    </Tooltip>
+                ))}
+            </div>
+        );
+    };
+
+    // diff apply success summary markers in a row on status bar
+    const HunkStatusSummary = ({ hunks }: { hunks: any[] }) => {
+        const statuses = hunks.map(hunk => hunkStatuses.get(hunk));
+        if (!statuses.some(Boolean)) return null;
+
+        return (
+            <div style={{
+                display: 'flex',
+                gap: '4px',
+                alignItems: 'center',
+                marginLeft: '12px'
+            }}>
+                {hunks.map((_, idx) => {
+                    const status = hunkStatuses.get(hunks[idx]);
+                    if (!status) return null;
+
+                    return (
+                        <Tooltip key={idx}
+                            title={status.applied ?
+                                `Hunk #${idx + 1} applied successfully` :
+                                `Hunk #${idx + 1}: ${status.reason || 'Not applied'}`
+                            }
+                        >
+                            {status.applied ? (
+                                <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                            ) : (
+                                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                            )}
+                        </Tooltip>
+                    );
+                })}
+            </div>
+        );
+    };
+
     // detect language from file path
     const detectLanguage = (filePath: string): string => {
         if (!filePath) return 'plaintext';
@@ -801,18 +875,21 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     height: '32px',
                     boxSizing: 'border-box'
                 }}>
-                    <b>{
-                        file.type === 'delete'
-                        ? `Delete: ${file.oldPath}`
-                        : file.type === 'add'
-                        ? `Create: ${file.newPath}`
-                        : `File: ${file.oldPath || file.newPath}`
-                }</b>
+		<div style={{ display: 'flex', alignItems: 'center' }}>
+                        <b>{
+                            file.type === 'delete'
+                            ? `Delete: ${file.oldPath}`
+                            : file.type === 'add'
+                            ? `Create: ${file.newPath}`
+                            : `File: ${file.oldPath || file.newPath}`
+                        }</b>
+                        <HunkStatusSummary hunks={file.hunks} />
+                </div>
                 {!['delete', 'rename'].includes(file.type) &&
                     <ApplyChangesButton
                         diff={diff}
                         filePath={file.newPath || file.oldPath}
-                        enabled={window.enableCodeApply === 'true'}
+                            enabled={window.enableCodeApply === 'true'}
                     />
                 }</div>
             </div>
@@ -843,106 +920,99 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     };
 
     const handleApplyChanges = async () => {
-        // Clean the diff content - stop at first triple backtick
-        const cleanDiff = (() => {
-            const endMarker = diff.indexOf('```');
-            return endMarker !== -1 ? diff.slice(0, endMarker).trim() : diff.trim();
-        })();
+	    // Clean the diff content - stop at first triple backtick
+	    const cleanDiff = (() => {
+		const endMarker = diff.indexOf('```');
+		return endMarker !== -1 ? diff.slice(0, endMarker).trim() : diff.trim();
+	    })();
 
-        try {
-            const response = await fetch('/api/apply-changes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    diff: cleanDiff, 
-                    filePath 
-                }),
-            });
-            if (response.ok || response.status === 207) {
-                setIsApplied(true);
-                const data = await response.json();
-                if (data.status === 'success') {
-                    // Update hunk statuses for successful application
-                    const files = parseDiff(cleanDiff);
-                    files.forEach(file => {
-                        file.hunks.forEach(hunk => {
-                            hunkStatuses.set(hunk, {
-                                applied: true,
-                                reason: 'Successfully applied'
-                            });
-                        });
-                    });
-                    triggerDiffUpdate();
+	    try {
+		const response = await fetch('/api/apply-changes', {
+		    method: 'POST',
+		    headers: { 'Content-Type': 'application/json' },
+		    body: JSON.stringify({
+			diff: cleanDiff,
+			filePath
+		    }),
+		});
 
-                    message.success(`Changes applied successfully to ${filePath}`);
-                } else if (data.status === 'partial') {
-                    parseDiff(cleanDiff).forEach(file => {
-                        file.hunks.forEach((hunk, index) => {
-                            const statusData = data.details.hunks[index];
-                            hunkStatuses.set(hunk, {
-                                applied: statusData.status === 'success',
-                                reason: statusData.reason || 'Unknown error'
-                            });
-                        }); 
+		const data = await response.json();
+
+		if (response.ok || response.status === 207) {
+		    const files = parseDiff(cleanDiff);
+
+		    if (data.status === 'success') {
+			// Update all hunks as successful
+			files.forEach(file => {
+			    file.hunks.forEach(hunk => {
+				hunkStatuses.set(hunk, {
+				    applied: true,
+				    reason: 'Successfully applied'
+				});
+			    });
+			});
+
+			setIsApplied(true);
+			window.dispatchEvent(new Event('hunkStatusUpdate'));
+			message.success({
+			    content: (
+				<div>
+				    <CheckCircleOutlined style={{ color: '#52c41a', marginRight: '8px' }} />
+				    All hunks applied successfully
+				</div>
+			    ),
+			    duration: 5
+			});
+		    } else if (data.status === 'partial') {
+			// Update individual hunk statuses
+			files.forEach(file => {
+			    file.hunks.forEach((hunk, index) => {
+				const statusData = data.details.hunks[index];
+				hunkStatuses.set(hunk, {
+				    applied: statusData.status === 'success',
+				    reason: statusData.reason || 'Unknown error'
+				});
+			    });
+			});
+
+			const successCount = data.details.hunks.filter(h => h.status === 'success').length;
+			const totalCount = data.details.hunks.length;
+
+			setIsApplied(true);
+			window.dispatchEvent(new Event('hunkStatusUpdate'));
+			message.warning({
+			    content: (
+				<div>
+				    <InfoCircleOutlined style={{ color: '#faad14', marginRight: '8px' }} />
+				    {successCount} out of {totalCount} hunks applied successfully
+				</div>
+			    ),
+			    duration: 5
+			});
+		    }
+		} else {
+		    // Handle error response
+		    message.error({
+			content: (
+			    <div>
+				<CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
+				{data.detail?.message || data.detail || 'Failed to apply changes'}
+				{data.detail?.summary && (
+				    <p style={{ marginTop: '8px' }}>{data.detail.summary}</p>
+				)}
+			    </div>
+			),
+			duration: 5
 		    });
-                    triggerDiffUpdate();
- 
-		    // Show partial success message
-                    message.warning({
-                        content: (
-                            <div>
-                                <p>{data.message}</p>
-                                <p>{data.details?.summary}</p>
-				{data.details?.hunks && (
-                                    <div>
-                                        <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
-                                            {data.details.hunks.map((hunk, i) => (
-                                                <li key={i}>
-						    {hunk.status === 'failed' ?
-                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} /> :
-                                                        <CheckCircleOutlined style={{ color: '#52c41a', marginRight: '8px' }} />
-                                                    }
-                                                    {hunk.status === 'failed' ? 
-                                                        `Failed at line ${hunk.start_line}: ${hunk.reason}` :
-                                                        `Successfully applied hunk at line ${hunk.start_line}`
-                                                    }
-                                                </li>
-                                            ))}
-                                        </ul>
-                                </div>
-                                )}
-                            </div>
-                        ),
-                        duration: 10  // Show for 10 seconds since there's more to read
-                    });
-                    setIsApplied(true);  // Mark as applied for partial success
-                }
-            } else {
-                try {
-                    const errorData = await response.json();
-                    message.error({
-                        content: (
-                            <div>
-			        <p>
-                                    <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                    {errorData.detail?.message || errorData.detail || 'Failed to apply changes'}
-                                </p>
-                                {errorData.detail?.summary && <p>{errorData.detail.summary}</p>}
-                            </div>
-                        ),
-                        duration: 5
-                    });
-                } catch (parseError) {
-                    message.error('Failed to apply changes');
-                }
-            }
-        } catch (error: unknown) {
-            console.error('Error applying changes:', error);
-            message.error({
-                content: 'Error applying changes: ' + (error instanceof Error ? error.message : String(error)),
-                duration: 5
-            });
-        }
+		}
+	    } catch (error) {
+		console.error('Error applying changes:', error);
+		message.error({
+		    content: 'Error applying changes: ' +
+			    (error instanceof Error ? error.message : String(error)),
+		    duration: 5
+		});
+	    }
     };
 
     return enabled ? (
