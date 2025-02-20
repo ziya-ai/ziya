@@ -183,14 +183,14 @@ Codebase ends here.
 
 Remember to strictly adhere to the Git diff format guidelines provided above when suggesting code changes.
 
+Intermediate Steps: {agent_scratchpad}
 """
-
+# Putting the intermediate steps in template as Gemini does not support
+# empty strings in API. agent_scratchpad is empty at the beginning of the chain
 conversational_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", template),
-        # ("system", "You are a helpful AI bot. Your name is {name}."),
         MessagesPlaceholder(variable_name="chat_history"),
         ("user", "{question}"),
-        ("ai", "{agent_scratchpad}"),
     ]
 )
