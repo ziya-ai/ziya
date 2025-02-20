@@ -1,23 +1,25 @@
+import json
 import os
 import os.path
-from typing import List, Tuple, Set, Union
+from typing import List, Tuple, Union
 
-import json
 import botocore
 import tiktoken
 from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
+from langchain.chat_models.base import BaseChatModel
 from langchain_aws import ChatBedrock
 from langchain_community.document_loaders import TextLoader
 from langchain_core.agents import AgentFinish
 from langchain_core.messages import AIMessage, HumanMessage
-from pydantic import BaseModel, Field
+from langchain_google_genai import ChatGoogleGenerativeAI
 
+from app.utils.llm_constants import MODEL_MAPPING, AgentInput, SAMPLE_QUESTION, GEMINI_PREFIX, GOOGLE_API_KEY
 from app.agents.prompts import conversational_prompt
-from app.utils.sanitizer_util import clean_backtick_sequences
-
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
+from app.utils.sanitizer_util import clean_backtick_sequences
+
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Clean chat history by removing invalid messages and normalizing content."""
@@ -44,29 +46,36 @@ def parse_output(message):
     text = clean_backtick_sequences(message.content)
     return AgentFinish(return_values={"output": text}, log=text)
 
-aws_profile = os.environ.get("ZIYA_AWS_PROFILE")
-if aws_profile:
-    logger.info(f"Using AWS Profile: {aws_profile}")
-else:
-    logger.info("No AWS profile specified via --aws-profile flag, using default credentials")
-model_id = {
-    "sonnet3.5": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
-    "sonnet3.5-v2": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "opus": "us.anthropic.claude-3-opus-20240229-v1:0",
-    "sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0",
-    "haiku": "us.anthropic.claude-3-haiku-20240307-v1:0",
-}[os.environ.get("ZIYA_AWS_MODEL", "sonnet3.5-v2")]
-logger.info(f"Using Claude Model: {model_id}")
 
-model = ChatBedrock(
-    model_id=model_id,
-    model_kwargs={"max_tokens": 4096, "temperature": 0.3, "top_k": 15},
-    credentials_profile_name=aws_profile if aws_profile else None,
-    config=botocore.config.Config(
-        read_timeout=900
-    )
-)
+def get_chat_model() -> BaseChatModel:
+    model_name = os.environ.get("ZIYA_AWS_MODEL", "sonnet3.5-v2")
+    
+    logger.info(f"Using model name: {model_name}")
 
+    model_mapped_name = MODEL_MAPPING[model_name]
+
+    if model_name.startswith(GEMINI_PREFIX):
+        api_key = os.environ.get(GOOGLE_API_KEY)
+        if not api_key:
+            raise ValueError("%s environment variable is required for Gemini model" % GOOGLE_API_KEY)
+
+        return ChatGoogleGenerativeAI(
+            model=model_mapped_name,
+            temperature=0.2,
+            max_output_tokens=4096,
+            top_k=15,
+            google_api_key=api_key,
+            timeout=None,
+            verbose=True,
+        )
+    else:
+        aws_profile = os.environ.get("ZIYA_AWS_PROFILE", None)
+        return ChatBedrock(
+            model_id=MODEL_MAPPING[model_name],
+            model_kwargs={"max_tokens": 4096, "temperature": 0.3, "top_k": 15},
+            credentials_profile_name=aws_profile,
+            config=botocore.config.Config(read_timeout=900),
+        )
 
 def get_combined_docs_from_files(files) -> str:
     combined_contents: str = ""
@@ -86,17 +95,17 @@ def get_combined_docs_from_files(files) -> str:
     print(f"Codebase word count: {len(combined_contents.split()):,}")
     token_count = len(tiktoken.get_encoding("cl100k_base").encode(combined_contents))
     print(f"Codebase token count: {token_count:,}")
-    print(f"Max Claude Token limit: 200,000")
-    print("--------------------------------------------------------")
+    print("-" * 120)
     return combined_contents
-
-
-llm_with_stop = model.bind(stop=["</tool_input>"])
 
 def extract_codebase(x):
     logger.debug(f"Extracting codebase for files: {x['config'].get('files', [])}")
     return get_combined_docs_from_files(x["config"].get("files", []))
 
+
+# Variable definitions
+model = get_chat_model()
+llm_with_stop = model.bind(stop=["</tool_input>"])
 agent = (
         {
             "codebase": lambda x: extract_codebase(x),
@@ -108,14 +117,6 @@ agent = (
         | llm_with_stop
         | parse_output
 )
-
-
-class AgentInput(BaseModel):
-    question: str
-    config: dict = Field({})
-    chat_history: List[Tuple[str, str]] = Field(..., extra={"widget": {"type": "chat"}})
-
-
 agent_executor = AgentExecutor(
     agent=agent, tools=[], verbose=True, handle_parsing_errors=True
 ).with_types(input_type=AgentInput)
@@ -123,5 +124,4 @@ agent_executor = AgentExecutor(
 agent_executor = agent_executor | (lambda x: x["output"])
 
 if __name__ == "__main__":
-    question = "How are you ?"
-    print(agent_executor.invoke({"question": question, "chat_history": []}))
+    print(agent_executor.invoke({"question": SAMPLE_QUESTION, "chat_history": []}))

@@ -19,6 +19,10 @@ const cleanMessages = (messages: any[]) => {
         .map(msg => ({ ...msg, content: msg.content.trim() }));
 };
 
+const testOpsPathRegex = (op: Operation) => {
+    return /^\/logs\/.*\/streamed_output_str\/-$/.test(op.path);
+}
+
 export const sendPayload = async (messages, question, setStreamedContent, setIsStreaming, checkedItems) => {
     try {
 
@@ -90,7 +94,7 @@ export const sendPayload = async (messages, question, setStreamedContent, setIsS
             for (const op of ops) {
                 if (
                     op.op === 'add' &&
-                    op.path === '/logs/ChatBedrock/streamed_output_str/-'
+                    testOpsPathRegex(op)
                 ) {
                     contentChunks.push(op.value || '');
 		    const newContent = op.value || '';
