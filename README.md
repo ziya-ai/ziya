@@ -4,7 +4,7 @@
 See the [GitHub Repository](https://github.com/ziya-ai/ziya)
 
 ## Overview
-Ziya is a code assist tool for AWS Bedrock models. It can read your entire codebase and answer questions.
+Ziya is a code assist tool that uses AWS Bedrock and Google Gemini models. It can read your entire codebase and answer questions.
 
 The current version only performs read operations. However, future versions will be able to:
 
@@ -14,13 +14,22 @@ The current version only performs read operations. However, future versions will
 4. Iteratively continue to do 1,2,3 for a given objective. 
 
 ## Pre-requisites
-### Setup AWS credentials:
+### [Bedrock] Setup AWS credentials:
 The easiest way is to set the env variables with access to AWS Bedrock claude models.
 
 ```bash
 export AWS_ACCESS_KEY_ID=<YOUR-KEY>
 export AWS_SECRET_ACCESS_KEY=<YOUR-SECRET>
 ```
+
+### [Gemini] Setup Env file
+Create a file with the following contents
+
+```bash
+# Get the API KEY from Google AI Studio
+GOOGLE_API_KEY=<GOOGLE_API_KEY>
+```
+
 ### Installation
 
 ```bash
@@ -57,12 +66,20 @@ ziya
 
 `--profile`: AWS profile to use for the Bedrock LLM.
 
-`--model`: The AWS Bedrock Model to use, one of `sonnet3.5`(default), `sonnet`, `haiku` or `opus`.
+`--model`: The Model to use. We support Bedrock/Gemini models
 
 `--port`: The port number for frontend app. Default is `6969`.
 
 `--max-depth`: Maximum depth for folder structure traversal. Default is `15`.
 
+`--env-file`: (Mandatory for Gemini) .env file with environment variables.
+
+
+### How to run
 ```bash
+# For Bedrock
 ziya --exclude='tst,build,*.py' --profile=ziya --model=sonnet3.5 --port=8080
+
+# For Gemini. Assume env file is at ./.env
+ziya --exclude='tst,build,*.py' --model=gemini-2.0-flash --port=8080 --env-file=.env
 ```
