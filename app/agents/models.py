@@ -54,18 +54,31 @@ class ModelManager:
         'model': None,
         'auth_checked': False,
         'auth_success': False,
+        'credentials_checked': False,
         'google_credentials': None,
         'aws_profile': None,
         'process_id': None
     }
 
     DEFAULT_ENDPOINT = "bedrock"
+    # Define valid models for each endpoint
+    BEDROCK_MODELS = {
+        "sonnet": "anthropic.claude-v2",
+        "sonnet3.5": "anthropic.claude-3",
+        "sonnet3.5-v2": "anthropic.claude-3-sonnet",
+        "haiku": "anthropic.claude-3-haiku",
+        "opus": "anthropic.claude-3-opus"
+    }
+
+    GOOGLE_MODELS = {
+        "gemini-pro": "gemini-pro",
+        "gemini-1.5-pro": "gemini-1.5-pro"
+    }
 
     DEFAULT_MODELS = {
         "bedrock": "sonnet3.5-v2",
         "google": "gemini-1.5-pro"
     }
-
 
     MODEL_CONFIGS = {
         "bedrock": {
@@ -171,6 +184,32 @@ class ModelManager:
             ) 
 
     @classmethod
+    def validate_model_choice(cls, endpoint: str, model: str) -> str:
+        """
+        Validates the model choice for the given endpoint and returns the full model identifier.
+        Raises ValueError if invalid.
+        """
+        if endpoint == "bedrock":
+            if model not in cls.BEDROCK_MODELS:
+                valid_models = ", ".join(cls.BEDROCK_MODELS.keys())
+                raise ValueError(
+                    f"Invalid model '{model}' for bedrock endpoint. "
+                    f"Valid models are: {valid_models}"
+                )
+            return cls.BEDROCK_MODELS[model]
+
+        elif endpoint == "google":
+            if model not in cls.GOOGLE_MODELS:
+                valid_models = ", ".join(cls.GOOGLE_MODELS.keys())
+                raise ValueError(
+                    f"Invalid model '{model}' for google endpoint. "
+                    f"Valid models are: {valid_models}"
+                )
+            return cls.GOOGLE_MODELS[model]
+        else:
+            raise ValueError(f"Invalid endpoint: {endpoint}. Must be 'bedrock' or 'google'")
+ 
+    @classmethod
     def _load_credentials(cls) -> bool:
         """
         Load credentials from environment or .env files.
@@ -240,7 +279,6 @@ class ModelManager:
 
     @classmethod
     def initialize_model(cls, force_reinit: bool = False) -> BaseChatModel:
-
         """Initialize and return the appropriate model based on environment settings."""
         current_pid = os.getpid()
 
@@ -266,7 +304,6 @@ class ModelManager:
         logger.info(f"Initializing model for endpoint: {endpoint}, model: {model_name}")
         if endpoint == "bedrock":
             cls._state['model'] = cls._initialize_bedrock_model(model_name)
-#            cls._state['model'].model_id = model_name  # Ensure model ID matches what was requested
         elif endpoint == "google":
             cls._state['model'] = cls._initialize_google_model(model_name)
         else:
@@ -323,6 +360,15 @@ class ModelManager:
                     "  - Your current directory\n"
                     "  - ~/.ziya/.env\n")
  
+        if model_name not in cls.GOOGLE_MODELS:
+            raise ValueError(f"Invalid Google model: {model_name}")
+
+        # Force reload of environment variables
+        load_dotenv(override=True)
+
+        logger.info("Checking Google authentication methods...")
+
+        # Check API Key
         api_key = os.getenv("GOOGLE_API_KEY")
         if api_key:
             logger.debug(f"Found API key (starts with: {api_key[:6]}...)")
@@ -366,6 +412,8 @@ class ModelManager:
                 verbose=os.environ.get("ZIYA_THINKING_MODE") == "1"
             )
             model.callbacks = [EmptyMessageFilter()]
+            # Test the model with a simple query
+            # response = model.invoke("Test connection")
             logger.info("Successfully connected to Google API")
             return model
 

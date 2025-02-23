@@ -29,7 +29,11 @@ langchain-google-genai = ">=0.1.0"
 langchain-cli = ">=0.0.15"
 pydevd-pycharm = "^243.18137.19"
 langchain-community = "^0.3.1"
+<<<<<<< HEAD
 transformers = "^4.48.3"
+=======
+transformers = "^4.36.2"
+>>>>>>> 0679ce1 (initial (re)implementation of google endpoint support)
 python-dotenv = ">=0.19.0"
 google-auth = ">=2.0.0"
 

@@ -895,6 +895,11 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
             i += 1
             continue
 
+        # Handle index lines and other git metadata
+        if line.startswith('index ') or line.startswith('new file mode ') or line.startswith('deleted file mode '):
+            i += 1
+            continue
+
         if line.startswith('@@ '):
             match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:\s+Hunk #(\d+))?', line)
             hunk_num = int(match.group(5)) if match and match.group(5) else len(hunks) + 1
@@ -928,6 +933,7 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
 
                 # Start collecting content for this hunk
                 current_lines = []
+                logger.debug(f"Found hunk: {current_hunk}")
                 in_hunk = True
                 hunks.append(hunk)
                 current_hunk = hunk

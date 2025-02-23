@@ -545,6 +545,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 .dark .model-id-display {
   background-color: #1f1f1f;
   border-top-color: #303030;
+  color: #ffffff;
 }
 
 .dark .token-summary .ant-progress-bg {
