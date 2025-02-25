@@ -1,0 +1,6 @@
+{
+    "target_file": "test.ts",
+    "description": "Test handling of JSON string content with escape sequences and comments",
+    "date_added": "2024-01-25",
+    "issue_reference": "d3_renderer_json_escape"
+}

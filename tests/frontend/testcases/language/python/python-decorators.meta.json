@@ -1,0 +1,14 @@
+{
+  "name": "Python Decorators and Type Hints",
+  "description": "Complex Python code with decorators, type hints, and async functions",
+  "tags": [
+    "python",
+    "decorators",
+    "type-hints",
+    "async"
+  ],
+  "expectedResult": {
+    "shouldApplyCleanly": true,
+    "expectedErrors": []
+  }
+}

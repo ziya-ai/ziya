@@ -1,0 +1,7 @@
+                        <Tooltip title="Toggle theme">
+                            <Button icon={<BulbOutlined />} onClick={toggleTheme} />
+                        </Tooltip>
+                       <debugcontrols
+                           setDebugView={setDebugView}
+                       />
+                        <Tooltip title="New Chat">

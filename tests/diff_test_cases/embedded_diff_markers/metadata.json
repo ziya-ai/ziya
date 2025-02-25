@@ -1,0 +1,6 @@
+{
+    "target_file": "test_diff_apply.py",
+    "description": "Test handling content that contains diff-like markers",
+    "date_added": "2024-01-17",
+    "issue_reference": "embedded_diff_markers"
+}

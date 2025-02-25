@@ -1,12 +1,14 @@
 import React, {useEffect, useState, useCallback} from 'react';
-import {Input, Tabs, Tree, TreeDataNode} from 'antd';
+import {Input, Tabs, Tree, TreeDataNode, Button, message} from 'antd';
 import {useFolderContext} from '../context/FolderContext';
+import {Folders} from '../utils/types';
+import {useChatContext} from '../context/ChatContext';
 import {TokenCountDisplay} from "./TokenCountDisplay";
 import union from 'lodash/union';
 import {ChatHistory} from "./ChatHistory";
 import {useTheme} from '../context/ThemeContext';
-
-
+import {ReloadOutlined, FolderOutlined, MessageOutlined} from '@ant-design/icons';
+import { convertToTreeData } from '../utils/folderUtil';
 const {TabPane} = Tabs;
 
 const {Search} = Input;
@@ -15,10 +17,14 @@ interface FolderTreeProps {
     isPanelCollapsed: boolean;
 }
 
+const ACTIVE_TAB_KEY = 'ZIYA_ACTIVE_TAB';
+const DEFAULT_TAB = '1'; // File Explorer tab
+
 export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const {
         folders,
         treeData,
+	setTreeData,
         checkedKeys,
         setCheckedKeys,
 	expandedKeys,
@@ -26,8 +32,9 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     } = useFolderContext();
     const [modelId, setModelId] = useState<string>('');
     const {isDarkMode} = useTheme();
-
-
+    const {currentConversationId} = useChatContext();
+    const [isRefreshing, setIsRefreshing] = useState(false);
+    const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || DEFAULT_TAB);
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
@@ -43,6 +50,11 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         }
     }, [searchValue, treeData]);
 
+    // Save active tab whenever it changes
+    useEffect(() => {
+        localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
+    }, [activeTab]);
+
         const fetchModelId = useCallback(async () => {
         try {
             const response = await fetch('/api/model-id');
@@ -56,6 +68,40 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     useEffect(() => {
         fetchModelId();
     }, [fetchModelId]);
+
+    const refreshFolders = async () => {
+        setIsRefreshing(true);
+        try {
+            const response = await fetch('/api/folders?refresh=true');
+            if (!response.ok) {
+                throw new Error('Failed to refresh folders');
+            }
+	    const data: Folders = await response.json();
+
+            // Sort the tree data recursively
+            const sortTreeData = (nodes: TreeDataNode[]): TreeDataNode[] => {
+		return nodes.sort((a, b) =>
+                    String(a.title).toLowerCase()
+                        .localeCompare(String(b.title).toLowerCase())
+                )
+                    .map(node => ({
+                        ...node,
+                        children: node.children ? sortTreeData(node.children) : undefined
+                    }));
+            };
+
+	    const sortedData = sortTreeData(convertToTreeData(data));
+	    console.debug('Refreshed and sorted folder structure:', { nodeCount: sortedData.length });
+
+            setTreeData(sortedData);
+            message.success('Folder structure refreshed');
+        } catch (err) {
+            console.error('Failed to refresh folders:', err);
+            message.error('Failed to refresh folders');
+        } finally {
+            setIsRefreshing(false);
+        }
+    };
 
     const filterTreeData = (data: TreeDataNode[], searchValue: string): {
         filteredData: TreeDataNode[],
@@ -182,69 +228,99 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     );
 
     return (
-            <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
-	                <Tabs
+        <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
+	    <TokenCountDisplay/>
+            <Tabs 
+                activeKey={activeTab}
                 defaultActiveKey="1"
-		style={{
+                destroyInactiveTabPane={false}
+                style={{
                     height: '100%',
                     display: 'flex',
                     flexDirection: 'column',
                     color: isDarkMode ? '#ffffff' : undefined,
-                    overflow: 'hidden'
+                    overflow: 'hidden',
+		    margin: '0 -8px'
                 }}
+                onChange={setActiveTab}
                 items={[
                     {
                         key: '1',
-                        label: 'File Explorer',
+			label: (
+                            <span>
+                                <FolderOutlined style={{ marginRight: 8 }} />
+                                File Explorer
+                            </span>
+                        ),
                         children: (
                             <>
-                                <TokenCountDisplay/>
-	                        <div style={{
+                                <div style={{
                                     display: 'flex',
                                     flexDirection: 'column',
                                     height: '100%',
                                     overflow: 'hidden',
-                                    position: 'relative'
+				    padding: '0 8px'
                                 }}>
-                                <Search
-                                    style={{
-                                        marginBottom: 8,
-                                        backgroundColor: isDarkMode ? '#1f1f1f' : undefined,
-                                    }}
-                                    placeholder="Search folders"
-                                    onChange={onSearch}
-                                    allowClear
-                                />
-                                {folders ? (
-                                    <Tree
-                                        checkable
-                                        onExpand={onExpand}
-                                        expandedKeys={expandedKeys}
-                                        autoExpandParent={autoExpandParent}
-                                        onCheck={onCheck}
-                                        checkedKeys={checkedKeys}
-                                        treeData={filteredTreeData}
-                                        titleRender={titleRender}
-				        style={{
-                                            background: 'transparent',
-                                            color: isDarkMode ? '#ffffff' : '#000000',
-					    height: 'calc(100% - 40px)',
-                                            overflow: 'auto',
-                                            position: 'relative'
-                                        }}
-                                        className={isDarkMode ? 'dark' : ''}
-                                    />
-                                ) : (
-                                    <div>Loading Folders...</div>
-                                )}
-				</div>
+                                    <div style={{
+                                        flex: 1,
+                                        overflowY: 'auto',
+                                        overflowX: 'hidden'
+                                    }}>
+                                        <Search
+                                            style={{
+                                                marginBottom: 8,
+                                                backgroundColor: isDarkMode ? '#1f1f1f' : undefined,
+                                            }}
+                                            placeholder="Search folders"
+                                            onChange={onSearch}
+                                            allowClear
+                                        />
+                                        {folders ? (
+                                            <>
+                                                <Button
+                                                    icon={<ReloadOutlined spin={isRefreshing}/>}
+                                                    onClick={refreshFolders}
+                                                    style={{marginBottom: 8}}
+                                                    loading={isRefreshing}
+                                                >
+                                                    Refresh Files
+                                                </Button>
+                                                <Tree
+                                                    checkable
+                                                    onExpand={onExpand}
+                                                    expandedKeys={expandedKeys}
+                                                    autoExpandParent={autoExpandParent}
+                                                    onCheck={onCheck}
+                                                    checkedKeys={checkedKeys}
+                                                treeData={searchValue ? filteredTreeData : treeData}
+                                                    titleRender={titleRender}
+                                                    style={{
+                                                        background: 'transparent',
+                                                        color: isDarkMode ? '#ffffff' : '#000000',
+                                                        height: 'calc(100% - 40px)',
+                                                        overflow: 'auto',
+                                                        position: 'relative'
+                                                    }}
+                                                    className={isDarkMode ? 'dark' : ''}
+                                                />
+                                            </>
+                                        ) : (
+                                            <div>Loading Folders...</div>
+                                        )}
+                                    </div>
+                                </div>
                             </>
-                        ),
+                        )
                     },
                     {
                         key: '2',
-                        label: 'Chat History',
-                        children: <ChatHistory/>,
+			label: (
+                            <span>
+                                <MessageOutlined style={{ marginRight: 8 }} />
+                                Chat History
+                            </span>
+                        ),
+                        children: <ChatHistory/>
                     }
                 ]}
             />

@@ -11,13 +11,21 @@
     "@types/node": "^16.18.96",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.0",
+    "@types/lodash": "^4.14.202",
     "antd": "^5.20.3",
     "eventsource-parser": "^2.0.1",
+    "d3": "^7.8.5",
+    "vega": "^5.25.0",
+    "vega-lite": "^5.16.0",
+    "vega-embed": "^6.22.0",
+    "@types/d3": "^7.4.3",
     "lodash": "^4.17.21",
     "marked": "^14.1.2",
+    "prismjs": "^1.29.0",
     "react": "^18.3.1",
     "react-checkbox-tree": "^1.8.0",
     "react-diff-view": "^3.2.1",
+    "react-router-dom": "^6.22.3",
     "react-dom": "^18.3.1",
     "react-scripts": "5.0.1",
     "typescript": "^4.9.5",
@@ -29,7 +37,7 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "export SET NODE_OPTIONS=--openssl-legacy-provider && react-scripts build && npm run copy-to-templates",
-    "copy-to-templates": "rm -rf ../templates/* && cp -r build/* ../templates",
+    "copy-to-templates": "rm -rf ../templates/* && cp -r build/* ../templates && cp -r public/testcases ../templates/",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
@@ -45,7 +53,16 @@
       "react-app/jest"
     ]
   },
-  "browserslist": {
+  "prismjs": {
+    "languages": [],
+    "plugins": [],
+    "theme": "default",
+    "css": true,
+    "components": {
+      "prismjs": {
+        "core": true
+      }
+    },
     "production": [
       ">0.2%",
       "not dead",
@@ -59,9 +76,22 @@
   },
   "devDependencies": {
     "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
-    "@babel/plugin-transform-private-property-in-object": "^7.24.5"
+    "@babel/plugin-transform-private-property-in-object": "^7.24.5",
+    "@types/prismjs": "^1.26.3"
   },
   "resolutions": {
     "typescript": "3.4.5"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
   }
 }

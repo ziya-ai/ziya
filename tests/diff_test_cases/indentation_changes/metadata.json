@@ -1,0 +1,6 @@
+{
+    "target_file": "test_diff_apply.py",
+    "description": "Test preserving different indentation levels in changes",
+    "date_added": "2024-01-17",
+    "issue_reference": "indentation_changes"
+}

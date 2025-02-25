@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@types/lodash": "^4.17.14"
+  }
+}
