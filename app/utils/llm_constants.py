@@ -16,7 +16,6 @@ Model References:
 """
 
 MODEL_MAPPING = {
-    "sonnet3.7": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
     "sonnet3.5": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
     "sonnet3.5-v2": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "opus": "us.anthropic.claude-3-opus-20240229-v1:0",
