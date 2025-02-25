@@ -48,7 +48,7 @@ def parse_output(message):
 
 
 def get_chat_model() -> BaseChatModel:
-    model_name = os.environ.get("ZIYA_AWS_MODEL", "sonnet3.5-v2")
+    model_name = os.environ.get("ZIYA_AWS_MODEL", "sonnet3.7")
     
     logger.info(f"Using model name: {model_name}")
 
