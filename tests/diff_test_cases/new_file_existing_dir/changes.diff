@@ -1,0 +1,9 @@
+diff --git a/dev/null b/tests/newtest.py
+new file mode 100644
+--- /dev/null
++++ b/tests/newtest.py
+@@ -0,0 +1,4 @@
++def test():
++    x = 1
++    return x
++

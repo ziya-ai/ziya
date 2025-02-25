@@ -1,0 +1,20 @@
+diff --git a/example.py b/example.py
+index 1234567..89abcdef 100644
+--- a/example.py
++++ b/example.py
+@@ -1,5 +1,15 @@
+ from typing import Callable, TypeVar, ParamSpec, Awaitable
+ 
++P = ParamSpec('P')
++T = TypeVar('T')
++
++def async_decorator[P, T](func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
++    @wraps(func)
++    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
++        print(f"Calling {func.__name__}")
++        return await func(*args, **kwargs)
++    return wrapper
++
+ class Example:
+    def method(self):
+        pass

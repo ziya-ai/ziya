@@ -1,0 +1,12 @@
+diff --git a/test_diff_apply.py b/test_diff_apply.py
+--- a/test_diff_apply.py
++++ b/test_diff_apply.py
+@@ -1,5 +1,5 @@
+ def test():
+     normal_indent = True
+-    also_normal = True
+-    still_normal = True
++      more_indent = True
++        even_more = True
++    back_to_normal = True
+     return True
