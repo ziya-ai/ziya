@@ -17,7 +17,7 @@ def parse_arguments():
                         help="List of files or directories to exclude (e.g., --exclude 'tst,build,*.py')")
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
-    parser.add_argument("--model", type=str, choices=["sonnet", "sonnet3.5", "sonnet3.5-v2", "haiku", "opus"], default="sonnet3.5-v2",
+    parser.add_argument("--model", type=str, choices=["sonnet", "sonnet3.5", "sonnet3.7", "sonnet3.5-v2", "haiku", "opus"], default="sonnet3.7",
                         help="AWS Bedrock Model to use (e.g., --model sonnet)")
     parser.add_argument("--port", type=int, default=6969,
                         help="Port number to run Ziya frontend on (e.g., --port 8080)")

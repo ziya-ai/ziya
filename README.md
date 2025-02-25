@@ -57,12 +57,12 @@ ziya
 
 `--profile`: AWS profile to use for the Bedrock LLM.
 
-`--model`: The AWS Bedrock Model to use, one of `sonnet3.5`(default), `sonnet`, `haiku` or `opus`.
+`--model`: The AWS Bedrock Model to use, one of `sonnet3.7`(default), `sonnet`, `haiku` or `opus`.
 
 `--port`: The port number for frontend app. Default is `6969`.
 
 `--max-depth`: Maximum depth for folder structure traversal. Default is `15`.
 
 ```bash
-ziya --exclude='tst,build,*.py' --profile=ziya --model=sonnet3.5 --port=8080
+ziya --exclude='tst,build,*.py' --profile=ziya --model=sonnet3.7 --port=8080
 ```
