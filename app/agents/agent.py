@@ -1,4 +1,3 @@
-
 import os
 import os.path
 from typing import Dict, List, Tuple, Set, Union, Optional, Any
@@ -88,7 +87,7 @@ model_id = {
     "opus": "us.anthropic.claude-3-opus-20240229-v1:0",
     "sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0",
     "haiku": "us.anthropic.claude-3-haiku-20240307-v1:0",
-}[os.environ.get("ZIYA_AWS_MODEL", "sonnet3.7")]
+}[os.environ.get("ZIYA_AWS_MODEL", "sonnet3.5-v2")]
 logger.info(f"Using Claude Model: {model_id}")
     
 model = ChatBedrock(
@@ -323,7 +322,7 @@ def log_codebase_wrapper(x):
     logger.info(f"Codebase before prompt: {len(codebase)} chars")
     file_count = len([l for l in codebase.split('\n') if l.startswith('File: ')])
     logger.info(f"Number of files in codebase before prompt: {file_count}")
-    logger.info(f"Files in codebase before prompt:\n{chr(10).join([l for l in codebase.split('\n') if l.startswith('File: ')])}")
+    logger.info(f"Files in codebase before prompt:{chr(10)}{chr(10).join([l for l in codebase.split(chr(10)) if l.startswith('File: ')])}")
     return codebase
 
 # Define the agent chain

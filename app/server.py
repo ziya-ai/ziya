@@ -125,7 +125,14 @@ async def general_exception_handler(request: Request, exc: Exception):
         raise
 
 app.mount("/static", StaticFiles(directory="../templates/static"), name="static")
-app.mount("/testcases", StaticFiles(directory="../tests/frontend/testcases"), name="testcases")
+
+# Only mount testcases directory if it exists
+testcases_dir = "../tests/frontend/testcases"
+if os.path.exists(testcases_dir):
+    app.mount("/testcases", StaticFiles(directory=testcases_dir), name="testcases")
+else:
+    logger.info(f"Testcases directory '{testcases_dir}' does not exist - skipping mount")
+
 templates = Jinja2Templates(directory="../templates")
 
 # Add a route for the frontend
