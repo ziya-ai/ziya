@@ -1,0 +1,106 @@
+/* Debug interface layout */
+.debug-container .ant-card-body {
+    overflow: auto;
+}
+
+.debug-container .ant-table-wrapper {
+    width: 100%;
+}
+
+.debug-container .ant-table-cell {
+    white-space: nowrap;
+}
+
+/* Make the language column grow to fit content */
+.debug-container .ant-table-thead th:first-child,
+.debug-container .ant-table-tbody td:first-child {
+    min-width: 200px;
+    max-width: none;
+}
+
+/* Debug interface light mode */
+.debug-card {
+    background-color: #ffffff;
+    border: 1px solid #e8e8e8;
+}
+
+.debug-card pre {
+    padding: 16px;
+    border-radius: 6px;
+    overflow: auto;
+    background-color: #f6f8fa;
+    border: 1px solid #e1e8e8;
+}
+
+.debug-card code {
+    color: #24292e;
+}
+
+/* Debug interface dark mode */
+.dark .debug-card {
+    background-color: #141414;
+    border-color: #303030;
+    color: #ffffff;
+}
+
+.dark .debug-container .ant-card-head {
+    background-color: #1f1f1f;
+    border-bottom-color: #303030;
+    color: #ffffff;
+}
+
+.dark .debug-container .ant-table {
+    background-color: #141414;
+    color: #ffffff;
+}
+
+.dark .debug-container .ant-table-thead > tr > th {
+    background-color: #1f1f1f;
+    color: #ffffff;
+    border-bottom: 1px solid #303030;
+}
+
+.dark .debug-container .ant-table-tbody > tr > td {
+    border-bottom: 1px solid #303030;
+    color: #ffffff;
+}
+
+.dark .debug-container .ant-table-tbody > tr:hover > td {
+    background-color: #1f1f1f;
+}
+
+.dark .debug-container .ant-tabs-tab {
+    color: #ffffff;
+}
+
+.dark .debug-container .ant-tabs-content {
+    color: #ffffff;
+}
+
+.dark .debug-card pre {
+    background-color: #1f1f1f;
+    border-color: #303030;
+    color: #ffffff;
+}
+
+.dark .debug-card code {
+    color: #e6e6e6;
+}
+
+/* Test results status colors - light mode */
+.debug-container .status-success {
+    color: #52c41a;
+}
+
+.debug-container .status-failed {
+    color: #ff4d4f;
+}
+
+.debug-container .status-pending {
+    color: #1890ff;
+}
+
+/* Test results status colors - dark mode */
+.dark .debug-container .status-success {
+    color: #73d13d;
+}

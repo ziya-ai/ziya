@@ -1,0 +1,7 @@
+{
+    "id": "component-casing",
+    "name": "JSX Component Casing",
+    "description": "Test proper handling of JSX component casing and indentation",
+    "targetFile": "frontend/src/components/App.tsx",
+    "category": "jsx-casing"
+}

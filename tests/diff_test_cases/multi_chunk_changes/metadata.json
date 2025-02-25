@@ -1,0 +1,6 @@
+{
+    "target_file": "test_diff_apply.py",
+    "description": "Multiple chunks with embedded diff markers and indentation changes",
+    "date_added": "2024-01-17",
+    "issue_reference": "multi_chunk_embedded_diff_markers"
+}

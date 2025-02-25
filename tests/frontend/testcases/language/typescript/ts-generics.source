@@ -1,0 +1,8 @@
+type Props<T> = {
+    data: T[];
+    render: (item: T) => JSX.Element;
+};
+
+const Component = <T,>({ data, render }: Props<T>) => (
+    <div>{data.map(render)}</div>
+);

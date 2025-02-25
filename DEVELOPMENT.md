@@ -13,8 +13,6 @@ poetry run fbuild && poetry run python app/main.py --profile ziya --port 6868
 #### To test Backend and FrontEnd changes via locally installed pip file run
 ```bash
 pip uninstall ziya -y
-#Note depending on node version you will have to remove below line in package.json 
-# "export SET NODE_OPTIONS=--openssl-legacy-provider && "
 poetry run fbuild && poetry build
 pip install dist/
 ```
@@ -27,8 +25,6 @@ poetry run pytest
 ### To Publish
 #### To publish to PyPi:
 ```bash
-#Note depending on node version you will have to remove below line in package.json 
-# "export SET NODE_OPTIONS=--openssl-legacy-provider && "
 poetry run fbuild && poetry build && poetry publish
 pip install ziya --upgrade
 OR 

@@ -1,0 +1,20 @@
+// Test file for JSX tag handling
+function TestComponent() {
+    return (
+        <div>
+            <CustomComponent
+                prop1="test"
+                prop2={value}
+            />
+            <lowercaseComponent
+                prop3="test"
+                prop4={value}
+            />
+            <div
+                className="test"
+            >
+                content
+            </div>
+        </div>
+    );
+}

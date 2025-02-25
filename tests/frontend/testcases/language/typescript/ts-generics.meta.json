@@ -1,0 +1,14 @@
+{
+  "name": "TypeScript Complex Generics",
+  "description": "Complex TypeScript code with nested generic types and mapped types",
+  "tags": [
+    "typescript",
+    "generics",
+    "mapped-types",
+    "type-inference"
+  ],
+  "expectedResult": {
+    "shouldApplyCleanly": true,
+    "expectedErrors": []
+  }
+}
