@@ -1,6 +1,7 @@
 import os
 import subprocess
 import json
+import tempfile
 import glob
 from io import StringIO
 import time
@@ -11,6 +12,7 @@ from app.utils.logging_utils import logger
 import difflib
 
 MIN_CONFIDENCE = 0.75 # what confidence level we cut off forced diff apply after fuzzy match
+MAX_OFFSET = 5        # max allowed line offset before considering a hunk apply failed
 
 class PatchApplicationError(Exception):
     """Custom exception for patch application failures"""
@@ -62,8 +64,6 @@ def clean_input_diff(diff_content: str) -> str:
         new_count = 0
         minus_seen = 0
         plus_seen = 0
-
-    import re
 
     for line in lines:
         # Reset skip flag on new file header
@@ -194,12 +194,12 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
         if line.startswith('@@ -0,0'):
             logger.debug("Detected new file from zero hunk marker")
             return True
-            
+
         # Case 2: Empty source file indicator
         if line == '--- /dev/null':
             logger.debug("Detected new file from /dev/null source")
             return True
-            
+
         # Case 3: New file mode
         if 'new file mode' in line:
             logger.debug("Detected new file from mode marker")
@@ -210,7 +210,7 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
 def create_new_file(git_diff: str, base_dir: str) -> None:
     """Create a new file from a git diff."""
     logger.info(f"Processing new file diff with length: {len(git_diff)} bytes")
-    
+
     try:
         # Parse the diff content
         diff_lines = git_diff.splitlines()
@@ -390,7 +390,7 @@ def normalize_whitespace_in_diff(diff_lines: List[str]) -> List[str]:
         if line.startswith(('+', '-', ' ')):
             prefix = line[0]  # Save the diff marker (+, -, or space)
             content = line[1:]  # Get the actual content
-            
+
             # Normalize the content while preserving essential indentation
             normalized = content.rstrip()  # Remove trailing whitespace
             if normalized:
@@ -407,7 +407,7 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
     Maintains compatibility with existing function signature.
     """
     logger.info(f"Processing diff for {original_file_path}")
-    
+
     try:
 
         # Clean up the diff content first
@@ -446,7 +446,7 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
 
             # Reconstruct normalized diff
             result = headers # start with original headers
-            
+
             # Extract original hunks
             original_hunks = []
             current_hunk = []
@@ -480,7 +480,7 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
         except Exception as e:
             logger.error(f"Error normalizing diff: {str(e)}")
             raise
-        
+
     except Exception as e:
         logger.error(f"Error correcting diff: {str(e)}")
         raise
@@ -635,69 +635,107 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> None:
 def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int) -> bool:
     """Check if a hunk has already been applied at the given position."""
     if pos >= len(file_lines):
+        logger.debug(f"Position {pos} beyond file length {len(file_lines)}")
         return False
 
-    # Get the expected final state after the hunk
+    # Extract content to compare
     old_lines = hunk['old_block']
     new_lines = hunk['new_lines']
 
     if not new_lines:
+        logger.debug("No new lines in hunk")
         return False
- 
-    # If we don't have enough lines to check, it can't be applied
+
+    # Do we have enough lines to compare?
     if pos + len(new_lines) > len(file_lines):
+        logger.debug(f"Not enough lines to check at pos {pos}")
         return False
- 
-    # Get the actual content at this position
+
+    # Get current content at position
     actual_lines = file_lines[pos:pos + len(new_lines)]
-    
-    # Convert line groups to strings for comparison
+
+    # Compare as strings for better matching
     actual_text = '\n'.join(actual_lines)
     new_text = '\n'.join(new_lines)
-    old_text = '\n'.join(old_lines) if old_lines else ''
+    old_text = '\n'.join(hunk['old_block']) if hunk['old_block'] else ''
 
-    # Use SequenceMatcher for fuzzy matching
-    matcher = difflib.SequenceMatcher(None)
-    
-    # Check similarity with new content
-    matcher.set_seqs(actual_text, new_text)
-    new_similarity = matcher.ratio()
-    
-    # High similarity with new content indicates already applied
-    if new_similarity > 0.95:  # Adjust threshold as needed
-        logger.debug(f"Hunk at position {pos} matches new state with similarity {new_similarity:.3f}")
+    # Exact match with new content
+    if actual_text == new_text:
+        logger.debug(f"Exact match with new content at pos {pos}")
         return True
 
-    # If we have old content to check against
-    if old_text:
-        # Check similarity with old content
-        matcher.set_seqs(actual_text, old_text)
-        old_similarity = matcher.ratio()
+    # Check if current content matches old content exactly
+    if old_text and actual_text == old_text:
+        logger.debug(f"Content matches old version at pos {pos}")
+        return False
 
-        # Low similarity with both old and new content suggests wrong position
-        if old_similarity < 0.8:  # Lower threshold for old content
-            logger.debug(f"Hunk at position {pos} doesn't match old state (similarity: {old_similarity:.3f}) "
-                        f"or new state (similarity: {new_similarity:.3f})")
-            return False
+    # Only use fuzzy matching as last resort with high threshold
+    matcher = difflib.SequenceMatcher(None)
+    matcher.set_seqs(actual_text, new_text)
+    similarity = matcher.ratio()
 
-    logger.debug(f"Hunk at position {pos} needs to be applied (new similarity: {new_similarity:.3f})")
+    # Very high threshold to avoid false positives
+    if similarity > 0.98:
+        logger.debug(f"High similarity ({similarity:.3f}) with new content at pos {pos}")
+        return True
+
+    logger.debug(f"Content differs at pos {pos} (similarity: {similarity:.3f})")
+    return False
+
+def apply_single_hunk(lines: List[str], hunk: Dict, pos: int) -> List[str]:
+    """Apply a single hunk at the specified position."""
+    result = lines.copy()
+
+    # Remove old lines
+    end_remove = pos + len(hunk['old_block'])
+    if pos < len(result):
+        logger.debug(f"Removing lines {pos}:{end_remove}")
+        result[pos:end_remove] = []
+
+    # Insert new lines
+    logger.debug(f"Inserting {len(hunk['new_lines'])} lines at pos={pos}")
+    for i, line in enumerate(hunk['new_lines']):
+        result.insert(pos + i, line)
+
+    return result
 
 def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, original_lines: list[str]) -> list[str]:
     # parse hunks
-    hunks = parse_unified_diff_exact_plus(diff_content, file_path)
+    hunks = list(parse_unified_diff_exact_plus(diff_content, file_path))
+    logger.debug(f"Parsed hunks for difflib: {json.dumps([{'old_start': h['old_start'], 'old_count': h['old_count'], 'new_start': h['new_start'], 'new_count': h['new_count'], 'old_block': h['old_block'], 'new_lines': h['new_lines']} for h in hunks], indent=2)}")
+    seen_hunks = set()
     stripped_original = [ln.rstrip('\n') for ln in original_lines]
-    
+
     final_lines = stripped_original.copy()
     offset = 0
+    applied_content = set()
     for hunk_idx, h in enumerate(hunks, start=1):
+        logger.debug(f"Processing hunk #{hunk_idx} with offset {offset}")
+
+        # Create a unique key for this hunk based on its content
+        hunk_key = (
+            tuple(h['old_block']),
+            tuple(h['new_lines'])
+        )
+        if hunk_key in seen_hunks:
+            continue
+
+        # First check if this hunk is already applied anywhere in the file
+        for pos in range(len(stripped_original)):
+            if is_hunk_already_applied(stripped_original, h, pos):
+                logger.info(f"Hunk #{hunk_idx} already applied at position {pos}")
+                # Skip this hunk but continue processing others
+                continue
+
+        seen_hunks.add(hunk_key)
+
         old_start = h['old_start']
         old_count = h['old_count']
         old_block = h['old_block']
-        new_lines = [ln for ln in h['new_lines'] if ln or ln == '']  # Preserve empty strings but not None
+        new_lines = h['new_lines']
         adjusted_old_start = max(1, old_start + offset)
 
         remove_pos = min(adjusted_old_start - 1, len(final_lines))
-        remove_pos = clamp(remove_pos, 0, len(stripped_original))
         strict_ok = False
 
         remove_pos = clamp(remove_pos, 0, len(final_lines))
@@ -707,34 +745,15 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         end_remove = remove_pos + actual_old_count
         total_lines = len(final_lines)
 
-        for i in range(remove_pos, end_remove):
-            logger.debug(f"  - {final_lines[i]!r}")
-        del final_lines[remove_pos:end_remove]
-
-        logger.debug(f"Hunk #{hunk_idx}: Inserting {len(new_lines)} lines at pos={remove_pos}")
-        for i, ln in enumerate(new_lines):
-            logger.debug(f"  + {ln}")
-            # Preserve indentation from the original line if possible
-            if remove_pos + i < len(stripped_original):
-                orig_indent = len(stripped_original[remove_pos + i]) - len(stripped_original[remove_pos + i].lstrip())
-                ln = ' ' * orig_indent + ln.lstrip()
-            final_lines.insert(remove_pos + i, ln)
-
-        net_change = len(new_lines) - old_count
+        net_change = len(new_lines) - actual_old_count
         offset += net_change
         remove_pos = clamp(remove_pos, 0, len(stripped_original))
-        strict_ok = False
-
-        # Check if hunk is already applied
-        if is_hunk_already_applied(stripped_original, h, remove_pos):
-            logger.info(f"Hunk #{hunk_idx} is already applied at position {remove_pos}")
-            continue
 
         # see if we have enough lines
         if remove_pos + old_count <= len(final_lines):
             file_slice = final_lines[remove_pos : remove_pos + old_count]
             # Compare to the first old_count lines from old_block
-            if old_block and len(old_block) >= old_count:
+            if old_block and len(old_block) >= actual_old_count:
                 old_block_minus = old_block[:old_count]  # The lines we think are removed
                 if file_slice == old_block_minus:
                     strict_ok = True
@@ -774,27 +793,71 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         end_remove = remove_pos + actual_old_count
         total_lines = len(final_lines)
 
-        logger.debug(f"Hunk #{hunk_idx}: Removing lines {remove_pos}:{end_remove} from file")
         if remove_pos < len(final_lines):
+            logger.debug(f"Hunk #{hunk_idx}: Removing lines {remove_pos}:{end_remove} from file")
             for i in range(remove_pos, min(end_remove, len(final_lines))):
-                logger.debug(f"  - {final_lines[i]!r}")
-            del final_lines[remove_pos:end_remove]
-            
+                logger.debug(f"  - {final_lines[i]}")
+            final_lines[remove_pos:end_remove] = []
+
         # Insert new_lines
         logger.debug(f"Hunk #{hunk_idx}: Inserting {len(new_lines)} lines at pos={remove_pos}")
-        for i, ln in enumerate(new_lines):
-            logger.debug(f"  + {ln}")
-            stripped_original.insert(remove_pos + i, ln)
+        inserted_at = set()
 
-        net_change = len(new_lines) - old_count
-        offset += net_change
-    # Ensure exactly one newline at end of file
-    if stripped_original:
-        # Add newlines to all lines except the last one if it's empty
-        result_lines = [ln + '\n' for ln in final_lines]
-        if not final_lines[-1].strip():
-            result_lines.pop()
-    
+        # Preserve function/block context
+        if remove_pos > 0 and final_lines:
+            # Check if we need to preserve function declaration
+            prev_line = final_lines[remove_pos-1].rstrip() if remove_pos > 0 else ""
+            if prev_line.startswith(('def ', 'class ')):
+                # Add blank line after function/class declaration if needed
+                final_lines.insert(remove_pos, '')
+                remove_pos += 1
+
+            for i, ln in enumerate(new_lines):
+                logger.debug(f"  + {ln}")
+                # Only insert if we haven't inserted at this position
+                if remove_pos + i not in inserted_at:
+                    final_lines.insert(remove_pos + i, ln)
+                    inserted_at.add(remove_pos + i)
+
+    changes_made = False
+    final_lines = stripped_original.copy()
+
+    # Process all hunks that were passed in
+    for hunk_idx, hunk in enumerate(hunks, 1):
+        try:
+            logger.debug(f"Processing hunk #{hunk_idx} at line {hunk['old_start']}")
+            best_pos, best_ratio = find_best_chunk_position(final_lines, hunk['old_block'], hunk['old_start'])
+
+            if is_hunk_already_applied(final_lines, hunk, best_pos):
+                logger.debug(f"Hunk #{hunk_idx} already applied at position {best_pos}")
+                continue
+
+            if best_ratio < MIN_CONFIDENCE:
+                logger.error(f"Hunk #{hunk_idx} => low confidence match (ratio={best_ratio:.2f})")
+                raise PatchApplicationError(f"Low confidence match for hunk #{hunk_idx}",
+                    {"status": "error", "type": "low_confidence", "hunk": hunk_idx, "confidence": best_ratio})
+
+            # Apply the hunk and track changes
+            new_lines = apply_single_hunk(final_lines, hunk, best_pos)
+            final_lines = new_lines
+            changes_made = True
+            logger.debug(f"Successfully applied hunk #{hunk_idx} at position {best_pos}")
+        except Exception as e:
+            logger.error(f"Failed to apply hunk #{hunk_idx}: {str(e)}")
+            raise
+
+    # Prepare final result with proper line endings
+    result_lines = [ln.rstrip() + '\n' for ln in final_lines]
+    if not changes_made and hunks:
+        # Check if content is already in desired state
+        if all(is_hunk_already_applied(final_lines, hunk, hunk['old_start'] - 1) for hunk in hunks):
+            logger.info("All changes appear to be already applied")
+            raise PatchApplicationError("Changes already applied", {
+                "status": "success",
+                "type": "already_applied"
+            })
+        raise PatchApplicationError("Failed to apply changes", {"type": "apply_failed"})
+
     return result_lines
 
 def strip_leading_dotslash(rel_path: str) -> str:
@@ -802,7 +865,7 @@ def strip_leading_dotslash(rel_path: str) -> str:
     Remove leading '../' or './' segments from the relative path
     so it matches patch lines that are always 'frontend/...', not '../frontend/...'.
     """
-    import re
+
     # Repeatedly strip leading '../' or './'
     pattern = re.compile(r'^\.\.?/')
     while pattern.match(rel_path):
@@ -814,23 +877,18 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
     Same logic: we gather old_block and new_lines. If we can't parse anything, we return an empty list.
     The calling code might handle that or raise an error if no hunks are found.
     """
-    import re
+
     lines = diff_content.splitlines()
+    logger.debug(f"Parsing diff with {len(lines)} lines:\n{diff_content}")
     hunks = []
     current_hunk = None
     in_hunk = False
     skip_file = True
+    seen_hunks = set()
 
     # fixme: import ziya project directory if specified on invocation cli
     rel_path = os.path.relpath(target_file, os.getcwd())
     rel_path = strip_leading_dotslash(rel_path)
-
-    def close_hunk():
-        nonlocal current_hunk, in_hunk
-        if current_hunk:
-            hunks.append(current_hunk)
-        current_hunk = None
-        in_hunk = False
 
     i = 0
     while i < len(lines):
@@ -846,54 +904,76 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
             continue
 
         if line.startswith('@@ '):
-            close_hunk()
-            match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$', line)
+            match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:\s+Hunk #(\d+))?', line)
+            hunk_num = int(match.group(5)) if match and match.group(5) else len(hunks) + 1
             if match:
                 old_start = int(match.group(1))
                 # Validate line numbers
                 if old_start < 1:
                     logger.warning(f"Invalid hunk header - old_start ({old_start}) < 1")
                     old_start = 1
-                
+
                 # Use default of 1 for count if not specified
                 old_count = int(match.group(2)) if match.group(2) else 1
-                
+
                 new_start = int(match.group(3))
                 new_count = int(match.group(4)) if match.group(4) else 1
-                current_hunk = {
+
+                # Use original hunk number if present in header
+                if match.group(5):
+                    hunk_num = int(match.group(5))
+
+                hunk = {
                     'old_start': old_start,
                     'old_count': old_count,
                     'new_start': new_start,
                     'new_count': new_count,
+                    'number': hunk_num,
                     'old_block': [],
+                    'original_hunk': hunk_num,  # Store original hunk number
                     'new_lines': []
                 }
+
+                # Start collecting content for this hunk
+                current_lines = []
                 in_hunk = True
-                hunks.append(current_hunk)
+                hunks.append(hunk)
+                current_hunk = hunk
+
             i += 1
             continue
 
-        if in_hunk and current_hunk:
-            if line.startswith('-'):
-                text = line[1:].rstrip('\n')
-                current_hunk['old_block'].append(text)
-            elif line.startswith('+'):
-                text = line[1:].rstrip('\n')
-                current_hunk['new_lines'].append(text)
-            else:
-                if not line.strip():
-                    i += 1  # Advance counter when skipping empty lines
-                # context => belongs to both old_block & new_lines
-                text = line[1:].rstrip('\n') if line.startswith(' ') else line.rstrip('\n')
-                current_hunk['old_block'].append(text)
-                current_hunk['new_lines'].append(text)
+        seen_hunks = set()
+        if in_hunk:
+            # End of hunk reached if we see a line that doesn't start with ' ', '+', '-', or '\'
+            if not line.startswith((' ', '+', '-', '\\')):
+                in_hunk = False
+                if current_hunk:
+                    # Check if this hunk is complete and unique
+                    if len(current_hunk['old_block']) == current_hunk['old_count'] and \
+                       len(current_hunk['new_lines']) == current_hunk['new_count']:
+                        hunk_key = (tuple(current_hunk['old_block']), tuple(current_hunk['new_lines']))
+                        if hunk_key not in seen_hunks:
+                            seen_hunks.add(hunk_key)
+                            hunks.append(current_hunk)
+                    current_hunk = None
+                i += 1
+                continue
+
+            if current_hunk:
+                if line.startswith('-'):
+                    text = line[1:].rstrip('\r\n')
+                    current_hunk['old_block'].append(text)
+                elif line.startswith('+'):
+                    text = line[1:].rstrip('\r\n')
+                    current_hunk['new_lines'].append(text)
+                elif line.startswith(' '):
+                    text = line[1:].rstrip('\r\n')
+                    current_hunk['old_block'].append(text)
+                    current_hunk['new_lines'].append(text)
+
         i += 1
-
-    close_hunk()
-    if len(hunks) == 0:
-        logger.warning(f"No hunks found in diff for {target_file}")
     return hunks
-
 
 def find_best_chunk_position(file_lines: list[str], old_block: list[str], approximate_line: int) -> tuple[int, float]:
     """
@@ -1059,7 +1139,7 @@ def extract_function_name(line: str) -> str:
 def cleanup_patch_artifacts(base_dir: str, file_path: str) -> None:
     """
     Clean up .rej and .orig files that might be left behind by patch application.
-    
+
     Args:
         base_dir: The base directory where the codebase is located
         file_path: The path to the file that was patched
@@ -1067,7 +1147,7 @@ def cleanup_patch_artifacts(base_dir: str, file_path: str) -> None:
     try:
         # Get the directory containing the file
         file_dir = os.path.dirname(os.path.join(base_dir, file_path))
-        
+
         # Find and remove .rej and .orig files
         for pattern in ['*.rej', '*.orig']:
             for artifact in glob.glob(os.path.join(file_dir, pattern)):
@@ -1084,6 +1164,12 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
     logger.info("Starting diff application process...")
     logger.debug("Original diff content:")
     logger.debug(git_diff)
+    changes_written = False
+    results = {
+        "succeeded": [],
+        "failed": [],
+        "already_applied": []
+    }
 
     # Correct the diff using existing functionality
     if file_path:
@@ -1112,138 +1198,227 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
         cleanup_patch_artifacts(user_codebase_dir, file_path)
         return
 
+    results = {"succeeded": [], "already_applied": [], "failed": []}
+
+    # Read original content before any modifications
     try:
-        # Try system patch first
+        with open(file_path, 'r', encoding='utf-8') as f:
+            original_content = f.read()
+    except FileNotFoundError:
+        original_content = ""
+
+    try:
+        logger.info("Starting patch application pipeline...")
         logger.debug("About to run patch command with:")
         logger.debug(f"CWD: {user_codebase_dir}")
-
-        # Save original file content to check if patch modified it
-        original_content = open(file_path, 'r').read() if os.path.exists(file_path) else ""
         logger.debug(f"Input length: {len(git_diff)} bytes")
+        changes_written = False
+        # Do a dry run to see what we're up against on first pass
         patch_result = subprocess.run(
             ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '--dry-run', '-i', '-'],
             input=git_diff,
+            encoding='utf-8',
             cwd=user_codebase_dir,
             capture_output=True,
             text=True,
             timeout=10
         )
-        logger.debug("Patch command completed with:")
         logger.debug(f"stdout: {patch_result.stdout}")
         logger.debug(f"stderr: {patch_result.stderr}")
+        logger.debug(f"Return code: {patch_result.returncode}")
 
-        # If patch thinks it's reversed, trust it and return early
-        if "Reversed (or previously applied) patch detected!" in patch_result.stdout:
-            logger.info("Patch detected as already applied")
-            return True
+        hunk_status = {}
+        patch_output = ""
+        file_was_modified = False
+        has_line_mismatch = False
+        has_large_offset = False
+        has_fuzz = False
+        patch_reports_success = False
 
-        # Otherwise proceed with actual patch application
-        patch_result = subprocess.run(
-            ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '-i', '-'],
-            input=git_diff,
-            cwd=user_codebase_dir,
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
+        # Parse the dry run output
+        dry_run_status = parse_patch_output(patch_result.stdout)
+        hunk_status = dry_run_status
+        already_applied = "Reversed (or previously applied)" in patch_result.stdout
+        logger.debug("Returned from dry run, processing results...")
+        logger.debug(f"Dry run status: {dry_run_status}")
 
-        patch_output = patch_result.stdout
-        # Check if file was actually modified
-        try:
-            current_content = open(file_path, 'r').read()
-            file_was_modified = current_content != original_content
-        except Exception as e:
-            logger.error(f"Error checking file modifications: {e}")
-            file_was_modified = False
+        # If patch indicates changes are already applied, return success
+        if already_applied:
+            logger.info("Changes appear to be already applied")
+            return {"status": "success", "details": {
+                "succeeded": [],
+                "failed": [],
+                "already_applied": list(dry_run_status.keys())
+            }}
 
-        # Parse patch output
-        has_line_mismatch = "No such line" in patch_output
-        has_large_offset = "offset -" in patch_result.stdout
-        has_fuzz = "with fuzz" in patch_result.stdout
-        patch_reports_success = patch_result.returncode == 0
-
-        hunk_status = parse_patch_output(patch_result.stdout)
-
-        # Check for success immediately after parsing output
-        if patch_result.returncode == 0 and all(success for success in hunk_status.values()):
-            logger.info("Patch command succeeded, all hunks applied cleanly")
-            cleanup_patch_artifacts(user_codebase_dir, file_path)
-            return True
-
-        # Check if any hunks failed or if we had line mismatches
-        failed_hunks = any(not success for success in hunk_status.values())
-
-        if failed_hunks or has_line_mismatch:
-            if file_was_modified:
-                # Restore original content since we don't trust the modifications
-                with open(file_path, 'w') as f:
-                    f.write(original_content)
-
-            # Extract remaining hunks to try with git apply
-            logger.warning("Some hunks failed or had line mismatches, extracting remaining hunks...")
-            git_diff = extract_remaining_hunks(git_diff, hunk_status)
-            if not git_diff:
-                logger.warning("No remaining hunks to process")
-                return False
-            logger.info("Proceeding with git apply...")
-
-        timestamp = int(time.time() * 1000)
-        temp_file = os.path.join(user_codebase_dir, f'temp_{timestamp}.diff')
-
-        try:
-            with open(temp_file, 'w', newline='\n') as f:
-                f.write(git_diff)
-
-            git_result = subprocess.run (
-                ['git', 'apply', '--verbose', '--ignore-whitespace',
-                 '--ignore-space-change', '--whitespace=nowarn',
-                 '--reject', temp_file],
+        # Apply successful hunks with system patch if any
+        # fixme: we should probably be iterating success only, but this will also hit already applied cases
+        if any(success for success in dry_run_status.values()):
+            logger.info("Applying successful hunks with system patch...")
+            patch_result = subprocess.run(
+                ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '-i', '-'],
+                input=git_diff,
+                encoding='utf-8',
                 cwd=user_codebase_dir,
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=10
             )
 
-            if git_result.returncode == 0:
-                logger.info("Git apply succeeded")
-                cleanup_patch_artifacts(user_codebase_dir, file_path)
-                return
+            # Actually write the successful changes
+            if patch_result.returncode == 0:
+                logger.info("Successfully applied some hunks with patch, writing changes")
+                # No need to do anything else as patch has written the changes
+            else:
+                logger.warning("Patch application had mixed results")
 
-            # If both patch and git apply fail, try difflib
-            logger.warning("Git apply failed, trying difflib...")
-            try:
-                apply_diff_with_difflib(file_path, git_diff)
-            except PatchApplicationError as e:
-                if 'available_lines' in e.details:
-                    logger.warning(
-                        f"Not enough lines in file to apply patch. "
-                        f"Requested {e.details['requested_lines']} lines at position {e.details['position']}, "
-                        f"but only {e.details['available_lines']} lines available after that position."
-                    )
-                elif e.details.get('status') == 'partial':
-                    logger.warning(f"Partial success: {e.details.get('summary', '')}")
-                    # Re-raise to let the endpoint handle the partial success
-                    raise
+            patch_output = patch_result.stdout
+            logger.debug(f"Raw (system) patch stdout:\n{patch_output}")
+            logger.debug(f"Raw (system) patch stdout:\n{patch_result.stderr}")
+            hunk_status = parse_patch_output(patch_output)
+
+        # Record results from patch stage
+        for hunk_num, success in dry_run_status.items():
+            if success:
+                if "Reversed (or previously applied)" in patch_output and f"Hunk #{hunk_num}" in patch_output:
+                    logger.info(f"Hunk #{hunk_num} was already applied")
+                    results["already_applied"].append(hunk_num)
                 else:
-                    logger.error(f"Failed to apply changes: {str(e)}")
-                    raise
-            logger.info("Difflib apply succeeded")
-            cleanup_patch_artifacts(user_codebase_dir, file_path)
-            return
+                    logger.info(f"Hunk #{hunk_num} applied successfully")
+                    results["succeeded"].append(hunk_num)
+                    changes_written = True
+            else:
+                logger.info(f"Hunk #{hunk_num} failed to apply")
+                results["failed"].append(hunk_num)
 
-        finally:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+        if results["succeeded"] or results["already_applied"]:
+            logger.info(f"Successfully applied {len(results['succeeded'])} hunks, "
+                      f"{len(results['already_applied'])} were already applied")
+            changes_written = True
+
+        # If any hunks failed, extract them to pass onto next pipeline stage
+        if results["failed"]:
+            logger.info(f"Extracting {len(results['failed'])} failed hunks for next stage")
+            git_diff = extract_remaining_hunks(git_diff, {h: False for h in results["failed"]})
+        else:
+            logger.info("Exiting pipeline die to full success condition.")
+            return {"status": "success", "details": results}
+
+        # Proceed with git apply if we have any failed hunks
+        if results["failed"]:
+            logger.debug("Some failed hunks reported, processing..")
+            if not git_diff.strip():
+                logger.warning("No valid hunks remaining to process")
+                return {"status": "partial", "details": results}
+            temp_path = None
+            logger.info("Proceeding with git apply for remaining hunks")
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.diff', delete=False) as temp_file:
+                    temp_file.write(git_diff)
+                    temp_path = temp_file.name
+
+                git_result = subprocess.run(
+                    ['git', 'apply', '--verbose', '--ignore-whitespace',
+                     '--ignore-space-change', '--whitespace=nowarn',
+                     '--check', temp_path],
+                    cwd=user_codebase_dir,
+                    capture_output=True,
+                    text=True
+                )
+                
+                if "patch does not apply" not in git_result.stderr:
+                    logger.info("Changes already applied according to git apply --check")
+                    return {"status": "success", "details": {
+                        "succeeded": [],
+                        "failed": [],
+                        "already_applied": results["failed"]
+                    }}
+
+                git_result = subprocess.run(
+                    ['git', 'apply', '--verbose', '--ignore-whitespace',
+                     '--ignore-space-change', '--whitespace=nowarn',
+                     '--reject', temp_path],
+                    cwd=user_codebase_dir,
+                    capture_output=True,
+                    text=True
+                )
+
+                logger.debug(f"Git apply stdout:\n{git_result.stdout}")
+                logger.debug(f"Git apply stderr:\n{git_result.stderr}")
+
+                if git_result.returncode == 0:
+                    logger.info("Git apply succeeded")
+                    # Move hunks from failed to succeeded
+                    for hunk_num in results["failed"][:]:
+                        results["failed"].remove(hunk_num)
+                        results["succeeded"].append(hunk_num)
+                    changes_written = True
+                    return {"status": "success", "details": results}
+                elif "already applied" in git_result.stderr:
+                    # Move hunks from failed to already_applied
+                    for hunk_num in results["failed"][:]:
+                        results["failed"].remove(hunk_num)
+                        results["already_applied"].append(hunk_num)
+                        logger.info(f"Marking hunk {hunk_num} as already applied and continuing")
+                else:
+                    logger.info("Git apply failed, moving to difflib stage...")
+                    # Continue to difflib
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+
+            # If git apply failed, try difflib with the same hunks we just tried
+            logger.info("Attempting to apply changes with difflib")
+            try:
+                logger.info("Starting difflib application...")
+                # Parse the remaining hunks for difflib
+                if git_diff:
+                    logger.debug(f"Passing to difflib:\n{git_diff}")
+                    try:
+                        apply_diff_with_difflib(file_path, git_diff)
+                        # If difflib succeeds, move remaining failed hunks to succeeded
+                        for hunk_num in results["failed"][:]:
+                            results["failed"].remove(hunk_num)
+                            results["succeeded"].append(hunk_num)
+                        changes_written = True
+                        return {"status": "success", "details": results}
+                    except Exception as e:
+                        if isinstance(e, PatchApplicationError) and e.details.get("type") == "already_applied":
+                            # Move failed hunks to already_applied
+                            for hunk_num in results["failed"][:]:
+                                results["failed"].remove(hunk_num)
+                                results["already_applied"].append(hunk_num)
+                            return {"status": "success", "details": results}
+                        logger.error(f"Difflib application failed: {str(e)}")
+                        raise
+            except PatchApplicationError as e:
+                logger.error(f"Difflib application failed: {str(e)}")
+                if e.details.get("type") == "already_applied":
+                    return {"status": "success", "details": results}
+                if changes_written:
+                    return {"status": "partial", "details": results}
+                raise
+        else:
+            logger.debug("Unreachable? No hunks reported failure, exiting pipeline after system patch stage.")
+
     except Exception as e:
         logger.error(f"Error applying patch: {str(e)}")
         raise
     finally:
         cleanup_patch_artifacts(user_codebase_dir, file_path)
 
+    # Return final status
+    if len(results["failed"]) == 0:
+        return {"status": "success", "details": results}
+    elif changes_written:
+        return {"status": "partial", "details": results}
+    return {"status": "error", "details": results}
+
 def parse_patch_output(patch_output: str) -> Dict[int, bool]:
     """Parse patch command output to determine which hunks succeeded/failed.
     Returns a dict mapping hunk number to success status."""
     hunk_status = {}
-    logger.debug(f"Parsing patch output.")
+    logger.debug(f"Parsing patch output:\n{patch_output}")
 
     in_patch_output = False
     current_hunk = None
@@ -1261,22 +1436,18 @@ def parse_patch_output(patch_output: str) -> Dict[int, bool]:
 
         # Check for significant adjustments that should invalidate "success"
         if current_hunk is not None:
-            if "offset -" in line:
+            if "succeeded at" in line:
+                hunk_status[current_hunk] = True
+                logger.debug(f"Hunk {current_hunk} succeeded")
+            elif "failed" in line:
                 hunk_status[current_hunk] = False
-                logger.debug(f"Marking hunk {current_hunk} as failed due to large offset")
-                continue
-            if "with fuzz" in line:
-                hunk_status[current_hunk] = False
-                logger.debug(f"Marking hunk {current_hunk} as failed due to fuzz")
-                continue
+                logger.debug(f"Hunk {current_hunk} failed")
 
         # Match lines like "Hunk #1 succeeded at 6."
         match = re.search(r'Hunk #(\d+) (succeeded|failed)', line)
         if match:
             hunk_num = int(match.group(1))
-            # Only mark as succeeded if we haven't already marked it as failed
-            if hunk_num not in hunk_status:
-                hunk_status[hunk_num] = match.group(2) == 'succeeded'
+            hunk_status[hunk_num] = match.group(2) == 'succeeded'
             logger.debug(f"Found hunk {hunk_num}: {'succeeded' if hunk_status[hunk_num] else 'failed'}")
 
     logger.debug(f"Final hunk status: {hunk_status}")
@@ -1286,45 +1457,56 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int,bool]) -> str:
     """Extract hunks that weren't successfully applied."""
     logger.debug("Extracting remaining hunks from diff")
 
-    logger.debug(f"Parsed hunk status: {json.dumps(hunk_status, indent=2)}")
-    
+    logger.debug(f"Hunk status before extraction: {json.dumps(hunk_status, indent=2)}")
+
     # Parse the original diff into hunks
     lines = git_diff.splitlines()
     hunks = []
     current_hunk = []
     headers = []
-
+    hunk_count = 0
     in_hunk = False
+
     for line in lines:
         if line.startswith(('diff --git', '--- ', '+++ ')):
             headers.append(line)
         elif line.startswith('@@'):
+            hunk_count += 1
             if current_hunk:
-                hunks.append(current_hunk)
-                hunk_complete = False
-            current_hunk = [line]
-            in_hunk = True
+                if current_hunk:
+                    hunks.append((hunk_count - 1, current_hunk))
+
+            # Only start collecting if this hunk failed
+            if hunk_count in hunk_status and not hunk_status[hunk_count]:
+                logger.debug(f"Including failed hunk #{hunk_count}")
+                current_hunk = [f"{line} Hunk #{hunk_count}"]
+                in_hunk = True
+            else:
+                logger.debug(f"Skipping successful hunk #{hunk_count}")
+                current_hunk = []
+                in_hunk = False
         elif in_hunk:
             current_hunk.append(line)
-            if not line.startswith((' ', '+', '-', '\\')) and not hunk_complete:
+            if not line.startswith((' ', '+', '-', '\\')):
                 # End of hunk reached
-                hunks.append(current_hunk)
+                if current_hunk:
+                    hunks.append(current_hunk)
                 current_hunk = []
-                hunk_complete = True
                 in_hunk = False
-            
-    if current_hunk:
-        hunks.append(current_hunk)
-        
-    # Filter out successfully applied hunks
-    for i, hunk in enumerate(hunks, 1):
-        logger.debug(f"Hunk {i}: {'keeping' if not hunk_status.get(i, False) else 'dropping'}")
 
-    remaining_hunks = [hunk for i, hunk in enumerate(hunks, 1)
-                       if not hunk_status.get(i, False)]
-    logger.info(f"Keeping {len(remaining_hunks)} hunks out of {len(hunks)} total")
-    if not remaining_hunks:
+    if current_hunk:
+        hunks.append((hunk_count, current_hunk))
+
+    # Build final result with proper spacing
+    result = []
+    result.extend(headers)
+    for _, hunk_lines in hunks:
+        result.extend(hunk_lines)
+
+    if not result:
+        logger.warning("No hunks to extract")
         return ''
-    
-    # Reconstruct diff with headers and remaining hunks
-    return '\n'.join(headers + sum(remaining_hunks, []))
+
+    final_diff = '\n'.join(result) + '\n'
+    logger.debug(f"Extracted diff for remaining hunks:\n{final_diff}")
+    return final_diff
