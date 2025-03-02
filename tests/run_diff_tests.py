@@ -216,6 +216,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_already_applied_complex(self):
         """Test applying a diff that has already been applied (complex case)"""
         self.run_diff_test('already_applied_complex')
+
+    def test_network_diagram_plugin(self):
+        """Test updating network diagram plugin with validation fixes"""
+        self.run_diff_test('network_diagram_plugin')
         
     def test_long_multipart_emptylines(self):
         """Test handling of long multi-part changes with empty lines and complex indentation"""
@@ -334,6 +338,8 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--log-level', default='INFO',
                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                       help='Set the log level')
+    parser.add_argument('--force-difflib', action='store_true',
+                      help='Bypass system patch and use difflib directly')
     args = parser.parse_args()
  
     os.environ['ZIYA_LOG_LEVEL'] = args.log_level
@@ -342,6 +348,9 @@ if __name__ == '__main__':
     if args.show_cases:
         print_test_case_details(args.test_filter)
         sys.exit(0)
+
+    if args.force_difflib:
+        os.environ['ZIYA_FORCE_DIFFLIB'] = '1'
  
     # Otherwise run the tests normally
     suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
