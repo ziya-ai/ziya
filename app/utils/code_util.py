@@ -700,25 +700,6 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     logger.debug("No changes needed")
     return True
 
-    return False
-
-def apply_single_hunk(lines: List[str], hunk: Dict, pos: int) -> List[str]:
-    """Apply a single hunk at the specified position."""
-    result = lines.copy()
-
-    # Remove old lines
-    end_remove = pos + len(hunk['old_block'])
-    if pos < len(result):
-        logger.debug(f"Removing lines {pos}:{end_remove}")
-        result[pos:end_remove] = []
-
-    # Insert new lines
-    logger.debug(f"Inserting {len(hunk['new_lines'])} lines at pos={pos}")
-    for i, line in enumerate(hunk['new_lines']):
-        result.insert(pos + i, line)
-
-    return result
-
 def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, original_lines: list[str]) -> list[str]:
     # parse hunks
     hunks = list(parse_unified_diff_exact_plus(diff_content, file_path))
@@ -758,9 +739,8 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         old_count = h['old_count']
         old_block = h['old_block']
         new_lines = h['new_lines']
-        adjusted_old_start = max(1, old_start + offset)
-
-        remove_pos = min(adjusted_old_start - 1, len(final_lines))
+        adjusted_old_start = max(0, old_start - 1)
+        remove_pos = min(adjusted_old_start + offset, len(final_lines))
 
         strict_ok = False
         remove_pos = clamp(remove_pos, 0, len(final_lines))
@@ -769,10 +749,16 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         actual_old_count = min(old_count, available_lines)
         end_remove = remove_pos + actual_old_count
         total_lines = len(final_lines)
-
-        net_change = len(new_lines) - actual_old_count
-        offset += net_change
         remove_pos = clamp(remove_pos, 0, len(stripped_original))
+
+        # Calculate net change based on actual lines removed and added
+        actual_removed = min(len(h['old_block']), len(final_lines) - remove_pos)
+        logger.debug(f"Removal calculation: min({len(h['old_block'])}, {len(final_lines)} - {remove_pos})")
+        logger.debug(f"Old block lines: {h['old_block']}")
+        logger.debug(f"New lines: {h['new_lines']}")
+        logger.debug(f"Remove position: {remove_pos}")
+        logger.debug(f"Final lines length: {len(final_lines)}")
+        offset += len(h['new_lines']) - actual_removed
 
         # see if we have enough lines
         if remove_pos + len(old_block) <= len(final_lines):
@@ -811,7 +797,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                     logger.error(msg)
                     raise PatchApplicationError(msg, {"status": "error", "type": "low_confidence", "hunk": hunk_idx, "confidence": best_ratio})
             logger.debug(f"Hunk #{hunk_idx}: fuzzy best pos={best_pos}, ratio={best_ratio:.2f}")
-            remove_pos = best_pos
+            remove_pos = best_pos + 1
 
         # forcibly remove old_count lines at remove_pos
         remove_pos = clamp(remove_pos, 0, len(stripped_original))
@@ -835,8 +821,15 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             final_lines.insert(remove_pos + i, ln)
         logger.debug(f"  final_lines after insertion: {final_lines}")
 
-    # Prepare final result with proper line endings
-    result_lines = [ln.rstrip() + '\n' for ln in final_lines]
+    # Remove trailing empty line if present
+    while final_lines and final_lines[-1] == '':
+        final_lines.pop()
+
+    # Add newlines to all lines
+    result_lines = [
+        ln + '\n' if not ln.endswith('\n') else ln
+        for ln in final_lines
+    ]
     logger.debug(f"Final result lines: {result_lines}")
     
     return result_lines
@@ -943,13 +936,16 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
 
             if current_hunk:
                 if line.startswith('-'):
-                    text = line[1:].rstrip('\r\n')
+                    text = line[1:]
+#                   text = text[1:] if text.startswith(' ') else text  # Remove one leading space if present
                     current_hunk['old_block'].append(text)
                 elif line.startswith('+'):
-                    text = line[1:].rstrip('\r\n')
+                    text = line[1:]
+#                   text = text[1:] if text.startswith(' ') else text
                     current_hunk['new_lines'].append(text)
                 elif line.startswith(' '):
-                    text = line[1:].rstrip('\r\n')
+                    text = line[1:]
+#                   text = text[1:] if text.startswith(' ') else text
                     current_hunk['old_block'].append(text)
                     current_hunk['new_lines'].append(text)
 
