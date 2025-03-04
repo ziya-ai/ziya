@@ -781,7 +781,8 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                         continue
                     elif already_applied / len(new_lines) > 0.7:  # If more than 70% of new lines already exist
                         logger.info(f"Hunk #{hunk_idx} appears to be already applied (found {already_applied}/{len(new_lines)} lines)")
-                        logger.info(f"Overwriting entire section.")
+                        continue # skip applying this hunk since its already mostly present
+                        #fixme: we need to mark this in the dict as already applied
                 else:
                     msg = (f"Hunk #{hunk_idx} => low confidence match (ratio={best_ratio:.2f}) near {remove_pos}, "
                            f"can't safely apply chunk. Failing.")
