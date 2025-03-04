@@ -740,7 +740,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         old_block = h['old_block']
         new_lines = h['new_lines']
         adjusted_old_start = max(0, old_start - 1)
-        remove_pos = min(adjusted_old_start + offset, len(final_lines))
+        remove_pos = min(adjusted_old_start + offset + 1, len(final_lines))
 
         strict_ok = False
         remove_pos = clamp(remove_pos, 0, len(final_lines))
@@ -750,15 +750,6 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         end_remove = remove_pos + actual_old_count
         total_lines = len(final_lines)
         remove_pos = clamp(remove_pos, 0, len(stripped_original))
-
-        # Calculate net change based on actual lines removed and added
-        actual_removed = min(len(h['old_block']), len(final_lines) - remove_pos)
-        logger.debug(f"Removal calculation: min({len(h['old_block'])}, {len(final_lines)} - {remove_pos})")
-        logger.debug(f"Old block lines: {h['old_block']}")
-        logger.debug(f"New lines: {h['new_lines']}")
-        logger.debug(f"Remove position: {remove_pos}")
-        logger.debug(f"Final lines length: {len(final_lines)}")
-        offset += len(h['new_lines']) - actual_removed
 
         # see if we have enough lines
         if remove_pos + len(old_block) <= len(final_lines):
@@ -797,7 +788,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                     logger.error(msg)
                     raise PatchApplicationError(msg, {"status": "error", "type": "low_confidence", "hunk": hunk_idx, "confidence": best_ratio})
             logger.debug(f"Hunk #{hunk_idx}: fuzzy best pos={best_pos}, ratio={best_ratio:.2f}")
-            remove_pos = best_pos + 1
+            remove_pos = best_pos + offset
 
         # forcibly remove old_count lines at remove_pos
         remove_pos = clamp(remove_pos, 0, len(stripped_original))
@@ -820,6 +811,15 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             logger.debug(f"  + {ln}")
             final_lines.insert(remove_pos + i, ln)
         logger.debug(f"  final_lines after insertion: {final_lines}")
+
+        # Calculate net change based on actual lines removed and added
+        actual_removed = min(len(h['old_block']), len(final_lines) - remove_pos)
+        logger.debug(f"Removal calculation: min({len(h['old_block'])}, {len(final_lines)} - {remove_pos})")
+        logger.debug(f"Old block lines: {h['old_block']}")
+        logger.debug(f"New lines: {h['new_lines']}")
+        logger.debug(f"Remove position: {remove_pos}")
+        logger.debug(f"Final lines length: {len(final_lines)}")
+        offset += len(h['new_lines']) - actual_removed
 
     # Remove trailing empty line if present
     while final_lines and final_lines[-1] == '':
