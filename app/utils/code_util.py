@@ -794,16 +794,17 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         # forcibly remove old_count lines at remove_pos
         remove_pos = clamp(remove_pos, 0, len(stripped_original))
         # Adjust old_count if we're near the end of file
-        available_lines = min(len(stripped_original) - remove_pos, len(old_block))
+        available_lines = len(final_lines) - remove_pos
         actual_old_count = min(old_count, available_lines)
         end_remove = remove_pos + actual_old_count
         total_lines = len(final_lines)
 
         if remove_pos < len(final_lines):
             logger.debug(f"Hunk #{hunk_idx}: Removing lines {remove_pos}:{end_remove} from file")
-            for i in range(remove_pos, min(end_remove, len(final_lines))):
+            lines_to_remove = final_lines[remove_pos:end_remove]
+            for i, line in enumerate(lines_to_remove, start=remove_pos):
                 logger.debug(f"  - {final_lines[i]}")
-            final_lines = final_lines[:remove_pos] + final_lines[end_remove:]
+            final_lines = final_lines[:remove_pos] + final_lines[min(end_remove, len(final_lines)):]
             logger.debug(f"  final_lines after removal: {final_lines}")
 
         # Insert new_lines
@@ -814,13 +815,14 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         logger.debug(f"  final_lines after insertion: {final_lines}")
 
         # Calculate net change based on actual lines removed and added
-        actual_removed = min(len(h['old_block']), len(final_lines) - remove_pos)
+        actual_removed = min(actual_old_count, len(final_lines) - remove_pos)
         logger.debug(f"Removal calculation: min({len(h['old_block'])}, {len(final_lines)} - {remove_pos})")
         logger.debug(f"Old block lines: {h['old_block']}")
         logger.debug(f"New lines: {h['new_lines']}")
         logger.debug(f"Remove position: {remove_pos}")
         logger.debug(f"Final lines length: {len(final_lines)}")
-        offset += len(h['new_lines']) - actual_removed
+        net_change = len(h['new_lines']) - actual_removed
+        offset += net_change
 
     # Remove trailing empty line if present
     while final_lines and final_lines[-1] == '':
@@ -1228,6 +1230,13 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
         original_content = ""
 
     try:
+        # Check if file exists before attempting patch
+        if not os.path.exists(file_path) and not is_new_file_creation(diff_lines):
+            raise PatchApplicationError(f"Target file does not exist: {file_path}", {
+                "status": "error",
+                "type": "missing_file",
+                "file": file_path
+            })
         logger.info("Starting patch application pipeline...")
         logger.debug("About to run patch command with:")
         logger.debug(f"CWD: {user_codebase_dir}")
@@ -1258,7 +1267,7 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
         # Parse the dry run output
         dry_run_status = parse_patch_output(patch_result.stdout)
         hunk_status = dry_run_status
-        already_applied = ("Reversed (or previously applied)" in patch_result.stdout and
+        already_applied = (not "No file to patch" in patch_result.stdout and "Reversed (or previously applied)" in patch_result.stdout and
                          "failed" not in patch_result.stdout.lower())
         logger.debug("Returned from dry run, processing results...")
         logger.debug(f"Dry run status: {dry_run_status}")
