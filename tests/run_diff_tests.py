@@ -99,7 +99,15 @@ class DiffRegressionTest(unittest.TestCase):
             f.write(original)
             
         # Apply the diff
-        use_git_to_apply_code_diff(diff,test_file_path)
+        use_git_to_apply_code_diff(diff, test_file_path)
+        
+        # If metadata specifies apply_twice, try applying the same diff again
+        if metadata.get('apply_twice'):
+            try:
+                use_git_to_apply_code_diff(diff, test_file_path)
+            except Exception as e:
+                # We expect this might fail, but shouldn't affect the test
+                logger.debug(f"Second application of diff failed (expected): {str(e)}")
         
         # Read the result
         with open(test_file_path, 'r', encoding='utf-8') as f:
@@ -209,6 +217,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test adding centralized defaults config and removing scattered is_default flags"""
         self.run_diff_test('model_defaults_config')
 
+    def test_line_calculation_fix(self):
+        """Test fixing line calculation when using different lists for available lines"""
+        self.run_diff_test('line_calculation_fix')
+
     def test_already_applied_simple(self):
         """Test applying a diff that has already been applied (simple case)"""
         self.run_diff_test('already_applied_simple')
@@ -221,9 +233,17 @@ class DiffRegressionTest(unittest.TestCase):
         """Test updating network diagram plugin with validation fixes"""
         self.run_diff_test('network_diagram_plugin')
         
+    def test_constant_duplicate_check(self):
+        """Test that constant definitions don't duplicate on multiple applications"""
+        self.run_diff_test('constant_duplicate_check')
+        
     def test_long_multipart_emptylines(self):
         """Test handling of long multi-part changes with empty lines and complex indentation"""
         self.run_diff_test('long_multipart_emptylines')
+
+    def test_d3_network_typescript(self):
+        """Test TypeScript fixes for D3 network diagram plugin"""
+        self.run_diff_test('d3_network_typescript')
 
 
 class PrettyTestResult(unittest.TestResult):
