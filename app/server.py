@@ -31,9 +31,12 @@ from app.utils.directory_util import get_ignored_patterns
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
 
+# Server configuration defaults
+DEFAULT_PORT = 6969
+# For model configurations, see app/agents/model.py
+
 class SetModelRequest(BaseModel):
     model_id: str
- 
 
 app = FastAPI()
 
@@ -700,4 +703,4 @@ async def apply_changes(request: ApplyChangesRequest):
         )
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=DEFAULT_PORT)

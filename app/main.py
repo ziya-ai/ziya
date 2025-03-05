@@ -9,6 +9,8 @@ from langchain_cli.cli import serve
 from app.utils.logging_utils import logger
 from app.utils.langchain_validation_util import validate_langchain_vars
 from app.utils.version_util import get_current_version, get_latest_version
+from app.server import DEFAULT_PORT
+from app.agents.models import ModelManager
 
 
 def parse_arguments():
@@ -17,18 +19,17 @@ def parse_arguments():
                         help="List of files or directories to exclude (e.g., --exclude 'tst,build,*.py')")
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
-    # Get default endpoint and model aliases from configuration
-    default_endpoint = "bedrock"  # Fallback default
     
     # Get default model alias from ModelManager based on default endpoint
-    default_model = ModelManager.DEFAULT_MODELS[default_endpoint]
-    
-    parser.add_argument("--endpoint", type=str, choices=["bedrock", "google"], default=default_endpoint,
-                        help=f"Model endpoint to use (default: {default_endpoint})")
+    default_model = ModelManager.DEFAULT_MODELS[ModelManager.DEFAULT_ENDPOINT]
+    parser.add_argument("--endpoint", type=str, choices=["bedrock", "google"], default=ModelManager.DEFAULT_ENDPOINT,
+                        help=f"Model endpoint to use (default: {ModelManager.DEFAULT_ENDPOINT})")
     parser.add_argument("--model", type=str, default=None,
                         help=f"Model to use from selected endpoint (default: {default_model})")
-    parser.add_argument("--port", type=int, default=6969,
-                        help="Port number to run Ziya frontend on (e.g., --port 8080)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=(f"Port number to run Ziya frontend on "
+                              f"(default: {DEFAULT_PORT}, e.g., --port 8080)"))
+
     parser.add_argument("--version", action="store_true",
                         help="Prints the version of Ziya")
     parser.add_argument("--max-depth", type=int, default=15,

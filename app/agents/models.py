@@ -59,6 +59,14 @@ class ModelManager:
         'process_id': None
     }
 
+    DEFAULT_ENDPOINT = "bedrock"
+
+    DEFAULT_MODELS = {
+        "bedrock": "sonnet3.5-v2",
+        "google": "gemini-1.5-pro"
+    }
+
+
     MODEL_CONFIGS = {
         "bedrock": {
             "sonnet3.7": {
@@ -68,7 +76,6 @@ class ModelManager:
                 "temperature": 0.3,
                 "top_k": 15, 
                 "supports_thinking": True,
-                "is_default": True
             },
             "sonnet3.5": {
                 "model_id": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
@@ -83,6 +90,7 @@ class ModelManager:
                 "max_output_tokens": 4096,
                 "temperature": 0.3,
                 "top_k": 15,
+#                "is_default": True
             },
             "opus": {
                 "model_id": "us.anthropic.claude-3-opus-20240229-v1:0",
@@ -126,11 +134,6 @@ class ModelManager:
         }
     }
 
-    DEFAULT_MODELS = {
-        "bedrock": "sonnet3.7",
-        "google": "gemini-1.5-pro"
-    }
-
     @classmethod
     def get_model_config(cls, endpoint: str, model_name: str = None) -> dict:
         """
@@ -142,13 +145,8 @@ class ModelManager:
             raise ValueError(f"Invalid endpoint: {endpoint}")
 
         if model_name is None:
-            # Find the default model for this endpoint
-            for name, config in endpoint_configs.items():
-                if config.get("is_default"):
-                    return {**config, "name": name}
-            # If no default specified, use first model
-            first_model = next(iter(endpoint_configs.items()))
-            return {**first_model[1], "name": first_model[0]}
+            default_name = cls.DEFAULT_MODELS[endpoint]
+            return {**endpoint_configs[default_name], "name": default_name}
 
         # Check if it's a model ID
         for name, config in endpoint_configs.items():
@@ -255,7 +253,7 @@ class ModelManager:
             cls._state['model'] = None
             cls._state['auth_checked'] = False
 
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
         model_name = os.environ.get("ZIYA_MODEL")
 
         # Clear existing model if forcing reinitialization
