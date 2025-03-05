@@ -12,7 +12,7 @@ import re
 from app.utils.logging_utils import logger
 import difflib
 
-MIN_CONFIDENCE = 0.75 # what confidence level we cut off forced diff apply after fuzzy match
+MIN_CONFIDENCE = 0.72 # what confidence level we cut off forced diff apply after fuzzy match
 MAX_OFFSET = 5        # max allowed line offset before considering a hunk apply failed
 
 class PatchApplicationError(Exception):
@@ -685,7 +685,7 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         logger.debug(f"Hunk changes: needed={changes_needed}, found={changes_found}, ratio={applied_ratio:.2f}")
 
         # Consider it applied if we found all changes
-        if applied_ratio == 1.0:  # Must match exactly
+        if applied_ratio >= 1.0:  # Must match exactly, or have all needed changes+
             logger.debug(f"All changes already present at pos {pos}")
             return True
         elif applied_ratio > 0:
@@ -711,9 +711,76 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     offset = 0
     applied_content = set()
     for hunk_idx, h in enumerate(hunks, start=1):
+        def calculate_initial_positions():
+            """Calculate initial positions and counts for the hunk."""
+            old_start = h['old_start'] - 1
+            old_count = h['old_count']
+            initial_remove_pos = clamp(old_start + offset, 0, len(final_lines))
+
+            # Adjust counts based on available lines
+            available_lines = len(final_lines) - initial_remove_pos
+            actual_old_count = min(old_count, available_lines)
+            end_remove = initial_remove_pos + actual_old_count
+
+            # Final position adjustment
+            remove_pos = clamp(initial_remove_pos, 0, len(stripped_original) - 1)
+
+            return {
+                'remove_pos': remove_pos,
+                'old_count': old_count,
+                'actual_old_count': actual_old_count,
+                'end_remove': end_remove
+            }
+
+        def try_strict_match(positions):
+            """Attempt a strict match of the hunk content."""
+            remove_pos = positions['remove_pos']
+
+            if remove_pos + len(h['old_block']) <= len(final_lines):
+                file_slice = final_lines[remove_pos : remove_pos + positions['old_count']]
+                if h['old_block'] and len(h['old_block']) >= positions['actual_old_count']:
+                    old_block_minus = h['old_block'][:positions['old_count']]
+                    if file_slice == old_block_minus:
+                        logger.debug(f"Hunk #{hunk_idx}: strict match at pos={remove_pos}")
+                        return True, remove_pos
+                    logger.debug(f"Hunk #{hunk_idx}: strict match failed at pos={remove_pos}")
+                else:
+                    logger.debug(f"Hunk #{hunk_idx}: old_block is smaller than old_count => strict match not possible")
+            return False, remove_pos
+
+        def try_fuzzy_match(positions):
+            """Attempt a fuzzy match if strict match fails."""
+            remove_pos = positions['remove_pos']
+            logger.debug(f"Hunk #{hunk_idx}: Attempting fuzzy near line {remove_pos}")
+
+            best_pos, best_ratio = find_best_chunk_position(stripped_original, h['old_block'], remove_pos)
+
+            # First check if changes are already applied (with high confidence threshold)
+            if any(new_line in stripped_original for new_line in h['new_lines']):
+                already_applied = sum(1 for line in h['new_lines'] if line in stripped_original)
+                if already_applied / len(h['new_lines']) >= 0.98:  # Require near-exact match
+                    logger.info(f"Hunk #{hunk_idx} appears to be already applied")
+                    return None, remove_pos  # Signal skip to next hunk
+
+            # Then check if we have enough confidence in our match position
+            if best_ratio <= MIN_CONFIDENCE:
+                msg = (f"Hunk #{hunk_idx} => low confidence match (ratio={best_ratio:.2f}) near {remove_pos}, "
+                       f"can't safely apply chunk. Failing.")
+                logger.error(msg)
+                raise PatchApplicationError(msg, {
+                    "status": "error",
+                    "type": "low_confidence",
+                    "hunk": hunk_idx,
+                    "confidence": best_ratio
+                })
+
+            logger.debug(f"Hunk #{hunk_idx}: fuzzy best pos={best_pos}, ratio={best_ratio:.2f}")
+            return (best_pos + offset if best_pos is not None else None), remove_pos
+
         logger.debug(f"Processing hunk #{hunk_idx} with offset {offset}")
 
         # Create a unique key for this hunk based on its content
+        already_found = False
         hunk_key = (
             tuple(h['old_block']),
             tuple(h['new_lines'])
@@ -724,110 +791,58 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         # First check if this hunk is already applied anywhere in the file
         for pos in range(len(stripped_original)):
             if is_hunk_already_applied(stripped_original, h, pos):
-                # Verify the new content is actually present
+                # Verify we have the exact new content, not just similar content
                 window = stripped_original[pos:pos+len(h['new_lines'])]
-                if window == h['new_lines']:
+                if all(line.rstrip() == new_line.rstrip() for line, new_line in zip(window, h['new_lines'])):
                     logger.info(f"Hunk #{hunk_idx} already present at position {pos}")
                     already_applied_hunks.add(hunk_key)
                     logger.debug(f"Verified hunk #{hunk_idx} is already applied")
-                    continue
-                
+                    already_found = True
+                    break
                 # Content doesn't match exactly, continue looking
                 continue
 
-        old_start = h['old_start']
-        old_count = h['old_count']
-        old_block = h['old_block']
-        new_lines = h['new_lines']
-        adjusted_old_start = max(0, old_start - 1)
-        remove_pos = min(adjusted_old_start + offset + 1, len(final_lines))
+        if already_found:
+            continue
 
-        strict_ok = False
-        remove_pos = clamp(remove_pos, 0, len(final_lines))
-        # Adjust old_count if we're near the end of file
-        available_lines = len(final_lines) - remove_pos
-        actual_old_count = min(old_count, available_lines)
-        end_remove = remove_pos + actual_old_count
-        total_lines = len(final_lines)
-        remove_pos = clamp(remove_pos, 0, len(stripped_original))
-
-        # see if we have enough lines
-        if remove_pos + len(old_block) <= len(final_lines):
-            file_slice = final_lines[remove_pos : remove_pos + len(old_block)]
-            # Compare to the first old_count lines from old_block
-            if old_block and len(old_block) >= actual_old_count:
-                old_block_minus = old_block[:old_count]  # The lines we think are removed
-                if file_slice == old_block_minus:
-                    strict_ok = True
-                    logger.debug(f"Hunk #{hunk_idx}: strict match at pos={remove_pos}")
-                else:
-                    logger.debug(f"Hunk #{hunk_idx}: strict match failed at pos={remove_pos}")
-            else:
-                logger.debug(f"Hunk #{hunk_idx}: old_block is smaller than old_count => strict match not possible")
-
+        # Calculate initial positions
+        positions = calculate_initial_positions()
+        
+        # Try strict match first
+        strict_ok, remove_pos = try_strict_match(positions)
+        
+        # If strict match fails, try fuzzy match
         if not strict_ok:
-            # Phase B: fuzzy
-            logger.debug(f"Hunk #{hunk_idx}: Attempting fuzzy near line {remove_pos}")
-            best_pos, best_ratio = find_best_chunk_position(stripped_original, old_block, remove_pos)
-            if best_ratio < MIN_CONFIDENCE:
-                # Raise error if ratio is too low
-                # Check if the changes might already be applied
-                if any(new_line in stripped_original for new_line in new_lines):
-                    # Count how many new lines are already in the file
-                    already_applied = sum(1 for line in new_lines if line in stripped_original)
-                    if already_applied / len(new_lines) == 1.0:
-                        logger.info(f"Hunk #{hunk_idx} fully previously applied. Not writing changes.")
-                        # fixme: add to dict as already applied
-                        continue
-                    elif already_applied / len(new_lines) > 0.7:  # If more than 70% of new lines already exist
-                        logger.info(f"Hunk #{hunk_idx} appears to be already applied (found {already_applied}/{len(new_lines)} lines)")
-                        continue # skip applying this hunk since its already mostly present
-                        #fixme: we need to mark this in the dict as already applied
-                else:
-                    msg = (f"Hunk #{hunk_idx} => low confidence match (ratio={best_ratio:.2f}) near {remove_pos}, "
-                           f"can't safely apply chunk. Failing.")
-                    logger.error(msg)
-                    raise PatchApplicationError(msg, {"status": "error", "type": "low_confidence", "hunk": hunk_idx, "confidence": best_ratio})
-            logger.debug(f"Hunk #{hunk_idx}: fuzzy best pos={best_pos}, ratio={best_ratio:.2f}")
-            remove_pos = best_pos + offset
+            result = try_fuzzy_match(positions)
+            if result is None:
+                # Skip this hunk as it's already applied
+                continue  # Skip this hunk (already applied)
+            new_pos, old_pos = result
+            if new_pos is not None:  # Only update position if we got a valid match
+                remove_pos = new_pos
 
-        # forcibly remove old_count lines at remove_pos
-        remove_pos = clamp(remove_pos, 0, len(stripped_original))
-        # Adjust old_count if we're near the end of file
-        available_lines = len(final_lines) - remove_pos
-        actual_old_count = min(old_count, available_lines)
-        end_remove = remove_pos + actual_old_count
-        total_lines = len(final_lines)
-
-        if remove_pos < len(final_lines):
-            logger.debug(f"Hunk #{hunk_idx}: Removing lines {remove_pos}:{end_remove} from file")
-            lines_to_remove = final_lines[remove_pos:end_remove]
-            for i, line in enumerate(lines_to_remove, start=remove_pos):
-                logger.debug(f"  - {final_lines[i]}")
-            final_lines = final_lines[:remove_pos] + final_lines[min(end_remove, len(final_lines)):]
-            logger.debug(f"  final_lines after removal: {final_lines}")
-
-        # Insert new_lines
-        logger.debug(f"Hunk #{hunk_idx}: Inserting {len(new_lines)} lines at pos={remove_pos}")
-        for i, ln in enumerate(new_lines):
-            logger.debug(f"  + {ln}")
-            final_lines.insert(remove_pos + i, ln)
+        # Use actual line counts from the blocks
+        old_count = len(h['old_block'])
+        logger.debug(f"Replacing {old_count} lines with {len(h['new_lines'])} lines at pos={remove_pos}")
+        
+        # Replace exactly the number of lines we counted
+        final_lines[remove_pos:remove_pos + old_count] = h['new_lines']
         logger.debug(f"  final_lines after insertion: {final_lines}")
 
         # Calculate net change based on actual lines removed and added
-        actual_removed = min(actual_old_count, len(final_lines) - remove_pos)
+        actual_removed = min(positions['old_count'], len(h['old_block']))
         logger.debug(f"Removal calculation: min({len(h['old_block'])}, {len(final_lines)} - {remove_pos})")
         logger.debug(f"Old block lines: {h['old_block']}")
         logger.debug(f"New lines: {h['new_lines']}")
         logger.debug(f"Remove position: {remove_pos}")
         logger.debug(f"Final lines length: {len(final_lines)}")
-        net_change = len(h['new_lines']) - actual_removed
+        net_change = len(h['new_lines']) - positions['actual_old_count']
         offset += net_change
 
     # Remove trailing empty line if present
     while final_lines and final_lines[-1] == '':
         final_lines.pop()
-
+    
     # Add newlines to all lines
     result_lines = [
         ln + '\n' if not ln.endswith('\n') else ln
@@ -936,21 +951,23 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
                     current_hunk = None
                 i += 1
                 continue
-
             if current_hunk:
                 if line.startswith('-'):
                     text = line[1:]
-#                   text = text[1:] if text.startswith(' ') else text  # Remove one leading space if present
                     current_hunk['old_block'].append(text)
+                    current_hunk['old_count'] = len(current_hunk['old_block'])
                 elif line.startswith('+'):
                     text = line[1:]
-#                   text = text[1:] if text.startswith(' ') else text
                     current_hunk['new_lines'].append(text)
+                    current_hunk['new_count'] = len(current_hunk['new_lines'])
                 elif line.startswith(' '):
                     text = line[1:]
-#                   text = text[1:] if text.startswith(' ') else text
-                    current_hunk['old_block'].append(text)
-                    current_hunk['new_lines'].append(text)
+                    if (not current_hunk['old_block'] or
+                        current_hunk['old_block'][-1] != text):
+                        current_hunk['old_block'].append(text)
+                    if (not current_hunk['new_lines'] or
+                        current_hunk['new_lines'][-1] != text):
+                        current_hunk['new_lines'].append(text)
 
         i += 1
     return hunks
@@ -971,11 +988,9 @@ def find_best_chunk_position(file_lines: list[str], old_block: list[str], approx
     block_str = '\n'.join(old_block)
     file_len = len(file_lines)
     block_len = len(old_block)
-
-    # choose a search space based upon file size
-    search_range = min(20, max(5, file_len // 10))
-    search_start = max(0, approximate_line - search_range)
-    search_end = min(file_len - block_len + 1, approximate_line + search_range)
+    
+    search_start = 0
+    search_end = file_len - block_len + 1
     if search_end < search_start:
         search_start = 0
         search_end = max(0, file_len - block_len + 1)
@@ -1009,7 +1024,7 @@ def find_best_chunk_position(file_lines: list[str], old_block: list[str], approx
         if ratio > best_ratio:
             best_ratio = ratio
             best_pos = pos
-        if best_ratio > 0.98:
+        if best_ratio >= 0.98:
             break
 
     logger.debug(f"find_best_chunk_position => best ratio={best_ratio:.2f} at pos={best_pos}, approximate_line={approximate_line}")
