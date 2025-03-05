@@ -1,0 +1,60 @@
+diff --git a/frontend/src/plugins/d3/networkDiagram.ts b/frontend/src/plugins/d3/networkDiagram.ts
+--- a/frontend/src/plugins/d3/networkDiagram.ts
++++ b/frontend/src/plugins/d3/networkDiagram.ts
+@@ -1,5 +1,6 @@
+ import { BaseType, Selection } from 'd3';
+ import { D3RenderPlugin, D3Node, D3Link, D3Style } from '../../types/d3';
++
+ export interface NetworkDiagramSpec {
+     width: number;
+     height: number;
+@@ -17,13 +18,12 @@ export interface NetworkDiagramSpec {
+ const isNetworkDiagramSpec = (spec: any): spec is NetworkDiagramSpec => {
+     return (
+         typeof spec === 'object' &&
+-        !spec.render && // Don't handle specs with direct render functions
+-        spec.type === 'network' &&
++        spec.type === 'network' && // Check for network type
+         Array.isArray(spec.nodes) &&
+         Array.isArray(spec.links) &&
+-        spec.nodes.length > 0 &&
+-        spec.links.length > 0 &&
+-        spec.nodes.every((n: any) => typeof n.id === 'string' && n.id) &&
++        spec.nodes.length >= 0 &&
++        spec.nodes.every((n: any) => typeof n.id === 'string') &&
++        spec.links.length >= 0 &&
+         spec.links.every((l: any) => typeof l.source === 'string' && typeof l.target === 'string')
+     );
+ };
+@@ -34,21 +34,12 @@ export const networkDiagramPlugin: D3RenderPlugin = {
+     priority: 1,
+     canHandle: isNetworkDiagramSpec,
+     render: (container: HTMLElement, d3: any, spec: any) => {
+-        console.debug('Network diagram plugin rendering:', spec);
++        console.debug('Network diagram plugin rendering:', { spec });
++        
+         if (!isNetworkDiagramSpec(spec)) {
+             throw new Error('Invalid network diagram specification');
+         }
+ 
+-        function isNetworkDiagramSpec(spec: any): spec is NetworkDiagramSpec {
+-            return (
+-                typeof spec === 'object' &&
+-                spec.type === 'network' &&
+-                Array.isArray(spec.nodes) &&
+-                Array.isArray(spec.links) &&
+-                spec.nodes.every((n: any) => typeof n.id === 'string') &&
+-                spec.links.every((l: any) => typeof l.source === 'string' && typeof l.target === 'string')
+-            );
+-        }
+         console.debug('Network diagram render:', {
+             nodeCount: spec.nodes.length,
+             linkCount: spec.links.length,
+@@ -56,6 +47,7 @@ export const networkDiagramPlugin: D3RenderPlugin = {
+         });
+         try {
+             const svg = d3.select(container)
++                .selectAll('*').remove()  // Clear existing content
+                 .append('svg')
+                 .attr('width', spec.width)
+                 .attr('height', spec.height || 400)
