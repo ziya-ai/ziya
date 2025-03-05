@@ -5,6 +5,8 @@ from typing import Dict, List, Tuple, Set, Union, Optional, Any
 import json
 import time
 import botocore
+import asyncio
+import tiktoken
 from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
 from langchain_aws import ChatBedrock
@@ -31,22 +33,45 @@ from anthropic import Anthropic
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Clean chat history by removing invalid messages and normalizing content."""
-    cleaned = []
-    for human, ai in chat_history:
-        # Skip pairs with empty messages
-        if not human or not human.strip() or not ai or not ai.strip():
-            logger.warning(f"Skipping invalid message pair: human='{human}', ai='{ai}'")
-            continue
-        cleaned.append((human.strip(), ai.strip()))
-    return cleaned
+    if not chat_history or not isinstance(chat_history, list):
+        return []
+    try:
+        cleaned = []
+        for human, ai in chat_history:
+            # Skip pairs with empty messages
+            if not isinstance(human, str) or not isinstance(ai, str):
+                logger.warning(f"Skipping invalid message pair: human='{human}', ai='{ai}'")
+                continue
+            human_clean = human.strip() if human else ""
+            ai_clean = ai.strip() if ai else ""
+            if not human_clean or not ai_clean:
+                logger.warning(f"Skipping empty message pair")
+                continue
+            cleaned.append((human.strip(), ai.strip()))
+        return cleaned
+    except Exception as e:
+        logger.error(f"Error cleaning chat history: {str(e)}")
+        logger.error(f"Raw chat history: {chat_history}")
+        return cleaned
 
 def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[HumanMessage, AIMessage]]:
     logger.info(f"Formatting chat history: {json.dumps(chat_history, indent=2)}")
     cleaned_history = clean_chat_history(chat_history)
     buffer = []
-    for human, ai in cleaned_history:
-        buffer.append(HumanMessage(content=human))
-        buffer.append(AIMessage(content=ai))
+    logger.debug("Message format before conversion:")
+    try:
+        for human, ai in cleaned_history:
+            if human and isinstance(human, str):
+                logger.debug(f"Human message type: {type(human)}, content: {human[:100]}")
+                buffer.append(HumanMessage(content=human))
+            if ai and isinstance(ai, str):
+                logger.debug(f"AI message type: {type(ai)}, content: {ai[:100]}")
+                buffer.append(AIMessage(content=ai))
+    except Exception as e:
+        logger.error(f"Error formatting chat history: {str(e)}")
+        logger.error(f"Problematic chat history: {chat_history}")
+        return []
+    logger.debug(f"Final formatted messages: {[type(m).__name__ for m in buffer]}")
     return buffer
 
 def parse_output(message):
@@ -153,6 +178,32 @@ class RetryingChatBedrock(Runnable):
         """Check if this is a streaming operation."""
         return hasattr(func, '__name__') and func.__name__ == 'astream'
 
+    def _format_message_content(self, message: Any) -> str:
+        """Ensure message content is properly formatted as a string."""
+        if isinstance(message, dict):
+            content = message.get('content', '')
+        elif hasattr(message, 'content'):
+            content = message.content
+        else:
+            content = str(message)
+
+        # Handle case where content is a list/array
+        if isinstance(content, (list, tuple)):
+            if len(content) > 0:
+                # Join array elements if present
+                content = ' '.join(str(item) for item in content)
+            else:
+                # Provide default content for empty arrays
+                content = "No content provided"
+
+        # Ensure we're returning a string
+        return str(content) if content else "No content provided"
+
+    def _format_messages(self, messages: List[Any]) -> List[Dict[str, str]]:
+        """Format messages to ensure they meet Claude's requirements."""
+        return [{"role": msg.get("role", "user"),
+                "content": self._format_message_content(msg)} for msg in messages]
+
     def invoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
         return self.model.invoke(input, config, **kwargs)
 
@@ -162,11 +213,27 @@ class RetryingChatBedrock(Runnable):
     async def astream(self, input: Any, config: Optional[Dict] = None, stream_mode: bool = True, **kwargs):
         max_retries = 3
         retry_delay = 1
+        logger.debug(f"Input message format: {type(input)}")
 
         for attempt in range(max_retries):
             try:
                 if stream_mode:
-                    async for chunk in self.model.astream(input, config, **kwargs):
+                    if isinstance(input, dict) and 'messages' in input:
+                        logger.debug("Message content types:")
+                        for msg in input['messages']:
+                            logger.debug(f"  - role: {msg.get('role', 'unknown')}")
+                            logger.debug(f"  - content type: {type(msg.get('content'))}")
+                            if isinstance(msg.get('content'), (list, dict)):
+                                logger.debug(f"  - content value: {msg.get('content')}")
+                    # Format messages if this is a chat input
+                    if isinstance(input, dict) and 'messages' in input:
+                        formatted_input = {
+                            **input,
+                            'messages': self._format_messages(input['messages'])
+                        }
+                    else:
+                        formatted_input = input
+                    async for chunk in self.model.astream(formatted_input, config, **kwargs):
                         if isinstance(chunk, dict) and "error" in chunk:
                             yield Generation(text=json.dumps(chunk))
                         else:
@@ -185,9 +252,26 @@ class RetryingChatBedrock(Runnable):
                         "detail": "Selected content is too large for the model. Please reduce the number of files."
                     }))
                     return
-            raise e
-
-
+            except ChatGoogleGenerativeAIError as e:
+                if "token count" in str(e):
+                    logger.error(f"Token limit exceeded on attempt {attempt + 1}: {str(e)}")
+                    yield Generation(
+                        text=json.dumps({
+                            "error": "validation_error",
+                            "detail": "Selected content is too large for the model. Please reduce the number of files."
+                        })
+                    )
+                    return  # Don't retry token limit errors
+                if attempt == max_retries - 1:
+                    raise  # Re-raise on last attempt
+                await asyncio.sleep(retry_delay * (attempt + 1))
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt == max_retries - 1:
+                    # On last attempt, yield error message instead of raising
+                    yield Generation(text=json.dumps({"error": "stream_error", "detail": str(e)}))
+                    return
+                await asyncio.sleep(retry_delay * (attempt + 1))
 model = RetryingChatBedrock(model)
 
 file_state_manager = FileStateManager()

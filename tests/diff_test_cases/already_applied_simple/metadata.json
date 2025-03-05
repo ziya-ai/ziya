@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test applying a diff that has already been applied (simple case)",
+    "date_added": "2024-05-30",
+    "issue_reference": "idempotent_diff_application"
+}

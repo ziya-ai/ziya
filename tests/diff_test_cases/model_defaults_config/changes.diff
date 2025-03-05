@@ -1,0 +1,45 @@
+diff --git a/test_models.py b/test_models.py
+--- a/test_models.py
++++ b/test_models.py
+@@ -6,6 +6,14 @@ class ModelManager:
+         'process_id': None
+     }
+ 
++    # Centralized defaults configuration
++    DEFAULT_CONFIG = {
++        "default_endpoint": "bedrock",
++        "endpoint_defaults": {
++            "bedrock": "sonnet3.7",
++            "google": "gemini-1.5-pro"
++        }
++    }
++
+     MODEL_CONFIGS = {
+         "bedrock": {
+             "sonnet3.7": {
+@@ -13,8 +21,7 @@
+                 "token_limit": 200000,
+                 "max_output_tokens": 128000,
+                 "temperature": 0.3,
+-                "top_k": 15,
+-                "is_default": True
++                "top_k": 15
+             },
+             "sonnet3.5": {
+                 "model_id": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+@@ -29,15 +36,11 @@ class ModelManager:
+                 "token_limit": 30720,
+                 "max_output_tokens": 2048,
+                 "temperature": 0.3, 
+-                "convert_system_message_to_human": True,
+-                "is_default": True
++                "convert_system_message_to_human": True
+             }
+         }
+     }
+ 
+-    DEFAULT_MODELS = {
+-        "bedrock": "sonnet3.5-v2",
+-        "google": "gemini-1.5-pro"
+-    }
++

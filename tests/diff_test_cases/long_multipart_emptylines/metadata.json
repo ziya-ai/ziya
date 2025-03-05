@@ -1,0 +1,6 @@
+{
+    "target_file": "frontend/src/components/D3Renderer.tsx",
+    "description": "Test handling of long multi-part changes with empty lines and complex indentation",
+    "date_added": "2024-01-17",
+    "issue_reference": "d3_renderer_responsive_layout"
+}

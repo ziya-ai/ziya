@@ -1,0 +1,14 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -1,5 +1,7 @@
+ def main():
+     x = 1
++    # First change
++    y = 2
+     return x
+
+@@ -3,1 +5,3 @@ def main():
+     return x
++    # Second change
++    return x + y

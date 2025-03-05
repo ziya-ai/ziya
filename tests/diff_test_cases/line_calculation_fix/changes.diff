@@ -1,0 +1,21 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -3,7 +3,7 @@ def apply_changes(final_lines, stripped_original, remove_pos, old_count):
+     # First block - end_remove calculation
+     available_lines = len(stripped_original) - remove_pos
+     actual_old_count = min(old_count, available_lines)
+-    end_remove = remove_pos + actual_old_count
++    end_remove = min(remove_pos + actual_old_count, len(final_lines))
+     total_lines = len(final_lines)
+     
+     # Some intermediate processing
+@@ -11,7 +11,7 @@ def apply_changes(final_lines, stripped_original, remove_pos, old_count):
+     # Second block - available_lines calculation
+     remove_pos = clamp(remove_pos, 0, len(stripped_original))
+     # Adjust old_count if we're near the end of file
+-    available_lines = len(final_lines) - remove_pos
++    available_lines = len(stripped_original) - remove_pos
+     actual_old_count = min(old_count, available_lines)
+     end_remove = remove_pos + actual_old_count
+     total_lines = len(final_lines)

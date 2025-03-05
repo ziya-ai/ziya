@@ -1,0 +1,11 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -5,3 +5,7 @@ def process():
+     x = 1
+     return x
+ 
++def process():
++    y = 2
++    return y
++

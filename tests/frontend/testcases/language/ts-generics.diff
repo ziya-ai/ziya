@@ -1,0 +1,32 @@
+diff --git a/component.tsx b/component.tsx
+index abcd123..efgh456 100644
+--- a/component.tsx
++++ b/component.tsx
+@@ -1,8 +1,21 @@
+-type Props<T> = {
+-    data: T[];
+-    render: (item: T) => JSX.Element;
++type Props<T extends Record<K, V>, K extends string, V> = {
++    data: Array<T>;
++    render: <U extends T[K]>(
++        item: U,
++        context: Record<K, (value: V) => U>
++    ) => JSX.Element;
++    keyExtractor?: (item: T) => string;
+ };
+ 
+-const Component = <T,>({ data, render }: Props<T>) => (
+-    <div>{data.map(render)}</div>
++const Component = <T extends Record<K, V>, K extends string, V>({
++    data,
++    render,
++    keyExtractor = (item: T) => String(item[K])
++}: Props<T, K, V>) => (
++    <div>
++        {data.map(item => (
++            <div key={keyExtractor(item)}>
++                {render(item[K], {})}
++            </div>
++        ))}
++    </div>
+ );

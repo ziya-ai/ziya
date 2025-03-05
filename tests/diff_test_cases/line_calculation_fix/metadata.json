@@ -1,0 +1,7 @@
+{
+    "target_file": "test.py",
+    "description": "Test fixing line calculation when using different lists for available lines calculation",
+    "date_added": "2024-03-20",
+    "issue_reference": "line_calculation_fix",
+    "apply_twice": true
+}
