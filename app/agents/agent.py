@@ -58,16 +58,20 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
     logger.info(f"Formatting chat history: {json.dumps(chat_history, indent=2)}")
     cleaned_history = clean_chat_history(chat_history)
     buffer = []
+    logger.debug("Message format before conversion:")
     try:
         for human, ai in cleaned_history:
             if human and isinstance(human, str):
+                logger.debug(f"Human message type: {type(human)}, content: {human[:100]}")
                 buffer.append(HumanMessage(content=human))
             if ai and isinstance(ai, str):
+                logger.debug(f"AI message type: {type(ai)}, content: {ai[:100]}")
                 buffer.append(AIMessage(content=ai))
     except Exception as e:
         logger.error(f"Error formatting chat history: {str(e)}")
         logger.error(f"Problematic chat history: {chat_history}")
         return []
+    logger.debug(f"Final formatted messages: {[type(m).__name__ for m in buffer]}")
     return buffer
 
 def parse_output(message):
@@ -209,10 +213,18 @@ class RetryingChatBedrock(Runnable):
     async def astream(self, input: Any, config: Optional[Dict] = None, stream_mode: bool = True, **kwargs):
         max_retries = 3
         retry_delay = 1
+        logger.debug(f"Input message format: {type(input)}")
 
         for attempt in range(max_retries):
             try:
                 if stream_mode:
+                    if isinstance(input, dict) and 'messages' in input:
+                        logger.debug("Message content types:")
+                        for msg in input['messages']:
+                            logger.debug(f"  - role: {msg.get('role', 'unknown')}")
+                            logger.debug(f"  - content type: {type(msg.get('content'))}")
+                            if isinstance(msg.get('content'), (list, dict)):
+                                logger.debug(f"  - content value: {msg.get('content')}")
                     # Format messages if this is a chat input
                     if isinstance(input, dict) and 'messages' in input:
                         formatted_input = {
