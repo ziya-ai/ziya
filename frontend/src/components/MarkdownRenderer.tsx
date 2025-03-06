@@ -386,7 +386,7 @@ const normalizeGitDiff = (diff: string): string => {
         // Check if this is a properly formatted diff
         const hasDiffHeaders = lines.some(line =>
             (line.startsWith('---') || line.startsWith('+++'))
-        );
+            ) && lines.some(line => line.startsWith('--- a/') || line.startsWith('+++ b/'));
         const hasHunkHeader = lines.some(line => 
             /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line)
         );
@@ -394,21 +394,29 @@ const normalizeGitDiff = (diff: string): string => {
         if (hasDiffHeaders && hasHunkHeader) {
             return diff;  // Return original diff if it's properly formatted
         }
-        
+
+        // Extract file paths from diff --git line
+        const gitMatch = lines[0].match(/diff --git a\/(.*?) b\/(.*?)$/);
+        if (!gitMatch) {
+            return diff;  // Return original if we can't parse the git diff line
+        }
+        const filePath = gitMatch[1];
+
+        // If we have a diff --git line but missing proper headers, add them
+        if (!hasDiffHeaders) {
+            // Insert headers after the diff --git line
+            lines.splice(1, 0,
+                `--- a/${filePath}`,
+                `+++ b/${filePath}`
+            );
+        }
+
         let addCount = 0;
         let removeCount = 0;
         let contextCount = 0;
         
         // Always keep the diff --git line
         normalizedLines.push(lines[0]);
-
-        // Extract file path from diff --git line
-        const filePathMatch = lines[0].match(/diff --git a\/(.*?) b\//);
-        const filePath = filePathMatch ? filePathMatch[1] : 'unknown';
-
-        // Add headers if missing
-        normalizedLines.push(`--- a/${filePath}`);
-        normalizedLines.push(`+++ b/${filePath}`);
 
         // Count lines and collect content
         const contentLines = lines.slice(1).filter(line => {
@@ -417,6 +425,10 @@ const normalizeGitDiff = (diff: string): string => {
             }
             if (line.startsWith('---') || line.startsWith('+++')) {
                 return false;
+            }
+            if (line.startsWith('@@')) {
+                // Keep hunk headers
+                return true;
             }
             // Check for +/- anywhere in the leading whitespace
             const trimmed = line.trimStart();

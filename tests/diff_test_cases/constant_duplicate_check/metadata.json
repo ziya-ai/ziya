@@ -1,0 +1,7 @@
+{
+    "target_file": "test.py",
+    "description": "Test applying a constant definition diff multiple times to verify no duplication",
+    "date_added": "2024-03-19",
+    "issue_reference": "duplicate_constant_definition",
+    "apply_twice": true
+}

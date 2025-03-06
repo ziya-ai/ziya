@@ -34,19 +34,23 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
     };
     
     const handleSave = () => {
-	// Create a new array with the edited message
-        const updatedMessages = currentMessages.map((msg, i) => {
-            if (i === index) {
-                return {
-                    ...msg,
-                    content: editedMessage,
-                    _timestamp: Date.now()  // Update timestamp to mark as modified
-                };
+        // Update the conversation in the context with the edited message
+        setConversations(prev => prev.map(conv => {
+            if (conv.id === currentConversationId) {
+                const updatedMessages = conv.messages.map((msg, i) => {
+                    if (i === index) {
+                        return {
+                            ...msg,
+                            content: editedMessage,
+                            _timestamp: Date.now()  // Update timestamp to mark as modified
+                        };
+                    }
+                    return msg;
+                });
+                return { ...conv, messages: updatedMessages, _version: Date.now() };
             }
-            return msg;
-        });
-        // Update all messages to preserve the conversation
-        updatedMessages.forEach(msg => addMessageToConversation(msg, currentConversationId));
+            return conv;
+        }));
         setIsEditing(false);
     };
 

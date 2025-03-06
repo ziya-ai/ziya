@@ -1,5 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 # import pydevd_pycharm
+from app.utils.logging_utils import logger
 
 template = """
 
@@ -14,6 +15,9 @@ CRITICAL: INSTRUCTION PRESERVATION:
    - If instructions seem to conflict, ask for clarification
 
 You are an excellent coder. Help the user with their coding tasks. You are given the codebase of the user in your context.
+surgical debug and fixes. 
+ask for clarification rather than declaring your surety unless you are absolutely certain. 
+I don't need you to be confident, I need you to be correct.
 
 IMPORTANT: Code Context Format
 
@@ -211,10 +215,33 @@ Remember to strictly adhere to the Git diff format guidelines provided above whe
 
 """
 
+# Create a wrapper around the original template
+original_template = template
+
+def log_template_variables(variables):
+    logger.info(f"Template variables: {variables.get('question', 'EMPTY')}")
+    return original_template
+
+# Debug function to log template variables
+def debug_question_template(question):
+    logger.info("====== TEMPLATE QUESTION DEBUG ======")
+    logger.info(f"Question type: {type(question)}")
+    logger.info(f"Question value: '{question}'")
+    logger.info(f"Question is empty: {not question or not question.strip()}")
+    logger.info("====== END TEMPLATE QUESTION DEBUG ======")
+    return question
+
+# Debug function to log chat history
+def debug_chat_history(chat_history):
+    logger.info("====== TEMPLATE CHAT HISTORY DEBUG ======")
+    logger.info(f"Chat history type: {type(chat_history)}")
+    logger.info(f"Chat history length: {len(chat_history) if hasattr(chat_history, '__len__') else 'N/A'}")
+    logger.info("====== END TEMPLATE CHAT HISTORY DEBUG ======")
+    return chat_history
+
 conversational_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", template),
-        # ("system", "You are a helpful AI bot."),
         MessagesPlaceholder(variable_name="chat_history"),
         ("user", "{question}"),
         ("ai", "{agent_scratchpad}"),

@@ -1,0 +1,39 @@
+diff --git a/frontend/src/plugins/d3/networkDiagram.ts b/frontend/src/plugins/d3/networkDiagram.ts
+--- a/frontend/src/plugins/d3/networkDiagram.ts
++++ b/frontend/src/plugins/d3/networkDiagram.ts
+@@ -49,14 +49,17 @@ interface NetworkOptions {
+     animation?: NetworkAnimation;
+ }
+ 
+-interface NetworkNode extends d3.SimulationNodeDatum, D3Node {
++interface NetworkNode extends d3.SimulationNodeDatum {
+     id: string;
+     label?: string;
+     group: number;
+     type: string;
+-    x?: number;
+-    y?: number;
+-}
++    // Required by D3Node
++    x: number;
++    y: number;
++    // Optional simulation properties
++    fx?: number | null;
++    fy?: number | null;
++} 
+ 
+ type D3Selection = d3.Selection<SVGGElement, unknown, HTMLElement, any>;
+ type NetworkNodeSelection = d3.Selection<SVGGElement, NetworkNode, SVGElement, unknown>;
+@@ -152,7 +155,13 @@ export const networkDiagramPlugin: D3RenderPlugin = {
+                 .attr('class', 'nodes')
+                 
+             const nodes: NetworkNodeSelection = nodeGroup.selectAll('g')
+-                .data(spec.nodes as NetworkNode[])
++                .data(spec.nodes.map(node => ({
++                    ...node,
++                    x: node.x || Math.random() * spec.width,
++                    y: node.y || Math.random() * spec.height,
++                    fx: null,
++                    fy: null
++                })) as NetworkNode[])
+                 .enter().append('g').attr('class', 'node');

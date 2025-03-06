@@ -1,0 +1,21 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -1,10 +1,14 @@
+ def main():
+     x = 1
++    y = 2
++    z = 3
+     
+     # Process values
+-    result = x * 2
++    result = x * y * z
+     
+-    # Return result
+-    return result
++    # Calculate final value
++    final = result + 10
++    
++    # Return final result
++    return final
+ 
