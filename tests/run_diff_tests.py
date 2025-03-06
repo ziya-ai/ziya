@@ -99,7 +99,15 @@ class DiffRegressionTest(unittest.TestCase):
             f.write(original)
             
         # Apply the diff
-        use_git_to_apply_code_diff(diff,test_file_path)
+        use_git_to_apply_code_diff(diff, test_file_path)
+        
+        # If metadata specifies apply_twice, try applying the same diff again
+        if metadata.get('apply_twice'):
+            try:
+                use_git_to_apply_code_diff(diff, test_file_path)
+            except Exception as e:
+                # We expect this might fail, but shouldn't affect the test
+                logger.debug(f"Second application of diff failed (expected): {str(e)}")
         
         # Read the result
         with open(test_file_path, 'r', encoding='utf-8') as f:
@@ -205,6 +213,39 @@ class DiffRegressionTest(unittest.TestCase):
         """Test inserting an import line between existing imports"""
         self.run_diff_test('import_line_order')
 
+    def test_model_defaults_config(self):
+        """Test adding centralized defaults config and removing scattered is_default flags"""
+        self.run_diff_test('model_defaults_config')
+
+    def test_line_calculation_fix(self):
+        """Test fixing line calculation when using different lists for available lines"""
+        self.run_diff_test('line_calculation_fix')
+
+    def test_already_applied_simple(self):
+        """Test applying a diff that has already been applied (simple case)"""
+        self.run_diff_test('already_applied_simple')
+
+    def test_already_applied_complex(self):
+        """Test applying a diff that has already been applied (complex case)"""
+        self.run_diff_test('already_applied_complex')
+
+    def test_network_diagram_plugin(self):
+        """Test updating network diagram plugin with validation fixes"""
+        self.run_diff_test('network_diagram_plugin')
+        
+    def test_constant_duplicate_check(self):
+        """Test that constant definitions don't duplicate on multiple applications"""
+        self.run_diff_test('constant_duplicate_check')
+        
+    def test_long_multipart_emptylines(self):
+        """Test handling of long multi-part changes with empty lines and complex indentation"""
+        self.run_diff_test('long_multipart_emptylines')
+
+    def test_d3_network_typescript(self):
+        """Test TypeScript fixes for D3 network diagram plugin"""
+        self.run_diff_test('d3_network_typescript')
+
+
 class PrettyTestResult(unittest.TestResult):
     def __init__(self):
         super(PrettyTestResult, self).__init__()
@@ -218,34 +259,55 @@ class PrettyTestResult(unittest.TestResult):
         self.test_results.append((test, 'ERROR', err))
     def addFailure(self, test, err):
         self.test_results.append((test, 'FAIL', err))
+
     def printSummary(self):
         print("\n" + "=" * 80)
         print("Test Results Summary")
         print("=" * 80)
-        # Group results by test case
-        results_by_case = {}
+        
+        # Group results by status
+        passed_tests = []
+        failed_tests = []
+        
         for test, status, error in self.test_results:
             case_name = test._testMethodName
             if '(case=' in str(test):
                 # Extract case name for parameterized tests
                 case_name = f"{test._testMethodName} ({str(test).split('case=')[1].rstrip(')')}"
-            results_by_case[case_name] = (status, error)
-        # Print results in a table format
-        print(f"{'Test Case':<50} {'Status':<10}")
-        print("-" * 80)
+            
+            if status == 'PASS':
+                passed_tests.append(case_name)
+            else:
+                failed_tests.append((case_name, status, error))
 
-        for case_name, (status, error) in sorted(results_by_case.items()):
-            status_color = '\033[92m' if status == 'PASS' else '\033[91m'  # Green for pass, red for fail/error
-            print(f"{case_name:<50} {status_color}{status}\033[0m")
-            if error and status == 'ERROR':
+        # Print passed tests first
+        print("\033[92mPASSED TESTS:\033[0m")
+        print("-" * 80)
+        if passed_tests:
+            for case_name in sorted(passed_tests):
+                print(f"\033[92m✓\033[0m {case_name}")
+        else:
+            print("No tests passed")
+
+        # Print failed tests with their errors
+        if failed_tests:
+            print("\n\033[91mFAILED TESTS:\033[0m")
+            print("-" * 80)
+            for case_name, status, error in sorted(failed_tests):
+                print(f"\033[91m✗\033[0m {case_name} ({status})")
                 import traceback
-                print(f"  └─ {''.join(traceback.format_exception(*error))}")
-            elif error and status == 'FAIL':
-                print(f"  └─ {str(error[1])}")        # Print overall summary
+                if error:
+                    if status == 'ERROR':
+                        error_details = ''.join(traceback.format_exception(*error))
+                    else:
+                        error_details = str(error[1])
+                    print("  └─ Error details:")
+                    for line in error_details.split('\n'):
+                        print(f"     {line}")
+                print()
+
         print("\n" + "=" * 80)
-        print(f"Total: {len(self.test_results)} tests")
-        print(f"Passed: {len([r for r in self.test_results if r[1] == 'PASS'])} tests")
-        print(f"Failed: {len([r for r in self.test_results if r[1] != 'PASS'])} tests")
+        print(f"Summary: \033[92m{len(passed_tests)} passed\033[0m, \033[91m{len(failed_tests)} failed\033[0m, {len(self.test_results)} total")
         print("=" * 80 + "\n")
 
 if __name__ == '__main__':
@@ -296,6 +358,8 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--log-level', default='INFO',
                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                       help='Set the log level')
+    parser.add_argument('--force-difflib', action='store_true',
+                      help='Bypass system patch and use difflib directly')
     args = parser.parse_args()
  
     os.environ['ZIYA_LOG_LEVEL'] = args.log_level
@@ -304,6 +368,9 @@ if __name__ == '__main__':
     if args.show_cases:
         print_test_case_details(args.test_filter)
         sys.exit(0)
+
+    if args.force_difflib:
+        os.environ['ZIYA_FORCE_DIFFLIB'] = '1'
  
     # Otherwise run the tests normally
     suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)

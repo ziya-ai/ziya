@@ -1,0 +1,82 @@
+export const D3Renderer: React.FC<D3RendererProps> = ({
+    // ... other props
+}) => {
+    return (
+        <div
+            id={containerId || 'd3-container'}
+            style={{
+                width: 'fit-content',
+                maxWidth: '100%',
+                height: 'auto',
+                padding: '16px',
+                position: 'relative',
+                margin: '0 auto'
+            }}
+        >
+            <Button
+                type="text"
+                icon={<ExpandOutlined />}
+                onClick={() => {
+                    const content = document.getElementById(containerId || 'd3-container');
+                    if (!content) return;
+                    
+                    const newWindow = window.open('', '_blank');
+                    if (!newWindow) {
+                        message.error('Pop-up was blocked. Please allow pop-ups for this site.');
+                        return;
+                    }
+                    
+                    newWindow.document.write(`
+                        <!DOCTYPE html>
+                        <html>
+                            <head>
+                                <title>D3 Visualization</title>
+                                <style>
+                                    body {
+                                        margin: 0;
+                                        padding: 16px;
+                                        display: flex;
+                                        justify-content: center;
+                                        align-items: center;
+                                        min-height: 100vh;
+                                        background: ${isDarkMode ? '#141414' : '#ffffff'};
+                                    }
+                                    #viz-container {
+                                        width: 95vw;
+                                        height: 95vh;
+                                    }
+                                </style>
+                            </head>
+                            <body>
+                                <div id="viz-container"></div>
+                            </body>
+                        </html>
+                    `);
+                    
+                    // Clone the visualization into the new window
+                    const vizContent = content.cloneNode(true);
+                    newWindow.document.getElementById('viz-container')?.appendChild(vizContent);
+                }}
+                style={{
+                    position: 'absolute',
+                    top: '8px',
+                    right: '8px',
+                    zIndex: 1,
+                    background: isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)',
+                    borderRadius: '4px'
+                }}
+            />
+            {isD3Mode ? (
+                <div 
+                    ref={d3ContainerRef}
+                    className="d3-container"
+                    style={{
+                        width: 'fit-content',
+                        maxWidth: '100%',
+                        height: 'auto',
+                        position: 'relative',
+                        overflow: 'visible'
+                    }}
+                />
+            ) : null}
+        </div>

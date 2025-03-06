@@ -1,0 +1,16 @@
+diff --git a/test_diff_apply.py b/test_diff_apply.py
+--- a/test_diff_apply.py
++++ b/test_diff_apply.py
+@@ -31,6 +31,11 @@ def marker_section_4():
+     """Section 4: Lines 31-40"""
+     line_31 = "MARKER 31"
+     line_32 = "MARKER 32"
++    
++    # Adding a nested structure
++    def nested_function():
++        """Nested function docstring"""
++        return "NESTED"
++        
+     line_33 = "MARKER 33"
+     line_34 = "MARKER 34"
+     line_35 = "MARKER 35"

@@ -1,0 +1,6 @@
+{
+    "target_file": "test_models.py",
+    "description": "Test adding a centralized default configuration and removing scattered is_default flags",
+    "date_added": "2024-06-01",
+    "issue_reference": "model_defaults_config_bug"
+}

@@ -1,0 +1,19 @@
+diff --git a/test.ts b/test.ts
+--- a/test.ts
++++ b/test.ts
+@@ -1,8 +1,10 @@
+ function parseJson() {
+    const jsonStr = `{
+        "key": "value"
+    }`;
+-    // Some comment
+-    parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
++      if (typeof jsonStr === 'string') {
++          // Clean up the JSON string
++          const cleanJson = jsonStr
++              .replace(/\r\n/g, '\n') 
++              .split('\n')
++              .map(line => line.trim())
++              .join('\n');
++          parsed = JSON.parse(cleanJson);
++      }

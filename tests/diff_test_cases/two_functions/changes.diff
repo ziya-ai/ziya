@@ -1,0 +1,12 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -5,3 +5,8 @@ def second():
+     x = 2
+     y = 3
+     return x + y
++    
++    def nested():
++        return x * y
++        
++    return x + y

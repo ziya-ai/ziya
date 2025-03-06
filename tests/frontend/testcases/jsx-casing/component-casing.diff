@@ -1,0 +1,15 @@
+diff --git a/frontend/src/components/App.tsx b/frontend/src/components/App.tsx
+--- a/frontend/src/components/App.tsx
++++ b/frontend/src/components/App.tsx
+@@ -171,9 +171,9 @@ export const App = () => {
+                         <Tooltip title="Toggle theme">
+                             <Button icon={<BulbOutlined />} onClick={toggleTheme} />
+                         </Tooltip>
+-                       <debugcontrols
+-                           setDebugView={setDebugView}
+-                       />
++                        <DebugControls
++                            setDebugView={setDebugView}
++                        />
+                         <Tooltip title="New Chat">
+                             <Button icon={<PlusOutlined />} onClick={handleNewChat} />

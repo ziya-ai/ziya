@@ -1,0 +1,89 @@
+diff --git a/frontend/src/components/MarkdownRenderer.tsx b/frontend/src/components/MarkdownRenderer.tsx
+--- a/frontend/src/components/MarkdownRenderer.tsx
++++ b/frontend/src/components/MarkdownRenderer.tsx
+@@ -958,64 +958,76 @@ interface CodeBlockProps {
+     index: number;
+ }
+ 
++// Cache for tracking which languages have been loaded
++const loadedLanguagesCache = new Set<string>();
++
+ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
+     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
+     const [loadError, setLoadError] = useState<string | null>(null);
+     const { isDarkMode } = useTheme();
+     const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
+-    const [debugInfo, setDebugInfo] = useState<any>({});
++    const languageRef = useRef<string>(token.lang || 'plaintext');
+ 
+     // Get the effective language for highlighting
+-    const getEffectiveLang = (rawLang: string | undefined): string => {
++    const getEffectiveLang = useCallback((rawLang: string | undefined): string => {
+         if (!rawLang) return 'plaintext';
+         if (rawLang === 'typescript jsx') return 'tsx';
+         return rawLang;
+-    };
++    }, []);
+ 
+     // Normalize the language identifier
+-    const normalizedLang = useMemo(() => {
+-        if (!token.lang) return 'plaintext';
++    const normalizedLang = useMemo(() => 
++        getEffectiveLang(token.lang), [token.lang, getEffectiveLang]);
++
++    // Load language only once when the component mounts or language changes
++    useEffect(() => {
++        let mounted = true;
++        
++        // Skip if language is already loaded
++        if (loadedLanguagesCache.has(normalizedLang)) {
++            setIsLanguageLoaded(true);
++            return;
++        }
++
+         // Map 'typescript jsx' to 'tsx' since we know tsx highlighting works
+-        if (token.lang === 'typescript jsx') {
+-            return 'tsx';
++        const effectiveLang = normalizedLang;
++        
++        const loadLanguage = async () => {
++            if (!mounted) return;
++            
++            setIsLanguageLoaded(false);
++            try {
++                await loadPrismLanguage(effectiveLang);
++                loadedLanguagesCache.add(effectiveLang);
++                if (mounted) {
++                    setPrismInstance(window.Prism);
++                    setIsLanguageLoaded(true);
++                }
++            } catch (error) {
++                if (mounted) {
++                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
++                    setLoadError(errorMessage);
++                    console.warn(`Error loading language ${effectiveLang}:`, error);
++                }
++            }
++        };
++
++        if (effectiveLang !== 'plaintext') {
++            loadLanguage();
+         }
+-        return token.lang;
+-    }, [token.lang]);
+-
+-    useEffect(() => {
+-        if (token.lang !== undefined && !prismInstance) {
+-            const loadLanguage = async () => {
+-                setIsLanguageLoaded(false);
+-                try {
+-                    console.debug('CodeBlock language info:', {
+-                        originalLang: token.lang,
+-                        effectiveLang: getEffectiveLang(token.lang),
+-                        tokenType: token.type,
+-                        prismLoaded: Boolean(window.Prism),
+-                        availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
+-                        tokenContent: token.text.substring(0, 100) + '...'
+-                    });
+-                    await loadPrismLanguage(normalizedLang);
+-                    setPrismInstance(window.Prism);

@@ -1,0 +1,51 @@
+diff --git a/test_diff_apply.py b/test_diff_apply.py
+--- a/test_diff_apply.py
++++ b/test_diff_apply.py
+@@ -1,12 +1,15 @@
+-# Test file for characterizing diff apply behavior
++# Test file for characterizing diff apply behavior - Modified
++# Adding a line that looks like a diff: --- a/test.py
++# Another line that looks like a diff: +++ b/test.py
+
+ def marker_section_1():
+     """Section 1: Lines 1-10"""
+     line_1 = "MARKER 1"
+-    line_2 = "MARKER 2"
+-    line_3 = "MARKER 3"
+-    line_4 = "MARKER 4"
+-    line_5 = "MARKER 5"
++
++    # Removing several lines and replacing with different indentation
++      line_2 = "INDENTED MARKER 2"
++        line_3 = "MORE INDENTED MARKER 3"
++    line_4_5 = "COMBINED MARKERS 4 AND 5"
+     return locals()
+
+ def marker_section_2():
+@@ -19,12 +22,14 @@ def marker_section_2():
+
+ def marker_section_3():
+     """Section 3: Lines 21-30"""
+-    line_21 = "MARKER 21"
+-    line_22 = "MARKER 22"
++    # Adding a line that contains diff-like content
++    line_21 = "--- MARKER 21 ---"
++    line_22 = "+++ MARKER 22 +++"
+     line_23 = "MARKER 23"
+     line_24 = "MARKER 24"
+     line_25 = "MARKER 25"
+-    return locals()
++    result = locals()
++    return result  # Modified return
+
+ def marker_section_4():
+     """Section 4: Lines 31-40"""
+@@ -32,7 +37,8 @@
+     line_32 = "MARKER 32"
+     line_33 = "MARKER 33"
+     line_34 = "MARKER 34"
+-    line_35 = "MARKER 35"
++    # Replacing line 35 with multiple lines
++    line_35a = "SPLIT MARKER 35 - PART A"
++    line_35b = "SPLIT MARKER 35 - PART B"
+     return locals()

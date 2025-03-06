@@ -9,6 +9,8 @@ from langchain_cli.cli import serve
 from app.utils.logging_utils import logger
 from app.utils.langchain_validation_util import validate_langchain_vars
 from app.utils.version_util import get_current_version, get_latest_version
+from app.server import DEFAULT_PORT
+from app.agents.models import ModelManager
 
 
 def parse_arguments():
@@ -17,14 +19,21 @@ def parse_arguments():
                         help="List of files or directories to exclude (e.g., --exclude 'tst,build,*.py')")
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
-    parser.add_argument("--model", type=str, choices=["sonnet", "sonnet3.5", "sonnet3.7", "sonnet3.5-v2", "haiku", "opus"], default="sonnet3.5-v2",
-                        help="AWS Bedrock Model to use (e.g., --model sonnet)")
-    parser.add_argument("--port", type=int, default=6969,
-                        help="Port number to run Ziya frontend on (e.g., --port 8080)")
+    # Get default model alias from ModelManager based on default endpoint
+    default_model = ModelManager.DEFAULT_MODELS[ModelManager.DEFAULT_ENDPOINT]
+    parser.add_argument("--endpoint", type=str, choices=["bedrock", "google"], default=ModelManager.DEFAULT_ENDPOINT,
+                        help=f"Model endpoint to use (default: {ModelManager.DEFAULT_ENDPOINT})")
+    parser.add_argument("--model", type=str, default=None,
+                        help=f"Model to use from selected endpoint (default: {default_model})")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=(f"Port number to run Ziya frontend on "
+                              f"(default: {DEFAULT_PORT}, e.g., --port 8080)"))
     parser.add_argument("--version", action="store_true",
                         help="Prints the version of Ziya")
     parser.add_argument("--max-depth", type=int, default=15,
                         help="Maximum depth for folder structure traversal (e.g., --max-depth 20)")
+    parser.add_argument("--check-auth", action="store_true",
+                        help="Check authentication setup without starting the server")
     return parser.parse_args()
 
 
@@ -36,8 +45,20 @@ def setup_environment(args):
 
     if args.profile:
         os.environ["ZIYA_AWS_PROFILE"] = args.profile
+
+    os.environ["ZIYA_ENDPOINT"] = args.endpoint
     if args.model:
-        os.environ["ZIYA_AWS_MODEL"] = args.model
+        os.environ["ZIYA_MODEL"] = args.model
+
+    # If using Google endpoint, ensure credentials are available
+    if args.endpoint == "google" and not ModelManager._load_credentials():
+        logger.error(
+            "\nGOOGLE_API_KEY environment variable is required for google endpoint.\n"
+            "You can set it in your environment or create a .env file in either:\n"
+                    "  - Your current directory\n"
+                    "  - ~/.ziya/.env\n")
+        sys.exit(1)
+            
     os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
 
 
@@ -96,7 +117,38 @@ def start_server(args):
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     # Override the default server location from 127.0.0.1 to 0.0.0.0
     # This allows the server to be accessible from other machines on the network
-    serve(host="0.0.0.0", port=args.port)
+    try:
+        # Pre-initialize the model to catch any credential issues before starting the server
+        logger.info("Performing initial authentication check...")
+        try:
+            # Try to initialize the model before starting the server
+            ModelManager.initialize_model()
+            logger.info("Authentication successful, starting server...")
+            serve(host="0.0.0.0", port=args.port)
+        except ValueError as e:
+            logger.error(f"\n{str(e)}")
+            logger.error("Server startup aborted due to configuration error.")
+            sys.exit(1)
+    except ValueError as e:
+        logger.error(f"\n{str(e)}")
+        logger.error("Server startup aborted due to configuration error.")
+        sys.exit(1)
+
+def check_auth(args):
+    """Check authentication setup without starting the server."""
+    try:
+        setup_environment(args)
+        # Only initialize if not already done
+        if not ModelManager._state['auth_checked'] or ModelManager._state['process_id'] != os.getpid():
+            model = ModelManager.initialize_model()
+        elif not ModelManager._state['auth_success']:
+            logger.error("Previous authentication attempt failed")
+            return False
+        logger.info("Authentication check successful!")
+        return True
+    except Exception as e:
+        logger.error(f"Authentication check failed: {str(e)}")
+        return False
 
 
 def main():
@@ -106,7 +158,16 @@ def main():
         print_version()
         return
 
-    check_version_and_upgrade()
+    if args.check_auth:
+        success = check_auth(args)
+        sys.exit(0 if success else 1)
+        return
+
+    try:
+        check_version_and_upgrade()
+    except Exception as e:
+        logger.error(f"Error checking version: {e}")
+        logger.warning("Continuing with current version...")
     validate_langchain_vars()
     setup_environment(args)
     start_server(args)

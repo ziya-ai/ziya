@@ -1,0 +1,8 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -1,3 +1,4 @@
+ def main():
+     # Server configuration defaults
++    DEFAULT_PORT = 6969
+     return True

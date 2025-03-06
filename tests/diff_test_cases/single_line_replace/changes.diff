@@ -1,0 +1,6 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -3,1 +3,2 @@ def main():
+-    return x
++    return x + 1
