@@ -933,7 +933,6 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
 
                 # Start collecting content for this hunk
                 current_lines = []
-                logger.debug(f"Found hunk: {current_hunk}")
                 in_hunk = True
                 hunks.append(hunk)
                 current_hunk = hunk

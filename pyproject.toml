@@ -17,25 +17,19 @@ patch-ng = ">=1.17"
 pydantic = "^2.9.2"
 jinja2 = "^3.1.3"
 tiktoken = "^0.8.0"
-anthropic = "^0.46.0"
-boto3 = "^1.35.75"
+boto3 = "^1.34.88"
 langchain-aws = ">=0.2,<0.3"
 langchain = ">=0.3,<0.4"
 langgraph = ">=0.2,<0.3"
 langchainhub = ">=0.1.15"
-langchain-core = ">=0.1.17"  # Pin to a version known to work with both Bedrock and Google
 langchain-anthropic = ">=0.2,<0.3"
-langchain-google-genai = ">=0.1.0"
+langchain-cli = ">=0.0.15"
 pydevd-pycharm = "^243.18137.19"
 langchain-community = "^0.3.1"
-transformers = "^4.48.3"
-python-dotenv = ">=0.19.0"
-google-auth = ">=2.0.0"
-langchain-cli = "^0.0.35"
+transformers = "^4.36.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
-black = "^23.12.1"
 
 [build-system]
 requires = ["poetry-core"]

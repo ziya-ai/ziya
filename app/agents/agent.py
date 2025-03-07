@@ -29,10 +29,6 @@ from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file
 from app.utils.file_state_manager import FileStateManager
 
-import tiktoken
-import anthropic
-from anthropic import Anthropic
-
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Clean chat history by removing invalid messages and normalizing content."""
@@ -84,35 +80,42 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
         return []
 
 
-
     logger.debug(f"Final formatted messages: {[type(m).__name__ for m in buffer]}")
     return buffer
 
 def parse_output(message):
     """Parse and sanitize the output from the language model."""
     try:
-        # Extract content from message object
-        if isinstance(message, str):
-            content = message
+        # Get the content based on the object type
+        content = None
+        if hasattr(message, 'text'):
+            content = message.text
+        elif hasattr(message, 'content'):
+            content = message.content
         else:
-            content = getattr(message, 'text', None) or getattr(message, 'content', None) or str(message)
-
-        if isinstance(content, str):
-            # Check if this is an error message
+            content = str(message)
+    finally:
+        if content:
+            # If content is a method (from Gemini), get the actual content
+            if callable(content):
+                try:
+                    content = content()
+                except Exception as e:
+                    logger.error(f"Error calling content method: {e}")
             try:
+                # Check if this is an error message
                 error_data = json.loads(content)
                 if error_data.get('error') == 'validation_error':
                     logger.info(f"Detected validation error in output: {content}")
                     return AgentFinish(return_values={"output": content}, log=content)
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError:
                 pass
-        # If not an error, clean and return the content
-        text = clean_backtick_sequences(str(content))
-        logger.info(f"parse_output received content size: {len(str(content))} chars, returning size: {len(text)} chars")
-        return AgentFinish(return_values={"output": text}, log=text)
-    except Exception as e:
-        logger.error(f"Error in parse_output: {str(e)}")
-        return AgentFinish(return_values={"output": str(message)}, log=str(message))
+            # If not an error, clean and return the content
+            text = clean_backtick_sequences(content)
+            # Log using the same content we extracted
+            logger.info(f"parse_output received content size: {len(content)} chars, returning size: {len(text)} chars")
+            return AgentFinish(return_values={"output": text}, log=text)
+        return AgentFinish(return_values={"output": ""}, log="")
 
 # Create a wrapper class that adds retries
 class RetryingChatBedrock(Runnable):
@@ -145,21 +148,7 @@ class RetryingChatBedrock(Runnable):
 
 
     def get_num_tokens(self, text: str) -> int:
-        """
-        Custom token counting function using anthropic's tokenizer.
-        Falls back to tiktoken if anthropic is not available.
-        """
-        try:
-            client = Anthropic()
-            count = client.count_tokens(text)
-            return count
-        except Exception as e:
-            logger.warning(f"Failed to use anthropic tokenizer: {str(e)}")
-            try:
-                return len(tiktoken.get_encoding("cl100k_base").encode(text))
-            except Exception as e:
-                logger.error(f"Failed to count tokens: {str(e)}")
-                return len(text.split()) # Rough approximation
+        return self.model.get_num_tokens(text)
 
     def __getattr__(self, name: str):
         # Delegate any unknown attributes to the underlying model
@@ -299,32 +288,12 @@ class RetryingChatBedrock(Runnable):
         """Stream responses with retries and proper message formatting."""
         max_retries = 3
         retry_delay = 1
-        logger.debug(f"Input message format: {type(input)}")
-
-        # Handle non-retryable errors first
-        try:
-            # Check for token limit errors before attempting any retries
-            if isinstance(input, dict) and 'messages' in input:
-                try:
-                    tokens = self.model.get_num_tokens(str(input))
-                    if tokens > 30720:  # Gemini's limit
-                        logger.error(f"Token count {tokens} exceeds limit before retry")
-                        yield Generation(
-                            text=json.dumps({
-                                "error": "validation_error",
-                                "detail": "Selected content is too large for the model. Please reduce the number of files."
-                            })
-                        )
-                        return
-                except Exception as e:
-                    logger.warning(f"Failed to check tokens before stream: {e}")
-
-        except Exception as e:
-            logger.error(f"Error in pre-stream validation: {e}")
 
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1} of {max_retries}")
-            
+            try:
+
+
                 # Convert input to messages if needed
                 if hasattr(input, 'to_messages'):
                     messages = input.to_messages()
@@ -416,7 +385,6 @@ class RetryingChatBedrock(Runnable):
 
 # Initialize the model using the ModelManager
 model = RetryingChatBedrock(ModelManager.initialize_model())
-
 
 file_state_manager = FileStateManager()
 
@@ -556,7 +524,7 @@ def log_codebase_wrapper(x):
     logger.info(f"Codebase before prompt: {len(codebase)} chars")
     file_count = len([l for l in codebase.split('\n') if l.startswith('File: ')])
     logger.info(f"Number of files in codebase before prompt: {file_count}")
-    logger.info(f"Files in codebase before prompt:{chr(10)}{chr(10).join([l for l in codebase.split(chr(10)) if l.startswith('File: ')])}")
+    logger.info(f"Files in codebase before prompt:\n{chr(10).join([l for l in codebase.split('\n') if l.startswith('File: ')])}")
     return codebase
 
 # Define the agent chain
