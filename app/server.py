@@ -728,6 +728,7 @@ async def update_model_settings(settings: ModelSettingsRequest):
         }
     except Exception as e:
         logger.error(f"Error updating model settings: {str(e)}", exc_info=True)
+
         raise HTTPException(
             status_code=500,
             detail=f"Error updating model settings: {str(e)}"

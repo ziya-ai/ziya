@@ -255,6 +255,7 @@ class ModelManager:
         if not cls._state['aws_profile']:
             cls._state['aws_profile'] = os.environ.get("ZIYA_AWS_PROFILE")
             cls._state['aws_region'] = os.environ.get("ZIYA_AWS_REGION", "us-west-2")
+
             logger.info(f"Using AWS Profile: {cls._state['aws_profile']}" if cls._state['aws_profile'] else "Using default AWS credentials")
         
         # Get custom settings if available
