@@ -272,6 +272,7 @@ class RetryingChatBedrock(Runnable):
         return RetryingChatBedrock(self.model.bind(**supported_kwargs))
 
 
+
     def get_num_tokens(self, text: str) -> int:
         return self.model.get_num_tokens(text)
 
