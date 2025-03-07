@@ -14,7 +14,7 @@ from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from google.api_core.exceptions import ResourceExhausted
 from langchain_community.document_loaders import TextLoader
 from langchain_core.agents import AgentFinish
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, BaseMessage
 from langchain_core.outputs import Generation
 from langchain_core.runnables import RunnablePassthrough, Runnable
 from pydantic import BaseModel, Field
@@ -28,10 +28,6 @@ from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file
 from app.utils.file_state_manager import FileStateManager
-
-import tiktoken
-import anthropic
-from anthropic import Anthropic
 
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -58,7 +54,7 @@ def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, s
         return cleaned
 
 def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[HumanMessage, AIMessage]]:
-    logger.info(f"Formatting chat history: {json.dumps(chat_history, indent=2)}")
+    logger.info(f"Chat history type: {type(chat_history)}")
     cleaned_history = clean_chat_history(chat_history)
     buffer = []
     logger.debug("Message format before conversion:")
@@ -66,74 +62,104 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
         for human, ai in cleaned_history:
             if human and isinstance(human, str):
                 logger.debug(f"Human message type: {type(human)}, content: {human[:100]}")
-                buffer.append(HumanMessage(content=human))
+                try:
+                    buffer.append(HumanMessage(content=str(human)))
+                except Exception as e:
+                    logger.error(f"Error creating HumanMessage: {str(e)}")
             if ai and isinstance(ai, str):
                 logger.debug(f"AI message type: {type(ai)}, content: {ai[:100]}")
-                buffer.append(AIMessage(content=ai))
+                try:
+                    buffer.append(AIMessage(content=str(ai)))
+                except Exception as e:
+                    logger.error(f"Error creating AIMessage: {str(e)}")
     except Exception as e:
         logger.error(f"Error formatting chat history: {str(e)}")
         logger.error(f"Problematic chat history: {chat_history}")
         return []
+
     logger.debug(f"Final formatted messages: {[type(m).__name__ for m in buffer]}")
     return buffer
 
 def parse_output(message):
     """Parse and sanitize the output from the language model."""
     try:
-        # Extract content from message object
-        if isinstance(message, str):
-            content = message
+        # Get the content based on the object type
+        content = None
+        if hasattr(message, 'text'):
+            content = message.text
+        elif hasattr(message, 'content'):
+            content = message.content
         else:
-            content = getattr(message, 'text', None) or getattr(message, 'content', None) or str(message)
-
-        if isinstance(content, str):
-            # Check if this is an error message
+            content = str(message)
+    finally:
+        if content:
+            # If content is a method (from Gemini), get the actual content
+            if callable(content):
+                try:
+                    content = content()
+                except Exception as e:
+                    logger.error(f"Error calling content method: {e}")
             try:
+                # Check if this is an error message
                 error_data = json.loads(content)
                 if error_data.get('error') == 'validation_error':
                     logger.info(f"Detected validation error in output: {content}")
                     return AgentFinish(return_values={"output": content}, log=content)
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError:
                 pass
-        # If not an error, clean and return the content
-        text = clean_backtick_sequences(str(content))
-        logger.info(f"parse_output received content size: {len(str(content))} chars, returning size: {len(text)} chars")
-        return AgentFinish(return_values={"output": text}, log=text)
-    except Exception as e:
-        logger.error(f"Error in parse_output: {str(e)}")
-        return AgentFinish(return_values={"output": str(message)}, log=str(message))
-
-# Initialize the model using the ModelManager
-model = ModelManager.initialize_model()
+            # If not an error, clean and return the content
+            text = clean_backtick_sequences(content)
+            # Log using the same content we extracted
+            logger.info(f"parse_output received content size: {len(content)} chars, returning size: {len(text)} chars")
+            return AgentFinish(return_values={"output": text}, log=text)
+        return AgentFinish(return_values={"output": ""}, log="")
 
 # Create a wrapper class that adds retries
 class RetryingChatBedrock(Runnable):
     def __init__(self, model):
         self.model = model
+        self.provider = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+
+    def _debug_input(self, input: Any):
+        """Debug log input structure"""
+        logger.info(f"Input type: {type(input)}")
+        if hasattr(input, 'to_messages'):
+            logger.info("ChatPromptValue detected, messages:")
+            messages = input.to_messages()
+            for i, msg in enumerate(messages):
+                logger.info(f"Message {i}:")
+                logger.info(f"  Type: {type(msg)}")
+                logger.info(f"  Content type: {type(msg.content)}")
+                logger.info(f"  Content: {msg.content}")
+        elif isinstance(input, dict):
+            logger.info(f"Input keys: {input.keys()}")
+            if 'messages' in input:
+                logger.info("Messages content:")
+                for i, msg in enumerate(input['messages']):
+                    logger.info(f"Message {i}: type={type(msg)}, content={msg}")
+        else:
+            logger.info(f"Raw input: {input}")
 
     def bind(self, **kwargs):
         return RetryingChatBedrock(self.model.bind(**kwargs))
 
+
     def get_num_tokens(self, text: str) -> int:
-        """
-        Custom token counting function using anthropic's tokenizer.
-        Falls back to tiktoken if anthropic is not available.
-        """
-        try:
-            client = Anthropic()
-            count = client.count_tokens(text)
-            return count
-        except Exception as e:
-            logger.warning(f"Failed to use anthropic tokenizer: {str(e)}")
-            try:
-                return len(tiktoken.get_encoding("cl100k_base").encode(text))
-            except Exception as e:
-                logger.error(f"Failed to count tokens: {str(e)}")
-                return len(text.split()) # Rough approximation
+        return self.model.get_num_tokens(text)
 
     def __getattr__(self, name: str):
         # Delegate any unknown attributes to the underlying model
         return getattr(self.model, name)
+
+    def _get_provider_format(self) -> str:
+        """Get the message format requirements for current provider."""
+        # Can be extended for other providers
+        return self.provider
+
+    def _convert_to_messages(self, input_value: Any) -> Union[str, List[Dict[str, str]]]:
+        """Convert input to messages format expected by provider."""
+        if isinstance(input_value, (str, list)):
+            return input_value
 
     async def _handle_stream_error(self, e: Exception):
         """Handle stream errors by yielding an error message."""
@@ -144,6 +170,24 @@ class RetryingChatBedrock(Runnable):
             })
         )
         return
+
+    def _prepare_input(self, input: Any) -> Dict:
+        """Convert input to format expected by Bedrock."""
+        logger.info("Preparing input for Bedrock")
+
+        if hasattr(input, 'to_messages'):
+            # Handle ChatPromptValue
+            messages = input.to_messages()
+            logger.debug(f"Model type: {type(self.model)}")
+            logger.debug(f"Original messages: {messages}")
+
+            # Filter out empty messages but keep the original message types
+            filtered_messages = [
+                msg for msg in messages
+                if self._format_message_content(msg)
+            ]
+
+            return filtered_messages
 
     async def _handle_validation_error(self, e: Exception):
         """Handle validation errors by yielding an error message."""
@@ -157,92 +201,116 @@ class RetryingChatBedrock(Runnable):
 
     def _format_message_content(self, message: Any) -> str:
         """Ensure message content is properly formatted as a string."""
+        logger.info(f"Formatting message: type={type(message)}")
         if isinstance(message, dict):
-            content = message.get('content', '')
-        elif hasattr(message, 'content'):
-            content = message.content
-        else:
-            content = str(message)
-
-        # Handle case where content is a list/array
-        if isinstance(content, (list, tuple)):
-            if len(content) > 0:
-                # Join array elements if present
-                content = ' '.join(str(item) for item in content)
+            logger.info(f"Dict message keys: {message.keys()}")
+            if 'content' in message:
+                logger.info(f"Content type: {type(message['content'])}")
+                logger.info(f"Content value: {message['content']}")
+        try:
+            # Handle different message formats
+            if isinstance(message, dict):
+                content = message.get('content', '')
+            elif hasattr(message, 'content'):
+                content = message.content
             else:
-                # Provide default content for empty arrays
-                content = "No content provided"
+                content = str(message)
+            # Ensure content is a string
+            if not isinstance(content, str):
+                if content is None:
+                    return ""
+                content = str(content)
+ 
+            return content.strip()
+        except Exception as e:
+            logger.error(f"Error formatting message content: {str(e)}")
+            return ""
+ 
+    def _prepare_messages_for_provider(self, input: Any) -> List[Dict[str, str]]:
+        formatted_messages = []
+        
+        # Convert input to messages list
+        if hasattr(input, 'to_messages'):
+            messages = list(input.to_messages())
+            logger.debug(f"Converting ChatPromptValue to messages: {len(messages)} messages")
+        elif isinstance(input, (list, tuple)):
+            messages = list(input)
+        else:
+            messages = [input]
+            
+        # Process messages in order
+        logger.debug(f"Processing {len(messages)} messages")
+        for msg in messages:
+            # Extract role and content
+            if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
+                if isinstance(msg, SystemMessage):
+                    role = 'system'
+                elif isinstance(msg, HumanMessage):
+                    role = 'user'
+                else:
+                    role = 'assistant'
+                content = msg.content
+            elif isinstance(msg, dict) and 'content' in msg:
+                role = msg.get('role', 'user')
+                content = msg['content']
+            else:
+                role = 'user'
+                content = str(msg)
 
-        # Ensure we're returning a string
-        return str(content) if content else "No content provided"
+            logger.debug(f"Message type: {type(msg)}, role: {role}, content type: {type(content)}")
 
-    def _format_messages(self, messages: List[Any]) -> List[Dict[str, str]]:
-        """Format messages to ensure they meet Claude's requirements."""
-        return [{"role": msg.get("role", "user"),
-                "content": self._format_message_content(msg)} for msg in messages]
+            # Skip empty assistant messages
+            if role == 'assistant' and not content:
+                continue
 
-    def invoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
-        return self.model.invoke(input, config, **kwargs)
+            # Ensure content is a non-empty string
+            content = str(content).strip()
+            if not content:
+                continue
 
-    async def ainvoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
-        return await self.model.ainvoke(input, config, **kwargs)
+            formatted_messages.append({
+                'role': role,
+                'content': content
+            })
+ 
+        return formatted_messages
+ 
 
-    async def astream(self, input: Any, config: Optional[Dict] = None, stream_mode: bool = True, **kwargs):
+    @property
+    def _is_chat_model(self):
+        return isinstance(self.model, ChatBedrock)
+
+    async def astream(self, input: Any, config: Optional[Dict] = None, **kwargs):
+        """Stream responses with retries and proper message formatting."""
         max_retries = 3
         retry_delay = 1
-        logger.debug(f"Input message format: {type(input)}")
-
-        # Handle non-retryable errors first
-        try:
-            # Check for token limit errors before attempting any retries
-            if isinstance(input, dict) and 'messages' in input:
-                try:
-                    tokens = self.model.get_num_tokens(str(input))
-                    if tokens > 30720:  # Gemini's limit
-                        logger.error(f"Token count {tokens} exceeds limit before retry")
-                        yield Generation(
-                            text=json.dumps({
-                                "error": "validation_error",
-                                "detail": "Selected content is too large for the model. Please reduce the number of files."
-                            })
-                        )
-                        return
-                except Exception as e:
-                    logger.warning(f"Failed to check tokens before stream: {e}")
-
-        except Exception as e:
-            logger.error(f"Error in pre-stream validation: {e}")
 
         for attempt in range(max_retries):
+            logger.info(f"Attempt {attempt + 1} of {max_retries}")
             try:
-                if stream_mode:
-                    if isinstance(input, dict) and 'messages' in input:
-                        logger.debug("Message content types:")
-                        for msg in input['messages']:
-                            logger.debug(f"  - role: {msg.get('role', 'unknown')}")
-                            logger.debug(f"  - content type: {type(msg.get('content'))}")
-                            if isinstance(msg.get('content'), (list, dict)):
-                                logger.debug(f"  - content value: {msg.get('content')}")
-                    # Format messages if this is a chat input
-                    if isinstance(input, dict) and 'messages' in input:
-                        formatted_input = {
-                            **input,
-                            'messages': self._format_messages(input['messages'])
-                        }
-                    else:
-                        formatted_input = input
-                    async for chunk in self.model.astream(formatted_input, config, **kwargs):
-                        if isinstance(chunk, dict) and "error" in chunk:
-                            yield Generation(text=json.dumps(chunk))
-                            if chunk.get("error") == "validation_error":
-                                return  # Don't retry validation errors
-                        else:
-                            yield chunk
+                # Convert input to messages if needed
+                if hasattr(input, 'to_messages'):
+                    messages = input.to_messages()
+                    logger.debug(f"Using messages from ChatPromptValue: {len(messages)} messages")
                 else:
-                    # Get complete response at once
-                    result = await self.model.ainvoke(input, config, **kwargs)
-                    yield result
+                    messages = input
+                    logger.debug(f"Using input directly: {type(input)}")
+
+                # Filter out empty messages
+                if isinstance(messages, list):
+                    messages = [
+                        msg for msg in messages 
+                        if isinstance(msg, BaseMessage) and msg.content
+                    ]
+                    if not messages:
+                        raise ValueError("No valid messages with content")
+                    logger.debug(f"Filtered to {len(messages)} non-empty messages")
+
+                async for chunk in self.model.astream(messages, config, **kwargs):
+                    yield chunk
+
                 break  # Success, exit retry loop
+
             except ResourceExhausted as e:
                 logger.error(f"Google API quota exceeded: {str(e)}")
                 yield Generation(
@@ -251,39 +319,65 @@ class RetryingChatBedrock(Runnable):
                         "detail": "API quota has been exceeded. Please try again in a few minutes."
                     })
                 )
-                return  # Don't retry quota errors
-            except (botocore.exceptions.EventStreamError, ExceptionGroup) as e:
-                error_message = str(e)
-                if "validationException" in str(e):
-                    logger.error(f"Validation error from AWS: {str(e)}")
-                    yield Generation(text=json.dumps({
-                        "error": "validation_error",
-                        "detail": "Selected content is too large for the model. Please reduce the number of files."
-                    }))
-                    return
-            except ChatGoogleGenerativeAIError as e:
-                if "token count" in str(e):
-                    logger.error(f"Token limit exceeded on attempt {attempt + 1}: {str(e)}")
-                    yield Generation(
-                        text=json.dumps({
-                            "error": "validation_error",
-                            "detail": "Selected content is too large for the model. Please reduce the number of files."
-                        })
-                    )
-                    return  # Don't retry token limit errors
-                if attempt == max_retries - 1:
-                    raise  # Re-raise on last attempt
-                await asyncio.sleep(retry_delay * (attempt + 1))
+                return
+
             except Exception as e:
                 logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
                 if attempt == max_retries - 1:
-                    # On last attempt, yield error message instead of raising
                     yield Generation(text=json.dumps({"error": "stream_error", "detail": str(e)}))
                     return
                 await asyncio.sleep(retry_delay * (attempt + 1))
-            raise e
 
-model = RetryingChatBedrock(model)
+    def _format_messages(self, input_messages: List[Any]) -> List[Dict[str, str]]:
+        """Format messages according to provider requirements."""
+        provider = self._get_provider_format()
+        formatted = []
+
+        try:
+            for msg in input_messages:
+                if isinstance(msg, (HumanMessage, AIMessage, SystemMessage)):
+                    # Convert LangChain messages based on provider
+                    if provider == "bedrock":
+                        role = "user" if isinstance(msg, HumanMessage) else \
+                              "assistant" if isinstance(msg, AIMessage) else \
+                              "system"
+                    else:
+                        # Default/fallback format
+                        role = msg.__class__.__name__.lower().replace('message', '')
+
+                    content = self._format_message_content(msg)
+                elif isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    # Already in provider format
+                    role = msg["role"]
+                    content = self._format_message_content(msg["content"])
+                else:
+                    logger.warning(f"Unknown message format: {type(msg)}")
+                    role = "user"  # Default to user role
+                    content = self._format_message_content(msg)
+
+                formatted.append({"role": role, "content": content})
+        except Exception as e:
+            logger.error(f"Error formatting messages: {str(e)}")
+            raise
+    def _validate_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Remove any messages with empty content."""
+        return [msg for msg in messages if msg.get('content')]
+
+    def invoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
+        try:
+            if isinstance(input, dict) and "messages" in input:
+                messages = self._convert_to_messages(input["messages"])
+                input = {**input, "messages": messages}
+            return self.model.invoke(input, config, **kwargs)
+        except Exception as e:
+            self.logger.error(f"Error in invoke: {str(e)}")
+            raise
+
+    async def ainvoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
+        return await self.model.ainvoke(input, config, **kwargs)
+
+# Initialize the model using the ModelManager
+model = RetryingChatBedrock(ModelManager.initialize_model())
 
 file_state_manager = FileStateManager()
 
@@ -409,7 +503,13 @@ def extract_codebase(x):
     return codebase
 
 def log_output(x):
-    logger.info(f"Final output size: {len(x.return_values['output'])} chars, first 100 chars: {x.return_values['output'][:100]}")
+    """Log output in a consistent format."""
+    try:
+        output = x.content if hasattr(x, 'content') else str(x)
+        logger.info(f"Final output size: {len(output)} chars, first 100 chars: {output[:100]}")
+    except Exception as e:
+        logger.error(f"Error in log_output: {str(e)}")
+        output = str(x)
     return x
 
 def log_codebase_wrapper(x):
@@ -417,7 +517,7 @@ def log_codebase_wrapper(x):
     logger.info(f"Codebase before prompt: {len(codebase)} chars")
     file_count = len([l for l in codebase.split('\n') if l.startswith('File: ')])
     logger.info(f"Number of files in codebase before prompt: {file_count}")
-    logger.info(f"Files in codebase before prompt:{chr(10)}{chr(10).join([l for l in codebase.split(chr(10)) if l.startswith('File: ')])}")
+    logger.info(f"Files in codebase before prompt:\n{chr(10).join([l for l in codebase.split('\n') if l.startswith('File: ')])}")
     return codebase
 
 # Define the agent chain
@@ -425,17 +525,17 @@ agent = (
     {
         "codebase": log_codebase_wrapper,
         "question": lambda x: x["question"],
-        "agent_scratchpad": lambda x: format_xml(x["intermediate_steps"]),
-        "chat_history": lambda x: _format_chat_history(x["chat_history"]),
+        "chat_history": lambda x: _format_chat_history(x.get("chat_history", [])),
+        "agent_scratchpad": lambda x: [
+            AIMessage(content=format_xml([]))
+        ],
     }
     | conversational_prompt
-    | (lambda x: (
-        logger.info(f"Template population check:") or
-        logger.info(f"System message contains codebase section: {'---------------------------------------' in str(x)}") or
-        logger.info(f"Number of 'File:' markers in system message: {str(x).count('File:')}") or
-        x))
     | llm_with_stop
-    | parse_output
+    | (lambda x: AgentFinish(
+        return_values={"output": x.content if hasattr(x, 'content') else str(x)},
+        log=""
+    ))
     | log_output
 )
 
@@ -475,9 +575,8 @@ def update_and_return(input_data: Dict[str, Any]) -> Dict[str, Any]:
 agent_executor = AgentExecutor(
     agent=agent,
     tools=[],
-    verbose=True,
+    verbose=False,
     handle_parsing_errors=True,
-    max_iterations=3
 ).with_types(input_type=AgentInput) | RunnablePassthrough(update_and_return)
 
 # Chain the executor with the state update

@@ -13,40 +13,6 @@ import google.auth
 from dotenv import load_dotenv
 from dotenv.main import find_dotenv
 
-# Create a custom wrapper class for ChatGoogleGenerativeAI
-class SafeChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
-    """A wrapper around ChatGoogleGenerativeAI that prevents empty messages."""
-    
-    def _validate_messages(self, messages):
-        """Ensure no messages have empty content."""
-        logger.info(f"Validating {len(messages)} messages")
-        for i, msg in enumerate(messages):
-            if hasattr(msg, 'content'):
-                if not msg.content or msg.content.strip() == '':
-                    logger.warning(f"Empty message detected at position {i}, replacing with placeholder")
-                    msg.content = "Please provide a question."
-            elif isinstance(msg, dict) and 'content' in msg:
-                if not msg['content'] or not msg['content'].strip():
-                    logger.warning(f"Empty dict message detected at position {i}, replacing with placeholder")
-                    msg['content'] = "Please provide a question."
-        return messages
-    
-    async def agenerate(self, messages, *args, **kwargs):
-        """Override agenerate to validate messages."""
-        messages = self._validate_messages(messages)
-        return await super().agenerate(messages, *args, **kwargs)
-    
-    def generate(self, messages, *args, **kwargs):
-        """Override generate to validate messages."""
-        messages = self._validate_messages(messages)
-        return super().generate(messages, *args, **kwargs)
-    
-    async def ainvoke(self, input, *args, **kwargs):
-        """Override ainvoke to validate input."""
-        if isinstance(input, list):
-            input = self._validate_messages(input)
-        return await super().ainvoke(input, *args, **kwargs)
- 
 class ModelManager:
 
     # Class-level state with process-specific initialization
@@ -54,31 +20,18 @@ class ModelManager:
         'model': None,
         'auth_checked': False,
         'auth_success': False,
-        'credentials_checked': False,
         'google_credentials': None,
         'aws_profile': None,
         'process_id': None
     }
 
     DEFAULT_ENDPOINT = "bedrock"
-    # Define valid models for each endpoint
-    BEDROCK_MODELS = {
-        "sonnet": "anthropic.claude-v2",
-        "sonnet3.5": "anthropic.claude-3",
-        "sonnet3.5-v2": "anthropic.claude-3-sonnet",
-        "haiku": "anthropic.claude-3-haiku",
-        "opus": "anthropic.claude-3-opus"
-    }
-
-    GOOGLE_MODELS = {
-        "gemini-pro": "gemini-pro",
-        "gemini-1.5-pro": "gemini-1.5-pro"
-    }
 
     DEFAULT_MODELS = {
         "bedrock": "sonnet3.5-v2",
         "google": "gemini-1.5-pro"
     }
+
 
     MODEL_CONFIGS = {
         "bedrock": {
@@ -184,32 +137,6 @@ class ModelManager:
             ) 
 
     @classmethod
-    def validate_model_choice(cls, endpoint: str, model: str) -> str:
-        """
-        Validates the model choice for the given endpoint and returns the full model identifier.
-        Raises ValueError if invalid.
-        """
-        if endpoint == "bedrock":
-            if model not in cls.BEDROCK_MODELS:
-                valid_models = ", ".join(cls.BEDROCK_MODELS.keys())
-                raise ValueError(
-                    f"Invalid model '{model}' for bedrock endpoint. "
-                    f"Valid models are: {valid_models}"
-                )
-            return cls.BEDROCK_MODELS[model]
-
-        elif endpoint == "google":
-            if model not in cls.GOOGLE_MODELS:
-                valid_models = ", ".join(cls.GOOGLE_MODELS.keys())
-                raise ValueError(
-                    f"Invalid model '{model}' for google endpoint. "
-                    f"Valid models are: {valid_models}"
-                )
-            return cls.GOOGLE_MODELS[model]
-        else:
-            raise ValueError(f"Invalid endpoint: {endpoint}. Must be 'bedrock' or 'google'")
- 
-    @classmethod
     def _load_credentials(cls) -> bool:
         """
         Load credentials from environment or .env files.
@@ -279,6 +206,7 @@ class ModelManager:
 
     @classmethod
     def initialize_model(cls, force_reinit: bool = False) -> BaseChatModel:
+
         """Initialize and return the appropriate model based on environment settings."""
         current_pid = os.getpid()
 
@@ -304,14 +232,16 @@ class ModelManager:
         logger.info(f"Initializing model for endpoint: {endpoint}, model: {model_name}")
         if endpoint == "bedrock":
             cls._state['model'] = cls._initialize_bedrock_model(model_name)
+            if model_name:
+                cls._state['model'].model_id = model_name
         elif endpoint == "google":
             cls._state['model'] = cls._initialize_google_model(model_name)
         else:
             raise ValueError(f"Unsupported endpoint: {endpoint}")
-
+            
         # Update process ID after successful initialization
             cls._state['process_id'] = current_pid
-            
+        
         return cls._state['model']
  
     @classmethod
@@ -324,12 +254,13 @@ class ModelManager:
  
         if not cls._state['aws_profile']:
             cls._state['aws_profile'] = os.environ.get("ZIYA_AWS_PROFILE")
+            cls._state['aws_region'] = os.environ.get("ZIYA_AWS_REGION", "us-west-2")
             logger.info(f"Using AWS Profile: {cls._state['aws_profile']}" if cls._state['aws_profile'] else "Using default AWS credentials")
         
         # Get custom settings if available
         temperature = float(os.environ.get("ZIYA_TEMPERATURE", config.get('temperature', 0.3)))
         top_k = int(os.environ.get("ZIYA_TOP_K", config.get('top_k', 15)))
-        max_output = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", max_output))
+        max_output = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", config.get('max_output_tokens', 4096)))
         
         logger.info(f"Initializing Bedrock model: {model_id} with max_tokens: {max_output}, "
                     f"temperature: {temperature}, top_k: {top_k}")
@@ -337,6 +268,7 @@ class ModelManager:
         return ChatBedrock(
             model_id=model_id,
             credentials_profile_name=cls._state['aws_profile'],
+            region_name=cls._state['aws_region'],
             config=botocore.config.Config(read_timeout=900, retries={'max_attempts': 3, 'total_max_attempts': 5}),
             model_kwargs={
                 "max_tokens": max_output,
@@ -360,15 +292,6 @@ class ModelManager:
                     "  - Your current directory\n"
                     "  - ~/.ziya/.env\n")
  
-        if model_name not in cls.GOOGLE_MODELS:
-            raise ValueError(f"Invalid Google model: {model_name}")
-
-        # Force reload of environment variables
-        load_dotenv(override=True)
-
-        logger.info("Checking Google authentication methods...")
-
-        # Check API Key
         api_key = os.getenv("GOOGLE_API_KEY")
         if api_key:
             logger.debug(f"Found API key (starts with: {api_key[:6]}...)")
@@ -412,8 +335,6 @@ class ModelManager:
                 verbose=os.environ.get("ZIYA_THINKING_MODE") == "1"
             )
             model.callbacks = [EmptyMessageFilter()]
-            # Test the model with a simple query
-            # response = model.invoke("Test connection")
             logger.info("Successfully connected to Google API")
             return model
 
@@ -479,3 +400,38 @@ class EmptyMessageFilter(BaseCallbackHandler):
             logger.error("All messages are empty, adding a placeholder message")
             messages.append({"role": "user", "content": "Please provide a question."})
         return messages
+
+# Create a custom wrapper class for ChatGoogleGenerativeAI
+class SafeChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
+    """A wrapper around ChatGoogleGenerativeAI that prevents empty messages."""
+    
+    def _validate_messages(self, messages):
+        """Ensure no messages have empty content."""
+        logger.info(f"Validating {len(messages)} messages")
+        for i, msg in enumerate(messages):
+            if hasattr(msg, 'content'):
+                if not msg.content or msg.content.strip() == '':
+                    logger.warning(f"Empty message detected at position {i}, replacing with placeholder")
+                    msg.content = "Please provide a question."
+            elif isinstance(msg, dict) and 'content' in msg:
+                if not msg['content'] or not msg['content'].strip():
+                    logger.warning(f"Empty dict message detected at position {i}, replacing with placeholder")
+                    msg['content'] = "Please provide a question."
+        return messages
+    
+    async def agenerate(self, messages, *args, **kwargs):
+        """Override agenerate to validate messages."""
+        messages = self._validate_messages(messages)
+        return await super().agenerate(messages, *args, **kwargs)
+    
+    def generate(self, messages, *args, **kwargs):
+        """Override generate to validate messages."""
+        messages = self._validate_messages(messages)
+        return super().generate(messages, *args, **kwargs)
+    
+    async def ainvoke(self, input, *args, **kwargs):
+        """Override ainvoke to validate input."""
+        if isinstance(input, list):
+            input = self._validate_messages(input)
+        return await super().ainvoke(input, *args, **kwargs)
+ 

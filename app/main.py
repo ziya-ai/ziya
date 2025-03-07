@@ -19,6 +19,7 @@ def parse_arguments():
                         help="List of files or directories to exclude (e.g., --exclude 'tst,build,*.py')")
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
+    
     # Get default model alias from ModelManager based on default endpoint
     default_model = ModelManager.DEFAULT_MODELS[ModelManager.DEFAULT_ENDPOINT]
     parser.add_argument("--endpoint", type=str, choices=["bedrock", "google"], default=ModelManager.DEFAULT_ENDPOINT,
@@ -28,6 +29,7 @@ def parse_arguments():
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=(f"Port number to run Ziya frontend on "
                               f"(default: {DEFAULT_PORT}, e.g., --port 8080)"))
+
     parser.add_argument("--version", action="store_true",
                         help="Prints the version of Ziya")
     parser.add_argument("--max-depth", type=int, default=15,

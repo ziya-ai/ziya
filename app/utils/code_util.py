@@ -933,7 +933,6 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
 
                 # Start collecting content for this hunk
                 current_lines = []
-                logger.debug(f"Found hunk: {current_hunk}")
                 in_hunk = True
                 hunks.append(hunk)
                 current_hunk = hunk
@@ -1318,9 +1317,15 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
             )
 
             # Actually write the successful changes
-            if patch_result.returncode == 0:
+            if "misordered hunks" in patch_result.stderr:
+                logger.warning("Patch reported misordered hunks - falling back to difflib")
+                # Skip to difflib application
+                apply_diff_with_difflib(file_path, git_diff)
+                return
+            elif patch_result.returncode == 0:
                 logger.info("Successfully applied some hunks with patch, writing changes")
-                # No need to do anything else as patch has written the changes
+                # Verify changes were actually written
+                changes_written = True
             else:
                 logger.warning("Patch application had mixed results")
 

@@ -104,7 +104,7 @@ CRITICAL: When generating hunks and context:
 4. Double-check that context lines exist in the original file
 
 CRITICAL: VISUALIZATION CAPABILITIES:
-You can generate inline diagrams using either ```graphviz or ```d3 code blocks. 
+You can generate inline diagrams using either ```graphviz code blocks. 
 Actively look for opportunities to enhance explanations with visual representations 
 when they would provide clearer understanding, especially for:
 - System architectures
@@ -242,8 +242,8 @@ def debug_chat_history(chat_history):
 conversational_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", template),
-        MessagesPlaceholder(variable_name="chat_history"),
+        MessagesPlaceholder(variable_name="chat_history", optional=True),
         ("user", "{question}"),
-        ("ai", "{agent_scratchpad}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad", optional=True),
     ]
 )
