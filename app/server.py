@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
-from app.agents.agent import model
+from app.agents.agent import model, RetryingChatBedrock
 from app.agents.agent import agent_executor
 from app.agents.agent import update_conversation_state, update_and_return
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError 
@@ -499,18 +499,35 @@ def get_current_model():
     """Get detailed information about the currently active model."""
     logger.info(
         "Current model info request: %s",
-        {
-            'model_id': model.model_id,
-            'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock"),
-            'model_env': os.environ.get("ZIYA_MODEL")
+        {   'model_id': model.model_id,
+            'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock")
         })
+
+    # Get actual model settings
+    model_kwargs = {}
+    if hasattr(model, 'model') and hasattr(model.model, 'model_kwargs'):
+        model_kwargs = model.model.model_kwargs
+    elif hasattr(model, 'model_kwargs'):
+        model_kwargs = model.model_kwargs
+
+    logger.info("Current model configuration:")
+    logger.info(f"  Model ID: {model.model_id}")
+    logger.info(f"  Temperature: {model_kwargs.get('temperature', 'Not set')} (env: {os.environ.get('ZIYA_TEMPERATURE', 'Not set')})")
+    logger.info(f"  Top K: {model_kwargs.get('top_k', 'Not set')} (env: {os.environ.get('ZIYA_TOP_K', 'Not set')})")
+    logger.info(f"  Max tokens: {model_kwargs.get('max_tokens', 'Not set')} (env: {os.environ.get('ZIYA_MAX_OUTPUT_TOKENS', 'Not set')})")
+    logger.info(f"  Thinking mode: {os.environ.get('ZIYA_THINKING_MODE', 'Not set')}")
+        
     return {
         'model_id': model.model_id,
         'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock"),
         'settings': {
-            'temperature': float(os.environ.get("ZIYA_TEMPERATURE", 0.3)),
-            'max_output_tokens': int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096)),
-            'top_k': int(os.environ.get("ZIYA_TOP_K", 15))
+            'temperature': model_kwargs.get('temperature', 
+                float(os.environ.get("ZIYA_TEMPERATURE", 0.3))),
+            'max_output_tokens': model_kwargs.get('max_tokens',
+                int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))),
+            'top_k': model_kwargs.get('top_k',
+                int(os.environ.get("ZIYA_TOP_K", 15))),
+            'thinking_mode': os.environ.get("ZIYA_THINKING_MODE") == "1"
         }
     }
 
@@ -541,7 +558,13 @@ async def set_model(request: SetModelRequest):
         # Reinitialize the model
         try:
             logger.info(f"Reinitializing model with ID: {model_id}")
-            ModelManager.initialize_model()
+            new_model = ModelManager.initialize_model(force_reinit=True)
+            new_model.model_id = model_id  # Ensure model ID is set correctly
+            
+            # Update the global model instance
+            global model
+            model = RetryingChatBedrock(new_model)
+            
             return {"status": "success", "model": model_id}
         except Exception as e:
             logger.error(f"Failed to initialize model: {str(e)}")
@@ -648,17 +671,63 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
 
 @app.post('/api/model-settings')
 async def update_model_settings(settings: ModelSettingsRequest):
+    global model
     try:
+        # Log the requested settings
+        logger.info(f"Requested model settings update:")
+        logger.info(f"  Temperature: {settings.temperature}")
+        logger.info(f"  Top K: {settings.top_k}")
+        logger.info(f"  Max Output Tokens: {settings.max_output_tokens}")
+        logger.info(f"  Thinking Mode: {settings.thinking_mode}")
+
         # Store settings in environment variables for the agent to use
         os.environ["ZIYA_TEMPERATURE"] = str(settings.temperature)
         os.environ["ZIYA_TOP_K"] = str(settings.top_k)
         os.environ["ZIYA_MAX_OUTPUT_TOKENS"] = str(settings.max_output_tokens)
         os.environ["ZIYA_THINKING_MODE"] = "1" if settings.thinking_mode else "0"
         
-        logger.info(f"Updated model settings: {settings.json()}")
-        return {'status': 'success', 'message': 'Model settings updated'}
+        # Update the model's kwargs directly
+        if hasattr(model, 'model'):
+            # For wrapped models (e.g., RetryingChatBedrock)
+            if hasattr(model.model, 'model_kwargs'):
+                model.model.model_kwargs.update({
+                    'temperature': settings.temperature,
+                    'top_k': settings.top_k,
+                    'max_tokens': settings.max_output_tokens
+                })
+        elif hasattr(model, 'model_kwargs'):
+            # For direct model instances
+            model.model_kwargs.update({
+                'temperature': settings.temperature,
+                'top_k': settings.top_k,
+                'max_tokens': settings.max_output_tokens
+            })
+            
+        # Force model reinitialization to apply new settings
+        from app.agents.models import ModelManager
+        model = ModelManager.initialize_model(force_reinit=True)
+        model.model_id = os.environ.get("ZIYA_MODEL", model.model_id)
+
+        # Get the model's current settings for verification
+        model_kwargs = {}
+        if hasattr(model, 'model') and hasattr(model.model, 'model_kwargs'):
+            model_kwargs = model.model.model_kwargs
+        elif hasattr(model, 'model_kwargs'):
+            model_kwargs = model.model_kwargs
+
+        logger.info("Current model settings after update:")
+        logger.info(f"  Model kwargs temperature: {model_kwargs.get('temperature', 'Not set')}")
+        logger.info(f"  Model kwargs top_k: {model_kwargs.get('top_k', 'Not set')}")
+        logger.info(f"  Model kwargs max_tokens: {model_kwargs.get('max_tokens', 'Not set')}")
+        logger.info(f"  Environment ZIYA_THINKING_MODE: {os.environ.get('ZIYA_THINKING_MODE')}")
+
+        return {
+            'status': 'success',
+            'message': 'Model settings updated',
+            'settings': model_kwargs
+        }
     except Exception as e:
-        logger.error(f"Error updating model settings: {str(e)}")
+        logger.error(f"Error updating model settings: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Error updating model settings: {str(e)}"

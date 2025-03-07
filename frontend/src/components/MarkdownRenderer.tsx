@@ -1415,7 +1415,7 @@ const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkM
 // Handle direct D3.js visualizations
 if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
     try {
-        // Create a container with unique ID
+        // Return D3Renderer component directly
         const containerId = `d3-viz-${Date.now()}`;
         const SpinnerComponent = () => (
             <div style={{
@@ -1429,7 +1429,6 @@ if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
                 <Spin tip="Preparing visualization..." />
             </div>
         );
-
 
         // Return the spinner immediately
         const containerElement = (
@@ -1446,12 +1445,12 @@ if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
                 spec={token.text}
                 width={800}
                 height={400}
+                type="d3"
             />
         );
-
         return containerElement;
     } catch (error) {
-        return <pre key={index}><code>Error parsing D3 specification: {error instanceof Error ? error.message : String(error)}</code></pre>;
+        return <pre key={index}><code>Error rendering D3 visualization: {error instanceof Error ? error.message : String(error)}</code></pre>;
     }
 }
 

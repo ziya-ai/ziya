@@ -7,6 +7,7 @@ import {TokenCountDisplay} from "./TokenCountDisplay";
 import union from 'lodash/union';
 import {ChatHistory} from "./ChatHistory";
 import {useTheme} from '../context/ThemeContext';
+import {ModelConfigButton} from './ModelConfigButton';
 import {ReloadOutlined, FolderOutlined, MessageOutlined} from '@ant-design/icons';
 import { convertToTreeData } from '../utils/folderUtil';
 const {TabPane} = Tabs;
@@ -324,8 +325,14 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                     }
                 ]}
             />
-            <div className="model-id-display">
-                {modelId && <span>Model: {modelId}</span>}
+            <div className="model-id-display" style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'space-between',
+                padding: '0 8px' 
+            }}>
+                {modelId && <span style={{ flex: 1 }}>Model: {modelId}</span>}
+                {modelId && <ModelConfigButton modelId={modelId} />}
             </div>
         </div>
     );
