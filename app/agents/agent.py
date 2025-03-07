@@ -1310,7 +1310,8 @@ def log_codebase_wrapper(x):
     logger.info(f"Codebase before prompt: {len(codebase)} chars")
     file_count = len([l for l in codebase.split('\n') if l.startswith('File: ')])
     logger.info(f"Number of files in codebase before prompt: {file_count}")
-    logger.info(f"Files in codebase before prompt:\n{chr(10).join([l for l in codebase.split('\n') if l.startswith('File: ')])}")
+    file_lines = [l for l in codebase.split('\n') if l.startswith('File: ')]
+    logger.info("Files in codebase before prompt:\n" + "\n".join(file_lines))
     return codebase
 
 def create_agent_chain(chat_model: BaseChatModel):
