@@ -933,7 +933,6 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
 
                 # Start collecting content for this hunk
                 current_lines = []
-                logger.debug(f"Found hunk: {current_hunk}")
                 in_hunk = True
                 hunks.append(hunk)
                 current_hunk = hunk
@@ -1327,7 +1326,6 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
                 logger.info("Successfully applied some hunks with patch, writing changes")
                 # Verify changes were actually written
                 changes_written = True
-
             else:
                 logger.warning("Patch application had mixed results")
 

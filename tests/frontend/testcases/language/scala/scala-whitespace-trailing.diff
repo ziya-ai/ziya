@@ -1,0 +1,9 @@
+diff --git a/Example.scala b/Example.scala
+--- a/Example.scala
++++ b/Example.scala
+@@ -1,4 +1,4 @@
+ object Example {
+-  def test = "old"
++  def test = "new"    
++  val x = 42   
+ }

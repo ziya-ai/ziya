@@ -208,13 +208,7 @@ export const TokenCountDisplay = () => {
                         <span>Chat: <span style={getTokenStyle(chatTokenCount)}>
                             {chatTokenCount.toLocaleString()}</span></span>
                     </Tooltip>
-                    <Tooltip 
-                        title={
-                            <>
-                                Combined tokens (files + chat)<br/>
-                                {combinedTokenCount.toLocaleString()} out of ±160,000
-                            </>
-                        } mouseEnterDelay={0.5}>
+                    <Tooltip title="Combined tokens (files + chat)" mouseEnterDelay={0.5}>
                         <span>Total: <span style={getTokenStyle(combinedTokenCount)}>
                             {combinedTokenCount.toLocaleString()}</span></span>
                     </Tooltip>
