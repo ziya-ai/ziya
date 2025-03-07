@@ -517,6 +517,7 @@ def get_current_model():
     logger.info(f"  Max tokens: {model_kwargs.get('max_tokens', 'Not set')} (env: {os.environ.get('ZIYA_MAX_OUTPUT_TOKENS', 'Not set')})")
     logger.info(f"  Thinking mode: {os.environ.get('ZIYA_THINKING_MODE', 'Not set')}")
         
+
     return {
         'model_id': model.model_id,
         'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock"),
@@ -528,6 +529,7 @@ def get_current_model():
             'top_k': model_kwargs.get('top_k',
                 int(os.environ.get("ZIYA_TOP_K", 15))),
             'thinking_mode': os.environ.get("ZIYA_THINKING_MODE") == "1"
+
         }
     }
 

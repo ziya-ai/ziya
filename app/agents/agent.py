@@ -62,6 +62,7 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
         for human, ai in cleaned_history:
             if human and isinstance(human, str):
                 logger.debug(f"Human message type: {type(human)}, content: {human[:100]}")
+
                 try:
                     buffer.append(HumanMessage(content=str(human)))
                 except Exception as e:
@@ -72,10 +73,12 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
                     buffer.append(AIMessage(content=str(ai)))
                 except Exception as e:
                     logger.error(f"Error creating AIMessage: {str(e)}")
+
     except Exception as e:
         logger.error(f"Error formatting chat history: {str(e)}")
         logger.error(f"Problematic chat history: {chat_history}")
         return []
+
 
     logger.debug(f"Final formatted messages: {[type(m).__name__ for m in buffer]}")
     return buffer
@@ -201,6 +204,7 @@ class RetryingChatBedrock(Runnable):
 
     def _format_message_content(self, message: Any) -> str:
         """Ensure message content is properly formatted as a string."""
+
         logger.info(f"Formatting message: type={type(message)}")
         if isinstance(message, dict):
             logger.info(f"Dict message keys: {message.keys()}")
@@ -288,6 +292,8 @@ class RetryingChatBedrock(Runnable):
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1} of {max_retries}")
             try:
+
+
                 # Convert input to messages if needed
                 if hasattr(input, 'to_messages'):
                     messages = input.to_messages()
@@ -310,6 +316,7 @@ class RetryingChatBedrock(Runnable):
                     yield chunk
 
                 break  # Success, exit retry loop
+
 
             except ResourceExhausted as e:
                 logger.error(f"Google API quota exceeded: {str(e)}")

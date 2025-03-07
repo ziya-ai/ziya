@@ -243,6 +243,7 @@ conversational_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", template),
         MessagesPlaceholder(variable_name="chat_history", optional=True),
+
         ("user", "{question}"),
         MessagesPlaceholder(variable_name="agent_scratchpad", optional=True),
     ]

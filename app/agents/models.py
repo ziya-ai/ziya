@@ -255,6 +255,7 @@ class ModelManager:
         if not cls._state['aws_profile']:
             cls._state['aws_profile'] = os.environ.get("ZIYA_AWS_PROFILE")
             cls._state['aws_region'] = os.environ.get("ZIYA_AWS_REGION", "us-west-2")
+
             logger.info(f"Using AWS Profile: {cls._state['aws_profile']}" if cls._state['aws_profile'] else "Using default AWS credentials")
         
         # Get custom settings if available
@@ -269,6 +270,7 @@ class ModelManager:
             model_id=model_id,
             credentials_profile_name=cls._state['aws_profile'],
             region_name=cls._state['aws_region'],
+
             config=botocore.config.Config(read_timeout=900, retries={'max_attempts': 3, 'total_max_attempts': 5}),
             model_kwargs={
                 "max_tokens": max_output,
