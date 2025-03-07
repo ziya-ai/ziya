@@ -1,0 +1,14 @@
+{
+  "name": "Scala Whitespace Handling",
+  "description": "Test proper handling of trailing whitespace in Scala code",
+  "tags": [
+    "scala",
+    "whitespace",
+    "syntax-highlighting"
+  ],
+  "expectedResult": {
+    "shouldApplyCleanly": true,
+    "expectedErrors": [],
+    "noWhitespaceMarkers": true
+  }
+}

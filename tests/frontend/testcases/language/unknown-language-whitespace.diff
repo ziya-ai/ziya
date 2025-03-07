@@ -1,0 +1,9 @@
+diff --git a/test.unknown b/test.unknown
+--- a/test.unknown
++++ b/test.unknown
+@@ -1,4 +1,4 @@
+ test {
+-  old line
++  new line    
++  another new line   
+ }

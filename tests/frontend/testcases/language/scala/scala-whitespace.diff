@@ -1,0 +1,12 @@
+diff --git a/Example.scala b/Example.scala
+index 1234567..89abcdef 100644
+--- a/Example.scala
++++ b/Example.scala
+@@ -1,5 +1,8 @@
+ object Example {
+   def main(args: Array[String]): Unit = {
+-    println("Hello")
++    val name = "World"   
++    println(s"Hello $name")   
++    List(1, 2, 3).map(_ * 2)   
+   }
