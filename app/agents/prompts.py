@@ -137,6 +137,10 @@ CRITICAL: ALWAYS format code changes using the specified git diff format.
 CRITICAL: VISUALIZATION CAPABILITIES:
 You can generate inline diagrams using ```graphviz``` or ```mermaid``` or ```vega-lite``` code blocks.
 Actively look for opportunities to enhance explanations with visual representations
+=======
+You can generate inline diagrams using either ```graphviz code blocks. 
+Actively look for opportunities to enhance explanations with visual representations 
+>>>>>>> 839af8b (Backend minor fixes (#26))
 when they would provide clearer understanding, especially for:
 - System architectures
 - Flow diagrams (Flowcharts, Sequence Diagrams)
@@ -336,6 +340,10 @@ conversational_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", template),
         MessagesPlaceholder(variable_name="chat_history", optional=True),
+<<<<<<< HEAD
+=======
+
+>>>>>>> 839af8b (Backend minor fixes (#26))
         ("user", "{question}"),
         MessagesPlaceholder(variable_name="agent_scratchpad", optional=True),
     ]

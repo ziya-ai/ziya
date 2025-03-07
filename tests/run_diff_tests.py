@@ -1751,6 +1751,12 @@ class DiffRegressionTest(unittest.TestCase):
                                f"Second application should report hunks as already_applied for {case_name}")
 
 
+    def test_misordered_hunks(self):
+        """Test handling of misordered hunks in patch application"""
+        self.run_diff_test('misordered_hunks')
+
+
+
 class PrettyTestResult(unittest.TestResult):
     def __init__(self):
         super(PrettyTestResult, self).__init__()

@@ -20,9 +20,15 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
+<<<<<<< HEAD
 from app.agents.agent import model, RetryingChatBedrock, initialize_langserve
 from app.agents.agent import agent, agent_executor, create_agent_chain, create_agent_executor
 from app.agents.agent import update_conversation_state, update_and_return, parse_output
+=======
+from app.agents.agent import model, RetryingChatBedrock
+from app.agents.agent import agent_executor
+from app.agents.agent import update_conversation_state, update_and_return
+>>>>>>> 839af8b (Backend minor fixes (#26))
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError 
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -146,15 +152,124 @@ def get_templates_dir():
 
 templates_dir = get_templates_dir()
 
+<<<<<<< HEAD
 # Mount templates/static if it exists (for frontend assets)
 templates_static_dir = os.path.join(templates_dir, "static")
 if os.path.exists(templates_static_dir) and os.path.isdir(templates_static_dir):
     app.mount("/static", StaticFiles(directory=templates_static_dir), name="static")
     logger.info(f"Mounted templates/static directory at /static")
+=======
+@app.exception_handler(ResourceExhausted)
+async def resource_exhausted_handler(request: Request, exc: ResourceExhausted):
+    """Handle Google API quota exceeded errors."""
+    logger.error(f"Google API quota exceeded: {str(exc)}")
+    return JSONResponse(
+        status_code=429,  # Too Many Requests
+        content={
+            "error": "quota_exceeded",
+            "detail": "API quota has been exceeded. Please try again in a few minutes.",
+            "original_error": str(exc)
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    error_message = str(exc)
+    status_code = 500
+    error_type = "unknown_error"
+    
+    # Check for empty text parameter error from Gemini
+    if "Unable to submit request because it has an empty text parameter" in error_message:
+        logger.error("Caught empty text parameter error from Gemini")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "validation_error",
+                "detail": "Empty message content detected. Please provide a question."
+            }
+        )
+    
+    # Check for Google API quota exceeded error
+    if "Resource has been exhausted" in error_message and "check quota" in error_message:
+        return JSONResponse(
+            status_code=429,  # Too Many Requests
+            content={
+                "error": "quota_exceeded",
+                "detail": "API quota has been exceeded. Please try again in a few minutes."
+            })
+    
+    # Check for Gemini token limit error
+    if isinstance(exc, ChatGoogleGenerativeAIError) and "token count" in error_message:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": "validation_error",
+                "detail": "Selected content is too large for the model. Please reduce the number of files."
+            }
+        )
+    
+    # Check for Google API quota exceeded error
+    if "Resource has been exhausted" in error_message and "check quota" in error_message:
+        return JSONResponse(
+            status_code=429,  # Too Many Requests
+            content={
+                "error": "quota_exceeded",
+                "detail": "API quota has been exceeded. Please try again in a few minutes."
+            })
+
+    try:
+        # Check if this is a streaming error
+        if isinstance(exc, EventStreamError):
+            if "validationException" in error_message:
+                status_code = 413
+                error_type = "validation_error"
+                error_message = "Selected content is too large for the model. Please reduce the number of files."
+        elif isinstance(exc, ExceptionGroup):
+            # Handle nested exceptions
+            for e in exc.exceptions:
+                if isinstance(e, EventStreamError) and "validationException" in str(e):
+                    status_code = 413
+                    error_type = "validation_error"
+                    error_message = "Selected content is too large for the model. Please reduce the number of files."
+                    break
+        logger.error(f"Exception handler: type={error_type}, status={status_code}, message={error_message}")
+
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": error_type, "detail": error_message}
+        )
+    except Exception as e:
+        logger.error(f"Error in exception handler: {str(e)}", exc_info=True)
+        raise
+
+# Get the absolute path to the project root directory
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Define paths relative to project root
+static_dir = os.path.join(project_root, "templates", "static")
+testcases_dir = os.path.join(project_root, "tests", "frontend", "testcases")
+templates_dir = os.path.join(project_root, "templates")
+
+# Create directories if they don't exist
+os.makedirs(static_dir, exist_ok=True)
+os.makedirs(testcases_dir, exist_ok=True)
+os.makedirs(templates_dir, exist_ok=True)
+
+# Mount static files and templates
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# Only mount testcases directory if it exists
+testcases_dir = "../tests/frontend/testcases"
+if os.path.exists(testcases_dir):
+    app.mount("/testcases", StaticFiles(directory=testcases_dir), name="testcases")
+>>>>>>> 839af8b (Backend minor fixes (#26))
 else:
     logger.warning(f"Templates static directory '{templates_static_dir}' does not exist - frontend assets may not load correctly")
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 839af8b (Backend minor fixes (#26))
 templates = Jinja2Templates(directory=templates_dir)
 
 # Add a route for the frontend
@@ -882,7 +997,92 @@ async def stream_endpoint(request: Request, body: dict):
             logger.info(f"[INSTRUMENTATION] /ziya/stream cleaned chat history from {len(body['chat_history'])} to {len(cleaned_history)} pairs")
             body["chat_history"] = cleaned_history
             
+<<<<<<< HEAD
         logger.info("[INSTRUMENTATION] /ziya/stream starting stream endpoint with body size: %d", len(str(body)))
+=======
+        logger.info("Starting stream endpoint with body size: %d", len(str(body)))
+        # Define the streaming response with proper error handling
+        async def error_handled_stream():
+            response = None
+            try:
+                # Convert to ChatPromptValue before streaming
+                if isinstance(body, dict) and "messages" in body:
+                    from langchain_core.prompt_values import ChatPromptValue
+                    from langchain_core.messages import HumanMessage
+                    body["messages"] = [HumanMessage(content=msg) for msg in body["messages"]]
+                    body = ChatPromptValue(messages=body["messages"])
+                # Create the iterator inside the error handling context
+                iterator = agent_executor.astream_log(body)
+                async for chunk in iterator:
+                    logger.info("Processing chunk: %s",
+                              chunk if isinstance(chunk, dict) else chunk[:200] + "..." if len(chunk) > 200 else chunk)
+                    if isinstance(chunk, dict) and "error" in chunk:
+                        # Format error as SSE message
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        # Update file state before returning
+                        update_and_return(body)
+                        logger.info(f"Sent error message: {chunk}")
+                        return
+                    elif isinstance(chunk, Generation) and hasattr(chunk, 'text') and "quota_exceeded" in chunk.text:
+                        yield f"data: {chunk.text}\n\n"
+                        update_and_return(body)
+                        return
+                    else:
+                        try:
+                            yield chunk
+                            await response.flush()
+                        except EventStreamError as e:
+                            if "validationException" in str(e):
+                                error_msg = {
+                                    "error": "validation_error",
+                                    "detail": "Selected content is too large for the model. Please reduce the number of files."
+                                }
+                                yield f"data: {json.dumps(error_msg)}\n\n"
+                                update_and_return(body)
+                                await response.flush()
+                                logger.info("Sent EventStreamError message: %s", error_msg)
+                                return
+                        except ChatGoogleGenerativeAIError as e:
+                            if "token count" in str(e):
+                                error_msg = {
+                                    "error": "validation_error",
+                                    "detail": "Selected content is too large for the model. Please reduce the number of files."
+                                }
+                                yield f"data: {json.dumps(error_msg)}\n\n"
+                                update_and_return(body)
+                                await response.flush()
+                                logger.info("Sent token limit error message: %s", error_msg)
+                                return
+            except ResourceExhausted as e:
+                error_msg = {
+                    "error": "quota_exceeded",
+                    "detail": "API quota has been exceeded. Please try again in a few minutes."
+                }
+                yield f"data: {json.dumps(error_msg)}\n\n"
+                update_and_return(body)
+                logger.error(f"Caught ResourceExhausted error: {str(e)}")
+                return
+            except EventStreamError as e:
+                if "validationException" in str(e):
+                    error_msg = {
+                        "error": "validation_error",
+                        "detail": "Selected content is too large for the model. Please reduce the number of files."
+                    }
+                    yield f"data: {json.dumps(error_msg)}\n\n"
+                    update_and_return(body)
+                    await response.flush()
+                    return
+                raise
+            finally:
+                update_and_return(body)
+        return StreamingResponse(error_handled_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+    except Exception as e:
+        logger.error(f"Error in stream endpoint: {str(e)}")
+        error_msg = {"error": "stream_error", "detail": str(e)}
+        logger.error(f"Sending error response: {error_msg}")
+        update_and_return(body)
+        return StreamingResponse(iter([f"data: {json.dumps(error_msg)}\n\n"]), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+>>>>>>> 839af8b (Backend minor fixes (#26))
         
         # Convert to ChatPromptValue if needed
         if isinstance(body, dict) and "messages" in body:
@@ -1597,6 +1797,63 @@ async def api_get_folders():
         logger.error(f"Error in api_get_folders: {e}")
         return {"error": str(e)}
 
+<<<<<<< HEAD
+=======
+@app.get('/api/default-included-folders')
+def get_model_id():
+    return {'defaultIncludedFolders': []}
+
+@app.get('/api/current-model')
+def get_current_model():
+    """Get detailed information about the currently active model."""
+    logger.info(
+        "Current model info request: %s",
+        {   'model_id': model.model_id,
+            'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        })
+
+    # Get actual model settings
+    model_kwargs = {}
+    if hasattr(model, 'model') and hasattr(model.model, 'model_kwargs'):
+        model_kwargs = model.model.model_kwargs
+    elif hasattr(model, 'model_kwargs'):
+        model_kwargs = model.model_kwargs
+
+    logger.info("Current model configuration:")
+    logger.info(f"  Model ID: {model.model_id}")
+    logger.info(f"  Temperature: {model_kwargs.get('temperature', 'Not set')} (env: {os.environ.get('ZIYA_TEMPERATURE', 'Not set')})")
+    logger.info(f"  Top K: {model_kwargs.get('top_k', 'Not set')} (env: {os.environ.get('ZIYA_TOP_K', 'Not set')})")
+    logger.info(f"  Max tokens: {model_kwargs.get('max_tokens', 'Not set')} (env: {os.environ.get('ZIYA_MAX_OUTPUT_TOKENS', 'Not set')})")
+    logger.info(f"  Thinking mode: {os.environ.get('ZIYA_THINKING_MODE', 'Not set')}")
+        
+
+    return {
+        'model_id': model.model_id,
+        'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock"),
+        'settings': {
+            'temperature': model_kwargs.get('temperature', 
+                float(os.environ.get("ZIYA_TEMPERATURE", 0.3))),
+            'max_output_tokens': model_kwargs.get('max_tokens',
+                int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))),
+            'top_k': model_kwargs.get('top_k',
+                int(os.environ.get("ZIYA_TOP_K", 15))),
+            'thinking_mode': os.environ.get("ZIYA_THINKING_MODE") == "1"
+
+        }
+    }
+
+@app.get('/api/model-id')
+def get_model_id():
+    if os.environ.get("ZIYA_ENDPOINT") == "google":
+        model_name = os.environ.get("ZIYA_MODEL", "gemini-pro")
+        return {'model_id': model_name}
+    elif os.environ.get("ZIYA_MODEL"):
+        return {'model_id': os.environ.get("ZIYA_MODEL")}
+    else:
+        # Bedrock
+        return {'model_id': model.model_id.split(':')[0].split('/')[-1]}
+        
+>>>>>>> 839af8b (Backend minor fixes (#26))
 @app.post('/api/set-model')
 async def set_model(request: SetModelRequest):
     """Set the active model for the current endpoint."""
@@ -1613,6 +1870,7 @@ async def set_model(request: SetModelRequest):
             logger.error("Empty model ID provided")
             raise HTTPException(status_code=400, detail="Model ID is required")
 
+<<<<<<< HEAD
         # Get current endpoint
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         current_model = os.environ.get("ZIYA_MODEL")
@@ -1800,6 +2058,30 @@ async def set_model(request: SetModelRequest):
                 status_code=500,
                 detail=f"Failed to initialize model {found_alias}: {str(e)}"
             )
+=======
+        # Update environment variable
+        os.environ["ZIYA_MODEL"] = model_id
+        logger.info(f"Setting model to: {model_id}")
+        
+        # Reinitialize the model
+        try:
+            logger.info(f"Reinitializing model with ID: {model_id}")
+            new_model = ModelManager.initialize_model(force_reinit=True)
+            new_model.model_id = model_id  # Ensure model ID is set correctly
+            
+            # Update the global model instance
+            global model
+            model = RetryingChatBedrock(new_model)
+            
+
+            return {"status": "success", "model": model_id}
+        except Exception as e:
+            logger.error(f"Failed to initialize model: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to initialize model: {str(e)}")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+>>>>>>> 839af8b (Backend minor fixes (#26))
 
     except Exception as e:
         logger.error(f"Error in set_model: {str(e)}", exc_info=True)
@@ -2069,6 +2351,7 @@ async def test_cache_functionality():
 @app.post('/api/model-settings')
 async def update_model_settings(settings: ModelSettingsRequest):
     global model
+<<<<<<< HEAD
     import gc
     original_settings = settings.dict()
     try:
@@ -2142,6 +2425,7 @@ async def update_model_settings(settings: ModelSettingsRequest):
         if hasattr(model, 'model'):
             # For wrapped models (e.g., RetryingChatBedrock)
             if hasattr(model.model, 'model_kwargs'):
+<<<<<<< HEAD
                 # Replace the entire model_kwargs dict
                 model.model.model_kwargs = filtered_kwargs
                 logger.info(f"Updated model.model.model_kwargs: {model.model.model_kwargs}")
@@ -2178,16 +2462,56 @@ async def update_model_settings(settings: ModelSettingsRequest):
             logger.info(f"  model.model.max_tokens: {model.model.max_tokens}")
 
         # Return the original requested settings to ensure the frontend knows what was requested
+=======
+                model.model.model_kwargs.update({
+                    'temperature': settings.temperature,
+                    'top_k': settings.top_k,
+                    'max_tokens': settings.max_output_tokens
+                })
+        elif hasattr(model, 'model_kwargs'):
+            # For direct model instances
+            model.model_kwargs.update({
+                'temperature': settings.temperature,
+                'top_k': settings.top_k,
+                'max_tokens': settings.max_output_tokens
+            })
+            
+        # Force model reinitialization to apply new settings
+        from app.agents.models import ModelManager
+        model = ModelManager.initialize_model(force_reinit=True)
+        model.model_id = os.environ.get("ZIYA_MODEL", model.model_id)
+
+        # Get the model's current settings for verification
+        model_kwargs = {}
+        if hasattr(model, 'model') and hasattr(model.model, 'model_kwargs'):
+            model_kwargs = model.model.model_kwargs
+        elif hasattr(model, 'model_kwargs'):
+            model_kwargs = model.model_kwargs
+
+        logger.info("Current model settings after update:")
+        logger.info(f"  Model kwargs temperature: {model_kwargs.get('temperature', 'Not set')}")
+        logger.info(f"  Model kwargs top_k: {model_kwargs.get('top_k', 'Not set')}")
+        logger.info(f"  Model kwargs max_tokens: {model_kwargs.get('max_tokens', 'Not set')}")
+        logger.info(f"  Environment ZIYA_THINKING_MODE: {os.environ.get('ZIYA_THINKING_MODE')}")
+>>>>>>> 839af8b (Backend minor fixes (#26))
 
         return {
             'status': 'success',
             'message': 'Model settings updated',
+<<<<<<< HEAD
             'settings': original_settings,
             'applied_settings': current_kwargs
         }
 
     except Exception as e:
         logger.error(f"Error updating model settings: {str(e)}", exc_info=True)
+=======
+            'settings': model_kwargs
+        }
+    except Exception as e:
+        logger.error(f"Error updating model settings: {str(e)}", exc_info=True)
+
+>>>>>>> 839af8b (Backend minor fixes (#26))
         raise HTTPException(
             status_code=500,
             detail=f"Error updating model settings: {str(e)}"
