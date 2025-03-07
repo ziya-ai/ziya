@@ -1327,6 +1327,7 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
                 logger.info("Successfully applied some hunks with patch, writing changes")
                 # Verify changes were actually written
                 changes_written = True
+
             else:
                 logger.warning("Patch application had mixed results")
 

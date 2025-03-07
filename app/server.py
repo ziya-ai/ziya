@@ -517,6 +517,7 @@ def get_current_model():
     logger.info(f"  Max tokens: {model_kwargs.get('max_tokens', 'Not set')} (env: {os.environ.get('ZIYA_MAX_OUTPUT_TOKENS', 'Not set')})")
     logger.info(f"  Thinking mode: {os.environ.get('ZIYA_THINKING_MODE', 'Not set')}")
         
+
     return {
         'model_id': model.model_id,
         'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock"),
@@ -528,6 +529,7 @@ def get_current_model():
             'top_k': model_kwargs.get('top_k',
                 int(os.environ.get("ZIYA_TOP_K", 15))),
             'thinking_mode': os.environ.get("ZIYA_THINKING_MODE") == "1"
+
         }
     }
 
@@ -565,6 +567,7 @@ async def set_model(request: SetModelRequest):
             global model
             model = RetryingChatBedrock(new_model)
             
+
             return {"status": "success", "model": model_id}
         except Exception as e:
             logger.error(f"Failed to initialize model: {str(e)}")
@@ -680,6 +683,7 @@ async def update_model_settings(settings: ModelSettingsRequest):
         logger.info(f"  Max Output Tokens: {settings.max_output_tokens}")
         logger.info(f"  Thinking Mode: {settings.thinking_mode}")
 
+
         # Store settings in environment variables for the agent to use
         os.environ["ZIYA_TEMPERATURE"] = str(settings.temperature)
         os.environ["ZIYA_TOP_K"] = str(settings.top_k)
@@ -728,6 +732,7 @@ async def update_model_settings(settings: ModelSettingsRequest):
         }
     except Exception as e:
         logger.error(f"Error updating model settings: {str(e)}", exc_info=True)
+
         raise HTTPException(
             status_code=500,
             detail=f"Error updating model settings: {str(e)}"

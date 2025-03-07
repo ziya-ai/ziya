@@ -245,9 +245,11 @@ class DiffRegressionTest(unittest.TestCase):
         """Test TypeScript fixes for D3 network diagram plugin"""
         self.run_diff_test('d3_network_typescript')
 
+
     def test_misordered_hunks(self):
         """Test handling of misordered hunks in patch application"""
         self.run_diff_test('misordered_hunks')
+
 
 
 class PrettyTestResult(unittest.TestResult):
