@@ -13,40 +13,6 @@ import google.auth
 from dotenv import load_dotenv
 from dotenv.main import find_dotenv
 
-# Create a custom wrapper class for ChatGoogleGenerativeAI
-class SafeChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
-    """A wrapper around ChatGoogleGenerativeAI that prevents empty messages."""
-    
-    def _validate_messages(self, messages):
-        """Ensure no messages have empty content."""
-        logger.info(f"Validating {len(messages)} messages")
-        for i, msg in enumerate(messages):
-            if hasattr(msg, 'content'):
-                if not msg.content or msg.content.strip() == '':
-                    logger.warning(f"Empty message detected at position {i}, replacing with placeholder")
-                    msg.content = "Please provide a question."
-            elif isinstance(msg, dict) and 'content' in msg:
-                if not msg['content'] or not msg['content'].strip():
-                    logger.warning(f"Empty dict message detected at position {i}, replacing with placeholder")
-                    msg['content'] = "Please provide a question."
-        return messages
-    
-    async def agenerate(self, messages, *args, **kwargs):
-        """Override agenerate to validate messages."""
-        messages = self._validate_messages(messages)
-        return await super().agenerate(messages, *args, **kwargs)
-    
-    def generate(self, messages, *args, **kwargs):
-        """Override generate to validate messages."""
-        messages = self._validate_messages(messages)
-        return super().generate(messages, *args, **kwargs)
-    
-    async def ainvoke(self, input, *args, **kwargs):
-        """Override ainvoke to validate input."""
-        if isinstance(input, list):
-            input = self._validate_messages(input)
-        return await super().ainvoke(input, *args, **kwargs)
- 
 class ModelManager:
 
     # Class-level state with process-specific initialization
@@ -324,6 +290,8 @@ class ModelManager:
  
         if not cls._state['aws_profile']:
             cls._state['aws_profile'] = os.environ.get("ZIYA_AWS_PROFILE")
+            cls._state['aws_region'] = os.environ.get("ZIYA_AWS_REGION", "us-west-2")
+
             logger.info(f"Using AWS Profile: {cls._state['aws_profile']}" if cls._state['aws_profile'] else "Using default AWS credentials")
         
         # Get custom settings if available
@@ -337,6 +305,8 @@ class ModelManager:
         return ChatBedrock(
             model_id=model_id,
             credentials_profile_name=cls._state['aws_profile'],
+            region_name=cls._state['aws_region'],
+
             config=botocore.config.Config(read_timeout=900, retries={'max_attempts': 3, 'total_max_attempts': 5}),
             model_kwargs={
                 "max_tokens": max_output,
@@ -479,3 +449,39 @@ class EmptyMessageFilter(BaseCallbackHandler):
             logger.error("All messages are empty, adding a placeholder message")
             messages.append({"role": "user", "content": "Please provide a question."})
         return messages
+
+# Create a custom wrapper class for ChatGoogleGenerativeAI
+class SafeChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
+    """A wrapper around ChatGoogleGenerativeAI that prevents empty messages."""
+    
+    def _validate_messages(self, messages):
+        """Ensure no messages have empty content."""
+        logger.info(f"Validating {len(messages)} messages")
+        for i, msg in enumerate(messages):
+            if hasattr(msg, 'content'):
+                if not msg.content or msg.content.strip() == '':
+                    logger.warning(f"Empty message detected at position {i}, replacing with placeholder")
+                    msg.content = "Please provide a question."
+            elif isinstance(msg, dict) and 'content' in msg:
+                if not msg['content'] or not msg['content'].strip():
+                    logger.warning(f"Empty dict message detected at position {i}, replacing with placeholder")
+                    msg['content'] = "Please provide a question."
+        return messages
+    
+    async def agenerate(self, messages, *args, **kwargs):
+        """Override agenerate to validate messages."""
+        messages = self._validate_messages(messages)
+        return await super().agenerate(messages, *args, **kwargs)
+    
+    def generate(self, messages, *args, **kwargs):
+        """Override generate to validate messages."""
+        messages = self._validate_messages(messages)
+        return super().generate(messages, *args, **kwargs)
+    
+    async def ainvoke(self, input, *args, **kwargs):
+        """Override ainvoke to validate input."""
+        if isinstance(input, list):
+            input = self._validate_messages(input)
+        return await super().ainvoke(input, *args, **kwargs)
+ 
+
