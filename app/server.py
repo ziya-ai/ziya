@@ -208,7 +208,21 @@ async def general_exception_handler(request: Request, exc: Exception):
         logger.error(f"Error in exception handler: {str(e)}", exc_info=True)
         raise
 
-app.mount("/static", StaticFiles(directory="../templates/static"), name="static")
+# Get the absolute path to the project root directory
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Define paths relative to project root
+static_dir = os.path.join(project_root, "templates", "static")
+testcases_dir = os.path.join(project_root, "tests", "frontend", "testcases")
+templates_dir = os.path.join(project_root, "templates")
+
+# Create directories if they don't exist
+os.makedirs(static_dir, exist_ok=True)
+os.makedirs(testcases_dir, exist_ok=True)
+os.makedirs(templates_dir, exist_ok=True)
+
+# Mount static files and templates
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # Only mount testcases directory if it exists
 testcases_dir = "../tests/frontend/testcases"
@@ -217,7 +231,7 @@ if os.path.exists(testcases_dir):
 else:
     logger.info(f"Testcases directory '{testcases_dir}' does not exist - skipping mount")
 
-templates = Jinja2Templates(directory="../templates")
+templates = Jinja2Templates(directory=templates_dir)
 
 # Add a route for the frontend
 add_routes(app, agent_executor, disabled_endpoints=["playground"], path="/ziya")
@@ -299,8 +313,14 @@ async def stream_endpoint(body: dict):
         async def error_handled_stream():
             response = None
             try:
+                # Convert to ChatPromptValue before streaming
+                if isinstance(body, dict) and "messages" in body:
+                    from langchain_core.prompt_values import ChatPromptValue
+                    from langchain_core.messages import HumanMessage
+                    body["messages"] = [HumanMessage(content=msg) for msg in body["messages"]]
+                    body = ChatPromptValue(messages=body["messages"])
                 # Create the iterator inside the error handling context
-                iterator = agent_executor.astream_log(body, {})
+                iterator = agent_executor.astream_log(body)
                 async for chunk in iterator:
                     logger.info("Processing chunk: %s",
                               chunk if isinstance(chunk, dict) else chunk[:200] + "..." if len(chunk) > 200 else chunk)
