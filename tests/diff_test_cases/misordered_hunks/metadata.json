@@ -1,0 +1,7 @@
+{
+    "target_file": "test_settings.py",
+    "description": "Test handling of misordered hunks in patch application",
+    "date_added": "2024-03-20",
+    "issue_reference": "misordered_hunks_bug",
+    "expected_behavior": "Should fall back to difflib when patch reports misordered hunks"
+}
