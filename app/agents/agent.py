@@ -268,6 +268,7 @@ class RetryingChatBedrock(Runnable):
             
         return RetryingChatBedrock(self.model.bind(**supported_kwargs))
 
+
     def get_num_tokens(self, text: str) -> int:
         return self.model.get_num_tokens(text)
 
@@ -885,8 +886,13 @@ class RetryingChatBedrock(Runnable):
                     logger.error(f"All {max_retries} attempts failed")
                     raise
 
-    async def ainvoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
-        return await self.model.ainvoke(input, config, **kwargs)
+            formatted_messages.append({
+                'role': role,
+                'content': content
+            })
+ 
+        return formatted_messages
+ 
 
 class LazyLoadedModel:
     def __init__(self):
