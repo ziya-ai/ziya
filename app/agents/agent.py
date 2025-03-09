@@ -14,7 +14,7 @@ from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from google.api_core.exceptions import ResourceExhausted
 from langchain_community.document_loaders import TextLoader
 from langchain_core.agents import AgentFinish
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, BaseMessage
 from langchain_core.outputs import Generation
 from langchain_core.runnables import RunnablePassthrough, Runnable
 from pydantic import BaseModel, Field
@@ -82,7 +82,9 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
 
 def parse_output(message):
     """Parse and sanitize the output from the language model."""
+    logger.info("parse_output called with type: %s", type(message))
     try:
+        logger.info(f"Raw response from model: {message}")
         # Get the content based on the object type
         content = None
         if hasattr(message, 'text'):
@@ -91,28 +93,69 @@ def parse_output(message):
             content = message.content
         else:
             content = str(message)
-    finally:
-        if content:
-            # If content is a method (from Gemini), get the actual content
-            if callable(content):
-                try:
-                    content = content()
-                except Exception as e:
-                    logger.error(f"Error calling content method: {e}")
+
+        # If content is a method (from Gemini), get the actual content
+        if callable(content):
             try:
-                # Check if this is an error message
-                error_data = json.loads(content)
-                if error_data.get('error') == 'validation_error':
-                    logger.info(f"Detected validation error in output: {content}")
-                    return AgentFinish(return_values={"output": content}, log=content)
-            except json.JSONDecodeError:
-                pass
-            # If not an error, clean and return the content
-            text = clean_backtick_sequences(content)
-            # Log using the same content we extracted
-            logger.info(f"parse_output received content size: {len(content)} chars, returning size: {len(text)} chars")
-            return AgentFinish(return_values={"output": text}, log=text)
-        return AgentFinish(return_values={"output": ""}, log="")
+                content = content()
+            except Exception as e:
+                logger.error(f"Error calling content method: {e}")
+
+        logger.debug("Content inspection:")
+        logger.debug(f"Type: {type(content)}")
+        logger.debug(f"Has diff marker: {'```diff' in content}")
+        logger.debug(f"Content starts with: {content[:100]}")
+        logger.debug(f"Content ends with: {content[-100:]}")
+        logger.debug(f"Raw content length: {len(content)}")
+
+    finally:
+        if not content:
+            return AgentFinish(return_values={"output": ""}, log="")
+
+        try:
+            # Check if this is an error message
+            error_data = json.loads(content)
+            if error_data.get('error') == 'validation_error':
+                logger.info(f"Detected validation error in output: {content}")
+                return AgentFinish(return_values={"output": content}, log=content)
+        except json.JSONDecodeError:
+            pass
+
+        # Extract diff content from markdown code fence if present
+        if "```diff" in content:
+            parts = content.split("```diff")
+            logger.debug(f"Split parts: {len(parts)}")
+            if len(parts) > 1:
+                logger.debug("Processing diff parts:")
+                logger.debug(f"Before diff: {parts[0]}")
+                logger.debug(f"Diff part before cleanup: {parts[1]}")
+
+                diff_content = parts[1].split("```")[0].strip()
+
+                # Clean up line numbers in brackets
+                cleaned_lines = []
+                for line in diff_content.splitlines():
+                    # Skip empty lines
+                    if not line.strip():
+                        cleaned_lines.append(line)
+                        continue
+
+                    # Remove line numbers in brackets if present
+                    if '] ' in line and line[0] in [' ', '+', '-']:
+                        prefix = line[0]
+                        _, content = line.split('] ', 1)
+                        cleaned_lines.append(f"{prefix}{content}")
+                    else:
+                        cleaned_lines.append(line)
+
+                diff_content = '\n'.join(cleaned_lines)
+                logger.info(f"Extracted diff content:\n{diff_content}")
+                return AgentFinish(return_values={"output": diff_content}, log=diff_content)
+
+        # If not a diff or error, clean and return the content
+        text = clean_backtick_sequences(content)
+        logger.info(f"parse_output extracted content size: {len(content)} chars, cleaned size: {len(text)} chars")
+        return AgentFinish(return_values={"output": text}, log=text)
 
 # Create a wrapper class that adds retries
 class RetryingChatBedrock(Runnable):
@@ -307,7 +350,11 @@ class RetryingChatBedrock(Runnable):
                     logger.debug(f"Filtered to {len(messages)} non-empty messages")
 
                 async for chunk in self.model.astream(messages, config, **kwargs):
-                    yield chunk
+                    if isinstance(chunk, AIMessageChunk):
+                        content = chunk.content() if callable(chunk.content) else chunk.content
+                        yield AIMessageChunk(content=content)
+                    else:
+                        yield chunk
 
                 break  # Success, exit retry loop
 
@@ -532,13 +579,11 @@ agent = (
     }
     | conversational_prompt
     | llm_with_stop
-    | (lambda x: AgentFinish(
-        return_values={"output": x.content if hasattr(x, 'content') else str(x)},
-        log=""
-    ))
+    | parse_output
     | log_output
 )
 
+logger.info("Agent chain defined with parse_output")
 def update_conversation_state(conversation_id: str, file_paths: List[str]) -> None:
     """Update file states after a response has been generated"""
     logger.info(f"Updating conversation state for {conversation_id} with {len(file_paths)} files")

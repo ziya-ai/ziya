@@ -85,14 +85,23 @@ export const StreamedContent: React.FC = () => {
                 <div className="message assistant">
                     <div className="message-sender">AI:</div>
 		    <Suspense fallback={<div>Loading content...</div>}>
-                        {error ? (
-                            <ErrorDisplay message={error} />
-                        ) : (
-                            <MarkdownRenderer
-                                markdown={streamedContentMap.get(currentConversationId) || ''}
-                                enableCodeApply={enableCodeApply}
-                            />
-                        )}
+                        <>
+                            {console.log('StreamedContent rendering:', {
+                                content: streamedContentMap.get(currentConversationId),
+                                isDiff: streamedContentMap.get(currentConversationId)?.match(/^(---|\+\+\+|@@)/m),
+                                firstLines: streamedContentMap.get(currentConversationId)
+                                    ?.split('\n')
+                                    .slice(0, 3)
+                            })}
+                            {error ? (
+                                <ErrorDisplay message={error} />
+                            ) : (
+                                <MarkdownRenderer
+                                    markdown={streamedContentMap.get(currentConversationId) || ''}
+                                    enableCodeApply={enableCodeApply}
+                                />
+                            )}
+                        </>
                     </Suspense>
                 </div>
             )}

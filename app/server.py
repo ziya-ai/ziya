@@ -26,7 +26,8 @@ from starlette.responses import StreamingResponse
 from google.api_core.exceptions import ResourceExhausted
 import uvicorn
 
-from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff, PatchApplicationError
+from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff
+from app.utils.code_util import PatchApplicationError, split_combined_diff
 from app.utils.directory_util import get_ignored_patterns
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
@@ -38,7 +39,11 @@ DEFAULT_PORT = 6969
 class SetModelRequest(BaseModel):
     model_id: str
 
-app = FastAPI()
+app = FastAPI(
+    title="Ziya API",
+    description="Code assistant API",
+    docs_url="/docs"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +52,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Configure FastAPI for larger request bodies
+from starlette.middleware.base import BaseHTTPMiddleware
+class RequestSizeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if request.method == "POST":
+            request.scope["max_request_size"] = 10 * 1024 * 1024  # 10MB
+        return await call_next(request)
+
+app.add_middleware(RequestSizeMiddleware)
 
 
 @app.exception_handler(EventStreamError)
@@ -322,22 +337,29 @@ async def stream_endpoint(body: dict):
                 # Create the iterator inside the error handling context
                 iterator = agent_executor.astream_log(body)
                 async for chunk in iterator:
-                    logger.info("Processing chunk: %s",
-                              chunk if isinstance(chunk, dict) else chunk[:200] + "..." if len(chunk) > 200 else chunk)
                     if isinstance(chunk, dict) and "error" in chunk:
                         # Format error as SSE message
                         yield f"data: {json.dumps(chunk)}\n\n"
-                        # Update file state before returning
-                        update_and_return(body)
-                        logger.info(f"Sent error message: {chunk}")
-                        return
+                        
                     elif isinstance(chunk, Generation) and hasattr(chunk, 'text') and "quota_exceeded" in chunk.text:
                         yield f"data: {chunk.text}\n\n"
                         update_and_return(body)
                         return
+                        
                     else:
                         try:
-                            yield chunk
+                            # Parse and clean the chunk before sending
+                            parsed_chunk = parse_output(chunk)
+                            if parsed_chunk and parsed_chunk.return_values:
+                                cleaned_output = parsed_chunk.return_values.get("output", "")
+                                if cleaned_output:
+                                    yield f"data: {cleaned_output}\n\n"
+                                    continue
+                            
+                            # Fall back to original chunk if parsing fails
+                            chunk_content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                            yield f"data: {chunk.content if hasattr(chunk, 'content') else str(chunk)}\n\n"
+
                             await response.flush()
                         except EventStreamError as e:
                             if "validationException" in str(e):
@@ -491,34 +513,30 @@ async def get_folders():
     return get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
 
 @app.get('/api/default-included-folders')
-def get_model_id():
-    return {'defaultIncludedFolders': []}
 
 @app.get('/api/current-model')
 def get_current_model():
     """Get detailed information about the currently active model."""
     logger.info(
         "Current model info request: %s",
-        {   'model_id': model.model_id,
+        {   'model_id': ModelManager.get_model_id(model),
             'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock")
         })
 
     # Get actual model settings
     model_kwargs = {}
-    if hasattr(model, 'model') and hasattr(model.model, 'model_kwargs'):
-        model_kwargs = model.model.model_kwargs
-    elif hasattr(model, 'model_kwargs'):
-        model_kwargs = model.model_kwargs
+    # Get model settings through ModelManager
+    model_kwargs = ModelManager.get_model_settings(model)
 
     logger.info("Current model configuration:")
-    logger.info(f"  Model ID: {model.model_id}")
+    logger.info(f"  Model ID: {ModelManager.get_model_id(model)}")
     logger.info(f"  Temperature: {model_kwargs.get('temperature', 'Not set')} (env: {os.environ.get('ZIYA_TEMPERATURE', 'Not set')})")
     logger.info(f"  Top K: {model_kwargs.get('top_k', 'Not set')} (env: {os.environ.get('ZIYA_TOP_K', 'Not set')})")
     logger.info(f"  Max tokens: {model_kwargs.get('max_tokens', 'Not set')} (env: {os.environ.get('ZIYA_MAX_OUTPUT_TOKENS', 'Not set')})")
     logger.info(f"  Thinking mode: {os.environ.get('ZIYA_THINKING_MODE', 'Not set')}")
         
     return {
-        'model_id': model.model_id,
+        'model_id': ModelManager.get_model_id(model),
         'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock"),
         'settings': {
             'temperature': model_kwargs.get('temperature', 
@@ -612,7 +630,16 @@ def get_model_capabilities(model: str = None):
 
 class ApplyChangesRequest(BaseModel):
     diff: str
-    filePath: str
+    filePath: str = Field(..., description="Path to the file being modified")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "diff": "diff --git a/file.txt b/file.txt\n...",
+                "filePath": "file.txt"
+            }
+        }
+        max_str_length = 1000000  # Allow larger diffs
 
 class ModelSettingsRequest(BaseModel):
     temperature: float = Field(default=0.3, ge=0, le=1)
@@ -736,8 +763,46 @@ async def update_model_settings(settings: ModelSettingsRequest):
 @app.post('/api/apply-changes')
 async def apply_changes(request: ApplyChangesRequest):
     try:
+        # Validate diff size
+        if len(request.diff) < 100:  # Arbitrary minimum for a valid git diff
+            logger.warning(f"Suspiciously small diff received: {len(request.diff)} bytes")
+            logger.warning(f"Diff content: {request.diff}")
+
         logger.info(f"Received request to apply changes to file: {request.filePath}")
-        logger.info(f"Diff content: \n{request.diff}")
+        logger.info(f"Raw request diff length: {len(request.diff)} bytes")
+        logger.info("First 100 chars of raw diff:")
+        logger.info(request.diff[:100])
+        logger.info(f"Full diff content: \n{request.diff}")
+
+        # Extract individual diffs if multiple are present
+        individual_diffs = split_combined_diff(request.diff)
+        if len(individual_diffs) > 1:
+            logger.info(f"Received combined diff with {len(individual_diffs)} files")
+            # Find the diff for our target file
+            logger.debug("Individual diffs:")
+            logger.debug('\n'.join(individual_diffs))
+            target_diff = None
+            for diff in individual_diffs:
+                target_file = extract_target_file_from_diff(diff)
+                if target_file and os.path.normpath(target_file) == os.path.normpath(request.filePath):
+                    target_diff = diff
+                    break
+
+            if not target_diff:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        'status': 'error',
+                        'type': 'file_not_found',
+                        'message': f'No diff found for requested file {request.filePath} in combined diff'
+                    }
+                )
+        else:
+            logger.info("Single diff found")
+            target_diff = individual_diffs[0]
+            
+        request.diff = target_diff
+        logger.info(f"Using diff for {request.filePath}")
 
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
         if not user_codebase_dir:
@@ -776,11 +841,20 @@ async def apply_changes(request: ApplyChangesRequest):
                     status_code = 500  # Internal Server Error
                 else:
                     status_code = 422  # Unprocessable Entity
-
+                
+                # Format error response based on whether we have multiple failures
+                error_content = {
+                    'status': 'error',
+                    'message': str(e)
+                }
+                if 'failures' in details:
+                    error_content['failures'] = details['failures']
+                else:
+                    error_content['details'] = details
+                
                 raise HTTPException(status_code=status_code, detail={
                     'status': 'error',
-                    'message': str(e),
-                    'details': details
+                    **error_content
                 })
         logger.error(f"Error applying changes: {error_msg}")
         raise HTTPException(

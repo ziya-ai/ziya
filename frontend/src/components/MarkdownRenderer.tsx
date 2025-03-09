@@ -855,21 +855,70 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     };
 
     const handleApplyChanges = async () => {
-        // Clean the diff content - stop at first triple backtick
+        // Extract the actual diff content
         const cleanDiff = (() => {
-            const endMarker = diff.indexOf('```');
-            return endMarker !== -1 ? diff.slice(0, endMarker).trim() : diff.trim();
+            console.log('Pre-fetch diff content:', diff);
+            // Log the incoming diff content
+            console.log('Raw diff content:', {
+                length: diff.length,
+                firstLine: diff.split('\n')[0],
+                totalLines: diff.split('\n').length,
+                fullContent: diff
+            });
+            // If it's already a raw diff, use it directly
+            if (diff.startsWith('diff --git')) {
+                return diff.trim();
+            }
+
+            // Otherwise extract diff from markdown code block
+            const diffMatch = diff.match(/```diff\n([\s\S]*?)```(?:\s|$)/);
+            console.log('Diff match result:', {
+                found: !!diffMatch,
+                groups: diffMatch ? diffMatch.length : 0,
+                matchContent: diffMatch ? {
+                    fullMatch: diffMatch[0],
+                    diffContent: diffMatch[1],
+                } : null
+            });
+            if (diffMatch) {
+                return diffMatch[1].trim();
+            }
+
+            // Fallback to original cleaning method
+            return diff.trim();
         })();
 
+        // Log the processed diff content
+        console.log('Processed diff content:', {
+            length: cleanDiff.length,
+            lines: cleanDiff.split('\n').length,
+            firstLine: cleanDiff.split('\n')[0],
+            lastLine: cleanDiff.split('\n').slice(-1)[0],
+            fullContent: cleanDiff,
+            truncated: cleanDiff.length < diff.length
+        });
+
+        // Log the actual request body
+        const requestBody = JSON.stringify({ diff: cleanDiff, filePath: filePath.trim() });
+        console.log('Request body:', requestBody);
+
+        const requestBodyParsed = JSON.parse(requestBody);
+        console.log('Parsed request body diff length:', requestBodyParsed.diff.split('\n').length);
+
         try {
+            console.log('About to send fetch request with body length:', cleanDiff.length);
             const response = await fetch('/api/apply-changes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    diff: cleanDiff, 
-                    filePath 
+                body: JSON.stringify({
+                    diff: cleanDiff,
+                    filePath: filePath.trim(),
                 }),
             });
+            
+            // Log the actual sent data
+            const sentData = await response.clone().json();
+            console.log('Actually sent to server:', sentData);
             if (response.ok || response.status === 207) {
                 setIsApplied(true);
                 const data = await response.json();
@@ -983,18 +1032,38 @@ interface DiffTokenProps {
     isDarkMode: boolean;
 }
 
+const extractFilePathFromDiff = (content: string): string | null => {
+    // Try to find the target file path from diff headers
+    const lines = content.split('\n');
+    for (const line of lines) {
+        // Check for +++ line first as it's the target file
+        if (line.startsWith('+++ b/')) {
+            return line.substring(6);
+        }
+        // Fallback to --- line if +++ isn't found yet
+        if (line.startsWith('--- a/')) {
+            return line.substring(6);
+        }
+    }
+    return null;
+};
+
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
     const isDiffValid = useMemo(() => {
         if (!token.text.trim().startsWith('diff --git')) {
             return false;
         }
         try {
+            // Log the full diff content for debugging
+            console.log('Processing diff content:', token.text);
             const files = parseDiff(token.text);
             return files && files.length > 0;
         } catch (e) {
+            console.error('Error parsing diff:', e);
             return false;
         }
     }, [token.text]);
+
     if (isDiffValid) {
         return (
             <DiffViewWrapper
@@ -1257,17 +1326,137 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 
 const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode[] => {
     return tokens.map((token, index) => {
-        if (token.type === 'code' && isCodeToken(token) && token.lang === 'diff') {
+        if (token.type === 'code' && isCodeToken(token)) {
+            // First check if it's an explicitly marked diff
+            console.log('Processing token:', {
+                type: token.type,
+                lang: token.lang,
+                textPreview: token.text.substring(0, 50),
+                isDiff: token.lang === 'diff' || token.text.startsWith('diff --git')
+            });
+
+            const isDiffContent = (text: string): boolean => {
+                return text.startsWith('diff --git') ||
+                       text.match(/^---\s+a\/.*\n\+\+\+\s+b\/.*$/m) !== null ||
+                       text.match(/^@@.*@@/m) !== null;
+            };
+
+            console.log('Content analysis:', {
+                lang: token.lang,
+                isDiff: isDiffContent(token.text),
+                firstLine: token.text.split('\n')[0]
+            });
+
+            if (token.lang === 'diff' || isDiffContent(token.text)) {
+                let processedText = token.text;
+
+                // If it's a unified diff without git headers, add them
+                if (!processedText.startsWith('diff --git')) {
+                    const filePath = processedText.match(/^---\s+a\/(.*)\n/)?.[1];
+                    if (filePath) {
+                        processedText = `diff --git a/${filePath} b/${filePath}\n${processedText}`;
+                    }
+                }
+                token = { ...token, text: processedText };
+                return <DiffToken key={index} token={token} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
+            }
+
+            // Then check for streaming diff content - either complete chunks or partial
+            const isDiffChunk = token.text.match(/^(?:diff --git |--- a\/|\+\+\+ b\/|@@ -\d+,\d+ \+\d+,\d+ @@)/m) ||
+                               // Also match individual diff lines that might come in chunks
+                               token.text.match(/^[-+\s].*$/m) && 
+                               // But make sure it looks like actual diff content
+                               (token.text.includes('--- ') || 
+                                token.text.includes('+++ ') || 
+                                token.text.match(/^[-+]/m));
+
+            if (isDiffChunk) {
+                console.debug('Detected streaming diff chunk:', {
+                    firstLine: token.text.split('\n')[0],
+                    hasGitHeader: token.text.includes('diff --git'),
+                    hasUnifiedHeader: token.text.includes('--- a/') || token.text.includes('+++ b/'),
+                    hasHunkHeader: token.text.includes('@@ -'),
+                    chunkLength: token.text.length
+                });
+
+                // Force diff language for streaming chunks
+                const diffToken = {
+                    ...token,
+                    lang: 'diff'
+                };
+
+                return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
+            }
+        }
+
+        if (token.type === 'code' && isCodeToken(token)) {
             try {
-                return (
-                    <DiffToken
+                // Extract file path and language from diff if possible
+                const extractFileInfo = (diffText: string) => {
+                    const lines = diffText.split('\n');
+                    let filePath: string | null = null;
+
+                    // Try git diff header first
+                    for (const line of lines) {
+                        if (line.startsWith('diff --git')) {
+                            const match = line.match(/diff --git a\/.*? b\/(.*?)$/);
+                            if (match) {
+                                filePath = match[1];
+                                break;
+                            }
+                        }
+
+                        // Try unified diff header
+                        if (line.startsWith('+++ b/')) {
+                            filePath = line.substring(6);
+                            break;
+                        }
+                    }
+
+                    if (filePath) {
+                        const ext = filePath.split('.').pop()?.toLowerCase();
+                        if (ext) {
+                            const langMap: { [key: string]: string } = {
+                                'ts': 'typescript',
+                                'tsx': 'typescript',
+                                'js': 'javascript',
+                                'jsx': 'javascript',
+                                'py': 'python',
+                                'rb': 'ruby',
+                                'php': 'php',
+                                'java': 'java',
+                                'go': 'go',
+                                'rs': 'rust',
+                                'cpp': 'cpp',
+                                'c': 'c',
+                                'cs': 'csharp',
+                                'css': 'css',
+                                'html': 'markup',
+                                'xml': 'markup',
+                                'md': 'markdown'
+                            };
+                            return { filePath, language: langMap[ext] || ext };
+                        }
+                    }
+                    return { filePath: null, language: null };
+                }
+
+                // Process the token
+                const { filePath, language } = extractFileInfo(token.text);
+                const processedToken = {
+                    ...token,
+                    lang: 'diff',  // Always set lang to diff for diff content
+                    filePath,      // Store extracted file path
+                    sourceLanguage: language  // Store detected source language
+                };
+
+                return <DiffToken
                         key={index}
-                        token={token}
+                        token={processedToken}
                         index={index}
                         enableCodeApply={enableCodeApply}
                         isDarkMode={isDarkMode}
-                    />
-                );
+                       />;
             } catch (error) {
                 console.error('Error parsing diff:', error, '\nDiff content:', token.text);
                 // If parsing fails, render as regular code
@@ -1463,7 +1652,7 @@ if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
 
         // Handle regular text, only if it has content - wrap with pre tags for safety
         if ('text' in token) {
-            const text = token.text || '';
+            const text = token.text?.trim() || '';
             // Always escape HTML entities, but preserve existing escaped entities
 	    const escapedText = text
                 .replace(/&/g, '&amp;')  // Must be first to not double-escape other entities
@@ -1495,18 +1684,84 @@ interface MarkdownRendererProps {
 
 // Configure marked options
 marked.setOptions({
-    renderer: new marked.Renderer(),
     gfm: true,
-    breaks: true,
+    breaks: false,
     pedantic: false
-}) as any;
+});
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply }) => {
     const { isDarkMode } = useTheme();
 
     const tokens = useMemo(() => {
-        return (typeof markdown === 'string' ? marked.lexer(markdown) : []) as TokenWithText[];
+        if (!markdown?.trim()) {
+            return [];
+        }
+
+        console.log('Processing markdown:', {
+            length: markdown.length,
+            firstLines: markdown.split('\n').slice(0, 3)
+        });
+
+        // Split content by code blocks first
+        const parts = markdown.split(/(```diff[\s\S]*?```|```[\s\S]*?```)/g);
+
+        const processedTokens: TokenWithText[] = [];
+
+        parts.forEach((part, index) => {
+            if (!part.trim()) return; // Skip empty parts
+
+            // Check if this part is a diff code block
+            const isDiffBlock = part.startsWith('```diff');
+            const isCodeBlock = part.startsWith('```');
+
+            if (isDiffBlock) {
+                // Extract diff content from between the backticks
+                const diffContent = part.replace(/^```diff\n/, '').replace(/```$/, '');
+                processedTokens.push({
+                    type: 'code',
+                    text: diffContent,
+                    lang: 'diff'
+                });
+            } else if (isCodeBlock) {
+                // Handle other code blocks
+                const match = part.match(/^```(\w+)?\n([\s\S]*?)```$/);
+                if (match) {
+                    processedTokens.push({
+                        type: 'code',
+                        text: match[2],
+                        lang: match[1] || 'plaintext'
+                    });
+                }
+            } else {
+                // Check if this part contains a raw diff
+                if (part.trim().startsWith('diff --git') ||
+                    part.match(/^---\s+a\/.*\n\+\+\+\s+b\/.*$/m)) {
+                    processedTokens.push({
+                        type: 'code',
+                        text: part,
+                        lang: 'diff'
+                    });
+                } else {
+                    // Process regular text through marked
+                    const regularTokens = marked.lexer(part) as TokenWithText[];
+                    processedTokens.push(...regularTokens);
+                }
+            }
+        });
+
+        console.log('Processed tokens:', processedTokens.map(t => ({
+            type: t.type,
+            lang: 'lang' in t ? t.lang : undefined,
+            textPreview: 'text' in t ? t.text.substring(0, 50) : 'no text'
+        })));
+
+        return processedTokens;
     }, [markdown]);
+
+    // Debug logging to check token content
+    useEffect(() => {
+        console.log('Parsed tokens:', tokens);
+    }, [tokens]);
 
     const renderedContent = useMemo(() => {
 	return renderTokens(tokens, enableCodeApply, isDarkMode);

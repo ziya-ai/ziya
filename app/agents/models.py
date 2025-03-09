@@ -1,5 +1,5 @@
+from typing import Optional, Dict, Any
 import os
-from typing import Optional
 import json
 import botocore
 from pathlib import Path
@@ -87,7 +87,6 @@ class ModelManager:
                 "max_output_tokens": 2048,
                 "temperature": 0.3, 
                 "convert_system_message_to_human": True,
-                "streaming": False, 
             },
             "gemini-1.5-pro": {
                 "model_id": "gemini-1.5-pro",
@@ -95,7 +94,6 @@ class ModelManager:
                 "max_output_tokens": 2048,
                 "temperature": 0.3,
                 "convert_system_message_to_human": False,
-                "streaming": False,
             }
         }
     }
@@ -135,6 +133,47 @@ class ModelManager:
                 f"Invalid model '{model_name}' for google endpoint. "
                 f"Valid models are: {valid_models}"
             ) 
+
+    @classmethod
+    def get_model_id(cls, model_instance) -> str:
+        """Get model ID in a consistent way across different model types."""
+        # Try direct model_id attribute first
+        if hasattr(model_instance, 'model_id'):
+            return model_instance.model_id
+
+        # Get from environment or model config
+        endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
+        model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS[endpoint])
+
+        # Look up the full model ID from config
+        if endpoint in cls.MODEL_CONFIGS and model_name in cls.MODEL_CONFIGS[endpoint]:
+            return cls.MODEL_CONFIGS[endpoint][model_name]["model_id"]
+
+        return model_name
+
+    @classmethod
+    def get_model_settings(cls, model_instance) -> Dict[str, Any]:
+        """Get model settings in a consistent way across different model types."""
+        # Try to get settings from model instance first
+        if hasattr(model_instance, 'model') and hasattr(model_instance.model, 'model_kwargs'):
+            return model_instance.model.model_kwargs
+        if hasattr(model_instance, 'model_kwargs'):
+            return model_instance.model_kwargs
+
+        # Fall back to config-based settings
+        endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
+        model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS[endpoint])
+
+        if endpoint in cls.MODEL_CONFIGS and model_name in cls.MODEL_CONFIGS[endpoint]:
+            config = cls.MODEL_CONFIGS[endpoint][model_name]
+            return {
+                'temperature': float(os.environ.get("ZIYA_TEMPERATURE", config.get('temperature', 0.3))),
+                'max_tokens': int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", config.get('max_output_tokens', 4096))),
+                'top_k': int(os.environ.get("ZIYA_TOP_K", config.get('top_k', 15)))
+            }
+
+        # Return empty dict if no settings found
+        return {}
 
     @classmethod
     def _load_credentials(cls) -> bool:
@@ -320,7 +359,6 @@ class ModelManager:
             temperature = float(os.environ.get("ZIYA_TEMPERATURE", 
                                model_config.get("temperature", 0.3)))
             # Get custom settings if available
-            top_k = int(os.environ.get("ZIYA_TOP_K", model_config.get("top_k", 0)))
             max_output_tokens = model_config.get("max_output_tokens", 2048)
 
             # Use our custom wrapper class instead of ChatGoogleGenerativeAI directly
@@ -329,7 +367,6 @@ class ModelManager:
                 convert_system_message_to_human=convert_system,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
-                top_k=top_k,
                 client_options={"api_endpoint": "generativelanguage.googleapis.com"},
                 max_retries=3,
                 verbose=os.environ.get("ZIYA_THINKING_MODE") == "1"
