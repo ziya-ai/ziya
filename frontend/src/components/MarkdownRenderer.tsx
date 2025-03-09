@@ -2381,6 +2381,22 @@ interface DiffTokenProps {
     isStreaming?: boolean;
 }
 
+const extractFilePathFromDiff = (content: string): string | null => {
+    // Try to find the target file path from diff headers
+    const lines = content.split('\n');
+    for (const line of lines) {
+        // Check for +++ line first as it's the target file
+        if (line.startsWith('+++ b/')) {
+            return line.substring(6);
+        }
+        // Fallback to --- line if +++ isn't found yet
+        if (line.startsWith('--- a/')) {
+            return line.substring(6);
+        }
+    }
+    return null;
+};
+
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
     const { isStreaming } = useChatContext();
     // Check if we're in a streaming response

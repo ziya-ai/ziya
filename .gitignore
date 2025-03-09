@@ -1,0 +1,11 @@
+__pycache__
+**/.DS_Store
+.idea
+dist
+frontend/build
+templates/
+*.swp
+*.rej
+*.orig
+.env
+*.bak
