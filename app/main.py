@@ -163,6 +163,12 @@ def main():
     if args.check_auth:
         success = check_auth(args)
         sys.exit(0 if success else 1)
+    args = parse_arguments()
+
+    if args.version:
+        # Print version and exit immediately without initializing model
+        current_version = get_current_version()
+        print(f"Ziya version {current_version}")
         return
 
     try:
@@ -170,10 +176,6 @@ def main():
     except Exception as e:
         logger.error(f"Error checking version: {e}")
         logger.warning("Continuing with current version...")
-    validate_langchain_vars()
-    setup_environment(args)
-    start_server(args)
 
-
-if __name__ == "__main__":
-    main()
+    current_version = get_current_version()
+    print(f"Ziya version {current_version}")
