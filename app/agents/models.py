@@ -43,20 +43,19 @@ class ModelManager:
                 "top_k": 15, 
                 "supports_thinking": True,
             },
-            "sonnet3.5": {
-                "model_id": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
-                "token_limit": 200000,
-                "max_output_tokens": 4096,
-                "temperature": 0.3,
-                "top_k": 15,
-            },
             "sonnet3.5-v2": {
                 "model_id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
                 "token_limit": 200000,
                 "max_output_tokens": 4096,
                 "temperature": 0.3,
                 "top_k": 15,
-#                "is_default": True
+            },
+            "sonnet3.5": {
+                "model_id": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+                "token_limit": 200000,
+                "max_output_tokens": 4096,
+                "temperature": 0.3,
+                "top_k": 15,
             },
             "opus": {
                 "model_id": "us.anthropic.claude-3-opus-20240229-v1:0",
@@ -232,8 +231,9 @@ class ModelManager:
         logger.info(f"Initializing model for endpoint: {endpoint}, model: {model_name}")
         if endpoint == "bedrock":
             cls._state['model'] = cls._initialize_bedrock_model(model_name)
-            if model_name:
-                cls._state['model'].model_id = model_name
+            # Don't override the model_id with the alias name
+            # if model_name:
+            #     cls._state['model'].model_id = model_name
         elif endpoint == "google":
             cls._state['model'] = cls._initialize_google_model(model_name)
         else:
