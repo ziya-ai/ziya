@@ -104,18 +104,20 @@ export const sendPayload = async (
     onStreamComplete?: (content: string) => void
 ) => {
     let eventSource: EventSource | undefined;
+    const messagesToSend = isStreamingToCurrentConversation ? messages : messages.slice(0, messages.length -1);
+
     try {
 	eventSource = undefined;
 	let hasError = false;
 
-	console.log('Messages received in sendPayload:', messages.map(m => ({
+	console.log('Messages received in sendPayload:', messagesToSend.map(m => ({
             role: m.role,
             content: m.content.substring(0, 50)
         })));
 
 	let currentContent = '';
 	setIsStreaming(true);
-	let response = await getApiResponse(messages, question, checkedItems);
+	let response = await getApiResponse(messagesToSend, question, checkedItems);
         console.log("Initial API response:", response.status, response.statusText);
         
         if (!response.ok) {
@@ -125,7 +127,7 @@ export const sendPayload = async (
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 // Retry the request once
-                let retryResponse = await getApiResponse(messages, question, checkedItems);
+                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems);
                 if (!retryResponse.ok) {
                     throw await handleStreamError(retryResponse);
                 }
