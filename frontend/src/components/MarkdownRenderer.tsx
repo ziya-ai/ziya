@@ -423,6 +423,9 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
         console.error("Error extracting single file diff:", error);
         return fullDiff.trim(); // Return the full diff as a fallback
     }
+    
+    // Fallback for any other cases
+    return 'Unknown file operation';
 };
 
 // Helper function to check if this is a deletion diff
