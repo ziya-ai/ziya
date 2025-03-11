@@ -132,21 +132,6 @@ def parse_output(message):
 
                 diff_content = parts[1].split("```")[0].strip()
 
-                # Clean up line numbers in brackets
-                cleaned_lines = []
-                for line in diff_content.splitlines():
-                    # Skip empty lines
-                    if not line.strip():
-                        cleaned_lines.append(line)
-                        continue
-
-                    # Remove line numbers in brackets if present
-                    if '] ' in line and line[0] in [' ', '+', '-']:
-                        prefix = line[0]
-                        _, content = line.split('] ', 1)
-                        cleaned_lines.append(f"{prefix}{content}")
-                    else:
-                        cleaned_lines.append(line)
 
                 diff_content = '\n'.join(cleaned_lines)
                 logger.info(f"Extracted diff content:\n{diff_content}")
@@ -161,7 +146,7 @@ def parse_output(message):
 class RetryingChatBedrock(Runnable):
     def __init__(self, model):
         self.model = model
-        self.provider = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        self.provider = None # to be set by ModelManager
 
     def _debug_input(self, input: Any):
         """Debug log input structure"""
@@ -197,7 +182,7 @@ class RetryingChatBedrock(Runnable):
     def _get_provider_format(self) -> str:
         """Get the message format requirements for current provider."""
         # Can be extended for other providers
-        return self.provider
+        return os.environ.get("ZIYA_ENDPOINT", "bedrock")
 
     def _convert_to_messages(self, input_value: Any) -> Union[str, List[Dict[str, str]]]:
         """Convert input to messages format expected by provider."""
@@ -318,6 +303,12 @@ class RetryingChatBedrock(Runnable):
  
         return formatted_messages
  
+    @property
+    def model_id(self):
+        """Get model ID from ModelManager rather than underlying model."""
+        if not self._model_id:
+            self._model_id = ModelManager.get_model_id(self.model)
+        return self._model_id
 
     @property
     def _is_chat_model(self):

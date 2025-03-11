@@ -348,15 +348,65 @@ const DiffControls = memo(({
 });
 
 const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string => {
+    // Helper to extract paths from git diff header
+    const extractPathsFromHeader = (diffHeader: string): [string | null, string | null] => {
+        const match = diffHeader.match(/^diff --git a\/(.*?) b\/(.*?)$/);
+
+        // If we have a standard git diff header match
+        if (match) {
+            // Check if this is a new file
+            if (match[1].includes('/dev/null')) {
+                return [null, match[2]];
+            }
+            // Check if this is a deletion
+            if (match[2].includes('/dev/null')) {
+                return [match[1], null];
+            }
+            return [match[1], match[2]];
+        }
+
+        if (!match) return [null, null];
+        return [match[1], match[2]];
+    };
+
+    // Detect rename by comparing paths in diff header
+    const isRename = (oldPath: string, newPath: string): boolean => {
+        if (!oldPath || !newPath || oldPath === newPath) {
+            return false;
+        }
+        // Exclude /dev/null paths which indicate add/delete operations
+        return !oldPath.includes('/dev/null') && !newPath.includes('/dev/null');
+    };
+
     if (file.type === 'rename' && file.oldPath && file.newPath) {
+        const similarityIndex = file.similarity || 100;
+        return `Rename${similarityIndex < 100 ? ' with changes' : ''}: ${file.oldPath} → ${file.newPath} (${similarityIndex}% similar)`;
+    }
+    
+    // Check for renames in the git diff header if not already detected
+    if (file.hunks?.[0]?.content) {
+        const firstLine = file.hunks[0].content.split('\n')[0];
+        if (firstLine?.startsWith('diff --git') && !file.type) {
+            const [oldPath, newPath] = extractPathsFromHeader(firstLine);
+            if (oldPath && newPath && isRename(oldPath, newPath)) {
+                file.type = 'rename';
+                return `Rename: ${oldPath} → ${newPath}`;
+            }
+        }
+    }
+    
+    if (file.oldPath && file.newPath && file.oldPath !== file.newPath) {
         return `Rename: ${file.oldPath} → ${file.newPath}`;
     } else if (file.type === 'delete') {
         return `Delete: ${file.oldPath}`;
     } else if (file.type === 'add') {
         return `Create: ${file.newPath}`;
-    } else {
+    } else if (file.type === 'modify' || (file.oldPath || file.newPath)) {
         return `File: ${file.oldPath || file.newPath}`;
     }
+    
+    // Fallback for any other cases
+    return 'Unknown file operation';
 };
 
 // Helper function to check if this is a deletion diff
@@ -796,6 +846,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
       return (  
         <div
 	    key={`diff-${fileIndex}`}
+            data-diff-type={file.type}
             className="diff-view smaller-diff-view"
             style={{
                 backgroundColor: currentTheme.content.background,
@@ -814,13 +865,23 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     boxSizing: 'border-box'
                 }}>
                     <b>{
-                        file.type === 'delete'
-                        ? `Delete: ${file.oldPath}`
-                        : file.type === 'add'
-                        ? `Create: ${file.newPath}`
-                        : `File: ${file.oldPath || file.newPath}`
+                        (() => {
+                            switch (file.type) {
+                                case 'delete':
+                                    return `Delete: ${file.oldPath}`;
+                                case 'add':
+                                    return `Create: ${file.newPath}`;
+                                case 'rename':
+                                    const similarity = file.similarity || 100;
+                                    return `Rename: ${file.oldPath} → ${file.newPath}${
+                                        similarity < 100 ? ` (${similarity}% similar)` : ''
+                                    }`;
+                                default:
+                                    return `File: ${file.oldPath || file.newPath}`;
+                            }
+                        })()
                 }</b>
-                {!['delete', 'rename'].includes(file.type) &&
+                {!['delete'].includes(file.type) &&
                     <ApplyChangesButton
                         diff={diff}
                         filePath={file.newPath || file.oldPath}
@@ -1656,7 +1717,7 @@ if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
             // Always escape HTML entities, but preserve existing escaped entities
 	    const escapedText = text
                 .replace(/&/g, '&amp;')  // Must be first to not double-escape other entities
-		.replace(/&amp;(amp|lt|gt|quot|apos);/g, '&$1;')  // Fix double-escaped entities
+		        .replace(/&amp;(amp|lt|gt|quot|apos);/g, '&$1;')  // Fix double-escaped entities
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
@@ -1704,12 +1765,43 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
         // Split content by code blocks first
         const parts = markdown.split(/(```diff[\s\S]*?```|```[\s\S]*?```)/g);
+        
+        // Helper to clean line numbers from diff content (gemini is insisting on doing this despite instructions)
+        const cleanDiffContent = (content: string): string => {
+            const lines = content.split('\n');
+            const cleanedLines = lines.map(line => {
+                // Preserve diff headers unchanged
+                if (line.startsWith('diff --git') ||
+                    line.startsWith('index ') ||
+                    line.startsWith('--- ') ||
+                    line.startsWith('+++ ') ||
+                    line.startsWith('@@ ')) {
+                    return line;
+                }
+                // Handle content lines with various line number formats
+                // Matches: [NNN ], [NNN+], [NNN,+], [NNN*]
+                const match = line.match(/^(\s*)([+-]+\s*)?\[(\d+)(?:[+*]|\s*,\s*[+-\s])?\s*\](\s*)(.*?)$/);
+                if (match) {
+                    const [_, leadingSpace, marker, _num, postSpace, content] = match;
+                    // Preserve exact whitespace and handle markers
+                    if (marker && marker.trim()) {
+                        // For add/remove lines, keep original marker and all whitespace
+                        return `${marker.trim()}${postSpace.substring(1)}${content}`;
+                    } else {
+                        // For context lines, ensure we have a space marker
+                        return `${postSpace}${content}`;
+                    }
+                }
+                return line;
+            });
+            return cleanedLines.join('\n');
+        };
+
 
         const processedTokens: TokenWithText[] = [];
 
         parts.forEach((part, index) => {
             if (!part.trim()) return; // Skip empty parts
-
             // Check if this part is a diff code block
             const isDiffBlock = part.startsWith('```diff');
             const isCodeBlock = part.startsWith('```');
@@ -1717,9 +1809,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             if (isDiffBlock) {
                 // Extract diff content from between the backticks
                 const diffContent = part.replace(/^```diff\n/, '').replace(/```$/, '');
+                const cleanedDiff = cleanDiffContent(diffContent);
                 processedTokens.push({
                     type: 'code',
-                    text: diffContent,
+                    text: cleanedDiff,
                     lang: 'diff'
                 });
             } else if (isCodeBlock) {
@@ -1736,9 +1829,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 // Check if this part contains a raw diff
                 if (part.trim().startsWith('diff --git') ||
                     part.match(/^---\s+a\/.*\n\+\+\+\s+b\/.*$/m)) {
+                    const cleanedDiff = cleanDiffContent(part);
                     processedTokens.push({
                         type: 'code',
-                        text: part,
+                        text: cleanedDiff,
                         lang: 'diff'
                     });
                 } else {
