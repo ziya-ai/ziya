@@ -4,7 +4,7 @@ version = "0.1.45"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>"]
 readme = "README.md"
-include = ["templates/**/*", "pyproject.toml" ,"scripts.py"]
+include = ["templates/**/*", "pyproject.toml" ,"ziya_exec.py"]
 packages = [
     { include = "app" },
 ]
@@ -36,8 +36,8 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-ziya = 'scripts:ziya'
-dev = 'scripts:dev'
-finstall = "scripts:frontend_install"
-fstart = "scripts:frontend_start"
-fbuild = "scripts:frontend_build"
+ziya = 'ziya_exec:ziya'
+dev = 'ziya_exec:dev'
+finstall = "ziya_exec:frontend_install"
+fstart = "ziya_exec:frontend_start"
+fbuild = "ziya_exec:frontend_build"
