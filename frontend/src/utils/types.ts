@@ -12,6 +12,7 @@ export type Message = {
     role: 'human' | 'assistant';
     _timestamp?: number;
     _version?: number;
+    isComplete?: boolean;
 };
 
 export interface Conversation {

@@ -6,6 +6,9 @@ body {
   background-color: #f5f5f5;
   transition: background-color 0.3s ease, color 0.3s ease;
   --model-display-height: 35px;
+  overflow: hidden;
+  height: 100vh;
+  overscroll-behavior: none;
 }
 
 .app-header {
@@ -55,17 +58,20 @@ body.dark {
 
 /* Container Layout */
 .container {
-  position: absolute;
-  top: var(--header-height);
+  position: fixed;
+  top: calc(var(--header-height));
   left: 0;
   right: 0;
   bottom: 0;
   margin: 0;
-  overflow: hidden;
+  overflow: hidden !important;
   transition: left 0.3s ease;
   border: none;
   background-color: inherit;
   will-change: transform;
+  height: calc(100vh - var(--app-header-height));
+  display: flex;
+  flex-direction: row;
 }
 
 .container.panel-collapsed {
@@ -74,7 +80,7 @@ body.dark {
 
 /* Chat Container */
 .chat-container {
-  contain: paint;
+  contain: relative;
   height: calc(100vh - var(--header-height) - 30px); 
   transform: trnaslateZ(0);
   overflow-y: auto;
@@ -381,6 +387,8 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   z-index: 2;
   margin-top: 1px;
   display: flex;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .folder-tree-panel.collapsed {

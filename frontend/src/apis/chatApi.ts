@@ -24,9 +24,18 @@ const isValidMessage = (message: any) => {
 };
 
 const cleanMessages = (messages: any[]) => {
-    return messages
+    const cleaned = messages
         .filter(isValidMessage)
         .map(msg => ({ ...msg, content: msg.content.trim() }));
+    
+    // Log the cleaning process for debugging
+    console.debug('Message cleaning:', {
+        original: messages.length,
+        cleaned: cleaned.length,
+        removed: messages.length - cleaned.length
+    });
+
+    return cleaned;
 };
 
 const isStreamingError = (error: any): boolean => {
@@ -103,8 +112,48 @@ export const sendPayload = async (
     removeStreamingConversation: (id: string) => void,
     onStreamComplete?: (content: string) => void
 ) => {
+    
+    // Log initial state
+    console.debug('sendPayload initial state:', {
+        messageCount: messages.length,
+        messages: messages.map(m => ({
+            role: m.role,
+            contentPreview: m.content?.substring(0, 50),
+            hasContent: Boolean(m.content),
+            contentLength: m.content?.length
+        })),
+        isStreamingToCurrentConversation
+    });
+ 
     let eventSource: EventSource | undefined;
-    const messagesToSend = isStreamingToCurrentConversation ? messages : messages.slice(0, messages.length -1);
+
+    // Track message filtering
+    const preFilterMessages = isStreamingToCurrentConversation ? messages : messages.slice(0, messages.length - 1);
+    console.debug('Pre-filter messages:', {
+         original: messages.length,
+         filtered: preFilterMessages.length,
+         reason: isStreamingToCurrentConversation ? 'streaming' : 'non-streaming'
+    });
+     
+    // Keep all messages but mark which ones are complete pairs
+    const messagesToSend = messages.reduce<Message[]>((acc, msg, index) => {
+        const next = index + 1 < messages.length ? messages[index + 1] : null;
+        const isCompletePair = msg.role === 'human' && next?.role === 'assistant';
+        
+        acc.push({
+            ...msg,
+            isComplete: isCompletePair || msg.role === 'assistant'
+        });
+        
+        return acc;
+    }, [] as Message[]);
+    
+    console.debug('Message processing:', {
+        original: messages.length,
+        processed: messagesToSend.length,
+        pairs: messagesToSend.filter(m => m.isComplete).length / 2,
+        incomplete: messagesToSend.filter(m => !m.isComplete).length
+    });
 
     try {
 	eventSource = undefined;
@@ -115,6 +164,15 @@ export const sendPayload = async (
             content: m.content.substring(0, 50)
         })));
 
+    // Log any message filtering that happens
+    if (messagesToSend.length !== messages.length) {
+        console.debug('Message count changed:', {
+            before: messages.length,
+            after: messagesToSend.length,
+            dropped: messages.length - messagesToSend.length
+        });
+    }
+        
 	let currentContent = '';
 	setIsStreaming(true);
 	let response = await getApiResponse(messagesToSend, question, checkedItems);
@@ -122,7 +180,7 @@ export const sendPayload = async (
         
         if (!response.ok) {
             if (response.status === 503) {
-		console.log("Service unavailable, attempting retry");
+                console.log("Service unavailable, attempting retry");
                 await handleStreamError(response);
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -133,12 +191,12 @@ export const sendPayload = async (
                 }
                 response = retryResponse;
             } else if (response.status === 401) {
-		console.log("Authentication error");
+                console.log("Authentication error");
                 // Handle auth failure explicitly
                 throw await handleStreamError(response);
             } else {
-		console.log("Other error:", response.status);
-		// Handle other errors
+                console.log("Other error:", response.status);
+                // Handle other errors
                 throw await handleStreamError(response);
             }
         }
@@ -147,7 +205,7 @@ export const sendPayload = async (
             throw new Error('No body in response');
         }
 
-	// Set up cleanup on unmount or error
+        // Set up cleanup on unmount or error
         const cleanup = () => {
             if (eventSource) eventSource.close();
             setIsStreaming(false);
@@ -157,16 +215,16 @@ export const sendPayload = async (
         console.log("Setting up stream reader for response");
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
-	let errorOccurred = false;
+        let errorOccurred = false;
         const parser = createParser(onParse);
 
         function onParse(event) {
             if (event.type === 'event') {
-		// Received SSE Event
+                // Received SSE Event
                 try {
                     const data = JSON.parse(event.data);
-		    // Check for errors in either direct response or nested in operations
-		    let errorData: ErrorResponse | null = null;
+                    // Check for errors in either direct response or nested in operations
+                    let errorData: ErrorResponse | null = null;
 
                     if (data.error || data.event === 'error') {
                         errorData = data;
@@ -176,22 +234,22 @@ export const sendPayload = async (
                             if (op.op === 'add' && op.value && typeof op.value.output === 'string') {
                                 try {
                                     const outputData = JSON.parse(op.value.output);
-				    if (outputData && typeof outputData === 'object' && 'error' in outputData) {
-					const response = new Response(JSON.stringify(outputData), {
-					    status: outputData.error === 'validation_error' ? 413 : 500
-					});
-					message.error({
-					    content: outputData.detail || 'An error occurred',
-					    duration: 10,
-					    key: 'stream-error'
-					});
-					errorOccurred = true;
-					removeStreamingConversation(conversationId);
-					break;
-				    }
+                                    if (outputData && typeof outputData === 'object' && 'error' in outputData) {
+                                        const response = new Response(JSON.stringify(outputData), {
+                                            status: outputData.error === 'validation_error' ? 413 : 500
+                                        });
+                                        message.error({
+                                            content: outputData.detail || 'An error occurred',
+                                            duration: 10,
+                                            key: 'stream-error'
+                                        });
+                                        errorOccurred = true;
+                                        removeStreamingConversation(conversationId);
+                                        break;
+                                    }
                                 } catch (e) {} // Not JSON or not an error
-			    }
-			}
+                            }
+                        }
                     }
 
                     // Process operations if present
@@ -201,7 +259,7 @@ export const sendPayload = async (
                             const newContent = op.value || '';
                             if (!newContent) continue;
                             currentContent += newContent;
-			    setStreamedContentMap((prev: Map<string, string>) => {
+                                setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
                                 next.set(conversationId, currentContent);
                                 return next;
@@ -219,7 +277,7 @@ export const sendPayload = async (
         async function readStream() {
 	    let streamClosed = false;
             while (true) {
-		try {
+                try {
                     const { done, value } = await reader.read();
                     if (done) break;
                     if (errorOccurred) break;
@@ -229,36 +287,36 @@ export const sendPayload = async (
                     try {
                         const jsonData = JSON.parse(chunk);
                         if (jsonData.error === 'validation_error') {
-		            const response = new Response(chunk, { status: 413 });
-			    try {
-                                throw await handleStreamError(response);
-                            } catch (error) {
-                                errorOccurred = true;
-                                removeStreamingConversation(conversationId);
-                                throw error;
-                            }
+                            const response = new Response(chunk, { status: 413 });
+                            try {
+                                    throw await handleStreamError(response);
+                                } catch (error) {
+                                    errorOccurred = true;
+                                    removeStreamingConversation(conversationId);
+                                    throw error;
+                                }
                             break;
                         }
                     } catch (e) {} // Ignore parse errors for non-JSON chunks
-		    parser.feed(chunk);
+                    parser.feed(chunk);
                 } catch (error) {
                     console.error('Error reading stream:', error);
                     break;
-		}
-            }
+                    }
+                }
         }
 
-	try {
+        try {
             console.log("Starting stream read...");
             await readStream();
-	    // After successful streaming, update with final content
-	    if (currentContent && !errorOccurred) {
-		console.log("Stream completed successfully");
+            // After successful streaming, update with final content
+            if (currentContent && !errorOccurred) {
+                console.log("Stream completed successfully");
 
-		// Check if the content is an error message
+                // Check if the content is an error message
                 try {
                     const errorData = JSON.parse(currentContent);
-		    console.log("Parsed final content:", errorData);
+                    console.log("Parsed final content:", errorData);
                     if (errorData.error === 'validation_error') {
                         message.error({
                             content: errorData.detail,
@@ -269,29 +327,29 @@ export const sendPayload = async (
                 } catch (e) {} // Not JSON or not an error
 
                 onStreamComplete?.(currentContent);
-		// Add AI response to conversation
+                // Add AI response to conversation
                 const aiMessage: Message = {
                     role: 'assistant',
                     content: currentContent
                 };
 
-		const isNonCurrentConversation = !isStreamingToCurrentConversation;
+                const isNonCurrentConversation = !isStreamingToCurrentConversation;
                 addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
-		removeStreamingConversation(conversationId);
+                removeStreamingConversation(conversationId);
             }
         } catch (error) {
-	    // Type guard for DOMException
+            // Type guard for DOMException
             if (error instanceof DOMException && error.name === 'AbortError') return;
             console.error('Stream error:', error);
             hasError = true;
             throw error;
-	} finally {
-	    setIsStreaming(false);
+        } finally {
+            setIsStreaming(false);
             return !errorOccurred && currentContent ? currentContent : '';
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
-	// Type guard for Error objects
+        // Type guard for Error objects
         if (error instanceof Error) {
             console.error('Error details:', {
                 name: error.name,
@@ -299,20 +357,20 @@ export const sendPayload = async (
                 stack: error.stack
             });
         }
-	if (eventSource && eventSource instanceof EventSource) eventSource.close();
-	// Clear streaming state
+        if (eventSource && eventSource instanceof EventSource) eventSource.close();
+        // Clear streaming state
         setIsStreaming(false);
         removeStreamingConversation(conversationId);
         // Show error message if not already shown
-	if (error instanceof Error) {
-                // Let the server's error message through
-                const errorMsg = error.message;
-                if (!errorMsg.includes('AWS credential error')) {
-                    message.error({ content: errorMsg, key: 'stream-error', duration: 10 });
-		}
+        if (error instanceof Error) {
+            // Let the server's error message through
+            const errorMsg = error.message;
+            if (!errorMsg.includes('AWS credential error')) {
+                message.error({ content: errorMsg, key: 'stream-error', duration: 10 });
+            }
         }
     } finally {
-	if (eventSource && eventSource instanceof EventSource) eventSource.close();
+        if (eventSource && eventSource instanceof EventSource) eventSource.close();
         return '';
     }
 };
@@ -343,18 +401,18 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
 
     // Build pairs of human messages and AI responses
     try {
-	// If this is the first message, we won't have any pairs yet
+        // If this is the first message, we won't have any pairs yet
         if (messages.length === 1 && messages[0].role === 'human') {
             console.log('First message in conversation, no history to send');
-	    console.log('Selected files being sent to server:', checkedItems);
-	    const response = await fetch('/ziya/stream_log', {
+	        console.log('Selected files being sent to server:', checkedItems);
+	        const response = await fetch('/ziya/stream_log', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     input: {
                         chat_history: [],
                         question: question,
-			config: {
+		    	        config: {
                             files: checkedItems,
                             // Add explicit file list for debugging
                             fileList: checkedItems.join(', ')
@@ -362,43 +420,84 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
                     },
                 }),
             });
-	    if (!response.ok) {
+            if (!response.ok) {
                 throw await handleStreamError(response);
             }
             return response;
         }
+        
+                // Log message state before processing
+                console.debug('getApiResponse processing:', {
+                    inputMessages: messages.length,
+                    messageTypes: messages.map(m => m.role),
+                    hasQuestion: Boolean(question)
+                });
  
         // For subsequent messages, build the history pairs
-        const validMessages = messages.filter(msg => msg?.content?.trim());
+        const validMessages = messages.filter(msg => {
+            const isValid = (msg?.content?.trim() &&
+                            (msg.isComplete || msg.role === 'human'));
+            if (!isValid) {
+                console.debug('Invalid message:', { role: msg?.role, content: msg?.content });
+            }
+            return isValid;
+        });
 
-	console.log('Valid messages:', validMessages.map(m => ({
-            role: m.role,
-            content: m.content.substring(0, 50)
+          // Log filtering results
+          console.debug('Message validation results:', {
+            before: messages.length,
+            after: validMessages.length,
+            invalidMessages: messages.filter(msg => !msg?.content?.trim()).map(m => m.role)
+        });
+
+        console.log('Messages before filtering:', {
+            total: messages.length,
+            valid: validMessages.length,
+            invalid: messages.length - validMessages.length
+        });
+
+        console.log('Valid messages:', validMessages.map(m => ({
+                role: m.role,
+                content: m.content.substring(0, 50)
         })));
 
-	// Build pairs from completed exchanges
+        // Build pairs from completed exchanges
         for (let i = 0; i < validMessages.length; i++) {
             const current = validMessages[i];
             const next = validMessages[i + 1];
+            
+            // Log each message being processed
+            console.log('Processing message:', {
+                index: i,
+                role: current?.role,
+                contentLength: current?.content?.length,
+                nextRole: next?.role
+            });
 
             // Only add complete human-assistant pairs
             if (current?.role === 'human' && next?.role === 'assistant') {
                 messageTuples.push([current.content, next.content]);
-		console.log('Added pair:', {
+                console.log('Added pair:', {
                     human: current.content.substring(0, 50),
                     ai: next.content.substring(0, 50),
-		    humanRole: current.role,
+                    humanRole: current.role,
                     aiRole: next.role
                 });
-		i++; // Skip the next message since we've used it
+                i++; // Skip the next message since we've used it
+            } else {
+                console.log('Skipping unpaired message:', {
+                    currentRole: current?.role,
+                    nextRole: next?.role
+                });
             }
+
         }
 
         console.log('Chat history pairs:', messageTuples.length);
-	console.log('Current question:', question);
-	console.log('Full chat history:', messageTuples);
+        console.log('Current question:', question);
+        console.log('Full chat history:', messageTuples);
 
-	const payload = {
+        const payload = {
             input: {
                 chat_history: messageTuples,
                 question: question,
@@ -414,12 +513,13 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         const response = await fetch('/ziya/stream_log', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-	    body: JSON.stringify(payload),
+            body: JSON.stringify(payload),
         });
-	if (!response.ok) {
+        if (!response.ok) {
             throw await handleStreamError(response);
         }
         return response;
+
     } catch (error) {
         console.error('API request failed:', error);
         throw error;
