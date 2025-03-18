@@ -179,13 +179,8 @@ class RetryingChatBedrock(Runnable):
             os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT),
             os.environ.get("ZIYA_MODEL")
         )
-        supported_kwargs = {}
-        for key, value in kwargs.items():
-            if key in model_config:
-                supported_kwargs[key] = value
-            else:
-                logger.info(f"Removing unsupported bind parameter '{key}' for model {model_config['model_id']}")
- 
+        supported_kwargs = ModelManager.filter_model_kwargs(kwargs, model_config)
+        logger.info(f"Binding with filtered kwargs: {supported_kwargs}")
         return RetryingChatBedrock(self.model.bind(**supported_kwargs))
 
     def get_num_tokens(self, text: str) -> int:
@@ -452,7 +447,7 @@ class LazyLoadedModel:
         self._model_with_stop = None
  
     def bind(self, **kwargs):
-        if self._model_with_stop is None:
+        if self._model is None:
             self._model_with_stop = self.get_model().bind(**kwargs)
         return self.get_model().bind(**kwargs)
  

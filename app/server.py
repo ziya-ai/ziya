@@ -570,13 +570,13 @@ async def set_model(request: SetModelRequest):
         logger.info(f"Setting model to: {found_alias}")
         
         # Reinitialize all model related state
-
         old_state = {
             'model_id': os.environ.get("ZIYA_MODEL"),
             'model': ModelManager._state.get('model'),
             'current_model_id': ModelManager._state.get('current_model_id')
         }
         logger.info(f"Saved old state: {old_state}")
+        
         try:
             logger.info(f"Reinitializing model with alias: {found_alias}")
             ModelManager._reset_state()
@@ -776,68 +776,68 @@ async def update_model_settings(settings: ModelSettingsRequest):
     global model
     try:
         # Log the requested settings
-        logger.info(f"Requested model settings update:")
-        logger.info(f"  Temperature: {settings.temperature}")
-        logger.info(f"  Top K: {settings.top_k}")
-        logger.info(f"  Max Output Tokens: {settings.max_output_tokens}")
-        logger.info(f"  Thinking Mode: {settings.thinking_mode}")
+        logger.info(f"Requested model settings update: {settings.dict()}")
 
-        # Store settings in environment variables for the agent to use
-        os.environ["ZIYA_TEMPERATURE"] = str(settings.temperature)        
-        # Check if the current model supports setting max_input_tokens
-        model_config = ModelManager.get_model_config(os.environ.get("ZIYA_ENDPOINT", "bedrock"), os.environ.get("ZIYA_MODEL"))
-        if settings.max_input_tokens is not None and model_config.get("supports_max_input_tokens", False):
-            logger.info(f"  Setting ZIYA_MAX_INPUT_TOKENS: {settings.max_input_tokens}")
-            os.environ["ZIYA_MAX_INPUT_TOKENS"] = str(settings.max_input_tokens)
-        else:
-            logger.info("  Model does not support setting max_input_tokens or value not provided.")
-        os.environ["ZIYA_TOP_K"] = str(settings.top_k)
-        os.environ["ZIYA_MAX_OUTPUT_TOKENS"] = str(settings.max_output_tokens)
-        os.environ["ZIYA_THINKING_MODE"] = "1" if settings.thinking_mode else "0"
+        # Get current model configuration
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        model_name = os.environ.get("ZIYA_MODEL")
+        model_config = ModelManager.get_model_config(endpoint, model_name)
         
+        # Store all settings in environment variables with ZIYA_ prefix
+        for key, value in settings.dict().items():
+            if value is not None:  # Only set if value is provided
+                env_key = f"ZIYA_{key.upper()}"
+                os.environ[env_key] = str(value)
+                logger.info(f"  Set {env_key}={value}")
+        
+        # Create a kwargs dictionary with all settings
+        model_kwargs = {}
+        # Map settings to model parameter names
+        param_mapping = {
+            'temperature': 'temperature',
+            'top_k': 'top_k',
+            'max_output_tokens': 'max_tokens',
+            'max_input_tokens': 'max_input_tokens',
+            # Add more mappings as needed
+        }
+        
+        for setting_name, param_name in param_mapping.items():
+            value = getattr(settings, setting_name, None)
+            if value is not None:
+                model_kwargs[param_name] = value
+            
+        # Filter kwargs to only include supported parameters
+        filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
+        logger.info(f"Filtered model kwargs: {filtered_kwargs}")
+            
         # Update the model's kwargs directly
         if hasattr(model, 'model'):
             # For wrapped models (e.g., RetryingChatBedrock)
             if hasattr(model.model, 'model_kwargs'):
-                model.model.model_kwargs.update({
-                    'temperature': settings.temperature,
-                    'top_k': settings.top_k,
-                    'max_tokens': settings.max_output_tokens
-                })
-                if settings.max_input_tokens is not None and model_config.get("supports_max_input_tokens", True):
-                    model.model.model_kwargs['max_input_tokens'] = settings.max_input_tokens
+                # Replace the entire model_kwargs dict
+                model.model.model_kwargs = filtered_kwargs
         elif hasattr(model, 'model_kwargs'):
             # For direct model instances
-            model.model_kwargs.update({
-                'temperature': settings.temperature,
-                'top_k': settings.top_k,
-                'max_tokens': settings.max_output_tokens
-            })
-            if settings.max_input_tokens is not None and model_config.get("supports_max_input_tokens", True):
-                model.model_kwargs['max_input_tokens'] = settings.max_input_tokens
-            
+            model.model_kwargs = filtered_kwargs
 
         # Force model reinitialization to apply new settings
         model = ModelManager.initialize_model(force_reinit=True)
 
         # Get the model's current settings for verification
-        model_kwargs = {}
+        current_kwargs = {}
         if hasattr(model, 'model') and hasattr(model.model, 'model_kwargs'):
-            model_kwargs = model.model.model_kwargs
+            current_kwargs = model.model.model_kwargs
         elif hasattr(model, 'model_kwargs'):
-            model_kwargs = model.model_kwargs
+            current_kwargs = model.model_kwargs
 
         logger.info("Current model settings after update:")
-        logger.info(f"  Model kwargs temperature: {model_kwargs.get('temperature', 'Not set')}")
-        logger.info(f"  Model kwargs top_k: {model_kwargs.get('top_k', 'Not set')}")
-        logger.info(f"  Model kwargs max_tokens: {model_kwargs.get('max_tokens', 'Not set')}")
-        logger.info(f"  Model kwargs max_input_tokens: {model_kwargs.get('max_input_tokens', 'Not set')}")
-        logger.info(f"  Environment ZIYA_THINKING_MODE: {os.environ.get('ZIYA_THINKING_MODE')}")
+        for key, value in current_kwargs.items():
+            logger.info(f"  {key}: {value}")
 
         return {
             'status': 'success',
             'message': 'Model settings updated',
-            'settings': model_kwargs
+            'settings': current_kwargs
         }
     except Exception as e:
         logger.error(f"Error updating model settings: {str(e)}", exc_info=True)

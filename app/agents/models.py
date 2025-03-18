@@ -195,6 +195,43 @@ class ModelManager:
             return model_alias
 
     @classmethod
+    def filter_model_kwargs(cls, kwargs, model_config):
+        """
+        Filter kwargs to only include parameters supported by the model.
+        
+        Args:
+            kwargs: Dictionary of parameters to filter
+            model_config: Model configuration dictionary
+            
+        Returns:
+            Dictionary with only supported parameters
+        """
+        # Always allow these common parameters
+        common_params = {'temperature', 'max_tokens', 'top_k', 'stop'}
+        
+        # Get all supported parameters from model config
+        supported_params = set(model_config.keys())
+        
+        # Add any explicitly supported parameters from model config
+        for key, value in model_config.items():
+            if key.startswith('supports_') and value:
+                param_name = key[9:]  # Remove 'supports_' prefix
+                supported_params.add(param_name)
+        
+        # Combine common and supported parameters
+        allowed_params = common_params.union(supported_params)
+        
+        # Filter kwargs to only include supported parameters
+        filtered_kwargs = {}
+        for key, value in kwargs.items():
+            if key in allowed_params:
+                filtered_kwargs[key] = value
+            else:
+                logger.info(f"Removing unsupported parameter '{key}' for model {model_config.get('model_id')}")
+        
+        return filtered_kwargs
+
+    @classmethod
     def _reset_state(cls):
         """forcibly reset the model state"""
         logger.info("Performing complete state reset")
@@ -226,6 +263,7 @@ class ModelManager:
         # Ensure critical flags are reset
         cls._state['process_id'] = None
         cls._state['auth_checked'] = False
+        cls._state['model_kwargs'] = None  # Ensure model_kwargs is reset
 
     @classmethod
     def get_model_settings(cls, model_instance) -> Dict[str, Any]:
@@ -386,7 +424,10 @@ class ModelManager:
                     f"{', '.join(cls.MODEL_CONFIGS[endpoint].keys())}"
                 )
         
-        cls._state['current_model_id'] = cls.MODEL_CONFIGS[endpoint][model_alias]['model_id']
+        # Get the model configuration
+        model_config = cls.MODEL_CONFIGS[endpoint][model_alias]
+        cls._state['current_model_id'] = model_config['model_id']
+        
         # Validate model configuration early
         if model_alias not in cls.MODEL_CONFIGS.get(endpoint, {}):
             raise ValueError(
@@ -403,7 +444,7 @@ class ModelManager:
         })
 
         # Return cached model if it exists for this process
-        if not force_reinit and cls._state['model'] is not None and cls._state['process_id'] == current_pid and cls._state['current_model_id'] == cls.MODEL_CONFIGS[endpoint][model_alias]['model_id']:
+        if not force_reinit and cls._state['model'] is not None and cls._state['process_id'] == current_pid and cls._state['current_model_id'] == model_config['model_id']:
             logger.info("Using cached model instance")
             return cls._state['model']
 
@@ -414,7 +455,6 @@ class ModelManager:
             cls._state['auth_checked'] = False
             cls._state['llm_with_stop'] = None
         
-
         # Clear existing model if forcing reinitialization
         if force_reinit:
             logger.info("Force reinitialization requested")
@@ -429,7 +469,11 @@ class ModelManager:
         logger.info(f"Initializing model for endpoint: {endpoint}, model: {model_alias}")
         
         # Get and log the actual model configuration being used
-        logger.info(f"Using model configuration for {model_alias}: {cls.MODEL_CONFIGS[endpoint][model_alias]}")
+        logger.info(f"Using model configuration for {model_alias}: {model_config}")
+        
+        # Clean up environment variables that might not be supported by the new model
+        cls._clean_unsupported_env_vars(model_config)
+        
         if endpoint == "bedrock":
             logger.info("Initializing Bedrock model")
             logger.info(f"State before Bedrock init: {cls._state}")
@@ -449,11 +493,25 @@ class ModelManager:
             'process_id': current_pid,
             'auth_checked': True,
             'auth_success': True,
-            'current_model_id': cls.MODEL_CONFIGS[endpoint][model_alias]['model_id'] # Store the full ID, not the alias.
+            'current_model_id': model_config['model_id'] # Store the full ID, not the alias.
         })
         logger.info(f"Model initialization complete. New state: {cls._state}")
         
         return cls._state['model']
+        
+    @classmethod
+    def _clean_unsupported_env_vars(cls, model_config):
+        """Remove environment variables for parameters not supported by the model"""
+        # Map of environment variables to their corresponding model config keys
+        env_to_config_map = {
+            "ZIYA_MAX_INPUT_TOKENS": "supports_max_input_tokens",
+            # Add other mappings as needed
+        }
+        
+        for env_var, config_key in env_to_config_map.items():
+            if env_var in os.environ and not model_config.get(config_key, False):
+                logger.info(f"Removing {env_var} as it's not supported by the current model")
+                del os.environ[env_var]
  
     @classmethod
     def _initialize_bedrock_model(cls, model_name: Optional[str] = None) -> ChatBedrock:
@@ -467,26 +525,41 @@ class ModelManager:
             cls._state['aws_region'] = os.environ.get("ZIYA_AWS_REGION", "us-west-2")
             logger.info(f"Using AWS Profile: {cls._state['aws_profile']}" if cls._state['aws_profile'] else "Using default AWS credentials")
         
-        # Get custom settings if available
-        temperature = float(os.environ.get("ZIYA_TEMPERATURE", config.get('temperature', 0.3)))
-        top_k = int(os.environ.get("ZIYA_TOP_K", config.get('top_k', 15)))
-        max_output = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", config.get('max_output_tokens', 4096)))
+        # Start with basic model kwargs
+        model_kwargs = {
+            'max_tokens': int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", max_output)),
+            'temperature': float(os.environ.get("ZIYA_TEMPERATURE", config.get('temperature', 0.3))),
+            'top_k': int(os.environ.get("ZIYA_TOP_K", config.get('top_k', 15)))
+        }
         
-        logger.info(f"Initializing Bedrock model: {model_id} with max_tokens: {max_output}, "
-                    f"temperature: {temperature}, top_k: {top_k}")
+        # Add any additional parameters from environment variables
+        for key, value in os.environ.items():
+            if key.startswith("ZIYA_") and key not in ["ZIYA_MODEL", "ZIYA_ENDPOINT", 
+                                                      "ZIYA_TEMPERATURE", "ZIYA_TOP_K", 
+                                                      "ZIYA_MAX_OUTPUT_TOKENS", "ZIYA_THINKING_MODE",
+                                                      "ZIYA_AWS_PROFILE", "ZIYA_AWS_REGION"]:
+                param_name = key[5:].lower()  # Remove ZIYA_ prefix and convert to lowercase
+                try:
+                    # Try to convert to appropriate type
+                    if value.isdigit():
+                        value = int(value)
+                    elif value.replace('.', '', 1).isdigit():
+                        value = float(value)
+                    elif value.lower() in ['true', 'false']:
+                        value = value.lower() == 'true'
+                    model_kwargs[param_name] = value
+                except Exception as e:
+                    logger.warning(f"Error converting environment variable {key}: {str(e)}")
+        
+        # Filter kwargs to only include supported parameters
+        filtered_kwargs = cls.filter_model_kwargs(model_kwargs, config)
+        
+        logger.info(f"Initializing Bedrock model: {model_id} with filtered kwargs: {filtered_kwargs}")
         
         # Force clean model creation
         cls._state['model'] = None
 
-        model_kwargs = {
-            'max_tokens': max_output,
-            'temperature': temperature,
-            'top_k': top_k
-        }
-        
-        cls._state['model_kwargs'] = {}
-        
-        logger.info(f"Model kwargs: {model_kwargs}")
+        cls._state['model_kwargs'] = filtered_kwargs
         
         # Log any model-specific capabilities
         capabilities = {k: v for k, v in config.items() if k.startswith('supports_')}
@@ -499,19 +572,9 @@ class ModelManager:
             credentials_profile_name=cls._state['aws_profile'],
             region_name=cls._state['aws_region'],
             config=botocore.config.Config(read_timeout=900, retries={'max_attempts': 3, 'total_max_attempts': 5}),
-            model_kwargs=model_kwargs
+            model_kwargs=filtered_kwargs
         )
 
-        # Filter model_kwargs to only include supported parameters, and assign to instance
-        supported_kwargs = {}
-        for key, value in model_kwargs.items():
-            if key in config:
-                supported_kwargs[key] = value
-            else:
-                logger.info(f"Removing unsupported parameter '{key}' for model {model_id}")
-        model.model_kwargs = supported_kwargs
-        
-        logger.info(f"Model kwargs set to: {model_kwargs}")
         logger.info(f"Successfully created new Bedrock model instance with ID: {model_id}")
         return model
  
