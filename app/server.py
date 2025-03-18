@@ -4,14 +4,14 @@ import json
 from typing import Dict, Any, List, Tuple, Optional, Union
 
 import tiktoken
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, APIRouter, routing
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
-from app.agents.agent import model, RetryingChatBedrock
-from app.agents.agent import agent_executor
+from app.agents.agent import model, RetryingChatBedrock, initialize_langserve
+from app.agents.agent import agent, agent_executor, create_agent_chain, create_agent_executor
 from app.agents.agent import update_conversation_state, update_and_return
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError 
 from fastapi.responses import FileResponse, StreamingResponse
@@ -53,13 +53,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure FastAPI for larger request bodies
-from starlette.middleware.base import BaseHTTPMiddleware
-class RequestSizeMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        if request.method == "POST":
-            request.scope["max_request_size"] = 10 * 1024 * 1024  # 10MB
-        return await call_next(request)
+# Add request size middleware
+from app.middleware import RequestSizeMiddleware
 
 app.add_middleware(RequestSizeMiddleware)
 
@@ -125,32 +120,6 @@ async def boto_client_exception_handler(request: Request, exc: ClientError):
     return JSONResponse(
         status_code=500,
         content={"detail": f"AWS Service Error: {str(exc)}"}
-    )
-
-@app.exception_handler(ResourceExhausted)
-async def resource_exhausted_handler(request: Request, exc: ResourceExhausted):
-    """Handle Google API quota exceeded errors."""
-    logger.error(f"Google API quota exceeded: {str(exc)}")
-    return JSONResponse(
-        status_code=429,  # Too Many Requests
-        content={
-            "error": "quota_exceeded",
-            "detail": "API quota has been exceeded. Please try again in a few minutes.",
-            "original_error": str(exc)
-        }
-    )
-
-@app.exception_handler(ResourceExhausted)
-async def resource_exhausted_handler(request: Request, exc: ResourceExhausted):
-    """Handle Google API quota exceeded errors."""
-    logger.error(f"Google API quota exceeded: {str(exc)}")
-    return JSONResponse(
-        status_code=429,  # Too Many Requests
-        content={
-            "error": "quota_exceeded",
-            "detail": "API quota has been exceeded. Please try again in a few minutes.",
-            "original_error": str(exc)
-        }
     )
 
 @app.exception_handler(Exception)
@@ -244,7 +213,7 @@ testcases_dir = "../tests/frontend/testcases"
 if os.path.exists(testcases_dir):
     app.mount("/testcases", StaticFiles(directory=testcases_dir), name="testcases")
 else:
-    logger.info(f"Testcases directory '{testcases_dir}' does not exist - skipping mount")
+    logger.debug(f"Testcases directory '{testcases_dir}' does not exist - skipping mount")
 
 templates = Jinja2Templates(directory=templates_dir)
 
@@ -419,7 +388,8 @@ async def stream_endpoint(body: dict):
 async def root(request: Request):
     return templates.TemplateResponse("index.html", {
         "request": request,
-        "diff_view_type": os.environ.get("ZIYA_DIFF_VIEW_TYPE", "unified")
+        "diff_view_type": os.environ.get("ZIYA_DIFF_VIEW_TYPE", "unified"),
+        "api_poth": "/ziya"
     })
 
 
@@ -518,7 +488,7 @@ async def get_folders():
 def get_current_model():
     """Get detailed information about the currently active model."""
     logger.info(
-        "Current model info request: %s",
+        "Current model info request - Environment state: %s",
         {   'model_id': ModelManager.get_model_id(model),
             'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock")
         })
@@ -558,35 +528,121 @@ def get_model_id():
         return {'model_id': os.environ.get("ZIYA_MODEL")}
     else:
         # Bedrock
-        return {'model_id': model.model_id.split(':')[0].split('/')[-1]}
+        return {'model_id': ModelManager.get_model_id(model).split(':')[0].split('/')[-1]}
         
 @app.post('/api/set-model')
 async def set_model(request: SetModelRequest):
     """Set the active model for the current endpoint."""
     try:
         model_id = request.model_id
+        logger.info(f"Received model change request: {model_id}")
+        
         if not model_id:
             logger.error("Empty model ID provided")
             raise HTTPException(status_code=400, detail="Model ID is required")
-
-        # Update environment variable
-        os.environ["ZIYA_MODEL"] = model_id
-        logger.info(f"Setting model to: {model_id}")
         
-        # Reinitialize the model
+        # Get current endpoint
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        current_model = os.environ.get("ZIYA_MODEL")
+        
+        logger.info(f"Current state - Endpoint: {endpoint}, Model: {current_model}")
+        
+        # If we received a full model ID, try to find its alias
+        found_alias = None
+        for alias, config in ModelManager.MODEL_CONFIGS[endpoint].items():
+            if config['model_id'] == model_id or alias == model_id:
+                found_alias = alias
+                break
+        
+        if not found_alias:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid model identifier: {model_id}. Valid models are: "
+                       f"{', '.join(ModelManager.MODEL_CONFIGS[endpoint].keys())}"
+            )
+        
+        # If model hasn't actually changed, return early
+        if found_alias == current_model:
+            logger.info(f"Model {found_alias} is already active, no change needed")
+            return {"status": "success", "model": found_alias, "changed": False}
+        
+        # Update environment variable
+        logger.info(f"Setting model to: {found_alias}")
+        
+        # Reinitialize all model related state
+
+        old_state = {
+            'model_id': os.environ.get("ZIYA_MODEL"),
+            'model': ModelManager._state.get('model'),
+            'current_model_id': ModelManager._state.get('current_model_id')
+        }
+        logger.info(f"Saved old state: {old_state}")
         try:
-            logger.info(f"Reinitializing model with ID: {model_id}")
+            logger.info(f"Reinitializing model with alias: {found_alias}")
+            ModelManager._reset_state()
+            logger.info(f"State after reset: {ModelManager._state}")
+            
+            # Set the new model in environment
+            os.environ["ZIYA_MODEL"] = found_alias
+            logger.info(f"Set ZIYA_MODEL environment variable to: {found_alias}")
+            
+            # Reinitialize with agent
             new_model = ModelManager.initialize_model(force_reinit=True)
-            new_model.model_id = model_id  # Ensure model ID is set correctly
             
-            # Update the global model instance
+            # Verify the model was actually changed by checking the model ID and updating global references
+            expected_model_id = ModelManager.MODEL_CONFIGS[endpoint][found_alias]['model_id']
+            actual_model_id = ModelManager.get_model_id(new_model)
+            if actual_model_id != expected_model_id:
+                logger.error(f"Model initialization failed - expected ID: {expected_model_id}, got: {actual_model_id}")
+                # Restore previous state
+                os.environ["ZIYA_MODEL"] = old_state['model_id'] if old_state['model_id'] else ModelManager.DEFAULT_MODELS["bedrock"]
+                ModelManager._state.update(old_state)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to change model - expected {expected_model_id}, got {actual_model_id}"
+                )
+            logger.info(f"Successfully changed model to {found_alias} ({actual_model_id})")
+            # update the global model reference
             global model
-            model = RetryingChatBedrock(new_model)
+            model = new_model
+
+            global agent
+            global agent_executor
+
+            # Recreate agent chain and executor with new model
+            agent = create_agent_chain(new_model)
+            agent_executor = create_agent_executor(agent)
+
+            logger.info("Created new agent chain and executor")
+            # Reinitialize langserve routes with new agent_executor
+            initialize_langserve(app, agent_executor)
             
-            return {"status": "success", "model": model_id}
+            # Return success response
+            return {
+                "status": "success",
+                "model": found_alias,
+                "changed": True,
+                "message": "Model and routes successfully updated"
+            }
+            
+        except ValueError as e:
+            logger.error(f"Model initialization error: {str(e)}")
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            logger.error(f"Failed to initialize model: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to initialize model: {str(e)}")
+            logger.error(f"Failed to initialize model {found_alias}: {str(e)}")
+            # Restore previous state
+            logger.error("Exception details:", exc_info=True)
+            logger.info(f"Restoring previous state: {old_state}")
+            
+            os.environ["ZIYA_MODEL"] = old_state['model_id'] if old_state['model_id'] else ModelManager.DEFAULT_MODELS["bedrock"]
+            if old_state['model']:
+                ModelManager._state.update(old_state)
+            else:
+                logger.warning("No previous model state to restore")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to initialize model {found_alias}: {str(e)}"
+            )
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -595,17 +651,19 @@ async def set_model(request: SetModelRequest):
 def get_available_models():
     """Get list of available models for the current endpoint."""
     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    
     try:
         models = []
         for name, config in ModelManager.MODEL_CONFIGS[endpoint].items():
             models.append({
                 "id": config["model_id"],
-                "name": name
+                "name": name,
+                "alias": name,
+                "display_name": f"{name} ({config['model_id']})"
             })
         return models
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        return {'model_id': model.model_id.split(':')[0].split('/')[-1]}
 
 @app.get('/api/model-capabilities')
 def get_model_capabilities(model: str = None):
@@ -613,13 +671,29 @@ def get_model_capabilities(model: str = None):
     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
     # If model parameter is provided, get capabilities for that model
     # Otherwise use current model
-    model_name = model if model else os.environ.get("ZIYA_MODEL")
+    model_alias = None
+    
+    if model:
+        # Convert model ID to alias if needed
+        if model.startswith('us.anthropic.'):
+            for alias, config in ModelManager.MODEL_CONFIGS[endpoint].items():
+                if config['model_id'] == model:
+                    model_alias = alias
+                    break
+            if not model_alias:
+                return {"error": f"Unknown model ID: {model}"}
+        else:
+            model_alias = model
+    else:
+        model_alias = os.environ.get("ZIYA_MODEL")
     
     try:
-        model_config = ModelManager.get_model_config(endpoint, model_name)
+        model_config = ModelManager.get_model_config(endpoint, model_alias)
         capabilities = {
             "supports_thinking": model_config.get("supports_thinking", False),
             "max_output_tokens": model_config.get("max_output_tokens", 4096),
+            "max_input_tokens": model_config.get("token_limit", 4096),
+            "token_limit": model_config.get("token_limit", 4096),
             "temperature_range": {"min": 0, "max": 1, "default": model_config.get("temperature", 0.3)},
             "top_k_range": {"min": 0, "max": 500, "default": model_config.get("top_k", 15)} if endpoint == "bedrock" else None
         }
@@ -644,8 +718,9 @@ class ApplyChangesRequest(BaseModel):
 class ModelSettingsRequest(BaseModel):
     temperature: float = Field(default=0.3, ge=0, le=1)
     top_k: int = Field(default=15, ge=0, le=500)
-    max_output_tokens: int = Field(default=4096, ge=1, le=128000)
+    max_output_tokens: int = Field(default=4096, ge=1)
     thinking_mode: bool = Field(default=False)
+    max_input_tokens: Optional[int] = Field(default=None, ge=1)
 
 
 class TokenCountRequest(BaseModel):
@@ -708,7 +783,14 @@ async def update_model_settings(settings: ModelSettingsRequest):
         logger.info(f"  Thinking Mode: {settings.thinking_mode}")
 
         # Store settings in environment variables for the agent to use
-        os.environ["ZIYA_TEMPERATURE"] = str(settings.temperature)
+        os.environ["ZIYA_TEMPERATURE"] = str(settings.temperature)        
+        # Check if the current model supports setting max_input_tokens
+        model_config = ModelManager.get_model_config(os.environ.get("ZIYA_ENDPOINT", "bedrock"), os.environ.get("ZIYA_MODEL"))
+        if settings.max_input_tokens is not None and model_config.get("supports_max_input_tokens", False):
+            logger.info(f"  Setting ZIYA_MAX_INPUT_TOKENS: {settings.max_input_tokens}")
+            os.environ["ZIYA_MAX_INPUT_TOKENS"] = str(settings.max_input_tokens)
+        else:
+            logger.info("  Model does not support setting max_input_tokens or value not provided.")
         os.environ["ZIYA_TOP_K"] = str(settings.top_k)
         os.environ["ZIYA_MAX_OUTPUT_TOKENS"] = str(settings.max_output_tokens)
         os.environ["ZIYA_THINKING_MODE"] = "1" if settings.thinking_mode else "0"
@@ -722,6 +804,8 @@ async def update_model_settings(settings: ModelSettingsRequest):
                     'top_k': settings.top_k,
                     'max_tokens': settings.max_output_tokens
                 })
+                if settings.max_input_tokens is not None and model_config.get("supports_max_input_tokens", True):
+                    model.model.model_kwargs['max_input_tokens'] = settings.max_input_tokens
         elif hasattr(model, 'model_kwargs'):
             # For direct model instances
             model.model_kwargs.update({
@@ -729,11 +813,12 @@ async def update_model_settings(settings: ModelSettingsRequest):
                 'top_k': settings.top_k,
                 'max_tokens': settings.max_output_tokens
             })
+            if settings.max_input_tokens is not None and model_config.get("supports_max_input_tokens", True):
+                model.model_kwargs['max_input_tokens'] = settings.max_input_tokens
             
+
         # Force model reinitialization to apply new settings
-        from app.agents.models import ModelManager
         model = ModelManager.initialize_model(force_reinit=True)
-        model.model_id = os.environ.get("ZIYA_MODEL", model.model_id)
 
         # Get the model's current settings for verification
         model_kwargs = {}
@@ -746,6 +831,7 @@ async def update_model_settings(settings: ModelSettingsRequest):
         logger.info(f"  Model kwargs temperature: {model_kwargs.get('temperature', 'Not set')}")
         logger.info(f"  Model kwargs top_k: {model_kwargs.get('top_k', 'Not set')}")
         logger.info(f"  Model kwargs max_tokens: {model_kwargs.get('max_tokens', 'Not set')}")
+        logger.info(f"  Model kwargs max_input_tokens: {model_kwargs.get('max_input_tokens', 'Not set')}")
         logger.info(f"  Environment ZIYA_THINKING_MODE: {os.environ.get('ZIYA_THINKING_MODE')}")
 
         return {

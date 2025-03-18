@@ -52,15 +52,6 @@ def setup_environment(args):
     if args.model:
         os.environ["ZIYA_MODEL"] = args.model
 
-    # If using Google endpoint, ensure credentials are available
-    if args.endpoint == "google" and not ModelManager._load_credentials():
-        logger.error(
-            "\nGOOGLE_API_KEY environment variable is required for google endpoint.\n"
-            "You can set it in your environment or create a .env file in either:\n"
-                    "  - Your current directory\n"
-                    "  - ~/.ziya/.env\n")
-        sys.exit(1)
-            
     os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
 
 
@@ -135,6 +126,9 @@ def start_server(args):
         logger.error(f"\n{str(e)}")
         logger.error("Server startup aborted due to configuration error.")
         sys.exit(1)
+    except Exception as e:
+        logger.error(f"Failed to start server: {str(e)}")
+        sys.exit(1)
 
 def check_auth(args):
     """Check authentication setup without starting the server."""
@@ -163,12 +157,6 @@ def main():
     if args.check_auth:
         success = check_auth(args)
         sys.exit(0 if success else 1)
-    args = parse_arguments()
-
-    if args.version:
-        # Print version and exit immediately without initializing model
-        current_version = get_current_version()
-        print(f"Ziya version {current_version}")
         return
 
     try:
@@ -176,6 +164,10 @@ def main():
     except Exception as e:
         logger.error(f"Error checking version: {e}")
         logger.warning("Continuing with current version...")
+    validate_langchain_vars()
+    setup_environment(args)
+    start_server(args)
 
-    current_version = get_current_version()
-    print(f"Ziya version {current_version}")
+
+if __name__ == "__main__":
+    main()

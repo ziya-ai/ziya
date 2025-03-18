@@ -14,16 +14,19 @@ from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from google.api_core.exceptions import ResourceExhausted
 from langchain_community.document_loaders import TextLoader
 from langchain_core.agents import AgentFinish
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, BaseMessage
 from langchain_core.outputs import Generation
 from langchain_core.runnables import RunnablePassthrough, Runnable
+from langserve import add_routes
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.agents.prompts import conversational_prompt
 from app.agents.models import ModelManager
-
+from app.middleware import RequestSizeMiddleware
 from app.utils.sanitizer_util import clean_backtick_sequences
-
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file
@@ -99,11 +102,14 @@ def parse_output(message):
             try:
                 content = content()
             except Exception as e:
-                logger.error(f"Error calling content method: {e}")
+                logger.error(f"Error calling content method: {str(e)}")
 
         logger.debug("Content inspection:")
         logger.debug(f"Type: {type(content)}")
-        logger.debug(f"Has diff marker: {'```diff' in content}")
+        if isinstance(content, str):
+            logger.debug(f"Has diff marker: {'```diff' in content}")
+        else:
+            logger.debug("Content is not a string, skipping diff marker check.")
         logger.debug(f"Content starts with: {content[:100]}")
         logger.debug(f"Content ends with: {content[-100:]}")
         logger.debug(f"Raw content length: {len(content)}")
@@ -131,11 +137,10 @@ def parse_output(message):
                 logger.debug(f"Diff part before cleanup: {parts[1]}")
 
                 diff_content = parts[1].split("```")[0].strip()
-
-
-                diff_content = '\n'.join(cleaned_lines)
-                logger.info(f"Extracted diff content:\n{diff_content}")
                 return AgentFinish(return_values={"output": diff_content}, log=diff_content)
+        else:
+            text = clean_backtick_sequences(content)
+            return AgentFinish(return_values={"output": text}, log=text)
 
         # If not a diff or error, clean and return the content
         text = clean_backtick_sequences(content)
@@ -169,8 +174,19 @@ class RetryingChatBedrock(Runnable):
             logger.info(f"Raw input: {input}")
 
     def bind(self, **kwargs):
-        return RetryingChatBedrock(self.model.bind(**kwargs))
-
+        # Filter kwargs to only include supported parameters for the current model
+        model_config = ModelManager.get_model_config(
+            os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT),
+            os.environ.get("ZIYA_MODEL")
+        )
+        supported_kwargs = {}
+        for key, value in kwargs.items():
+            if key in model_config:
+                supported_kwargs[key] = value
+            else:
+                logger.info(f"Removing unsupported bind parameter '{key}' for model {model_config['model_id']}")
+ 
+        return RetryingChatBedrock(self.model.bind(**supported_kwargs))
 
     def get_num_tokens(self, text: str) -> int:
         return self.model.get_num_tokens(text)
@@ -414,8 +430,34 @@ class RetryingChatBedrock(Runnable):
     async def ainvoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
         return await self.model.ainvoke(input, config, **kwargs)
 
-# Initialize the model using the ModelManager
-model = RetryingChatBedrock(ModelManager.initialize_model())
+class LazyLoadedModel:
+    def __init__(self):
+        self._model = None
+        self._model_with_stop = None 
+ 
+    def get_model(self):
+        """Get the underlying model instance"""
+        if self._model is None:
+            self._model = RetryingChatBedrock(ModelManager.initialize_model())
+        return self._model
+        
+    def __call__(self):
+        """Maintain backwards compatibility but log deprecation"""
+        logger.warning("Direct call to model() is deprecated, use get_model() instead")
+        return self.get_model()
+        
+    def reset(self):
+        """Force a complete reset of the model instance"""
+        self._model = None
+        self._model_with_stop = None
+ 
+    def bind(self, **kwargs):
+        if self._model_with_stop is None:
+            self._model_with_stop = self.get_model().bind(**kwargs)
+        return self.get_model().bind(**kwargs)
+ 
+model = LazyLoadedModel()
+llm_with_stop = model.bind(stop=["</tool_input>"])
 
 file_state_manager = FileStateManager()
 
@@ -447,7 +489,6 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     return combined_contents
 
 
-llm_with_stop = model.bind(stop=["</tool_input>"])
 
 class AgentInput(BaseModel):
     question: str
@@ -558,21 +599,29 @@ def log_codebase_wrapper(x):
     logger.info(f"Files in codebase before prompt:\n{chr(10).join([l for l in codebase.split('\n') if l.startswith('File: ')])}")
     return codebase
 
-# Define the agent chain
-agent = (
-    {
-        "codebase": log_codebase_wrapper,
-        "question": lambda x: x["question"],
-        "chat_history": lambda x: _format_chat_history(x.get("chat_history", [])),
-        "agent_scratchpad": lambda x: [
-            AIMessage(content=format_xml([]))
-        ],
-    }
-    | conversational_prompt
-    | llm_with_stop
-    | parse_output
-    | log_output
-)
+def create_agent_chain(chat_model: BaseChatModel):
+    """Create a new agent chain with the given model."""
+    llm_with_stop = model.bind(stop=["</tool_input"])
+    chain = (
+        {
+            "codebase": log_codebase_wrapper,
+            "question": lambda x: x["question"],
+            "chat_history": lambda x: _format_chat_history(x.get("chat_history", [])),
+            "agent_scratchpad": lambda x: [
+                AIMessage(content=format_xml([]))
+            ]
+        }
+        | conversational_prompt
+        | chat_model.bind(stop=["</tool_input>"])
+        | (lambda x: AgentFinish(
+            return_values={"output": x.content if hasattr(x, 'content') else str(x)},
+            log=x.content if hasattr(x, 'content') else str(x)
+        ))
+    )
+    return chain
+ 
+# Initialize the agent chain
+agent = create_agent_chain(model)
 
 logger.info("Agent chain defined with parse_output")
 def update_conversation_state(conversation_id: str, file_paths: List[str]) -> None:
@@ -608,12 +657,78 @@ def update_and_return(input_data: Dict[str, Any]) -> Dict[str, Any]:
     return input_data
 
 # Finally create the executor
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=[],
-    verbose=False,
-    handle_parsing_errors=True,
-).with_types(input_type=AgentInput) | RunnablePassthrough(update_and_return)
+def create_agent_executor(agent_chain: Runnable):
+    """Create a new agent executor with the given agent."""
+    return AgentExecutor(
+        agent=agent_chain,
+        tools=[],
+        verbose=False,
+        handle_parsing_errors=True
+    ).with_types(input_type=AgentInput) | RunnablePassthrough.assign(output=update_and_return)
 
-# Chain the executor with the state update
-agent_executor = agent_executor | RunnablePassthrough(update_and_return)
+agent_executor = create_agent_executor(agent)
+
+def initialize_langserve(app, executor):
+    """Initialize or reinitialize langserve routes with the given executor."""
+
+    # Create a new FastAPI app instance to ensure clean state
+    new_app = FastAPI(
+        title=app.title,
+        description=app.description,
+        version=app.version,
+        docs_url=app.docs_url,
+        redoc_url=app.redoc_url,
+        openapi_url=app.openapi_url
+    )  
+
+    # Store original routes that aren't /ziya routes
+    original_routes = [
+        route for route in app.routes 
+        if not route.path.startswith("/ziya")
+    ]
+
+    logger.info(f"Preserved {len(original_routes)} non-/ziya routes")
+ 
+     # Add required middleware
+    new_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+ 
+    # Add request size middleware
+    new_app.add_middleware(
+        RequestSizeMiddleware,
+        # Add the same max request size as in the original app
+        max_request_size=10 * 1024 * 1024  # 10MB
+    )
+
+    # Restore original routes
+    for route in original_routes:
+        new_app.routes.append(route)
+ 
+    # Add new routes with executor
+    add_routes(
+        new_app,
+        executor,
+        disabled_endpoints=["playground"],
+        path="/ziya"
+    )
+    
+    logger.info("Added new routes with updated executor")
+
+    # Clear all routes from original app
+    while app.routes:
+        app.routes.pop()
+ 
+    logger.info("Cleared existing routes")
+    
+    # Copy routes from new app to original app
+    for route in new_app.routes:
+        app.routes.append(route)
+        
+    logger.info(f"Successfully reinitialized app with {len(new_app.routes)} routes")
+    return True
+ 
