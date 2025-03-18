@@ -16,15 +16,15 @@ interface ConversationProps {
 
 const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => {
     const {currentMessages, 
-	   isTopToBottom, 
-	   isLoadingConversation,
-	   addStreamingConversation,
-	   streamingConversations,
-           currentConversationId,
-	   setIsStreaming,
-           setStreamedContentMap,
-           addMessageToConversation,
-           removeStreamingConversation
+        isTopToBottom, 
+	    isLoadingConversation,
+	    addStreamingConversation,
+	    streamingConversations,
+        currentConversationId,
+	    setIsStreaming,
+        setStreamedContentMap,
+        addMessageToConversation,
+        removeStreamingConversation
     } = useChatContext();
     
     const {checkedKeys} = useFolderContext();
@@ -112,7 +112,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             await sendPayload(
                                 currentConversationId,
                                 message.content,
-				streamingConversations.has(currentConversationId),
+                				streamingConversations.has(currentConversationId),
                                 currentMessages,
                                 setStreamedContentMap,
                                 setIsStreaming,
@@ -121,7 +121,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 removeStreamingConversation
                             );
                         } catch (error) {
-			    removeStreamingConversation(currentConversationId);
+                            setIsStreaming(false);
+			                removeStreamingConversation(currentConversationId);
                             console.error('Error retrying message:', error);
                         }
                     }}

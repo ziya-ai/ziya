@@ -301,6 +301,9 @@ export const sendPayload = async (
                     parser.feed(chunk);
                 } catch (error) {
                     console.error('Error reading stream:', error);
+                    errorOccurred = true;
+                    removeStreamingConversation(conversationId);
+                    setIsStreaming(false);
                     break;
                     }
                 }
@@ -341,6 +344,8 @@ export const sendPayload = async (
             // Type guard for DOMException
             if (error instanceof DOMException && error.name === 'AbortError') return;
             console.error('Stream error:', error);
+            removeStreamingConversation(conversationId);
+            setIsStreaming(false);
             hasError = true;
             throw error;
         } finally {
@@ -371,6 +376,8 @@ export const sendPayload = async (
         }
     } finally {
         if (eventSource && eventSource instanceof EventSource) eventSource.close();
+        setIsStreaming(false);
+        removeStreamingConversation(conversationId);
         return '';
     }
 };
