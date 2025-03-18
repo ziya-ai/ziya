@@ -22,6 +22,7 @@ from langserve import add_routes
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from botocore.exceptions import ClientError
 
 from app.agents.prompts import conversational_prompt
 from app.agents.models import ModelManager
@@ -31,6 +32,7 @@ from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file
 from app.utils.file_state_manager import FileStateManager
+from app.utils.error_handlers import format_error_response, detect_error_type
 
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -202,12 +204,18 @@ class RetryingChatBedrock(Runnable):
 
     async def _handle_stream_error(self, e: Exception):
         """Handle stream errors by yielding an error message."""
-        yield Generation(
-            text=json.dumps({
-                "error": "validation_error",
-                "detail": "Selected content is too large for the model. Please reduce the number of files."
-            })
-        )
+        error_type, detail, status_code, retry_after = detect_error_type(str(e))
+        error_message = {
+            "error": error_type,
+            "detail": detail,
+            "status_code": status_code
+        }
+        if retry_after:
+            error_message["retry_after"] = retry_after
+            
+        logger.info(f"Handling stream error with AIMessageChunk: {error_message}")
+        yield AIMessageChunk(content=json.dumps(error_message))
+        yield AIMessageChunk(content="[DONE]")
         return
 
     def _prepare_input(self, input: Any) -> Dict:
@@ -230,10 +238,19 @@ class RetryingChatBedrock(Runnable):
 
     async def _handle_validation_error(self, e: Exception):
         """Handle validation errors by yielding an error message."""
-        error_chunk = Generation(
-            text=json.dumps({"error": "validation_error", "detail": str(e)})
-        )
-        yield error_chunk
+        error_type, detail, status_code, retry_after = detect_error_type(str(e))
+        error_message = {
+            "error": error_type,
+            "detail": detail,
+            "status_code": status_code
+        }
+        if retry_after:
+            error_message["retry_after"] = retry_after
+            
+        logger.info(f"Handling validation error with AIMessageChunk: {error_message}")
+        yield AIMessageChunk(content=json.dumps(error_message))
+        yield AIMessageChunk(content="[DONE]")
+        return
     def _is_streaming(self, func) -> bool:
         """Check if this is a streaming operation."""
         return hasattr(func, '__name__') and func.__name__ == 'astream'
@@ -328,7 +345,7 @@ class RetryingChatBedrock(Runnable):
     async def astream(self, input: Any, config: Optional[Dict] = None, **kwargs):
         """Stream responses with retries and proper message formatting."""
         max_retries = 3
-        retry_delay = 1
+        base_retry_delay = 1
 
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1} of {max_retries}")
@@ -360,22 +377,56 @@ class RetryingChatBedrock(Runnable):
 
                 break  # Success, exit retry loop
 
-            except ResourceExhausted as e:
-                logger.error(f"Google API quota exceeded: {str(e)}")
-                yield Generation(
-                    text=json.dumps({
-                        "error": "quota_exceeded",
-                        "detail": "API quota has been exceeded. Please try again in a few minutes."
-                    })
-                )
+            except ClientError as e:
+                error_str = str(e)
+                logger.warning(f"Bedrock client error: {error_str}")
+                
+                error_type, detail, status_code, retry_after = detect_error_type(error_str)
+                logger.info(f"Detected error type: {error_type}, status: {status_code}")
+                
+                # Format error message
+                error_message = {
+                    "error": error_type,
+                    "detail": detail,
+                    "status_code": status_code
+                }
+                if retry_after:
+                    error_message["retry_after"] = retry_after
+                
+                logger.info(f"Yielding error response: {error_message}")
+                # Use AIMessageChunk for proper SSE formatting
+                yield AIMessageChunk(content=json.dumps(error_message))
+                yield AIMessageChunk(content="[DONE]")
                 return
 
             except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
-                if attempt == max_retries - 1:
-                    yield Generation(text=json.dumps({"error": "stream_error", "detail": str(e)}))
-                    return
-                await asyncio.sleep(retry_delay * (attempt + 1))
+                error_str = str(e)
+                logger.warning(f"Error on attempt {attempt + 1}: {error_str}")
+
+                # Check if this is a Bedrock error that was wrapped in another exception
+                error_type, detail, status_code, retry_after = detect_error_type(error_str)
+                logger.info(f"Detected error type: {error_type}, status: {status_code}")
+                
+                if attempt < max_retries - 1:
+                    # Exponential backoff and retry
+                    retry_delay = base_retry_delay * (2 ** attempt)
+                    await asyncio.sleep(retry_delay)
+                    continue
+                
+                # Final attempt failed, send error response
+                error_message = {
+                    "error": error_type,
+                    "detail": detail,
+                    "status_code": status_code
+                }
+                if retry_after:
+                    error_message["retry_after"] = retry_after
+                
+                logger.info(f"Yielding final error response: {error_message}")
+                # Use AIMessageChunk for proper SSE formatting
+                yield AIMessageChunk(content=json.dumps(error_message))
+                yield AIMessageChunk(content="[DONE]")
+                return
 
     def _format_messages(self, input_messages: List[Any]) -> List[Dict[str, str]]:
         """Format messages according to provider requirements."""

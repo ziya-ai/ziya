@@ -31,6 +31,8 @@ from app.utils.code_util import PatchApplicationError, split_combined_diff
 from app.utils.directory_util import get_ignored_patterns
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
+from app.utils.error_handlers import create_json_response, create_sse_error_message
+from app.middleware import RequestSizeMiddleware, ErrorHandlingMiddleware
 
 # Server configuration defaults
 DEFAULT_PORT = 6969
@@ -45,6 +47,9 @@ app = FastAPI(
     docs_url="/docs"
 )
 
+# Add middleware in the correct order
+app.add_middleware(ErrorHandlingMiddleware)  # Add our custom error handling middleware first
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,9 +57,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Add request size middleware
-from app.middleware import RequestSizeMiddleware
 
 app.add_middleware(RequestSizeMiddleware)
 
@@ -70,6 +72,29 @@ async def eventstream_exception_handler(request: Request, exc: EventStreamError)
                 "error": "validation_error",
                 "detail": "Selected content is too large for the model. Please reduce the number of files.",
                 "original_error": error_message
+            }
+        )
+
+async def handle_throttling_error(request: Request, exc: Exception) -> JSONResponse:
+    """Handle throttling errors with appropriate response"""
+    error_message = str(exc)
+    if "ThrottlingException" in error_message:
+        return JSONResponse(
+            status_code=429,  # Too Many Requests
+            content={
+               "error": "throttling_error",
+               "detail": "Too many requests. Please wait a moment before trying again.",
+               "retry_after": "5"  # Suggest retry after 5 seconds
+           }
+        )
+    # Handle other rate-limit related errors
+    if "RequestLimitExceeded" in error_message:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "rate_limit_exceeded",
+                "detail": "API rate limit exceeded. Please reduce request frequency.",
+                "retry_after": "10"  # Suggest longer retry for rate limits
             }
         )
 
@@ -96,39 +121,18 @@ async def credential_exception_handler(request: Request, exc: CredentialRetrieva
         headers={"WWW-Authenticate": "Bearer"}
     )
 
-@app.exception_handler(ClientError)
+@app.exception_handler(botocore.exceptions.ClientError)
 async def boto_client_exception_handler(request: Request, exc: ClientError):
     error_message = str(exc)
-    if "ExpiredTokenException" in error_message or "InvalidIdentityTokenException" in error_message:
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "AWS credentials have expired. Please refresh your credentials."},
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-    elif "ValidationException" in error_message:
-        logger.error(f"Bedrock validation error: {error_message}")
-        return JSONResponse(
-            status_code=400,
-            content={"error": "validation_error",
-                    "detail": "Invalid request format for Bedrock service. Please check your input format.",
-                    "message": error_message})
-    elif "ServiceUnavailableException" in error_message:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "AWS Bedrock service is temporarily unavailable. This usually happens when the service is experiencing high load. Please wait a moment and try again."}
-        )
-    return JSONResponse(
-        status_code=500,
-        content={"detail": f"AWS Service Error: {str(exc)}"}
-    )
+    logger.info(f"Handling boto ClientError: {error_message}")
+    return create_json_response(error_message)
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     error_message = str(exc)
-    status_code = 500
-    error_type = "unknown_error"
+    logger.error(f"General exception handler caught: {error_message}")
     
-    # Check for empty text parameter error from Gemini
+    # Special handling for Gemini empty text parameter error
     if "Unable to submit request because it has an empty text parameter" in error_message:
         logger.error("Caught empty text parameter error from Gemini")
         return JSONResponse(
@@ -139,16 +143,7 @@ async def general_exception_handler(request: Request, exc: Exception):
             }
         )
     
-    # Check for Google API quota exceeded error
-    if "Resource has been exhausted" in error_message and "check quota" in error_message:
-        return JSONResponse(
-            status_code=429,  # Too Many Requests
-            content={
-                "error": "quota_exceeded",
-                "detail": "API quota has been exceeded. Please try again in a few minutes."
-            })
-    
-    # Check for Gemini token limit error
+    # Special handling for Gemini token limit error
     if isinstance(exc, ChatGoogleGenerativeAIError) and "token count" in error_message:
         return JSONResponse(
             status_code=413,
@@ -158,39 +153,20 @@ async def general_exception_handler(request: Request, exc: Exception):
             }
         )
     
-    # Check for Google API quota exceeded error
-    if "Resource has been exhausted" in error_message and "check quota" in error_message:
-        return JSONResponse(
-            status_code=429,  # Too Many Requests
-            content={
-                "error": "quota_exceeded",
-                "detail": "API quota has been exceeded. Please try again in a few minutes."
-            })
-
+    # Handle EventStreamError and ExceptionGroup specially
     try:
-        # Check if this is a streaming error
         if isinstance(exc, EventStreamError):
-            if "validationException" in error_message:
-                status_code = 413
-                error_type = "validation_error"
-                error_message = "Selected content is too large for the model. Please reduce the number of files."
+            return create_json_response(error_message)
         elif isinstance(exc, ExceptionGroup):
             # Handle nested exceptions
             for e in exc.exceptions:
-                if isinstance(e, EventStreamError) and "validationException" in str(e):
-                    status_code = 413
-                    error_type = "validation_error"
-                    error_message = "Selected content is too large for the model. Please reduce the number of files."
-                    break
-        logger.error(f"Exception handler: type={error_type}, status={status_code}, message={error_message}")
-
-        return JSONResponse(
-            status_code=status_code,
-            content={"error": error_type, "detail": error_message}
-        )
+                if isinstance(e, EventStreamError) or "ThrottlingException" in str(e) or "ExpiredTokenException" in str(e):
+                    return create_json_response(str(e))
     except Exception as e:
         logger.error(f"Error in exception handler: {str(e)}", exc_info=True)
-        raise
+    
+    # Default handling for all other exceptions
+    return create_json_response(error_message)
 
 # Get the absolute path to the project root directory
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -228,7 +204,7 @@ async def stream_endpoint(body: dict):
     logger.info(f"Question: '{body.get('question', 'EMPTY')}'")
     logger.info(f"Chat history length: {len(body.get('chat_history', []))}")
     logger.info(f"Files count: {len(body.get('config', {}).get('files', []))}")
-    logger.info(f"Question type: {type(body.get('question', None))}")
+    logger.info(f"Question type: {type(body.get('question'))}")
 
     # Log the first few files
     if 'config' in body and 'files' in body['config']:
@@ -296,6 +272,7 @@ async def stream_endpoint(body: dict):
         # Define the streaming response with proper error handling
         async def error_handled_stream():
             response = None
+            error_sent = False
             try:
                 # Convert to ChatPromptValue before streaming
                 if isinstance(body, dict) and "messages" in body:
@@ -303,35 +280,107 @@ async def stream_endpoint(body: dict):
                     from langchain_core.messages import HumanMessage
                     body["messages"] = [HumanMessage(content=msg) for msg in body["messages"]]
                     body = ChatPromptValue(messages=body["messages"])
+                
                 # Create the iterator inside the error handling context
                 iterator = agent_executor.astream_log(body)
                 async for chunk in iterator:
                     if isinstance(chunk, dict) and "error" in chunk:
-                        # Format error as SSE message
+                        # Handle error responses from the model
+                        logger.warning(f"error response from model: {chunk}")
                         yield f"data: {json.dumps(chunk)}\n\n"
-                        
-                    elif isinstance(chunk, Generation) and hasattr(chunk, 'text') and "quota_exceeded" in chunk.text:
-                        yield f"data: {chunk.text}\n\n"
-                        update_and_return(body)
+                        yield "data: [DONE]\n\n"
+                        error_sent = True
                         return
-                        
-                    else:
+                    
+                    elif isinstance(chunk, Generation) and hasattr(chunk, 'text'):
+                        # Check if this is an error response from RetryingChatBedrock
                         try:
-                            # Parse and clean the chunk before sending
-                            parsed_chunk = parse_output(chunk)
-                            if parsed_chunk and parsed_chunk.return_values:
-                                cleaned_output = parsed_chunk.return_values.get("output", "")
-                                if cleaned_output:
-                                    yield f"data: {cleaned_output}\n\n"
-                                    continue
-                            
-                            # Fall back to original chunk if parsing fails
-                            chunk_content = chunk.content if hasattr(chunk, 'content') else str(chunk)
-                            yield f"data: {chunk.content if hasattr(chunk, 'content') else str(chunk)}\n\n"
+                            text = chunk.text
+                            # Try to parse as JSON to see if it's an error message
+                            if isinstance(text, str) and ('"error":' in text or '"status_code":' in text):
+                                try:
+                                    error_data = json.loads(text)
+                                    if isinstance(error_data, dict) and "error" in error_data:
+                                        logger.warning(f"Detected error in Generation: {error_data}")
+                                        yield f"data: {text}\n\n"
+                                        yield "data: [DONE]\n\n"
+                                        error_sent = True
+                                        update_and_return(body)
+                                        return
+                                except json.JSONDecodeError:
+                                    pass  # Not a valid JSON error message
+                        except Exception as e:
+                            logger.error(f"Error processing Generation: {e}")
+                        
+                        # Handle quota exceeded errors specifically
+                        if "quota_exceeded" in str(chunk.text):
+                            yield f"data: {json.dumps({'error': 'quota_exceeded', 'detail': 'API quota has been exceeded. Please try again in a few minutes.', 'status_code': 429})}\n\n"
+                            yield "data: [DONE]\n\n"
+                            update_and_return(body)
+                            return
+                    
+                    # Normal chunk processing
+                    try:
+                        # Parse and clean the chunk before sending
+                        parsed_chunk = parse_output(chunk)
+                        if parsed_chunk and parsed_chunk.return_values:
+                            cleaned_output = parsed_chunk.return_values.get("output", "")
+                            if cleaned_output:
+                                yield f"data: {cleaned_output}\n\n"
+                                continue
+                        
+                        # Fall back to original chunk if parsing fails
+                        chunk_content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                        yield f"data: {chunk_content}\n\n"
+                    except Exception as e:
+                        logger.error(f"Error processing chunk: {e}")
+                        continue
 
-                            await response.flush()
-                        except EventStreamError as e:
-                            if "validationException" in str(e):
+            except EventStreamError as e:
+                if "validationException" in str(e) or "Input is too long" in str(e):
+                    logger.warning("Validation exception in stream", exc_info=True)
+                    error_msg = {
+                        "error": "validation_error",
+                        "detail": "Selected content is too large for the model. Please reduce the number of files.",
+                        "status_code": 413
+                    }
+                    yield f"data: {json.dumps(error_msg)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    update_and_return(body)
+                    return
+                raise  # Re-raise other EventStreamError types
+
+            except ChatGoogleGenerativeAIError as e:
+                logger.warning("Google AI token limit error", exc_info=True)
+                if "token count" in str(e):
+                    error_msg = {
+                        "error": "validation_error",
+                        "detail": "Selected content is too large for the model. Please reduce the number of files.",
+                        "status_code": 413
+                    }
+                    yield f"data: {json.dumps(error_msg)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    update_and_return(body)
+                    return
+                raise
+
+            except Exception as e:
+                logger.error(f"Caught exception in error_handled_stream: {str(e)}")
+                if not error_sent:
+                    error_type, detail, status_code, retry_after = detect_error_type(str(e))
+                    error_msg = {
+                        "error": error_type,
+                        "detail": detail,
+                        "status_code": status_code
+                    }
+                    if retry_after:
+                        error_msg["retry_after"] = retry_after
+                    yield f"data: {json.dumps(error_msg)}\n\n"
+                    yield "data: [DONE]\n\n"
+                update_and_return(body)
+                return
+                logger.warning("Google AI token limit error", exc_info=True)
+                if "token count" in str(e):
                                 error_msg = {
                                     "error": "validation_error",
                                     "detail": "Selected content is too large for the model. Please reduce the number of files."
@@ -339,50 +388,85 @@ async def stream_endpoint(body: dict):
                                 yield f"data: {json.dumps(error_msg)}\n\n"
                                 update_and_return(body)
                                 await response.flush()
-                                logger.info("Sent EventStreamError message: %s", error_msg)
-                                return
-                        except ChatGoogleGenerativeAIError as e:
-                            if "token count" in str(e):
-                                error_msg = {
-                                    "error": "validation_error",
-                                    "detail": "Selected content is too large for the model. Please reduce the number of files."
-                                }
-                                yield f"data: {json.dumps(error_msg)}\n\n"
-                                update_and_return(body)
-                                await response.flush()
-                                logger.info("Sent token limit error message: %s", error_msg)
                                 return
             except ResourceExhausted as e:
                 error_msg = {
                     "error": "quota_exceeded",
-                    "detail": "API quota has been exceeded. Please try again in a few minutes."
+                    "detail": "API quota has been exceeded. Please try again in a few minutes.",
+                    "status_code": 429
                 }
                 yield f"data: {json.dumps(error_msg)}\n\n"
                 update_and_return(body)
-                logger.error(f"Caught ResourceExhausted error: {str(e)}")
+                logger.error(f"Resource exhausted error", exc_info=True)
                 return
             except EventStreamError as e:
-                if "validationException" in str(e):
+                if "validationException" in str(e) or "Input is too long" in str(e):
+                    logger.warning("Input too long error detected", exc_info=True)
                     error_msg = {
                         "error": "validation_error",
-                        "detail": "Selected content is too large for the model. Please reduce the number of files."
+                        "detail": "Selected content is too large for the model. Please reduce the number of files.",
+                        "status_code": 413
                     }
+                    # Send error message
                     yield f"data: {json.dumps(error_msg)}\n\n"
+                    # Send end marker
+                    yield "data: [DONE]\n\n"
                     update_and_return(body)
-                    await response.flush()
                     return
-                raise
+                raise  # Re-raise other EventStreamError types
+            except botocore.exceptions.ClientError as e:
+                error_message = str(e)
+                logger.error(f"Caught ClientError in error_handled_stream: {error_message}")
+                # Get formatted error response
+                error_type, detail, status_code, retry_after = detect_error_type(error_message)
+                error_msg = {
+                    "error": error_type,
+                    "detail": detail,
+                    "status_code": status_code
+                }
+                if retry_after:
+                    error_msg["retry_after"] = retry_after
+                # Send error message
+                yield f"data: {json.dumps(error_msg)}\n\n"
+                # Send end marker
+                yield "data: [DONE]\n\n"
+                update_and_return(body)
+                return
+            except Exception as e:
+                logger.error(f"Caught exception in error_handled_stream: {str(e)}")
+                if not error_sent:  # Only send error if we haven't sent one yet
+                    error_type, detail, status_code, retry_after = detect_error_type(str(e))
+                    error_msg = {
+                        "error": error_type,
+                        "detail": detail,
+                        "status_code": status_code
+                    }
+                    if retry_after:
+                        error_msg["retry_after"] = retry_after
+                    # Send error message
+                    yield f"data: {json.dumps(error_msg)}\n\n"
+                    # Send end marker
+                    yield "data: [DONE]\n\n"
+                    error_sent = True
+                update_and_return(body)
+                return
             finally:
                 update_and_return(body)
-        return StreamingResponse(error_handled_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+        
+        return StreamingResponse(
+            error_handled_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
+    
     except Exception as e:
         logger.error(f"Error in stream endpoint: {str(e)}")
-        error_msg = {"error": "stream_error", "detail": str(e)}
-        logger.error(f"Sending error response: {error_msg}")
         update_and_return(body)
-        return StreamingResponse(iter([f"data: {json.dumps(error_msg)}\n\n"]), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
-        
-
+        return StreamingResponse(
+            iter([create_sse_error_message(str(e))]), 
+            media_type="text/event-stream", 
+            headers={"Cache-Control": "no-cache"}
+        )
 
 @app.get("/")
 async def root(request: Request):
