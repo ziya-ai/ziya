@@ -328,6 +328,26 @@ export const StreamedContent: React.FC = () => {
         };
     }, [currentConversationId, streamingConversations]);
 
+        // Listen for network errors during streaming
+        const handleStreamError = (event: ErrorEvent) => {
+            if (streamingConversations.has(currentConversationId)) {
+                if (event.message.includes('network error') || 
+                    event.message.includes('ERR_INCOMPLETE_CHUNKED_ENCODING')) {
+                    setError('Connection interrupted. Please try again.');
+                    removeStreamingConversation(currentConversationId);
+                    setIsStreaming(false);
+                    setIsLoading(false);
+                }
+            }
+        };
+ 
+        window.addEventListener('error', handleStreamError);
+ 
+        return () => {
+            window.removeEventListener('error', handleStreamError);
+        };
+    }, [isStreaming, currentConversationId, streamingConversations]);
+    
     // Add effect to handle conversation switches
     useEffect(() => {
         // Force scroll event to trigger re-render
