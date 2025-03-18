@@ -26,6 +26,10 @@ from langchain_core.messages import HumanMessage
 # Import configuration from the central config module
 import app.config as config
 
+from langchain.agents import AgentExecutor
+from langchain.agents.format_scratchpad import format_xml
+from langchain_core.messages import HumanMessage
+
 class ModelManager:
     """Manages model initialization and configuration."""
     

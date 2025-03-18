@@ -331,6 +331,9 @@ def start_server(args):
             
         logger.error("Server startup aborted due to configuration error.")
         sys.exit(1)
+    except Exception as e:
+        logger.error(f"Failed to start server: {str(e)}")
+        sys.exit(1)
 
 def check_auth(args):
     """Check authentication setup without starting the server."""
@@ -393,12 +396,6 @@ def main():
     if args.check_auth:
         success = check_auth(args)
         sys.exit(0 if success else 1)
-    args = parse_arguments()
-
-    if args.version:
-        # Print version and exit immediately without initializing model
-        current_version = get_current_version()
-        print(f"Ziya version {current_version}")
         return
 
     try:
@@ -409,5 +406,6 @@ def main():
     
     start_server(args)
 
-    current_version = get_current_version()
-    print(f"Ziya version {current_version}")
+
+if __name__ == "__main__":
+    main()

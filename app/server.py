@@ -1760,6 +1760,7 @@ class ModelSettingsRequest(BaseModel):
     top_k: int = Field(default=15, ge=0, le=500)
     max_output_tokens: int = Field(default=4096, ge=1)
     thinking_mode: bool = Field(default=False)
+    max_input_tokens: Optional[int] = Field(default=None, ge=1)
 
 
 class TokenCountRequest(BaseModel):
