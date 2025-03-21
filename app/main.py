@@ -4,13 +4,11 @@ import subprocess
 import sys
 from typing import Optional
 
-from langchain_cli.cli import serve
-
 from app.utils.logging_utils import logger
-from app.utils.langchain_validation_util import validate_langchain_vars
 from app.utils.version_util import get_current_version, get_latest_version
-from app.server import DEFAULT_PORT
-from app.agents.models import ModelManager
+
+# Import configuration instead of individual constants
+import app.config as config
 
 
 def parse_arguments():
@@ -20,15 +18,15 @@ def parse_arguments():
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
     
-    # Get default model alias from ModelManager based on default endpoint
-    default_model = ModelManager.DEFAULT_MODELS[ModelManager.DEFAULT_ENDPOINT]
-    parser.add_argument("--endpoint", type=str, choices=["bedrock", "google"], default=ModelManager.DEFAULT_ENDPOINT,
-                        help=f"Model endpoint to use (default: {ModelManager.DEFAULT_ENDPOINT})")
+    # Get default model alias from config
+    default_model = config.DEFAULT_MODELS[config.DEFAULT_ENDPOINT]
+    parser.add_argument("--endpoint", type=str, choices=["bedrock", "google"], default=config.DEFAULT_ENDPOINT,
+                        help=f"Model endpoint to use (default: {config.DEFAULT_ENDPOINT})")
     parser.add_argument("--model", type=str, default=None,
                         help=f"Model to use from selected endpoint (default: {default_model})")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT,
                         help=(f"Port number to run Ziya frontend on "
-                              f"(default: {DEFAULT_PORT}, e.g., --port 8080)"))
+                              f"(default: {config.DEFAULT_PORT}, e.g., --port 8080)"))
 
     parser.add_argument("--version", action="store_true",
                         help="Prints the version of Ziya")
@@ -36,7 +34,37 @@ def parse_arguments():
                         help="Maximum depth for folder structure traversal (e.g., --max-depth 20)")
     parser.add_argument("--check-auth", action="store_true",
                         help="Check authentication setup without starting the server")
+    parser.add_argument("--list-models", action="store_true",
+                        help="List all supported endpoints and their available models")
     return parser.parse_args()
+
+
+def validate_model_and_endpoint(endpoint, model):
+    """
+    Validate that the specified endpoint and model are valid.
+    
+    Args:
+        endpoint: The endpoint name to validate
+        model: The model name to validate
+        
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    # Check if endpoint is valid
+    if endpoint not in config.MODEL_CONFIGS:
+        valid_endpoints = ", ".join(config.MODEL_CONFIGS.keys())
+        return False, f"Invalid endpoint: '{endpoint}'. Valid endpoints are: {valid_endpoints}"
+    
+    # If model is None, use the default model for the endpoint
+    if model is None:
+        model = config.DEFAULT_MODELS.get(endpoint)
+    
+    # Check if model is valid for the endpoint
+    if model not in config.MODEL_CONFIGS[endpoint]:
+        valid_models = ", ".join(config.MODEL_CONFIGS[endpoint].keys())
+        return False, f"Invalid model: '{model}' for endpoint '{endpoint}'. Valid models are: {valid_models}"
+    
+    return True, None
 
 
 def setup_environment(args):
@@ -48,9 +76,18 @@ def setup_environment(args):
     if args.profile:
         os.environ["ZIYA_AWS_PROFILE"] = args.profile
 
-    os.environ["ZIYA_ENDPOINT"] = args.endpoint
-    if args.model:
-        os.environ["ZIYA_MODEL"] = args.model
+    # Validate endpoint and model before setting environment variables
+    endpoint = args.endpoint
+    model = args.model
+    
+    is_valid, error_message = validate_model_and_endpoint(endpoint, model)
+    if not is_valid:
+        logger.error(error_message)
+        sys.exit(1)
+    
+    os.environ["ZIYA_ENDPOINT"] = endpoint
+    if model:
+        os.environ["ZIYA_MODEL"] = model
 
     os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
 
@@ -106,7 +143,53 @@ def print_version():
     print(f"Ziya version {current_version}")
 
 
+def print_models():
+    """Pretty-print all supported endpoints and their available models."""
+    print("\nSupported Endpoints and Models:")
+    print("==============================\n")
+    
+    for endpoint, models in config.MODEL_CONFIGS.items():
+        print(f"Endpoint: {endpoint}")
+        print("-" * (len(endpoint) + 10))
+        
+        # Get default model for this endpoint if available
+        default_model = config.DEFAULT_MODELS.get(endpoint, "")
+        
+        # Print each model with its details
+        for model_name, model_config in models.items():
+            default_marker = " (default)" if model_name == default_model else ""
+            print(f"  • {model_name}{default_marker}")
+            
+            # Print model ID if available
+            if "model_id" in model_config:
+                print(f"    - Model ID: {model_config['model_id']}")
+            
+            # Print token limits if available
+            if "token_limit" in model_config:
+                print(f"    - Token limit: {model_config['token_limit']:,}")
+            elif endpoint in config.ENDPOINT_DEFAULTS and "token_limit" in config.ENDPOINT_DEFAULTS[endpoint]:
+                print(f"    - Token limit: {config.ENDPOINT_DEFAULTS[endpoint]['token_limit']:,}")
+            
+            # Print max output tokens if available
+            if "max_output_tokens" in model_config:
+                print(f"    - Max output tokens: {model_config['max_output_tokens']:,}")
+            elif endpoint in config.ENDPOINT_DEFAULTS and "max_output_tokens" in config.ENDPOINT_DEFAULTS[endpoint]:
+                print(f"    - Max output tokens: {config.ENDPOINT_DEFAULTS[endpoint]['max_output_tokens']:,}")
+            
+            # Add a blank line between models for readability
+            print()
+        
+        # Add a blank line between endpoints
+        print()
+
+
 def start_server(args):
+    # Dynamically import these only when needed
+    from langchain_cli.cli import serve
+    from app.utils.langchain_validation_util import validate_langchain_vars
+    
+    validate_langchain_vars()
+    
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     # Override the default server location from 127.0.0.1 to 0.0.0.0
     # This allows the server to be accessible from other machines on the network
@@ -114,9 +197,17 @@ def start_server(args):
         # Pre-initialize the model to catch any credential issues before starting the server
         logger.info("Performing initial authentication check...")
         try:
-            # Try to initialize the model before starting the server
-            ModelManager.initialize_model()
+            # Set an environment variable to indicate we've already checked auth
+            # This will be used by ModelManager to avoid duplicate initialization
+            os.environ["ZIYA_AUTH_CHECKED"] = "true"
+            os.environ["ZIYA_PARENT_AUTH_COMPLETE"] = "true"
+            
+            # Skip model initialization completely - we'll initialize on demand
+            # This avoids the double initialization issue
             logger.info("Authentication successful, starting server...")
+            
+            # Pass the environment variable to child processes
+            os.environ["ZIYA_SKIP_INIT"] = "true"
             serve(host="0.0.0.0", port=args.port)
         except ValueError as e:
             logger.error(f"\n{str(e)}")
@@ -130,10 +221,16 @@ def start_server(args):
         logger.error(f"Failed to start server: {str(e)}")
         sys.exit(1)
 
+
 def check_auth(args):
     """Check authentication setup without starting the server."""
+    # Set up environment variables first
+    setup_environment(args)
+    
+    # Only import ModelManager when we actually need to check auth
+    from app.agents.models import ModelManager
+    
     try:
-        setup_environment(args)
         # Only initialize if not already done
         if not ModelManager._state['auth_checked'] or ModelManager._state['process_id'] != os.getpid():
             model = ModelManager.initialize_model()
@@ -148,12 +245,37 @@ def check_auth(args):
 
 
 def main():
+    # Check for version flag first to avoid unnecessary imports
+    if "--version" in sys.argv:
+        print_version()
+        return
+    
+    # Check for list-models flag to avoid unnecessary imports
+    if "--list-models" in sys.argv:
+        print_models()
+        return
+        
+    # Check for fbuild command to avoid unnecessary imports
+    command_name = sys.argv[0].split('/')[-1] if '/' in sys.argv[0] else sys.argv[0]
+    if command_name == 'fbuild':
+        return
+    
     args = parse_arguments()
 
+    # Handle version flag - just print version and exit immediately
     if args.version:
         print_version()
         return
+    
+    # Handle list-models flag - print models and exit immediately
+    if args.list_models:
+        print_models()
+        return
 
+    # Set up environment variables for remaining commands
+    setup_environment(args)
+    
+    # Handle check_auth command
     if args.check_auth:
         success = check_auth(args)
         sys.exit(0 if success else 1)
@@ -164,8 +286,7 @@ def main():
     except Exception as e:
         logger.error(f"Error checking version: {e}")
         logger.warning("Continuing with current version...")
-    validate_langchain_vars()
-    setup_environment(args)
+    
     start_server(args)
 
 

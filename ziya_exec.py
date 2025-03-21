@@ -2,8 +2,7 @@ import threading
 import subprocess
 import signal
 import sys
-
-from app.main import main
+import os
 
 
 def frontend_start():
@@ -19,7 +18,15 @@ def frontend_build():
 
 
 def ziya():
-    # frontend_build()
+    # Check for version flag first to avoid importing main
+    if "--version" in sys.argv:
+        # Use direct import of version utility to avoid loading the full app
+        from app.utils.version_util import get_current_version
+        print(f"Ziya version {get_current_version()}")
+        return
+        
+    # Only import main when needed
+    from app.main import main
     main()
 
 
@@ -34,7 +41,9 @@ def dev():
 
     frontend_thread.start()
     try:
-        print("Camme to main")
+        # Only import main when needed
+        from app.main import main
+        print("Came to main")
         main()
     except KeyboardInterrupt:
         print("Main process interrupted.")

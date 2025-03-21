@@ -177,12 +177,30 @@ class RetryingChatBedrock(Runnable):
 
     def bind(self, **kwargs):
         # Filter kwargs to only include supported parameters for the current model
-        model_config = ModelManager.get_model_config(
-            os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT),
-            os.environ.get("ZIYA_MODEL")
-        )
-        supported_kwargs = ModelManager.filter_model_kwargs(kwargs, model_config)
-        logger.info(f"Binding with filtered kwargs: {supported_kwargs}")
+        # For Claude models, we need to handle binding differently
+        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
+        model_name = os.environ.get("ZIYA_MODEL")
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+        model_id = model_config.get("model_id", model_name)
+        
+        # For Claude models, we need to be careful with certain parameters
+        if model_id and "claude" in model_id.lower():
+            # Filter out unsupported parameters for Claude models
+            supported_kwargs = {}
+            for key, value in kwargs.items():
+                if key != "stop":  # Claude doesn't support stop parameter in this context
+                    supported_kwargs[key] = value
+            
+            # Only log this once per process
+            if not hasattr(self.__class__, '_binding_logged'):
+                logger.info(f"Binding with filtered kwargs for Claude model: {supported_kwargs}")
+                self.__class__._binding_logged = True
+        else:
+            supported_kwargs = kwargs
+            if not hasattr(self.__class__, '_binding_logged'):
+                logger.info(f"Binding with kwargs: {supported_kwargs}")
+                self.__class__._binding_logged = True
+            
         return RetryingChatBedrock(self.model.bind(**supported_kwargs))
 
     def get_num_tokens(self, text: str) -> int:
@@ -213,9 +231,17 @@ class RetryingChatBedrock(Runnable):
         if retry_after:
             error_message["retry_after"] = retry_after
             
-        logger.info(f"Handling stream error with AIMessageChunk: {error_message}")
-        yield AIMessageChunk(content=json.dumps(error_message))
-        yield AIMessageChunk(content="[DONE]")
+        logger.info(f"[ERROR_SSE] Preparing error message: {error_message}")
+        
+        # Format as proper SSE message
+        sse_message = f"data: {json.dumps(error_message)}\n\n"
+        logger.info(f"[ERROR_SSE] Sending error SSE message: {sse_message}")
+        yield AIMessageChunk(content=sse_message)
+        
+        # Send DONE marker as proper SSE message
+        done_message = "data: [DONE]\n\n"
+        logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
+        yield AIMessageChunk(content=done_message)
         return
 
     def _prepare_input(self, input: Any) -> Dict:
@@ -247,9 +273,17 @@ class RetryingChatBedrock(Runnable):
         if retry_after:
             error_message["retry_after"] = retry_after
             
-        logger.info(f"Handling validation error with AIMessageChunk: {error_message}")
-        yield AIMessageChunk(content=json.dumps(error_message))
-        yield AIMessageChunk(content="[DONE]")
+        logger.info(f"[ERROR_SSE] Preparing validation error message: {error_message}")
+        
+        # Format as proper SSE message
+        sse_message = f"data: {json.dumps(error_message)}\n\n"
+        logger.info(f"[ERROR_SSE] Sending validation error SSE message: {sse_message}")
+        yield AIMessageChunk(content=sse_message)
+        
+        # Send DONE marker as proper SSE message
+        done_message = "data: [DONE]\n\n"
+        logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
+        yield AIMessageChunk(content=done_message)
         return
     def _is_streaming(self, func) -> bool:
         """Check if this is a streaming operation."""
@@ -346,6 +380,10 @@ class RetryingChatBedrock(Runnable):
         """Stream responses with retries and proper message formatting."""
         max_retries = 3
         base_retry_delay = 1
+        
+        # Add AWS credential debugging
+        from app.utils.aws_utils import debug_aws_credentials
+        debug_aws_credentials()
 
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1} of {max_retries}")
@@ -367,6 +405,22 @@ class RetryingChatBedrock(Runnable):
                     if not messages:
                         raise ValueError("No valid messages with content")
                     logger.debug(f"Filtered to {len(messages)} non-empty messages")
+                
+                # Debug the Bedrock client being used
+                if hasattr(self.model, 'client'):
+                    client = self.model.client
+                    logger.info(f"Bedrock client type: {type(client)}")
+                    if hasattr(client, '_request_signer'):
+                        logger.info("Client has request signer")
+                        signer = client._request_signer
+                        if hasattr(signer, 'credentials'):
+                            creds = signer.credentials
+                            logger.info(f"Signer credential type: {type(creds)}")
+                            if hasattr(creds, 'access_key'):
+                                logger.info(f"Signer access key ends with: {creds.access_key[-4:]}")
+                            if hasattr(creds, 'token') and creds.token:
+                                token_length = len(creds.token) if creds.token else 0
+                                logger.info(f"Signer has session token of length: {token_length}")
 
                 async for chunk in self.model.astream(messages, config, **kwargs):
                     if isinstance(chunk, AIMessageChunk):
@@ -376,10 +430,27 @@ class RetryingChatBedrock(Runnable):
                         yield chunk
 
                 break  # Success, exit retry loop
+                
+                # Re-raise the exception for the middleware to handle
+                raise
+                # Format as proper SSE message
+                sse_message = f"data: {error_json}\n\n"
+                logger.info(f"[ERROR_SSE] Sending throttling error message: {sse_message}")
+                yield AIMessageChunk(content=sse_message)
+                
+                # Send DONE marker
+                done_message = "data: [DONE]\n\n"
+                logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
+                yield AIMessageChunk(content=done_message)
+                return
 
             except ClientError as e:
                 error_str = str(e)
                 logger.warning(f"Bedrock client error: {error_str}")
+                
+                # Run credential debug again on error
+                logger.info("Running credential debug after error")
+                debug_aws_credentials()
                 
                 error_type, detail, status_code, retry_after = detect_error_type(error_str)
                 logger.info(f"Detected error type: {error_type}, status: {status_code}")
@@ -393,15 +464,53 @@ class RetryingChatBedrock(Runnable):
                 if retry_after:
                     error_message["retry_after"] = retry_after
                 
-                logger.info(f"Yielding error response: {error_message}")
-                # Use AIMessageChunk for proper SSE formatting
-                yield AIMessageChunk(content=json.dumps(error_message))
-                yield AIMessageChunk(content="[DONE]")
+                error_json = json.dumps(error_message)
+                logger.info(f"[ERROR_TRACE] Preparing error response JSON: {error_json}")
+                
+                # Format as proper SSE message
+                sse_message = f"data: {error_json}\n\n"
+                logger.info(f"[ERROR_SSE] Sending error SSE message: {sse_message}")
+                
+                # Log the exact message we're about to yield
+                logger.info("[ERROR_TRACE] About to yield AIMessageChunk with error content")
+                yield AIMessageChunk(content=sse_message)
+                logger.info("[ERROR_TRACE] Yielded error message")
+                
+                # Send DONE marker as proper SSE message
+                done_message = "data: [DONE]\n\n"
+                logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
+                yield AIMessageChunk(content=done_message)
+                logger.info("[ERROR_TRACE] Yielded DONE marker")
                 return
 
             except Exception as e:
                 error_str = str(e)
                 logger.warning(f"Error on attempt {attempt + 1}: {error_str}")
+
+                # Check if this is a throttling error wrapped in another exception
+                if "ThrottlingException" in error_str or "Too many requests" in error_str:
+                    logger.warning("Detected throttling error in exception")
+                    # Format error message for throttling
+                    error_message = {
+                        "error": "throttling_error",
+                        "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
+                        "status_code": 429,
+                        "retry_after": "5"
+                    }
+                    
+                    error_json = json.dumps(error_message)
+                    logger.info(f"[ERROR_TRACE] Preparing throttling error response: {error_json}")
+                    
+                    # Format as proper SSE message
+                    sse_message = f"data: {error_json}\n\n"
+                    logger.info(f"[ERROR_SSE] Sending throttling error message: {sse_message}")
+                    yield AIMessageChunk(content=sse_message)
+                    
+                    # Send DONE marker
+                    done_message = "data: [DONE]\n\n"
+                    logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
+                    yield AIMessageChunk(content=done_message)
+                    return
 
                 # Check if this is a Bedrock error that was wrapped in another exception
                 error_type, detail, status_code, retry_after = detect_error_type(error_str)
@@ -423,9 +532,13 @@ class RetryingChatBedrock(Runnable):
                     error_message["retry_after"] = retry_after
                 
                 logger.info(f"Yielding final error response: {error_message}")
-                # Use AIMessageChunk for proper SSE formatting
-                yield AIMessageChunk(content=json.dumps(error_message))
-                yield AIMessageChunk(content="[DONE]")
+                # Format as proper SSE message
+                sse_message = f"data: {json.dumps(error_message)}\n\n"
+                yield AIMessageChunk(content=sse_message)
+                
+                # Send DONE marker
+                done_message = "data: [DONE]\n\n"
+                yield AIMessageChunk(content=done_message)
                 return
 
     def _format_messages(self, input_messages: List[Any]) -> List[Dict[str, str]]:
@@ -479,12 +592,17 @@ class RetryingChatBedrock(Runnable):
 class LazyLoadedModel:
     def __init__(self):
         self._model = None
-        self._model_with_stop = None 
+        self._model_with_stop = None
+        self._binding_logged = False
  
     def get_model(self):
         """Get the underlying model instance"""
         if self._model is None:
-            self._model = RetryingChatBedrock(ModelManager.initialize_model())
+            # Initialize the model on first use
+            logger.info("Initializing model on first use")
+            from app.agents.models import ModelManager
+            model_instance = ModelManager.initialize_model(force_reinit=True)
+            self._model = RetryingChatBedrock(model_instance)
         return self._model
         
     def __call__(self):
@@ -496,6 +614,7 @@ class LazyLoadedModel:
         """Force a complete reset of the model instance"""
         self._model = None
         self._model_with_stop = None
+        self._binding_logged = False
  
     def bind(self, **kwargs):
         if self._model is None:

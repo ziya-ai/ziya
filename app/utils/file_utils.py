@@ -23,12 +23,12 @@ def is_binary_file(file_path: str) -> bool:
 
         # Check extension for known binary types
         if any(file_path.endswith(ext) for ext in BINARY_EXTENSIONS):
-            logger.debug(f"Detected binary file by extension: {file_path}")
             return True
             
         # Try to detect if file is binary by reading first few bytes
         with open(file_path, 'rb') as file:
             return b'\x00' in file.read(1024)
     except Exception as e:
+        # Only log at debug level for unusual errors
         logger.debug(f"Unable to process file {file_path}: {str(e)}")
         return False

@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import asyncio
 from typing import Dict, Any, List, Tuple, Optional, Union
 
 import tiktoken
@@ -12,44 +13,66 @@ from fastapi.templating import Jinja2Templates
 from langserve import add_routes
 from app.agents.agent import model, RetryingChatBedrock, initialize_langserve
 from app.agents.agent import agent, agent_executor, create_agent_chain, create_agent_executor
-from app.agents.agent import update_conversation_state, update_and_return
+from app.agents.agent import update_conversation_state, update_and_return, parse_output
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError 
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+
+# Import configuration
+import app.config as config
 from app.agents.models import ModelManager
 from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
 from botocore.exceptions import EventStreamError
 import botocore.errorfactory
 from starlette.responses import StreamingResponse
+from langchain_core.outputs import Generation
 
 # import pydevd_pycharm
 from google.api_core.exceptions import ResourceExhausted
 import uvicorn
 
 from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff
-from app.utils.code_util import PatchApplicationError, split_combined_diff
+from app.utils.code_util import PatchApplicationError, split_combined_diff, extract_target_file_from_diff
 from app.utils.directory_util import get_ignored_patterns
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
-from app.utils.error_handlers import create_json_response, create_sse_error_message
+from app.utils.error_handlers import (
+    create_json_response, create_sse_error_response, 
+    is_streaming_request, ValidationError, handle_request_exception,
+    handle_streaming_error
+)
+from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
 from app.middleware import RequestSizeMiddleware, ErrorHandlingMiddleware
 
-# Server configuration defaults
-DEFAULT_PORT = 6969
-# For model configurations, see app/agents/model.py
+# Use configuration from config module
+# For model configurations, see app/config.py
 
 class SetModelRequest(BaseModel):
     model_id: str
 
+class PatchRequest(BaseModel):
+    diff: str
+    file_path: Optional[str] = None
+    
+class FolderRequest(BaseModel):
+    directory: str
+    max_depth: int = 3
+    
+class FileRequest(BaseModel):
+    file_path: str
+    
+class FileContentRequest(BaseModel):
+    file_path: str
+    content: str
+
+# Create the FastAPI app
 app = FastAPI(
     title="Ziya API",
-    description="Code assistant API",
-    docs_url="/docs"
+    description="API for Ziya, a code assistant powered by LLMs",
+    version="0.1.0",
 )
 
-# Add middleware in the correct order
-app.add_middleware(ErrorHandlingMiddleware)  # Add our custom error handling middleware first
-
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -58,138 +81,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(RequestSizeMiddleware)
+# Add request size middleware
+app.add_middleware(
+    RequestSizeMiddleware,
+    default_max_size_mb=20  # 20MB
+)
 
+# Add error handling middleware
+app.add_middleware(ErrorHandlingMiddleware)
 
-@app.exception_handler(EventStreamError)
-async def eventstream_exception_handler(request: Request, exc: EventStreamError):
-    error_message = str(exc)
-    if "validationException" in error_message:
-        return JSONResponse(
-            status_code=413,  # Request Entity Too Large
-            headers={"Content-Type": "application/json"},
-            content={
-                "error": "validation_error",
-                "detail": "Selected content is too large for the model. Please reduce the number of files.",
-                "original_error": error_message
-            }
-        )
+# Get the directory of the current file
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
 
-async def handle_throttling_error(request: Request, exc: Exception) -> JSONResponse:
-    """Handle throttling errors with appropriate response"""
-    error_message = str(exc)
-    if "ThrottlingException" in error_message:
-        return JSONResponse(
-            status_code=429,  # Too Many Requests
-            content={
-               "error": "throttling_error",
-               "detail": "Too many requests. Please wait a moment before trying again.",
-               "retry_after": "5"  # Suggest retry after 5 seconds
-           }
-        )
-    # Handle other rate-limit related errors
-    if "RequestLimitExceeded" in error_message:
-        return JSONResponse(
-            status_code=429,
-            content={
-                "error": "rate_limit_exceeded",
-                "detail": "API rate limit exceeded. Please reduce request frequency.",
-                "retry_after": "10"  # Suggest longer retry for rate limits
-            }
-        )
+# Set up templates directory
+templates_dir = os.path.join(parent_dir, "templates")
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    if exc.status_code == 413:  # Entity Too Large
-        return JSONResponse(
-            status_code=413,
-            headers={"Content-Type": "application/json"},
-            content={
-                "error": "validation_error",
-                "detail": exc.detail
-            }
-        )
-    raise exc
-
-@app.exception_handler(CredentialRetrievalError)
-async def credential_exception_handler(request: Request, exc: CredentialRetrievalError):
-    # Pass through the original error message which may contain helpful authentication instructions
-    error_message = str(exc)
-    return JSONResponse(
-        status_code=401,
-        content={"detail": f"AWS credential error: {error_message}"},
-        headers={"WWW-Authenticate": "Bearer"}
-    )
-
-@app.exception_handler(botocore.exceptions.ClientError)
-async def boto_client_exception_handler(request: Request, exc: ClientError):
-    error_message = str(exc)
-    logger.info(f"Handling boto ClientError: {error_message}")
-    return create_json_response(error_message)
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    error_message = str(exc)
-    logger.error(f"General exception handler caught: {error_message}")
-    
-    # Special handling for Gemini empty text parameter error
-    if "Unable to submit request because it has an empty text parameter" in error_message:
-        logger.error("Caught empty text parameter error from Gemini")
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "validation_error",
-                "detail": "Empty message content detected. Please provide a question."
-            }
-        )
-    
-    # Special handling for Gemini token limit error
-    if isinstance(exc, ChatGoogleGenerativeAIError) and "token count" in error_message:
-        return JSONResponse(
-            status_code=413,
-            content={
-                "error": "validation_error",
-                "detail": "Selected content is too large for the model. Please reduce the number of files."
-            }
-        )
-    
-    # Handle EventStreamError and ExceptionGroup specially
-    try:
-        if isinstance(exc, EventStreamError):
-            return create_json_response(error_message)
-        elif isinstance(exc, ExceptionGroup):
-            # Handle nested exceptions
-            for e in exc.exceptions:
-                if isinstance(e, EventStreamError) or "ThrottlingException" in str(e) or "ExpiredTokenException" in str(e):
-                    return create_json_response(str(e))
-    except Exception as e:
-        logger.error(f"Error in exception handler: {str(e)}", exc_info=True)
-    
-    # Default handling for all other exceptions
-    return create_json_response(error_message)
-
-# Get the absolute path to the project root directory
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Define paths relative to project root
-static_dir = os.path.join(project_root, "templates", "static")
-testcases_dir = os.path.join(project_root, "tests", "frontend", "testcases")
-templates_dir = os.path.join(project_root, "templates")
-
-# Create directories if they don't exist
-os.makedirs(static_dir, exist_ok=True)
-os.makedirs(testcases_dir, exist_ok=True)
-os.makedirs(templates_dir, exist_ok=True)
-
-# Mount static files and templates
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-# Only mount testcases directory if it exists
-testcases_dir = "../tests/frontend/testcases"
-if os.path.exists(testcases_dir):
-    app.mount("/testcases", StaticFiles(directory=testcases_dir), name="testcases")
+# Mount templates/static if it exists (for frontend assets)
+templates_static_dir = os.path.join(templates_dir, "static")
+if os.path.exists(templates_static_dir) and os.path.isdir(templates_static_dir):
+    app.mount("/static", StaticFiles(directory=templates_static_dir), name="static")
+    logger.info(f"Mounted templates/static directory at /static")
 else:
-    logger.debug(f"Testcases directory '{testcases_dir}' does not exist - skipping mount")
+    logger.warning(f"Templates static directory '{templates_static_dir}' does not exist - frontend assets may not load correctly")
+
 
 templates = Jinja2Templates(directory=templates_dir)
 
@@ -197,53 +112,21 @@ templates = Jinja2Templates(directory=templates_dir)
 add_routes(app, agent_executor, disabled_endpoints=["playground"], path="/ziya")
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")
-async def stream_endpoint(body: dict):
-
-    # Debug logging
-    logger.info("Stream endpoint request body:")
-    logger.info(f"Question: '{body.get('question', 'EMPTY')}'")
-    logger.info(f"Chat history length: {len(body.get('chat_history', []))}")
-    logger.info(f"Files count: {len(body.get('config', {}).get('files', []))}")
-    logger.info(f"Question type: {type(body.get('question'))}")
-
-    # Log the first few files
-    if 'config' in body and 'files' in body['config']:
-        logger.info(f"First few files: {body['config']['files'][:5]}")
-
-    # Check if the question is empty or missing
-    if not body.get("question") or not body.get("question").strip():
-        logger.warning("Empty question detected, returning error response")
-        error_response = json.dumps({
-            "error": "validation_error",
-            "detail": "Please provide a question to continue."
-        })
-
-        # Return a properly formatted SSE response with the error
-        async def error_stream():
-            # Send the error message
-            yield f"data: {error_response}\n\n"
-            # Wait a moment to ensure the client receives it
-            await asyncio.sleep(0.1)
-            # Send an end message
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(
-            error_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache"}
-        )
+async def stream_endpoint(request: Request, body: dict):
+    """Stream endpoint with centralized error handling."""
     try:
-        # Check for empty question
+        # Debug logging
+        logger.info("Stream endpoint request body:")
+        logger.info(f"Question: '{body.get('question', 'EMPTY')}'")
+        logger.info(f"Chat history length: {len(body.get('chat_history', []))}")
+        logger.info(f"Files count: {len(body.get('config', {}).get('files', []))}")
+
+        # Check if the question is empty or missing
         if not body.get("question") or not body.get("question").strip():
-            logger.warning("Empty question detected in stream request")
-            # Return a friendly error message
-            return StreamingResponse(
-                iter([f'data: {json.dumps({"error": "validation_error", "detail": "Please enter a question"})}' + '\n\n']),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache"}
-            )
+            logger.warning("Empty question detected")
+            raise ValidationError("Please provide a question to continue.")
             
-        # Check for empty messages in chat history
+        # Clean chat history if present
         if "chat_history" in body:
             cleaned_history = []
             for pair in body["chat_history"]:
@@ -266,207 +149,62 @@ async def stream_endpoint(body: dict):
             
             logger.debug(f"Cleaned chat history from {len(body['chat_history'])} to {len(cleaned_history)} pairs")
             body["chat_history"] = cleaned_history
-            logger.debug(f"Cleaned chat history: {json.dumps(cleaned_history)}")
             
         logger.info("Starting stream endpoint with body size: %d", len(str(body)))
-        # Define the streaming response with proper error handling
-        async def error_handled_stream():
-            response = None
-            error_sent = False
-            try:
-                # Convert to ChatPromptValue before streaming
-                if isinstance(body, dict) and "messages" in body:
-                    from langchain_core.prompt_values import ChatPromptValue
-                    from langchain_core.messages import HumanMessage
-                    body["messages"] = [HumanMessage(content=msg) for msg in body["messages"]]
-                    body = ChatPromptValue(messages=body["messages"])
-                
-                # Create the iterator inside the error handling context
-                iterator = agent_executor.astream_log(body)
-                async for chunk in iterator:
-                    if isinstance(chunk, dict) and "error" in chunk:
-                        # Handle error responses from the model
-                        logger.warning(f"error response from model: {chunk}")
-                        yield f"data: {json.dumps(chunk)}\n\n"
-                        yield "data: [DONE]\n\n"
-                        error_sent = True
-                        return
-                    
-                    elif isinstance(chunk, Generation) and hasattr(chunk, 'text'):
-                        # Check if this is an error response from RetryingChatBedrock
-                        try:
-                            text = chunk.text
-                            # Try to parse as JSON to see if it's an error message
-                            if isinstance(text, str) and ('"error":' in text or '"status_code":' in text):
-                                try:
-                                    error_data = json.loads(text)
-                                    if isinstance(error_data, dict) and "error" in error_data:
-                                        logger.warning(f"Detected error in Generation: {error_data}")
-                                        yield f"data: {text}\n\n"
-                                        yield "data: [DONE]\n\n"
-                                        error_sent = True
-                                        update_and_return(body)
-                                        return
-                                except json.JSONDecodeError:
-                                    pass  # Not a valid JSON error message
-                        except Exception as e:
-                            logger.error(f"Error processing Generation: {e}")
-                        
-                        # Handle quota exceeded errors specifically
-                        if "quota_exceeded" in str(chunk.text):
-                            yield f"data: {json.dumps({'error': 'quota_exceeded', 'detail': 'API quota has been exceeded. Please try again in a few minutes.', 'status_code': 429})}\n\n"
-                            yield "data: [DONE]\n\n"
-                            update_and_return(body)
-                            return
-                    
-                    # Normal chunk processing
-                    try:
-                        # Parse and clean the chunk before sending
-                        parsed_chunk = parse_output(chunk)
-                        if parsed_chunk and parsed_chunk.return_values:
-                            cleaned_output = parsed_chunk.return_values.get("output", "")
-                            if cleaned_output:
-                                yield f"data: {cleaned_output}\n\n"
-                                continue
-                        
-                        # Fall back to original chunk if parsing fails
-                        chunk_content = chunk.content if hasattr(chunk, 'content') else str(chunk)
-                        yield f"data: {chunk_content}\n\n"
-                    except Exception as e:
-                        logger.error(f"Error processing chunk: {e}")
-                        continue
-
-            except EventStreamError as e:
-                if "validationException" in str(e) or "Input is too long" in str(e):
-                    logger.warning("Validation exception in stream", exc_info=True)
-                    error_msg = {
-                        "error": "validation_error",
-                        "detail": "Selected content is too large for the model. Please reduce the number of files.",
-                        "status_code": 413
-                    }
-                    yield f"data: {json.dumps(error_msg)}\n\n"
-                    yield "data: [DONE]\n\n"
-                    update_and_return(body)
-                    return
-                raise  # Re-raise other EventStreamError types
-
-            except ChatGoogleGenerativeAIError as e:
-                logger.warning("Google AI token limit error", exc_info=True)
-                if "token count" in str(e):
-                    error_msg = {
-                        "error": "validation_error",
-                        "detail": "Selected content is too large for the model. Please reduce the number of files.",
-                        "status_code": 413
-                    }
-                    yield f"data: {json.dumps(error_msg)}\n\n"
-                    yield "data: [DONE]\n\n"
-                    update_and_return(body)
-                    return
-                raise
-
-            except Exception as e:
-                logger.error(f"Caught exception in error_handled_stream: {str(e)}")
-                if not error_sent:
-                    error_type, detail, status_code, retry_after = detect_error_type(str(e))
-                    error_msg = {
-                        "error": error_type,
-                        "detail": detail,
-                        "status_code": status_code
-                    }
-                    if retry_after:
-                        error_msg["retry_after"] = retry_after
-                    yield f"data: {json.dumps(error_msg)}\n\n"
-                    yield "data: [DONE]\n\n"
-                update_and_return(body)
-                return
-                logger.warning("Google AI token limit error", exc_info=True)
-                if "token count" in str(e):
-                                error_msg = {
-                                    "error": "validation_error",
-                                    "detail": "Selected content is too large for the model. Please reduce the number of files."
-                                }
-                                yield f"data: {json.dumps(error_msg)}\n\n"
-                                update_and_return(body)
-                                await response.flush()
-                                return
-            except ResourceExhausted as e:
-                error_msg = {
-                    "error": "quota_exceeded",
-                    "detail": "API quota has been exceeded. Please try again in a few minutes.",
-                    "status_code": 429
-                }
-                yield f"data: {json.dumps(error_msg)}\n\n"
-                update_and_return(body)
-                logger.error(f"Resource exhausted error", exc_info=True)
-                return
-            except EventStreamError as e:
-                if "validationException" in str(e) or "Input is too long" in str(e):
-                    logger.warning("Input too long error detected", exc_info=True)
-                    error_msg = {
-                        "error": "validation_error",
-                        "detail": "Selected content is too large for the model. Please reduce the number of files.",
-                        "status_code": 413
-                    }
-                    # Send error message
-                    yield f"data: {json.dumps(error_msg)}\n\n"
-                    # Send end marker
-                    yield "data: [DONE]\n\n"
-                    update_and_return(body)
-                    return
-                raise  # Re-raise other EventStreamError types
-            except botocore.exceptions.ClientError as e:
-                error_message = str(e)
-                logger.error(f"Caught ClientError in error_handled_stream: {error_message}")
-                # Get formatted error response
-                error_type, detail, status_code, retry_after = detect_error_type(error_message)
-                error_msg = {
-                    "error": error_type,
-                    "detail": detail,
-                    "status_code": status_code
-                }
-                if retry_after:
-                    error_msg["retry_after"] = retry_after
-                # Send error message
-                yield f"data: {json.dumps(error_msg)}\n\n"
-                # Send end marker
-                yield "data: [DONE]\n\n"
-                update_and_return(body)
-                return
-            except Exception as e:
-                logger.error(f"Caught exception in error_handled_stream: {str(e)}")
-                if not error_sent:  # Only send error if we haven't sent one yet
-                    error_type, detail, status_code, retry_after = detect_error_type(str(e))
-                    error_msg = {
-                        "error": error_type,
-                        "detail": detail,
-                        "status_code": status_code
-                    }
-                    if retry_after:
-                        error_msg["retry_after"] = retry_after
-                    # Send error message
-                    yield f"data: {json.dumps(error_msg)}\n\n"
-                    # Send end marker
-                    yield "data: [DONE]\n\n"
-                    error_sent = True
-                update_and_return(body)
-                return
-            finally:
-                update_and_return(body)
         
+        # Convert to ChatPromptValue if needed
+        if isinstance(body, dict) and "messages" in body:
+            from langchain_core.prompt_values import ChatPromptValue
+            from langchain_core.messages import HumanMessage
+            body["messages"] = [HumanMessage(content=msg) for msg in body["messages"]]
+            body = ChatPromptValue(messages=body["messages"])
+        
+        # Return the streaming response
         return StreamingResponse(
-            error_handled_stream(),
+            stream_agent_response(body, request),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-        )
-    
-    except Exception as e:
-        logger.error(f"Error in stream endpoint: {str(e)}")
-        update_and_return(body)
-        return StreamingResponse(
-            iter([create_sse_error_message(str(e))]), 
-            media_type="text/event-stream", 
             headers={"Cache-Control": "no-cache"}
         )
+    except Exception as e:
+        # Handle any exceptions using the centralized error handler
+        logger.error(f"Exception in stream_endpoint: {str(e)}")
+        return handle_request_exception(request, e)
+
+async def stream_agent_response(body, request):
+    """Stream the agent's response with centralized error handling."""
+    try:
+        first_chunk = True
+        # Stream the response
+        async for chunk in agent_executor.astream_log(body):
+            # Process the chunk
+            try:
+                # Parse and clean the chunk before sending
+                parsed_chunk = parse_output(chunk)
+                if parsed_chunk and parsed_chunk.return_values:
+                    cleaned_output = parsed_chunk.return_values.get("output", "")
+                    if cleaned_output:
+                        first_chunk = False
+                        yield f"data: {cleaned_output}\n\n"
+                        continue
+                
+                # Fall back to original chunk if parsing fails
+                chunk_content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                first_chunk = False
+                yield f"data: {chunk_content}\n\n"
+            except Exception as e:
+                logger.error(f"Error processing chunk: {e}")
+                continue
+        
+        # Send the [DONE] marker
+        yield "data: [DONE]\n\n"
+        
+    except Exception as e:
+        # Use the centralized error handler for streaming errors
+        logger.error(f"Exception during streaming: {str(e)}")
+        
+        # Don't try to handle the error here, let the middleware handle it
+        # Just re-raise the exception so the middleware can catch it
+        raise
 
 @app.get("/")
 async def root(request: Request):
@@ -490,61 +228,255 @@ async def favicon():
 _folder_cache = {'timestamp': 0, 'data': None}
 
 def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
+    """
+    Get the folder structure of a directory with token counts.
+    
+    Args:
+        directory: The directory to get the structure of
+        ignored_patterns: Patterns to ignore
+        max_depth: Maximum depth to traverse
+        
+    Returns:
+        Dict with folder structure including token counts
+    """
+    from app.utils.file_utils import is_binary_file
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
-
+    encoding = tiktoken.get_encoding("cl100k_base")
+    
+    # Ensure max_depth is at least 15 if not specified
+    if max_depth <= 0:
+        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+    
+    logger.debug(f"Getting folder structure for {directory} with max depth {max_depth}")
+    
     def count_tokens(file_path: str) -> int:
+        """Count tokens in a file using tiktoken."""
         try:
-            # Skip binary files by extension
-            binary_extensions = {
-                '.pyc', '.pyo', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
-                '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
-                '.pyd', '.woff', '.woff2', '.ttf', '.eot'
-            }
-
-            if any(file_path.endswith(ext) for ext in binary_extensions):
-                logger.debug(f"Skipping binary file by extension: {file_path}")
+            # Skip binary files
+            if is_binary_file(file_path):
                 return 0
-
-            # Try to detect if file is binary by reading first few bytes
-            with open(file_path, 'rb') as file:
-                content_bytes = file.read(1024)
-                if b'\x00' in content_bytes:  # Binary file detection
-                    return 0
-
-            # If not binary, read as text
-            with open(file_path, 'r', encoding='utf-8') as file:
-                content = file.read()
-                return len(tiktoken.get_encoding("cl100k_base").encode(content))
-        except (UnicodeDecodeError, IOError) as e:
-            logger.debug(f"Skipping binary or unreadable file {file_path}: {str(e)}")
-            return 0 # Skip files that can't be read as text
-
-    def get_structure(current_dir: str, current_depth: int):
-        if current_depth > max_depth:
-            return None
-
-        current_structure = {}
-        for entry in os.listdir(current_dir):
-            if entry.startswith('.'):  # Skip hidden files/folders
+                
+            # Skip large files (>1MB)
+            if os.path.getsize(file_path) > 1024 * 1024:
+                return 0
+                
+            # Read file and count tokens
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                return len(encoding.encode(content))
+        except Exception as e:
+            logger.debug(f"Error counting tokens in {file_path}: {e}")
+            return 0
+    
+    def process_dir(path: str, depth: int) -> Dict[str, Any]:
+        """Process a directory recursively."""
+        if depth > max_depth:
+            return {'token_count': 0}
+            
+        result = {'token_count': 0, 'children': {}}
+        total_tokens = 0
+        
+        try:
+            entries = os.listdir(path)
+        except PermissionError:
+            logger.debug(f"Permission denied for {path}")
+            return {'token_count': 0}
+            
+        for entry in entries:
+            if entry.startswith('.'):  # Skip hidden files
                 continue
-            entry_path = os.path.join(current_dir, entry)
-            if os.path.islink(entry_path):  # Skip symbolic links
+                
+            entry_path = os.path.join(path, entry)
+            
+            if os.path.islink(entry_path):  # Skip symlinks
                 continue
+                
+            if should_ignore_fn(entry_path):  # Skip ignored files
+                continue
+                
             if os.path.isdir(entry_path):
-                if not should_ignore_fn(entry_path):
-                    sub_structure = get_structure(entry_path, current_depth + 1)
-                    if sub_structure is not None:
-                        token_count = sum(sub_structure[key]['token_count'] for key in sub_structure)
-                        current_structure[entry] = {'token_count': token_count, 'children': sub_structure}
-            else:
-                if not should_ignore_fn(entry_path):
-                    token_count = count_tokens(entry_path)
-                    current_structure[entry] = {'token_count': token_count}
+                if depth < max_depth:
+                    sub_result = process_dir(entry_path, depth + 1)
+                    if sub_result['token_count'] > 0 or sub_result.get('children'):
+                        result['children'][entry] = sub_result
+                        total_tokens += sub_result['token_count']
+            elif os.path.isfile(entry_path):
+                tokens = count_tokens(entry_path)
+                if tokens > 0:
+                    result['children'][entry] = {'token_count': tokens}
+                    total_tokens += tokens
+        
+        result['token_count'] = total_tokens
+        return result
+    
+    # Process the root directory
+    root_result = process_dir(directory, 1)
+    
+    # Return just the children of the root to match expected format
+    return root_result.get('children', {})
 
-        return current_structure
+@app.post("/folder")
+async def get_folder(request: FolderRequest):
+    """Get the folder structure of a directory."""
+    try:
+        # Get the ignored patterns
+        ignored_patterns = get_ignored_patterns(request.directory)
+        
+        # Use the max_depth from the request, but ensure it's at least 15 if not specified
+        max_depth = request.max_depth if request.max_depth > 0 else int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        logger.info(f"Using max depth for folder structure: {max_depth}")
+        
+        # Check if we have a cached result that's less than 5 seconds old
+        current_time = time.time()
+        if _folder_cache['timestamp'] > current_time - 5:
+            return _folder_cache['data']
+            
+        # Get the folder structure
+        result = get_folder_structure(request.directory, ignored_patterns, max_depth)
+        
+        # Cache the result
+        _folder_cache['timestamp'] = current_time
+        _folder_cache['data'] = result
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error in get_folder: {e}")
+        return {"error": str(e)}
 
-    folder_structure = get_structure(directory, 1)
-    return folder_structure
+@app.post("/file")
+async def get_file(request: FileRequest):
+    """Get the content of a file."""
+    try:
+        with open(request.file_path, 'r') as f:
+            content = f.read()
+        return {"content": content}
+    except Exception as e:
+        logger.error(f"Error in get_file: {e}")
+        return {"error": str(e)}
+
+@app.post("/save")
+async def save_file(request: FileContentRequest):
+    """Save content to a file."""
+    try:
+        with open(request.file_path, 'w') as f:
+            f.write(request.content)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Error in save_file: {e}")
+        return {"error": str(e)}
+
+@app.post("/apply_patch")
+async def apply_patch(request: PatchRequest):
+    """Apply a git diff to a file."""
+    try:
+        # If file_path is not provided, try to extract it from the diff
+        target_file = request.file_path
+        if not target_file:
+            target_file = extract_target_file_from_diff(request.diff)
+            
+        if not target_file:
+            return {"error": "Could not determine target file from diff"}
+            
+        # Apply the patch
+        result = use_git_to_apply_code_diff(request.diff, target_file)
+        return {"success": True, "result": result}
+    except PatchApplicationError as e:
+        logger.error(f"Error applying patch: {e}")
+        return {"error": str(e), "type": "patch_error"}
+    except Exception as e:
+        logger.error(f"Error in apply_patch: {e}")
+        return {"error": str(e)}
+
+@app.get('/api/available-models')
+def get_available_models():
+    """Get list of available models for the current endpoint."""
+    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+
+    try:
+        models = []
+        for name, config in ModelManager.MODEL_CONFIGS[endpoint].items():
+            models.append({
+                "id": config["model_id"],
+                "name": name,
+                "alias": name,
+                "display_name": f"{name} ({config['model_id']})"
+            })
+        return models
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Run the Ziya server")
+    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT, help="Port to run the server on")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to run the server on")
+    parser.add_argument("--model", type=str, default=None, help="Model to use")
+    parser.add_argument("--profile", type=str, default=None, help="AWS profile to use")
+    parser.add_argument("--region", type=str, default=None, help="AWS region to use")
+    
+    args = parser.parse_args()
+    
+    # Set the AWS profile if provided
+    if args.profile:
+        os.environ["AWS_PROFILE"] = args.profile
+        
+    # Set the AWS region if provided
+    if args.region:
+        os.environ["AWS_REGION"] = args.region
+        
+    # Initialize the model if provided
+    if args.model:
+        try:
+            ModelManager.initialize_model(args.model)
+        except Exception as e:
+            logger.error(f"Error initializing model: {e}")
+            
+    # Run the server
+    uvicorn.run(app, host=args.host, port=args.port)
+
+@app.get('/api/default-included-folders')
+
+@app.get('/api/current-model')
+def get_current_model():
+    """Get detailed information about the currently active model."""
+    try:
+        logger.info("Current model info request received")
+        
+        # Get model ID and endpoint
+        model_id = ModelManager.get_model_id(model)
+        endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
+        
+        # Get model settings through ModelManager
+        model_settings = ModelManager.get_model_settings(model)
+        
+        logger.info("Current model configuration:")
+        logger.info(f"  Model ID: {model_id}")
+        logger.info(f"  Endpoint: {endpoint}")
+        logger.info(f"  Settings: {model_settings}")
+        
+        # Return complete model information
+        return {
+            'model_id': model_id,
+            'endpoint': endpoint,
+            'settings': model_settings
+        }
+    except Exception as e:
+        logger.error(f"Error getting current model: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get current model: {str(e)}")
+
+@app.get('/api/model-id')
+def get_model_id():
+    if os.environ.get("ZIYA_ENDPOINT") == "google":
+        model_name = os.environ.get("ZIYA_MODEL", "gemini-pro")
+        return {'model_id': model_name}
+    elif os.environ.get("ZIYA_MODEL"):
+        return {'model_id': os.environ.get("ZIYA_MODEL")}
+    else:
+        # Bedrock
+        return {'model_id': ModelManager.get_model_id(model).split(':')[0].split('/')[-1]}
+
 
 def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     current_time = time.time()
@@ -558,101 +490,58 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
 
     return _folder_cache['data']
 
-@app.get("/api/folders")
-async def get_folders():
-    # pydevd_pycharm.settrace('localhost', port=59939, stdoutToServer=True, stderrToServer=True)
-    user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
-    max_depth = int(os.environ.get("ZIYA_MAX_DEPTH"))
-    ignored_patterns: List[Tuple[str, str]] = get_ignored_patterns(user_codebase_dir)
-    return get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+@app.get('/api/folders')
+async def api_get_folders():
+    """Get the folder structure for API compatibility."""
+    try:
+        user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
+        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH"))
+        ignored_patterns: List[Tuple[str, str]] = get_ignored_patterns(user_codebase_dir)
+        return get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+    except Exception as e:
+        logger.error(f"Error in api_get_folders: {e}")
+        return {"error": str(e)}
 
-@app.get('/api/default-included-folders')
-
-@app.get('/api/current-model')
-def get_current_model():
-    """Get detailed information about the currently active model."""
-    logger.info(
-        "Current model info request - Environment state: %s",
-        {   'model_id': ModelManager.get_model_id(model),
-            'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        })
-
-    # Get actual model settings
-    model_kwargs = {}
-    # Get model settings through ModelManager
-    model_kwargs = ModelManager.get_model_settings(model)
-
-    logger.info("Current model configuration:")
-    logger.info(f"  Model ID: {ModelManager.get_model_id(model)}")
-    logger.info(f"  Temperature: {model_kwargs.get('temperature', 'Not set')} (env: {os.environ.get('ZIYA_TEMPERATURE', 'Not set')})")
-    logger.info(f"  Top K: {model_kwargs.get('top_k', 'Not set')} (env: {os.environ.get('ZIYA_TOP_K', 'Not set')})")
-    logger.info(f"  Max tokens: {model_kwargs.get('max_tokens', 'Not set')} (env: {os.environ.get('ZIYA_MAX_OUTPUT_TOKENS', 'Not set')})")
-    logger.info(f"  Thinking mode: {os.environ.get('ZIYA_THINKING_MODE', 'Not set')}")
-        
-    return {
-        'model_id': ModelManager.get_model_id(model),
-        'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock"),
-        'settings': {
-            'temperature': model_kwargs.get('temperature', 
-                float(os.environ.get("ZIYA_TEMPERATURE", 0.3))),
-            'max_output_tokens': model_kwargs.get('max_tokens',
-                int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))),
-            'top_k': model_kwargs.get('top_k',
-                int(os.environ.get("ZIYA_TOP_K", 15))),
-            'thinking_mode': os.environ.get("ZIYA_THINKING_MODE") == "1"
-        }
-    }
-
-@app.get('/api/model-id')
-def get_model_id():
-    if os.environ.get("ZIYA_ENDPOINT") == "google":
-        model_name = os.environ.get("ZIYA_MODEL", "gemini-pro")
-        return {'model_id': model_name}
-    elif os.environ.get("ZIYA_MODEL"):
-        return {'model_id': os.environ.get("ZIYA_MODEL")}
-    else:
-        # Bedrock
-        return {'model_id': ModelManager.get_model_id(model).split(':')[0].split('/')[-1]}
-        
 @app.post('/api/set-model')
 async def set_model(request: SetModelRequest):
     """Set the active model for the current endpoint."""
     try:
         model_id = request.model_id
         logger.info(f"Received model change request: {model_id}")
-        
+
         if not model_id:
             logger.error("Empty model ID provided")
             raise HTTPException(status_code=400, detail="Model ID is required")
-        
+
         # Get current endpoint
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         current_model = os.environ.get("ZIYA_MODEL")
-        
+
         logger.info(f"Current state - Endpoint: {endpoint}, Model: {current_model}")
-        
+
         # If we received a full model ID, try to find its alias
         found_alias = None
-        for alias, config in ModelManager.MODEL_CONFIGS[endpoint].items():
-            if config['model_id'] == model_id or alias == model_id:
+        for alias, model_config_item in ModelManager.MODEL_CONFIGS[endpoint].items():
+            if model_config_item['model_id'] == model_id or alias == model_id:
                 found_alias = alias
                 break
-        
+
         if not found_alias:
+            logger.error(f"Invalid model identifier: {model_id}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid model identifier: {model_id}. Valid models are: "
                        f"{', '.join(ModelManager.MODEL_CONFIGS[endpoint].keys())}"
             )
-        
+
         # If model hasn't actually changed, return early
         if found_alias == current_model:
             logger.info(f"Model {found_alias} is already active, no change needed")
             return {"status": "success", "model": found_alias, "changed": False}
-        
+
         # Update environment variable
         logger.info(f"Setting model to: {found_alias}")
-        
+
         # Reinitialize all model related state
         old_state = {
             'model_id': os.environ.get("ZIYA_MODEL"),
@@ -660,22 +549,29 @@ async def set_model(request: SetModelRequest):
             'current_model_id': ModelManager._state.get('current_model_id')
         }
         logger.info(f"Saved old state: {old_state}")
-        
+
         try:
             logger.info(f"Reinitializing model with alias: {found_alias}")
             ModelManager._reset_state()
             logger.info(f"State after reset: {ModelManager._state}")
-            
+
             # Set the new model in environment
             os.environ["ZIYA_MODEL"] = found_alias
             logger.info(f"Set ZIYA_MODEL environment variable to: {found_alias}")
-            
+
             # Reinitialize with agent
-            new_model = ModelManager.initialize_model(force_reinit=True)
-            
+            try:
+                new_model = ModelManager.initialize_model(force_reinit=True)
+                logger.info(f"Model initialization successful: {type(new_model)}")
+            except Exception as model_init_error:
+                logger.error(f"Model initialization failed: {str(model_init_error)}", exc_info=True)
+                raise model_init_error
+
             # Verify the model was actually changed by checking the model ID and updating global references
             expected_model_id = ModelManager.MODEL_CONFIGS[endpoint][found_alias]['model_id']
             actual_model_id = ModelManager.get_model_id(new_model)
+            logger.info(f"Model ID verification - Expected: {expected_model_id}, Actual: {actual_model_id}")
+            
             if actual_model_id != expected_model_id:
                 logger.error(f"Model initialization failed - expected ID: {expected_model_id}, got: {actual_model_id}")
                 # Restore previous state
@@ -694,13 +590,22 @@ async def set_model(request: SetModelRequest):
             global agent_executor
 
             # Recreate agent chain and executor with new model
-            agent = create_agent_chain(new_model)
-            agent_executor = create_agent_executor(agent)
+            try:
+                agent = create_agent_chain(new_model)
+                agent_executor = create_agent_executor(agent)
+                logger.info("Created new agent chain and executor")
+            except Exception as agent_error:
+                logger.error(f"Failed to create agent: {str(agent_error)}", exc_info=True)
+                raise agent_error
 
-            logger.info("Created new agent chain and executor")
             # Reinitialize langserve routes with new agent_executor
-            initialize_langserve(app, agent_executor)
-            
+            try:
+                initialize_langserve(app, agent_executor)
+                logger.info("Reinitialized langserve routes")
+            except Exception as langserve_error:
+                logger.error(f"Failed to initialize langserve: {str(langserve_error)}", exc_info=True)
+                raise langserve_error
+
             # Return success response
             return {
                 "status": "success",
@@ -708,16 +613,15 @@ async def set_model(request: SetModelRequest):
                 "changed": True,
                 "message": "Model and routes successfully updated"
             }
-            
+
         except ValueError as e:
-            logger.error(f"Model initialization error: {str(e)}")
+            logger.error(f"Model initialization error: {str(e)}", exc_info=True)
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            logger.error(f"Failed to initialize model {found_alias}: {str(e)}")
+            logger.error(f"Failed to initialize model {found_alias}: {str(e)}", exc_info=True)
             # Restore previous state
-            logger.error("Exception details:", exc_info=True)
             logger.info(f"Restoring previous state: {old_state}")
-            
+
             os.environ["ZIYA_MODEL"] = old_state['model_id'] if old_state['model_id'] else ModelManager.DEFAULT_MODELS["bedrock"]
             if old_state['model']:
                 ModelManager._state.update(old_state)
@@ -727,27 +631,10 @@ async def set_model(request: SetModelRequest):
                 status_code=500,
                 detail=f"Failed to initialize model {found_alias}: {str(e)}"
             )
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get('/api/available-models')
-def get_available_models():
-    """Get list of available models for the current endpoint."""
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-    
-    try:
-        models = []
-        for name, config in ModelManager.MODEL_CONFIGS[endpoint].items():
-            models.append({
-                "id": config["model_id"],
-                "name": name,
-                "alias": name,
-                "display_name": f"{name} ({config['model_id']})"
-            })
-        return models
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in set_model: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to change model: {str(e)}")
 
 @app.get('/api/model-capabilities')
 def get_model_capabilities(model: str = None):
@@ -756,7 +643,7 @@ def get_model_capabilities(model: str = None):
     # If model parameter is provided, get capabilities for that model
     # Otherwise use current model
     model_alias = None
-    
+
     if model:
         # Convert model ID to alias if needed
         if model.startswith('us.anthropic.'):
@@ -770,7 +657,7 @@ def get_model_capabilities(model: str = None):
             model_alias = model
     else:
         model_alias = os.environ.get("ZIYA_MODEL")
-    
+
     try:
         model_config = ModelManager.get_model_config(endpoint, model_alias)
         capabilities = {
@@ -866,14 +753,14 @@ async def update_model_settings(settings: ModelSettingsRequest):
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         model_name = os.environ.get("ZIYA_MODEL")
         model_config = ModelManager.get_model_config(endpoint, model_name)
-        
+
         # Store all settings in environment variables with ZIYA_ prefix
         for key, value in settings.dict().items():
             if value is not None:  # Only set if value is provided
                 env_key = f"ZIYA_{key.upper()}"
                 os.environ[env_key] = str(value)
                 logger.info(f"  Set {env_key}={value}")
-        
+
         # Create a kwargs dictionary with all settings
         model_kwargs = {}
         # Map settings to model parameter names
@@ -881,19 +768,25 @@ async def update_model_settings(settings: ModelSettingsRequest):
             'temperature': 'temperature',
             'top_k': 'top_k',
             'max_output_tokens': 'max_tokens',
-            'max_input_tokens': 'max_input_tokens',
-            # Add more mappings as needed
+            # Only include max_input_tokens if the model supports it
+            # This will be filtered by filter_model_kwargs if not supported
         }
-        
+
         for setting_name, param_name in param_mapping.items():
             value = getattr(settings, setting_name, None)
             if value is not None:
                 model_kwargs[param_name] = value
-            
+                
+        # Only add max_input_tokens if the model supports it
+        if model_config.get('supports_max_input_tokens', False):
+            max_input_tokens = getattr(settings, 'max_input_tokens', None)
+            if max_input_tokens is not None:
+                model_kwargs['max_input_tokens'] = max_input_tokens
+
         # Filter kwargs to only include supported parameters
         filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
         logger.info(f"Filtered model kwargs: {filtered_kwargs}")
-            
+
         # Update the model's kwargs directly
         if hasattr(model, 'model'):
             # For wrapped models (e.g., RetryingChatBedrock)
@@ -970,7 +863,7 @@ async def apply_changes(request: ApplyChangesRequest):
         else:
             logger.info("Single diff found")
             target_diff = individual_diffs[0]
-            
+
         request.diff = target_diff
         logger.info(f"Using diff for {request.filePath}")
 
@@ -1011,7 +904,7 @@ async def apply_changes(request: ApplyChangesRequest):
                     status_code = 500  # Internal Server Error
                 else:
                     status_code = 422  # Unprocessable Entity
-                
+
                 # Format error response based on whether we have multiple failures
                 error_content = {
                     'status': 'error',
@@ -1021,7 +914,7 @@ async def apply_changes(request: ApplyChangesRequest):
                     error_content['failures'] = details['failures']
                 else:
                     error_content['details'] = details
-                
+
                 raise HTTPException(status_code=status_code, detail={
                     'status': 'error',
                     **error_content
@@ -1035,5 +928,4 @@ async def apply_changes(request: ApplyChangesRequest):
             }
         )
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=DEFAULT_PORT)
+

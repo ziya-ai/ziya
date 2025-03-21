@@ -10,7 +10,7 @@ def get_logger():
    # Remove any existing handlers
    logger.handlers.clear()
 
-   formatter = logging.Formatter("\033[35mZIYA\033[0m:     %(message)s")
+   formatter = logging.Formatter("\033[35mZIYA\033[0m: %(levelname)-8s %(message)s")
    handler = logging.StreamHandler()
    handler.setFormatter(formatter)
    logger.addHandler(handler)
