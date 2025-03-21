@@ -901,7 +901,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     for h in hunks:
         hunk_applied = False
         # Check if this hunk is already applied anywhere in the file
-        for pos in range(len(stripped_original)):
+        for pos in range(len(stripped_original) + 1):  # +1 to allow checking at EOF
             if is_hunk_already_applied(stripped_original, h, pos):
                 hunk_applied = True
                 break
@@ -912,6 +912,33 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     if all_already_applied:
         logger.info("All hunks already applied, returning original content")
         return original_lines
+
+    # Special case for multi-hunk changes to the same function
+    # We need to apply all hunks at once to avoid conflicts
+    if len(hunks) > 1:
+        # Check if hunks are modifying the same function
+        same_function = True
+        for i in range(1, len(hunks)):
+            if hunks[i]['old_start'] - hunks[i-1]['old_start'] < 10:  # Arbitrary threshold
+                same_function = True
+                break
+        
+        if same_function:
+            logger.info("Detected multiple hunks modifying the same function, applying all at once")
+            # Create a new file with all hunks applied
+            result = stripped_original.copy()
+            
+            # Apply hunks in reverse order to avoid position shifts
+            for hunk in reversed(hunks):
+                old_start = hunk['old_start'] - 1  # Convert to 0-based
+                old_count = len(hunk['old_block'])
+                
+                # Replace the content
+                if old_start < len(result):
+                    result[old_start:old_start + old_count] = hunk['new_lines']
+            
+            # Return with proper line endings
+            return [line if line.endswith('\n') else line + '\n' for line in result]
 
     # For first line replacement, we need a completely different approach
     # This is a general solution for any diff that modifies the first line
@@ -977,7 +1004,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             end_remove = initial_remove_pos + actual_old_count
 
             # Final position adjustment
-            remove_pos = clamp(initial_remove_pos, 0, len(stripped_original) - 1)
+            remove_pos = clamp(initial_remove_pos, 0, len(stripped_original) - 1 if stripped_original else 0)
 
             return {
                 'remove_pos': remove_pos,
@@ -1097,7 +1124,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         logger.debug(f"New lines: {h['new_lines']}")
         logger.debug(f"Remove position: {remove_pos}")
         logger.debug(f"Final lines length: {len(final_lines)}")
-        net_change = len(h['new_lines']) - positions['actual_old_count']
+        net_change = len(h['new_lines']) - actual_removed
         offset += net_change
 
     # If we had any failures, raise an error with all failure details
@@ -1132,7 +1159,8 @@ def strip_leading_dotslash(rel_path: str) -> str:
 
 def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[dict]:
     """
-    Same logic: we gather old_block and new_lines. If we can't parse anything, we return an empty list.
+    Parse a unified diff format and extract hunks with their content.
+    If we can't parse anything, we return an empty list.
     The calling code might handle that or raise an error if no hunks are found.
     
     This version handles embedded diff markers correctly by using a more robust parsing approach.
@@ -1160,8 +1188,11 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
             continue
 
         if line.startswith(('--- ', '+++ ')):
-            i += 1
-            continue
+            # Skip diff header lines, but only outside of hunks
+            # This is important for handling embedded diff markers in content
+            if not in_hunk:
+                i += 1
+                continue
 
         # Handle index lines and other git metadata
         if line.startswith('index ') or line.startswith('new file mode ') or line.startswith('deleted file mode '):
@@ -1233,6 +1264,10 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
                 # Skip lines starting with '\'
 
         i += 1
+    
+    # Sort hunks by old_start to ensure they're processed in the correct order
+    hunks.sort(key=lambda h: h['old_start'])
+    
     return hunks
 
 def find_best_chunk_position(file_lines: list[str], old_block: list[str], approximate_line: int) -> tuple[int, float]:
