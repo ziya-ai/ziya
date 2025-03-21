@@ -37,6 +37,20 @@ from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
 from langchain_core.messages import HumanMessage
 
+# Import configuration from the central config module
+import app.config as config
+
+class EmptyMessageFilter(BaseCallbackHandler):
+    """Filter out empty messages before they reach the model."""
+    
+    def on_chat_model_start(self, *args, **kwargs):
+        messages = kwargs.get('messages', [])
+        if not messages:
+            raise ValueError("No messages provided")
+        for message in messages:
+            if not message.content or not message.content.strip():
+                raise ValueError("Empty message content detected")
+
 class ModelManager:
     """Manages model initialization and configuration."""
     
