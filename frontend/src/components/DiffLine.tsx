@@ -10,6 +10,7 @@ interface DiffLineProps {
     newLineNumber?: number;
     viewType: 'unified' | 'split';
     showLineNumbers?: boolean;
+    similarity?: number;
 }
 
 interface WhitespaceMatch {
@@ -159,7 +160,7 @@ const compareLines = (line1: string, line2: string): boolean => {
     return true;
 }
 
-export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, oldLineNumber, newLineNumber, showLineNumbers, viewType }) => {
+export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, oldLineNumber, newLineNumber, showLineNumbers, viewType, similarity }) => {
     const [highlighted, setHighlighted] = useState(content);
     const [isLoading, setIsLoading] = useState(true);
     const { isDarkMode } = useTheme();
