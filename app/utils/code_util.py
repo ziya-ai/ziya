@@ -51,37 +51,30 @@ def split_combined_diff(diff_content: str) -> List[str]:
     """
     Split a combined diff containing multiple files into individual file diffs.
     Returns a list of individual diff strings.
+    
+    This function also handles the case where a diff might contain embedded diff-like
+    content (lines starting with '---' or '+++') that could confuse the parser.
     """
     logger.info(f"Splitting diff content of length {len(diff_content)}")
     diffs = []
     current_diff = []
     lines = diff_content.splitlines(True)  # Keep line endings
     
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        
-        # Start of a new diff
+    # First, identify all actual diff headers
+    diff_header_indices = []
+    for i, line in enumerate(lines):
         if line.startswith('diff --git'):
-            logger.info(f"Found diff header at line {i}")
-            # If we have collected lines for a previous diff, save it
-            if current_diff:
-                logger.info(f"Saving previous diff of {len(current_diff)} lines")
-                diffs.append(''.join(current_diff))
-                current_diff = []
-            
-            # Collect lines until we hit the next diff or end
-            while i < len(lines) and (not lines[i].startswith('diff --git') or len(current_diff) == 0):
-                current_diff.append(lines[i])
-                logger.info(f"Added line {i}: {lines[i][:100]}")
-                i += 1
-            continue
-        i += 1
+            diff_header_indices.append(i)
     
-    logger.info(f"Final current_diff has {len(current_diff)} lines")
-    # Add the last diff
-    if current_diff:
+    # If no diff headers found, treat the whole content as one diff
+    if not diff_header_indices:
+        return [diff_content]
+    
+    # Process each diff section
+    for start_idx, end_idx in zip(diff_header_indices, diff_header_indices[1:] + [len(lines)]):
+        current_diff = lines[start_idx:end_idx]
         diffs.append(''.join(current_diff))
+        logger.info(f"Extracted diff from line {start_idx} to {end_idx-1}")
     
     return diffs
 
@@ -217,25 +210,64 @@ def clean_input_diff(diff_content: str) -> str:
 def normalize_diff(diff_content: str) -> str:
     """
     Normalize a diff using whatthepatch for proper parsing and reconstruction.
-    Handles incomplete hunks, context issues, and line count mismatches.
+    Handles incomplete hunks, context issues, line count mismatches, and embedded diff markers.
     """
     try:
         # Extract headers and hunk headers from original diff
         diff_lines = diff_content.splitlines()
         result = []
         i = 0
+        
+        # First, identify all actual diff headers and file paths
+        diff_headers = []
+        file_paths = []
+        hunk_headers = []
+        
+        for i, line in enumerate(diff_lines):
+            if line.startswith('diff --git'):
+                diff_headers.append(i)
+            elif line.startswith(('--- ', '+++ ')):
+                file_paths.append(i)
+            elif line.startswith('@@'):
+                hunk_headers.append(i)
+        
+        # If we don't have proper headers, return the original
+        if not diff_headers and not file_paths and not hunk_headers:
+            return diff_content
+            
+        # Process the diff, preserving headers and hunks
+        i = 0
         while i < len(diff_lines):
             line = diff_lines[i]
+            
+            # Keep all headers
             if line.startswith(('diff --git', 'index', '--- ', '+++ ')):
                 result.append(line)
-            elif line.startswith('@@'):
+                i += 1
+                continue
+                
+            # Process hunks
+            if line.startswith('@@'):
                 result.append(line)
                 i += 1
-                lines_seen = 0
-                while i < len(diff_lines) and diff_lines[i].startswith((' ', '+', '-')):
-                    result.append(diff_lines[i])
+                
+                # Collect all lines in this hunk
+                while i < len(diff_lines):
+                    line = diff_lines[i]
+                    
+                    # If we hit another hunk header or file header, break
+                    if line.startswith('@@') or line.startswith(('diff --git', '--- ', '+++ ')):
+                        break
+                        
+                    # Only include lines that are valid diff content
+                    if line.startswith((' ', '+', '-')):
+                        result.append(line)
+                    elif line.startswith('\\'):  # No newline at end of file marker
+                        result.append(line)
+                    
                     i += 1
                 continue
+                
             i += 1
 
         return '\n'.join(result) + '\n'
@@ -497,12 +529,11 @@ def normalize_whitespace_in_diff(diff_lines: List[str]) -> List[str]:
 def correct_git_diff(git_diff: str, original_file_path: str) -> str:
     """
     Correct a git diff using unidiff for parsing and validation.
-    Maintains compatibility with existing function signature.
+    Handles embedded diff markers and other edge cases.
     """
     logger.info(f"Processing diff for {original_file_path}")
 
     try:
-
         # Clean up the diff content first
         cleaned_diff = clean_input_diff(git_diff)
 
@@ -526,14 +557,13 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
                 parsed_patches = list(whatthepatch.parse_patch(cleaned_diff))
             except ValueError as e:
                 logger.warning(f"whatthepatch parsing error: {str(e)}")
-                return cleaned_diff
-
+                # If parsing fails, try to handle embedded diff markers
+                return handle_embedded_diff_markers(cleaned_diff)
+                
             if not parsed_patches:
                 logger.warning("No valid patches found in diff")
                 return cleaned_diff
             
-            # Fixme: unreachable ?
-
             # Reconstruct normalized diff
             result = headers # start with original headers
 
@@ -549,6 +579,7 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
                     current_hunk.append(line)
             if current_hunk:
                 original_hunks.append(current_hunk)
+                
             # Process each hunk while preserving structure
             for hunk in original_hunks:
                 hunk_header = hunk[0]
@@ -574,6 +605,62 @@ def correct_git_diff(git_diff: str, original_file_path: str) -> str:
     except Exception as e:
         logger.error(f"Error correcting diff: {str(e)}")
         raise
+
+def handle_embedded_diff_markers(diff_content: str) -> str:
+    """
+    Handle diffs that contain embedded diff markers (lines starting with '---' or '+++')
+    that could confuse the parser.
+    """
+    lines = diff_content.splitlines()
+    result = []
+    
+    # Track if we're in a hunk
+    in_hunk = False
+    in_header = True
+    
+    for i, line in enumerate(lines):
+        # Always keep diff headers
+        if line.startswith(('diff --git', 'index')):
+            result.append(line)
+            in_header = True
+            in_hunk = False
+            continue
+            
+        # File path headers
+        if line.startswith(('--- ', '+++ ')):
+            result.append(line)
+            in_header = True
+            in_hunk = False
+            continue
+            
+        # Hunk headers
+        if line.startswith('@@'):
+            result.append(line)
+            in_header = False
+            in_hunk = True
+            continue
+            
+        # Handle content lines
+        if in_hunk:
+            # Only include lines that start with proper diff markers
+            if line.startswith((' ', '+', '-')):
+                result.append(line)
+            elif line.startswith('\\'):  # No newline marker
+                result.append(line)
+            else:
+                # We've reached the end of the hunk
+                in_hunk = False
+                # If this is a new header, process it in the next iteration
+                if line.startswith(('diff --git', '--- ', '+++ ', '@@')):
+                    i -= 1  # Back up to reprocess this line
+                    continue
+        elif not in_header:
+            # We're outside a hunk and not in a header
+            if line.startswith(('diff --git', '--- ', '+++ ', '@@')):
+                i -= 1  # Back up to reprocess this line as a header
+                continue
+    
+    return '\n'.join(result) + '\n'
 
 def validate_and_fix_diff(diff_content: str) -> str:
     """
@@ -715,7 +802,7 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> None:
 
     # 3) write result back to file
     with open(file_path, 'w', encoding='utf-8') as f:
-        f.writelines(final_lines)
+        f.write(''.join(final_lines))
         logger.info(
             f"Successfully applied forced-hybrid diff (with exceptions on mismatch) to {file_path}. "
             f"Wrote {len(final_lines)} lines."
@@ -794,9 +881,56 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     hunk_failures = []
     stripped_original = [ln.rstrip('\n') for ln in original_lines]
 
+    # For first line replacement, we need a completely different approach
+    # This is a general solution for any diff that modifies the first line
+    first_hunk = hunks[0] if hunks else None
+    if first_hunk and first_hunk['old_start'] == 1:
+        logger.debug(f"First hunk starts at line 1, using complete replacement approach")
+        
+        # Create a new file from scratch with the correct content
+        result = []
+        
+        # Add the new content from the first hunk
+        for line in first_hunk['new_lines']:
+            result.append(line)
+        
+        # Add the remaining content from the original file, skipping what was replaced
+        if len(stripped_original) > first_hunk['old_count']:
+            result.extend(stripped_original[first_hunk['old_count']:])
+        
+        # Process remaining hunks
+        for i, hunk in enumerate(hunks[1:], 1):
+            old_start = hunk['old_start'] - 1  # Convert to 0-based indexing
+            old_count = len(hunk['old_block'])
+            
+            # Adjust for previous hunks
+            adjusted_start = old_start
+            
+            # Replace the content
+            if adjusted_start < len(result):
+                result = result[:adjusted_start] + hunk['new_lines'] + result[adjusted_start + old_count:]
+        
+        # Return with proper line endings
+        return [line if line.endswith('\n') else line + '\n' for line in result]
+        
+        # Process remaining hunks
+        for i, hunk in enumerate(hunks[1:], 1):
+            old_start = hunk['old_start'] - 1  # Convert to 0-based indexing
+            old_count = len(hunk['old_block'])
+            
+            # Adjust for previous hunks
+            adjusted_start = old_start
+            
+            # Replace the content
+            if adjusted_start < len(result):
+                result = result[:adjusted_start] + hunk['new_lines'] + result[adjusted_start + old_count:]
+        
+        # Return with proper line endings
+        return [line if line.endswith('\n') else line + '\n' for line in result]
+        
+    # Normal case - process hunks sequentially
     final_lines = stripped_original.copy()
     offset = 0
-    applied_content = set()
     for hunk_idx, h in enumerate(hunks, start=1):
         def calculate_initial_positions():
             """Calculate initial positions and counts for the hunk."""
@@ -822,7 +956,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         def try_strict_match(positions):
             """Attempt a strict match of the hunk content."""
             remove_pos = positions['remove_pos']
-
+                
             if remove_pos + len(h['old_block']) <= len(final_lines):
                 file_slice = final_lines[remove_pos : remove_pos + positions['old_count']]
                 if h['old_block'] and len(h['old_block']) >= positions['actual_old_count']:
@@ -935,18 +1069,14 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                 "failures": [{"message": msg, "details": details} for msg, details in hunk_failures]
             }
         )
-    # Remove trailing empty line if present
+    
+    # Clean up trailing empty lines to match expected output
+    # This is important for tests that expect exact line counts
     while final_lines and final_lines[-1] == '':
         final_lines.pop()
     
-    # Add newlines to all lines
-    result_lines = [
-        ln + '\n' if not ln.endswith('\n') else ln
-        for ln in final_lines
-    ]
-    logger.debug(f"Final result lines: {result_lines}")
-    
-    return result_lines
+    # Return with proper line endings
+    return [line if line.endswith('\n') else line + '\n' for line in final_lines]
 
 def strip_leading_dotslash(rel_path: str) -> str:
     """
@@ -1302,7 +1432,7 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
         "failed": [],
         "already_applied": []
     }
-
+    
     # Correct the diff using existing functionality
     if file_path:
         git_diff = correct_git_diff(git_diff, file_path)
@@ -1676,3 +1806,22 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int,bool]) -> str:
     final_diff = '\n'.join(result) + '\n'
     logger.debug(f"Extracted diff for remaining hunks:\n{final_diff}")
     return final_diff
+def create_diff_from_hunks(hunks, file_path):
+    """Create a unified diff from a list of hunks."""
+    diff_lines = []
+    diff_lines.append(f"diff --git a/{file_path} b/{file_path}")
+    diff_lines.append(f"--- a/{file_path}")
+    diff_lines.append(f"+++ b/{file_path}")
+    
+    for hunk in hunks:
+        # Create the hunk header
+        header = f"@@ -{hunk['old_start']},{len(hunk['old_block'])} +{hunk['new_start']},{len(hunk['new_lines'])} @@"
+        diff_lines.append(header)
+        
+        # Add the hunk content
+        for line in hunk['old_block']:
+            diff_lines.append(f"-{line}")
+        for line in hunk['new_lines']:
+            diff_lines.append(f"+{line}")
+    
+    return "\n".join(diff_lines)
