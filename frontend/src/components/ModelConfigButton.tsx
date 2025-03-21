@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button, Tooltip, message } from 'antd';
+import { Button, Tooltip, message, Form } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
 import { ModelConfigModal, ModelSettings, ModelInfo } from './ModelConfigModal';
 
@@ -10,6 +10,8 @@ interface ModelConfigButtonProps {
 interface ModelCapabilities {
   supports_thinking: boolean;
   max_output_tokens: number;
+  token_limit: number;
+  max_input_tokens: number;
   temperature_range: { min: number; max: number; default: number };
   top_k_range: { min: number; max: number; default: number } | null;
 }
@@ -17,15 +19,17 @@ interface ModelCapabilities {
 export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId }) => {
   const [modalVisible, setModalVisible] = useState(false);
   const [settings, setSettings] = useState<ModelSettings>({
-    temperature: 0.3,
-    top_k: 15,
-    max_output_tokens: 4096,
+    temperature: 0,
+    top_k: 0,
+    max_output_tokens: 0,
+    max_input_tokens: 0,
     thinking_mode: false
   });
   const [currentModelId, setCurrentModelId] = useState<string>(modelId);
   const [endpoint, setEndpoint] = useState<string>('bedrock');
   const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [form] = Form.useForm();
 
   const verifyCurrentModel = useCallback(async () => {
     try {
@@ -35,23 +39,29 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       }
       const data = await response.json();
       const actualModelId = data.model_id;
+      const actualEndpoint = data.endpoint;
       
       // Only update if the actual model is different from what we're displaying
       if (actualModelId !== currentModelId) {
         setCurrentModelId(actualModelId);
         
         // Update endpoint based on verified model
-        if (data.endpoint === 'google') {
+        if (actualEndpoint === 'google') {
           setEndpoint('google');
-        } else {
+        } else if (actualEndpoint === 'bedrock') {
           setEndpoint('bedrock');
         }
 
         // Update settings
-        setSettings(prevSettings => ({
-          ...prevSettings,
-          ...data.settings
-        }));
+        setSettings(prevSettings => {
+          const newSettings = {
+            ...data.settings,
+            max_input_tokens: data.settings.max_input_tokens || capabilities?.max_input_tokens || capabilities?.token_limit
+          };
+          return newSettings;
+        });
+      } else {
+        setEndpoint(actualEndpoint); // Update endpoint even if model ID hasn't changed
       }
     } catch (error) {
       console.error('Error verifying current model:', error);
@@ -64,26 +74,67 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
     verifyCurrentModel();
   }, [verifyCurrentModel]);
 
-  // Fetch model capabilities
+  // Fetch initial capabilities and settings when modal opens
   useEffect(() => {
-    const fetchCapabilities = async () => {
-      try {
-        const response = await fetch('/api/model-capabilities');
-        if (!response.ok) {
-          throw new Error('Failed to fetch model capabilities');
+    if (modalVisible) {
+      const fetchInitialState = async () => {
+        try {
+          // Fetch current model settings
+          const response = await fetch('/api/current-model');
+          if (response.ok) {
+            const data = await response.json();
+            setSettings(data.settings);
+          }
+          // Fetch capabilities for the current model
+          await fetchModelCapabilities();
+        } catch (error) {
+          console.error('Error fetching initial state:', error);
         }
-        const data = await response.json();
-        setCapabilities(data);
-      } catch (error) {
-        console.error('Failed to load model capabilities:', error);
-        message.error('Failed to load model capabilities');
-      }
-    };
-
-    if (currentModelId) {
-      fetchCapabilities();
+      };
+      fetchInitialState();
     }
-  }, [currentModelId]);
+  }, [modalVisible]);
+
+  // Fetch model capabilities
+  const handleModelSelect = (newModelId: string) => {
+    form.setFieldsValue({ model: newModelId });
+    console.log('Model selected:', newModelId);
+    fetchModelCapabilities(newModelId, true);
+  };
+
+  const fetchModelCapabilities = async (modelId?: string, isModelChange: boolean = false) => {
+    try {
+      const url = modelId ? `/api/model-capabilities?model=${modelId}` : '/api/model-capabilities';
+      const response = await fetch(url, { cache: 'no-cache' });
+      if (!response.ok) {
+        throw new Error('Failed to fetch model capabilities');
+      }
+      const data = await response.json();
+      console.log('Fetched capabilities:', data);
+      setCapabilities(data);
+
+      // Update settings with capabilities
+      setSettings(prev => ({
+        ...prev,
+        max_input_tokens: data.token_limit,
+        max_output_tokens: data.max_output_tokens
+      }));
+      
+      if (isModelChange) {
+        // Update form with new model's default values
+        form.setFieldsValue({
+          temperature: data.temperature_range.default,
+          top_k: data.top_k_range?.default || 15,
+          max_output_tokens: data.max_output_tokens,
+          max_input_tokens: data.token_limit
+        });
+        console.log('Updated form with new model settings');
+      }
+    } catch (error) {
+      console.error('Failed to load model capabilities:', error);
+      message.error('Failed to load model capabilities');
+    }
+  };
 
   // Fetch available models
   useEffect(() => {
@@ -94,6 +145,7 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
           throw new Error('Failed to fetch available models');
         }
         const data = await response.json();
+        console.log('Available models:', data);
         setAvailableModels(data);
       } catch (error) {
         console.error('Error fetching available models:', error);
@@ -127,6 +179,12 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
           if (selectedModelId !== modelId) {
             window.location.reload();
           }
+
+          // Dispatch event for token display update
+          window.dispatchEvent(new CustomEvent('modelSettingsChanged', {
+            detail: currentModel
+          }));
+
           return true;
         }
       }
@@ -134,7 +192,6 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       throw new Error('Failed to verify model change');
     } catch (error) {
       message.error('Failed to change model: ' + (error instanceof Error ? error.message : 'Unknown error'));
-      console.error('Failed to change model:', error);
       message.error('Failed to change model');
       return false;
     }    
@@ -191,17 +248,21 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       // Only update local state if verification succeeds
       setSettings(newSettings);
       message.success('Model settings updated and verified');
+
+      // Dispatch event for token display update
+      window.dispatchEvent(new CustomEvent('modelSettingsChanged', {
+        detail: { settings: newSettings, capabilities }
+      }));
       
     } catch (error) {
       console.error('Error saving or verifying model settings:', error);
-      message.error('Failed to update settings: ' + (error instanceof Error ? error.message : 'Unknown error'));
-      throw error; // Re-throw to prevent modal from closing
+      throw error; // Re-throw to allow modal to reset state
     }
   };
 
   return (
     <>
-      <Tooltip title="Configure model settings">
+      <Tooltip title="Configure ${currentModelId} settings">
         <Button 
           type="text" 
           icon={<SettingOutlined />} 
@@ -215,8 +276,8 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
         capabilities={capabilities}
         availableModels={availableModels}
         onModelChange={handleModelChange}
-        endpoint={endpoint}
         onSave={handleSaveSettings}
+        endpoint={endpoint}
         currentSettings={settings}
       />
     </>

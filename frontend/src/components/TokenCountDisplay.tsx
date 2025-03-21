@@ -3,12 +3,9 @@ import {Folders, Message} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
 import {Tooltip, Spin, Progress, Typography, message, ProgressProps} from "antd";
 import { useTheme } from '../context/ThemeContext';
+import { ModelSettings } from './ModelConfigModal';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import {useChatContext} from "../context/ChatContext";
-
-const TOKEN_LIMIT = 160000;
-const WARNING_THRESHOLD = 100000;  // Lower threshold to account for overhead
-const DANGER_THRESHOLD = 140000;   // Lower threshold to account for overhead
 
 const getTokenCount = async (text: string): Promise<number> => {
     try {
@@ -44,6 +41,93 @@ export const TokenCountDisplay = () => {
     const lastMessageCount = useRef<number>(0);
     const lastMessageContent = useRef<string>('');
     const [tokenDetails, setTokenDetails] = useState<{[key: string]: number}>({}); 
+    const [modelLimits, setModelLimits] = useState<{
+        token_limit: number | null;
+        max_input_tokens: number;
+        max_output_tokens: number;
+    }>({ token_limit: null, max_input_tokens: 200000, max_output_tokens: 1024 });
+    
+    const tokenLimit = modelLimits.max_input_tokens || modelLimits.token_limit || 4096;
+    const warningThreshold = Math.floor(tokenLimit * 0.7);
+    const dangerThreshold = Math.floor(tokenLimit * 0.9);
+
+    useEffect(() => {
+        const fetchModelCapabilities = async () => {
+            try {
+                const response = await fetch('/api/current-model');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch current model settings');
+                }
+                const data = await response.json();
+                const capabilities = data.capabilities;
+                const settings = data.settings;
+                setModelLimits({
+                    token_limit: capabilities.token_limit,
+                    max_input_tokens: settings.max_input_tokens || capabilities.token_limit,
+                    max_output_tokens: settings.max_output_tokens || capabilities.max_output_tokens
+                });
+
+                console.debug('Model limits updated:', { capabilities, settings });
+            } catch (error) {
+                console.error('Failed to load model capabilities:', error);
+            }
+        };
+        fetchModelCapabilities();
+    }, []);
+
+    interface ModelSettingsEventDetail {
+        settings?: ModelSettings;
+        capabilities?: {
+            token_limit: number;
+            max_input_tokens: number;
+            max_output_tokens: number;
+        };
+    }
+
+    // Listen for model settings changes
+    useEffect(() => {
+        const handleModelSettingsChange = async (event: CustomEvent<ModelSettingsEventDetail>) => {
+            console.debug('Model settings changed:', event.detail);
+            try {
+
+                if (!event.detail) {
+                    // If no detail provided, fetch fresh data
+                    const response = await fetch('/api/current-model');
+                    if (!response.ok) throw new Error('Failed to fetch model settings');
+                    const data = await response.json();
+                    
+                    setModelLimits({
+                        token_limit: data.capabilities.token_limit,
+                        max_input_tokens: data.settings.max_input_tokens || data.capabilities.token_limit,
+                        max_output_tokens: data.settings.max_output_tokens
+                    });
+                } else {
+                    // Use provided data
+                    
+                }
+                if (event.detail.settings && event.detail.capabilities) {
+                    const { settings, capabilities } = event.detail;
+                    setModelLimits({
+                        token_limit: capabilities.token_limit,
+                        max_input_tokens: settings.max_input_tokens || capabilities.token_limit,
+                        max_output_tokens: settings.max_output_tokens || capabilities.max_output_tokens
+                    });
+                } else {
+                    throw new Error('Missing settings or capabilities in event data');
+                }
+            } catch (error) {
+                console.error('Error updating token limits:', error);
+            }
+        };
+
+        window.addEventListener('modelSettingsChanged', handleModelSettingsChange as unknown as EventListener);
+
+        return () => {
+            window.removeEventListener('modelSettingsChanged', handleModelSettingsChange as unknown as EventListener);
+        };
+        
+    }, []);
+ 
     const combinedTokenCount = totalTokenCount + chatTokenCount;
 
     // only calculate tokens when checked files change
@@ -76,8 +160,8 @@ export const TokenCountDisplay = () => {
     }, [checkedKeys, folders, getFolderTokenCount]);
 
     const getTokenColor = (count: number): string => {
-        if (count >= DANGER_THRESHOLD) return '#ff4d4f';  // Red
-        if (count >= WARNING_THRESHOLD) return '#faad14'; // Orange
+        if (count >= dangerThreshold) return '#ff4d4f';  // Red
+        if (count >= warningThreshold) return '#faad14'; // Orange
         return '#52c41a';  // Green
     };
     const getTokenStyle = (count: number) => ({
@@ -157,8 +241,8 @@ export const TokenCountDisplay = () => {
     }, [currentMessages, updateChatTokens, currentConversationId, hasMessagesChanged, isStreaming]);
 
     const getProgressStatus = (count: number): ProgressProps['status'] => {
-        if (count >= DANGER_THRESHOLD) return 'exception';
-        if (count >= WARNING_THRESHOLD) return 'normal';
+        if (count >= dangerThreshold) return 'exception';
+        if (count >= warningThreshold) return 'normal';
         return 'success';
     };
     const tokenDisplay = useMemo(() => (
@@ -208,15 +292,15 @@ export const TokenCountDisplay = () => {
                         <span>Chat: <span style={getTokenStyle(chatTokenCount)}>
                             {chatTokenCount.toLocaleString()}</span></span>
                     </Tooltip>
-                    <Tooltip title="Combined tokens (files + chat)" mouseEnterDelay={0.5}>
+                    <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`} mouseEnterDelay={0.5}>
                         <span>Total: <span style={getTokenStyle(combinedTokenCount)}>
                             {combinedTokenCount.toLocaleString()}</span></span>
                     </Tooltip>
                 </div>
-		<Tooltip title={`${combinedTokenCount.toLocaleString()} of ${TOKEN_LIMIT.toLocaleString()} tokens used`} mouseEnterDelay={0.5}>
+                <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens used`} mouseEnterDelay={0.5}>
                     <div>
                         <Progress
-                            percent={Math.round((combinedTokenCount / TOKEN_LIMIT) * 100)}
+                            percent={Math.round((combinedTokenCount / tokenLimit) * 100)}
                             size="small"
                             status={getProgressStatus(combinedTokenCount)}
                             showInfo={false}

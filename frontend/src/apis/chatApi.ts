@@ -15,6 +15,17 @@ interface ErrorResponse {
     error: string;
     detail: string;
     event?: string;
+    status_code?: number;
+}
+
+// Extended interface to support LangChain error format
+interface LangChainErrorResponse {
+    type: string;
+    error: {
+        message: string;
+        code: string;
+        status?: number;
+    };
 }
 
 const isValidMessage = (message: any) => {
@@ -44,6 +55,186 @@ const isStreamingError = (error: any): boolean => {
         error.message.includes('Input is too long')
     );
 };
+
+/**
+ * Safely parses an SSE message, ensuring it's properly formatted
+ * @param rawData The raw SSE message data
+ * @returns Parsed JSON object or null if not a valid SSE message
+ */
+function parseSSEMessage(rawData: string): any {
+  // Only process if it's a string
+  if (!rawData || typeof rawData !== 'string') {
+    return null;
+  }
+  
+  // Check for LangChain error format directly
+  if (rawData.includes('"type":"error"') || rawData.includes('"type": "error"')) {
+    try {
+      // Extract the error object using regex
+      const errorMatch = /data: ({.*"type":\s*"error".*})\n\n/.exec(rawData);
+      if (errorMatch && errorMatch[1]) {
+        return JSON.parse(errorMatch[1]);
+      }
+    } catch (e) {
+      console.warn('Failed to parse LangChain error format:', e);
+    }
+  }
+  
+  // Check if this is a properly formatted SSE message
+  if (rawData.includes('data: {') || rawData.includes('data: [')) {
+    // Extract only lines that start with "data: "
+    const dataLines = rawData.split('\n')
+      .filter(line => line.trim().startsWith('data: '))
+      .map(line => line.trim().substring(6)); // Remove "data: " prefix
+    
+    if (dataLines.length === 0) {
+      console.debug('No data lines found in SSE message');
+      return null; // Not a valid SSE message
+    }
+    
+    // Join the data lines and parse as JSON
+    try {
+      const jsonData = dataLines.join('');
+      
+      // Special case for [DONE] marker
+      if (jsonData === '[DONE]') {
+        return '[DONE]';
+      }
+      
+      return JSON.parse(jsonData);
+    } catch (e) {
+      console.warn('Failed to parse SSE data as JSON:', e);
+      return null;
+    }
+  } else {
+    // This might be a direct JSON string, try to parse it directly
+    try {
+      return JSON.parse(rawData);
+    } catch (e) {
+      // Not valid JSON either
+      return null;
+    }
+  }
+}
+
+/**
+ * Extracts error information from a response, but only if it's a valid SSE message
+ * @param chunk The response chunk to check for errors
+ * @returns Error response object or null if no error found
+ */
+function extractErrorFromSSE(chunk: string): ErrorResponse | null {
+  // First check if it's a valid SSE message
+  const parsedSSE = parseSSEMessage(chunk);
+  if (!parsedSSE) {
+    console.debug('Not a valid SSE message, skipping error extraction');
+    
+    // Try direct regex extraction for simple error messages
+    // This handles cases where the error message is in a simple format
+    // that might not be properly parsed by parseSSEMessage
+    const directErrorMatch = /data: (\{"error": "[^"]+", "detail": "[^"]+"(?:, "status_code": \d+)?\})\n\n/.exec(chunk);
+    if (directErrorMatch) {
+      try {
+        const errorObj = JSON.parse(directErrorMatch[1]);
+        if (errorObj.error && errorObj.detail) {
+          console.log('Found direct error in SSE message:', errorObj);
+          return errorObj as ErrorResponse;
+        }
+      } catch (e) {
+        console.warn('Failed to parse direct error match:', e);
+      }
+    }
+    
+    return null;
+  }
+  
+  // Handle LangChain error format
+  if (parsedSSE && typeof parsedSSE === 'object' && parsedSSE.type === 'error' && parsedSSE.error) {
+    console.log('Found LangChain error format:', parsedSSE);
+    return {
+      error: parsedSSE.error.code || 'error',
+      detail: parsedSSE.error.message || 'An error occurred',
+      status_code: parsedSSE.error.status || 500
+    };
+  }
+  
+  // If it's a parsed JSON object with an error field (original format)
+  if (parsedSSE && typeof parsedSSE === 'object' && parsedSSE.error) {
+    console.log('Found error in SSE message:', parsedSSE);
+    return {
+      error: parsedSSE.error,
+      detail: parsedSSE.detail || 'Unknown error',
+      status_code: parsedSSE.status_code || 500
+    };
+  }
+  
+  // Only apply regex to valid SSE messages that might contain errors
+  // and make sure we're not just seeing error strings in file content
+  if (typeof parsedSSE === 'string' && 
+      (parsedSSE.includes('"error":') || parsedSSE.includes('"status_code":')) &&
+      // Make sure this is an actual error response, not just file content
+      parsedSSE.includes('data:')) {
+    
+    console.log('Attempting to extract error from string SSE payload');
+    
+    // Apply regex extraction only to valid SSE content
+    const errorMatch = /"error":\s*"([^"]+)"/.exec(parsedSSE);
+    const detailMatch = /"detail":\s*"([^"]+)"/.exec(parsedSSE);
+    
+    if (errorMatch && detailMatch) {
+      return {
+        error: errorMatch[1],
+        detail: detailMatch[1],
+        status_code: 500 // Default if not specified
+      };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Extracts error messages from nested LangChain ops structure
+ * @param chunk The response chunk to check for nested errors
+ * @returns Error response object or null if no error found
+ */
+function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
+  try {
+    // First try to parse the outer JSON structure
+    const match = /data: ({.*"ops".*})/s.exec(chunk);
+    if (!match || !match[1]) return null;
+    
+    const parsed = JSON.parse(match[1]);
+    
+    // Check if this is an ops array
+    if (!parsed.ops || !Array.isArray(parsed.ops)) return null;
+    
+    // Look for final_output entries that might contain error messages
+    for (const op of parsed.ops) {
+      if (op.op === 'add' && op.path && op.path.includes('/final_output') && op.value) {
+        // Check if the value contains an output field with an error message
+        if (op.value.output && typeof op.value.output === 'string') {
+          // Try to extract error from the nested output
+          const errorMatch = /data: ({.*"error".*})/s.exec(op.value.output);
+          if (errorMatch && errorMatch[1]) {
+            try {
+              const errorObj = JSON.parse(errorMatch[1]);
+              if (errorObj.error && errorObj.detail) {
+                console.log('Found nested error in ops structure:', errorObj);
+                return errorObj as ErrorResponse;
+              }
+            } catch (e) {
+              console.warn('Failed to parse nested error:', e);
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to extract error from nested ops:', e);
+  }
+  
+  return null;
+}
 
 const handleStreamError = async (response: Response): Promise<never> => {
     console.log("Handling stream error:", response.status);
@@ -126,6 +317,8 @@ export const sendPayload = async (
     });
  
     let eventSource: EventSource | undefined;
+    let hasError = false;
+    let currentContent = '';
 
     // Track message filtering
     const preFilterMessages = isStreamingToCurrentConversation ? messages : messages.slice(0, messages.length - 1);
@@ -156,26 +349,22 @@ export const sendPayload = async (
     });
 
     try {
-	eventSource = undefined;
-	let hasError = false;
-
-	console.log('Messages received in sendPayload:', messagesToSend.map(m => ({
+        console.log('Messages received in sendPayload:', messagesToSend.map(m => ({
             role: m.role,
             content: m.content.substring(0, 50)
         })));
 
-    // Log any message filtering that happens
-    if (messagesToSend.length !== messages.length) {
-        console.debug('Message count changed:', {
-            before: messages.length,
-            after: messagesToSend.length,
-            dropped: messages.length - messagesToSend.length
-        });
-    }
-        
-	let currentContent = '';
-	setIsStreaming(true);
-	let response = await getApiResponse(messagesToSend, question, checkedItems);
+        // Log any message filtering that happens
+        if (messagesToSend.length !== messages.length) {
+            console.debug('Message count changed:', {
+                before: messages.length,
+                after: messagesToSend.length,
+                dropped: messages.length - messagesToSend.length
+            });
+        }
+            
+        setIsStreaming(true);
+        let response = await getApiResponse(messagesToSend, question, checkedItems);
         console.log("Initial API response:", response.status, response.statusText);
         
         if (!response.ok) {
@@ -229,6 +418,21 @@ export const sendPayload = async (
             if (event.type === 'event') {
                 try {
                     console.log("Attempting to parse SSE data");
+                    
+                    // Check for errors using our new function
+                    const errorResponse = extractErrorFromSSE(event.data);
+                    if (errorResponse) {
+                        console.log("Error detected in SSE message:", errorResponse);
+                        message.error({
+                            content: errorResponse.detail || 'An error occurred',
+                            duration: 10,
+                            key: 'stream-error'
+                        });
+                        errorOccurred = true;
+                        removeStreamingConversation(conversationId);
+                        return;
+                    }
+                    
                     const data = JSON.parse(event.data);
                     console.log("Successfully parsed SSE data:", data);
                     
@@ -292,13 +496,6 @@ export const sendPayload = async (
                         console.log("Processing ops array:", data.ops);
                         for (const op of data.ops) {
                             if (op.op === 'add') {
-                                console.log("Processing add operation:", {
-                                    path: op.path,
-                                    valueType: typeof op.value,
-                                    hasOutput: op.value && 'output' in op.value,
-                                    outputPreview: op.value?.output ? op.value.output.substring(0, 200) : 'none',
-                                    fullValue: op.value
-                                });
 
                                 // Check for streamed output path specifically
                                 if (op.path === '/streamed_output/-') {
@@ -310,67 +507,12 @@ export const sendPayload = async (
                                     
                                     // Check if it's a string that might contain an error
                                     if (typeof op.value === 'string') {
-                                        if (op.value.includes('"error":') || op.value.includes('"validation_error"')) {
-                                            console.log("Detected potential error in streamed output string");
-                                            
-                                            try {
-                                                const errorData = JSON.parse(op.value);
-                                                console.log("Successfully parsed streamed output as JSON:", errorData);
-                                                
-                                                if (errorData && errorData.error) {
-                                                    console.log("Confirmed error in streamed output:", errorData);
-                                                    message.error({
-                                                        content: errorData.detail || 'An error occurred',
-                                                        duration: 10,
-                                                        key: 'stream-error'
-                                                    });
-                                                    errorOccurred = true;
-                                                    removeStreamingConversation(conversationId);
-                                                    break;
-                                                }
-                                            } catch (error) {
-                                                const e = error as Error;
-                                                const positionMatch = e.message.match(/position (\d+)/);
-                                                const position = positionMatch ? parseInt(positionMatch[1]) : null;
-                                                
-                                                console.log("Streamed output parse error:", {
-                                                    error: e,
-                                                    message: e.message,
-                                                    position: position,
-                                                    charsAroundError: position !== null ? 
-                                                        op.value.substring(
-                                                            Math.max(0, position - 10),
-                                                            position + 10
-                                                        ) : null
-                                                });
-                                                
-                                                // Try regex-based extraction
-                                                const detailMatch = op.value.match(/"detail":\s*"([^"]+)"/);
-                                                if (detailMatch && detailMatch[1]) {
-                                                    console.log("Extracted error message using regex:", detailMatch[1]);
-                                                    message.error({
-                                                        content: detailMatch[1],
-                                                        duration: 10,
-                                                        key: 'stream-error'
-                                                    });
-                                                    errorOccurred = true;
-                                                    removeStreamingConversation(conversationId);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Check for error in output property
-                                if (op.value && typeof op.value.output === 'string') {
-                                    try {
-                                        const outputData = JSON.parse(op.value.output);
-                                        console.log("Successfully parsed operation output:", outputData);
-                                        if (outputData && typeof outputData === 'object' && 'error' in outputData) {
-                                            console.log("Error found in operation output:", outputData);
+                                        // Use our new function to check for errors
+                                        const errorResponse = extractErrorFromSSE(op.value);
+                                        if (errorResponse) {
+                                            console.log("Error detected in streamed output:", errorResponse);
                                             message.error({
-                                                content: outputData.detail || 'An error occurred',
+                                                content: errorResponse.detail || 'An error occurred',
                                                 duration: 10,
                                                 key: 'stream-error'
                                             });
@@ -378,32 +520,19 @@ export const sendPayload = async (
                                             removeStreamingConversation(conversationId);
                                             break;
                                         }
-                                    } catch (error) {
-                                        const e = error as Error;
-                                        const positionMatch = e.message.match(/position (\d+)/);
-                                        const position = positionMatch ? parseInt(positionMatch[1]) : null;
-                                        
-                                        console.log("Operation output parse error:", {
-                                            error: e,
-                                            message: e.message,
-                                            position: position,
-                                            valuePreview: op.value.output.substring(0, 200),
-                                            valueLength: op.value.output.length,
-                                            charsAroundError: position !== null ? 
-                                                op.value.output.substring(
-                                                    Math.max(0, position - 10),
-                                                    position + 10
-                                                ) : null
-                                        });
+                                    }
+                                }
 
-                                        // Try regex-based error extraction as fallback
-                                        if (op.value.output.includes('"error":') || 
-                                            op.value.output.includes('"validation_error"')) {
-                                            const detailMatch = op.value.output.match(/"detail":\s*"([^"]+)"/);
-                                            if (detailMatch && detailMatch[1]) {
-                                                console.log("Extracted error message using regex:", detailMatch[1]);
+                                // Check for error in output property
+                                if (op.value && typeof op.value === 'object' && 'output' in op.value) {
+                                    if (typeof op.value.output === 'string') {
+                                        try {
+                                            // Use our new function to check for errors
+                                            const errorResponse = extractErrorFromSSE(op.value.output);
+                                            if (errorResponse) {
+                                                console.log("Error detected in operation output:", errorResponse);
                                                 message.error({
-                                                    content: detailMatch[1],
+                                                    content: errorResponse.detail || 'An error occurred',
                                                     duration: 10,
                                                     key: 'stream-error'
                                                 });
@@ -411,7 +540,48 @@ export const sendPayload = async (
                                                 removeStreamingConversation(conversationId);
                                                 break;
                                             }
+                                        } catch (error) {
+                                            console.warn("Error checking operation output:", error);
                                         }
+                                    } else if (typeof op.value.output === 'object' && op.value.output !== null) {
+                                        // Handle case where output is an object
+                                        console.log("Operation output is an object:", op.value.output);
+                                        try {
+                                            if (op.value.output.error) {
+                                                console.log("Error found in operation output object:", op.value.output);
+                                                message.error({
+                                                    content: op.value.output.detail || 'An error occurred',
+                                                    duration: 10,
+                                                    key: 'stream-error'
+                                                });
+                                                errorOccurred = true;
+                                                removeStreamingConversation(conversationId);
+                                                break;
+                                            }
+                                        } catch (error) {
+                                            console.warn("Error checking object output:", error);
+                                        }
+                                    }
+                                } else if (op.path.includes('final_output')) {
+                                    // Special handling for timestamp values that cause errors
+                                    try {
+                                        // Check if value is a timestamp string (common error case)
+                                        if (op.value && typeof op.value === 'string' && 
+                                            op.value.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)) {
+                                            console.log("Skipping timestamp value:", op.value);
+                                            continue;
+                                        }
+                                        
+                                        // Check if we have an object with output property
+                                        if (op.value && typeof op.value === 'object' && 'output' in op.value) {
+                                            if (typeof op.value.output !== 'string') {
+                                                console.log("Non-string output in final_output:", op.value.output);
+                                                // Don't try to use substring on non-string outputs
+                                                continue;
+                                            }
+                                        }
+                                    } catch (error) {
+                                        console.warn("Error handling timestamp or final output:", error);
                                     }
                                 }
                             }
@@ -430,6 +600,26 @@ export const sendPayload = async (
                                 next.set(conversationId, currentContent);
                                 return next;
                             });
+                        } else if (op.op === 'add' && op.path.includes('/streamed_output/-')) {
+                            // Check for error in messages array
+                            if (op.value && op.value.messages && Array.isArray(op.value.messages)) {
+                                for (const msg of op.value.messages) {
+                                    if (msg.content && typeof msg.content === 'string') {
+                                        const errorResponse = extractErrorFromSSE(msg.content);
+                                        if (errorResponse) {
+                                            console.log("Error detected in message content:", errorResponse);
+                                            message.error({
+                                                content: errorResponse.detail || 'An error occurred',
+                                                duration: 10,
+                                                key: 'stream-error'
+                                            });
+                                            errorOccurred = true;
+                                            removeStreamingConversation(conversationId);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             continue;
                         }
@@ -442,7 +632,7 @@ export const sendPayload = async (
         }
 
         async function readStream() {
-	    let streamClosed = false;
+            let streamClosed = false;
             while (true) {
                 try {
                     const { done, value } = await reader.read();
@@ -460,31 +650,74 @@ export const sendPayload = async (
                         continue;
                     }
                     
-                    console.log("Raw chunk received:", {
-                        length: chunk.length,
-                        preview: chunk.substring(0, 100) + (chunk.length > 100 ? '...' : '')
-                    });
-                    
-                    // Try to parse the chunk as JSON to check for validation error
+                    // Check for errors using our new function
                     try {
-                        const jsonData = JSON.parse(chunk);
-                        console.log("Successfully parsed chunk as JSON:", jsonData);
+                        // Check for nested errors in LangChain ops structure
+                        const nestedError = extractErrorFromNestedOps(chunk);
+                        if (nestedError) {
+                            console.log("Nested error detected in ops structure:", nestedError);
+                            message.error({
+                                content: nestedError.detail || 'An error occurred',
+                                duration: 10,
+                                key: 'stream-error'
+                            });
+                            errorOccurred = true;
+                            removeStreamingConversation(conversationId);
+                            break;
+                        }
                         
-                        if (jsonData.error === 'validation_error') {
-                            console.log("Validation error detected in chunk:", jsonData);
-                            const response = new Response(chunk, { status: 413 });
+                        // Direct check for simple SSE error messages in the standard format
+                        const directErrorMatch = /data: (\{"error": "[^"]+", "detail": "[^"]+", "status_code": \d+\})\n\n/.exec(chunk);
+                        if (directErrorMatch) {
                             try {
-                                throw await handleStreamError(response);
-                            } catch (error) {
-                                console.error("Error handling validation error:", error);
+                                const errorObj = JSON.parse(directErrorMatch[1]);
+                                console.log("Direct error message detected:", errorObj);
+                                message.error({
+                                    content: errorObj.detail || 'An error occurred',
+                                    duration: 10,
+                                    key: 'stream-error'
+                                });
                                 errorOccurred = true;
                                 removeStreamingConversation(conversationId);
-                                throw error;
+                                break;
+                            } catch (parseError) {
+                                console.warn("Failed to parse direct error message:", parseError);
                             }
+                        }
+                        
+                        // First check if this is a proper SSE message with data: prefix
+                        if (chunk.includes('data: {')) {
+                            const errorResponse = extractErrorFromSSE(chunk);
+                            if (errorResponse) {
+                                console.log("Error detected in raw chunk:", errorResponse);
+                                message.error({
+                                    content: errorResponse.detail || 'An error occurred',
+                                    duration: 10,
+                                    key: 'stream-error'
+                                });
+                                errorOccurred = true;
+                                removeStreamingConversation(conversationId);
+                                break;
+                            }
+                        }
+                        
+                        // Check for auth error specifically - use more precise detection
+                        if ((chunk.includes('"error": "auth_error"') || 
+                            chunk.includes('"error":"auth_error"')) &&
+                            // Make sure it's in a proper SSE data format to avoid false positives
+                            chunk.includes('data: {')) {
+                            console.log("Auth error detected in chunk");
+                            message.error({
+                                content: "AWS credentials have expired. Please refresh your credentials.",
+                                duration: 10,
+                                key: 'stream-error'
+                            });
+                            errorOccurred = true;
+                            removeStreamingConversation(conversationId);
                             break;
                         }
                     } catch (error) {
-                        console.log("Chunk is not valid JSON, treating as SSE");
+                        console.warn("Error checking chunk for errors:", error);
                     }
                     
                     // Feed the chunk to the SSE parser
@@ -506,18 +739,17 @@ export const sendPayload = async (
             if (currentContent && !errorOccurred) {
                 console.log("Stream completed successfully");
 
-                // Check if the content is an error message
-                try {
-                    const errorData = JSON.parse(currentContent);
-                    console.log("Parsed final content:", errorData);
-                    if (errorData.error === 'validation_error') {
-                        message.error({
-                            content: errorData.detail,
-                            duration: 10
-                        });
-                        return '';
-                    }
-                } catch (e) {} // Not JSON or not an error
+                // Check if the content is an error message using our new function
+                const errorResponse = extractErrorFromSSE(currentContent);
+                if (errorResponse) {
+                    console.log("Error detected in final content:", errorResponse);
+                    message.error({
+                        content: errorResponse.detail || 'An error occurred',
+                        duration: 10,
+                        key: 'stream-error'
+                    });
+                    return '';
+                }
 
                 onStreamComplete?.(currentContent);
                 // Add AI response to conversation
