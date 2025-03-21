@@ -125,8 +125,7 @@ export const StreamedContent: React.FC = () => {
                         {error && <ErrorDisplay message={error} />}
                         {!error && (
                             <MarkdownRenderer
-                                markdown={streamedContentMap.get(currentConversationId) || 
-                                    'Connection interrupted. Please try again.'}
+                                markdown={streamedContentMap.get(currentConversationId) || ''}
                                 enableCodeApply={enableCodeApply}
                             />
                         )}

@@ -133,14 +133,14 @@ export function ChatProvider({children}: ChatProviderProps) {
         setConversations(prevConversations => {
             const existingConversation = prevConversations.find(c => c.id === conversationId);
             const isFirstMessage = existingConversation?.messages.length === 0;
-	    console.log('Message processing:', {
+            console.log('Message processing:', {
                 messageRole: message.role,
                 targetConversationId: conversationId,
-		currentConversationId,
-		isNonCurrentConversation
+                currentConversationId,
+                isNonCurrentConversation
             });
-	    const shouldMarkUnread = message.role === 'assistant' && isNonCurrentConversation;
-	    console.log('Message add check:', {
+            const shouldMarkUnread = message.role === 'assistant' && isNonCurrentConversation;
+            console.log('Message add check:', {
                 willMarkUnread: shouldMarkUnread,
                 reason: shouldMarkUnread ? 'AI message to non-current conversation' : 'Not marking unread'
             });
@@ -150,7 +150,7 @@ export function ChatProvider({children}: ChatProviderProps) {
                         return {
                             ...conv,
                             messages: [...conv.messages, message],
-			    hasUnreadResponse: shouldMarkUnread,
+                            hasUnreadResponse: shouldMarkUnread,
                             lastAccessedAt: Date.now(),
                             _version: Date.now(),
                             title: isFirstMessage && message.role === 'human' ? message.content.slice(0, 45) + '...' : conv.title
@@ -203,11 +203,11 @@ export function ChatProvider({children}: ChatProviderProps) {
                 };
 
 		// Clear unread flag from current conversation before creating new one
-                const updatedConversations = conversations.map(conv =>
-                    conv.id === currentConversationId
-                        ? { ...conv, hasUnreadResponse: false }
-                        : conv
-                );
+        const updatedConversations = conversations.map(conv =>
+            conv.id === currentConversationId
+                ? { ...conv, hasUnreadResponse: false }
+                : conv
+        );
 
 		db.saveConversations([...updatedConversations, newConversation])
                     .then(() => {
@@ -248,7 +248,7 @@ export function ChatProvider({children}: ChatProviderProps) {
             // Set the current conversation ID after updating state
             await new Promise(resolve => setTimeout(resolve, 50));
             setCurrentConversationId(conversationId);
-	    console.log('Current conversation changed:', {
+            console.log('Current conversation changed:', {
                 from: currentConversationId,
                 to: conversationId,
                 streamingConversations: Array.from(streamingConversations),
@@ -295,7 +295,7 @@ export function ChatProvider({children}: ChatProviderProps) {
 
     useEffect(() => {
         currentConversationRef.current = currentConversationId;
-	console.log('Current conversation ref updated:', {
+        console.log('Current conversation ref updated:', {
             id: currentConversationId,
             streamingConversations: Array.from(streamingConversations),
             hasStreamingContent: Array.from(streamedContentMap.keys()),
@@ -345,7 +345,7 @@ export function ChatProvider({children}: ChatProviderProps) {
     const value = useMemo(() => ({
         question,
         setQuestion,
-	streamedContentMap,
+        streamedContentMap,
         setStreamedContentMap,
         isStreaming,
         streamingConversations,

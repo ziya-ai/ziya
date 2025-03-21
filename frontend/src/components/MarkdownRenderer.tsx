@@ -1388,25 +1388,13 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode[] => {
     return tokens.map((token, index) => {
         if (token.type === 'code' && isCodeToken(token)) {
-            // First check if it's an explicitly marked diff
-            console.log('Processing token:', {
-                type: token.type,
-                lang: token.lang,
-                textPreview: token.text.substring(0, 50),
-                isDiff: token.lang === 'diff' || token.text.startsWith('diff --git')
-            });
 
+            // First check if it's an explicitly marked diff
             const isDiffContent = (text: string): boolean => {
                 return text.startsWith('diff --git') ||
                        text.match(/^---\s+a\/.*\n\+\+\+\s+b\/.*$/m) !== null ||
                        text.match(/^@@.*@@/m) !== null;
             };
-
-            console.log('Content analysis:', {
-                lang: token.lang,
-                isDiff: isDiffContent(token.text),
-                firstLine: token.text.split('\n')[0]
-            });
 
             if (token.lang === 'diff' || isDiffContent(token.text)) {
                 let processedText = token.text;
@@ -1758,11 +1746,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             return [];
         }
 
-        console.log('Processing markdown:', {
-            length: markdown.length,
-            firstLines: markdown.split('\n').slice(0, 3)
-        });
-
         // Split content by code blocks first
         const parts = markdown.split(/(```diff[\s\S]*?```|```[\s\S]*?```)/g);
         
@@ -1843,19 +1826,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             }
         });
 
-        console.log('Processed tokens:', processedTokens.map(t => ({
-            type: t.type,
-            lang: 'lang' in t ? t.lang : undefined,
-            textPreview: 'text' in t ? t.text.substring(0, 50) : 'no text'
-        })));
-
         return processedTokens;
     }, [markdown]);
-
-    // Debug logging to check token content
-    useEffect(() => {
-        console.log('Parsed tokens:', tokens);
-    }, [tokens]);
 
     const renderedContent = useMemo(() => {
 	return renderTokens(tokens, enableCodeApply, isDarkMode);
