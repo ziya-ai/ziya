@@ -1134,6 +1134,8 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
     """
     Same logic: we gather old_block and new_lines. If we can't parse anything, we return an empty list.
     The calling code might handle that or raise an error if no hunks are found.
+    
+    This version handles embedded diff markers correctly by using a more robust parsing approach.
     """
 
     lines = diff_content.splitlines()
@@ -1200,45 +1202,35 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> list[d
                 # Start collecting content for this hunk
                 current_lines = []
                 in_hunk = True
-                hunks.append(hunk)
+                hunks.append(hunk)  # Add the hunk to our list immediately
                 current_hunk = hunk
 
             i += 1
             continue
 
-        seen_hunks = set()
         if in_hunk:
             # End of hunk reached if we see a line that doesn't start with ' ', '+', '-', or '\'
             if not line.startswith((' ', '+', '-', '\\')):
                 in_hunk = False
                 if current_hunk:
                     # Check if this hunk is complete and unique
-                    if len(current_hunk['old_block']) == current_hunk['old_count'] and \
-                       len(current_hunk['new_lines']) == current_hunk['new_count']:
-                        hunk_key = (tuple(current_hunk['old_block']), tuple(current_hunk['new_lines']))
-                        if hunk_key not in seen_hunks:
-                            seen_hunks.add(hunk_key)
-                            hunks.append(current_hunk)
-                    current_hunk = None
+                    hunk_key = (tuple(current_hunk['old_block']), tuple(current_hunk['new_lines']))
+                    if hunk_key not in seen_hunks:
+                        seen_hunks.add(hunk_key)
                 i += 1
                 continue
             if current_hunk:
                 if line.startswith('-'):
                     text = line[1:]
                     current_hunk['old_block'].append(text)
-                    current_hunk['old_count'] = len(current_hunk['old_block'])
                 elif line.startswith('+'):
                     text = line[1:]
                     current_hunk['new_lines'].append(text)
-                    current_hunk['new_count'] = len(current_hunk['new_lines'])
                 elif line.startswith(' '):
                     text = line[1:]
-                    if (not current_hunk['old_block'] or
-                        current_hunk['old_block'][-1] != text):
-                        current_hunk['old_block'].append(text)
-                    if (not current_hunk['new_lines'] or
-                        current_hunk['new_lines'][-1] != text):
-                        current_hunk['new_lines'].append(text)
+                    current_hunk['old_block'].append(text)
+                    current_hunk['new_lines'].append(text)
+                # Skip lines starting with '\'
 
         i += 1
     return hunks
