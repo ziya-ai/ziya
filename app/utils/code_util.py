@@ -813,6 +813,11 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     Check if a hunk has already been applied at the given position.
     Returns True only if ALL changes in the hunk are already present.
     Checks if the target state matches exactly.
+    
+    Improved to better handle already applied patches by:
+    1. Checking if the file already contains the exact new content
+    2. Comparing the entire window of lines, not just individual lines
+    3. Using stricter matching for already applied hunks
     """
     if pos >= len(file_lines):
         logger.debug(f"Position {pos} beyond file length {len(file_lines)}")
@@ -821,13 +826,23 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     # Get the lines we're working with
     window_size = max(len(hunk['old_block']), len(hunk['new_lines']))
     available_lines = file_lines[pos:pos + window_size]
+    
+    # First check: exact match of the entire new content block
+    # This is the most reliable way to detect already applied changes
+    if len(available_lines) >= len(hunk['new_lines']):
+        exact_match = True
+        for i, new_line in enumerate(hunk['new_lines']):
+            if i >= len(available_lines) or available_lines[i].rstrip() != new_line.rstrip():
+                exact_match = False
+                break
+        
+        if exact_match:
+            logger.debug(f"Exact match of new content found at position {pos}")
+            return True
 
     # Count actual changes needed (excluding context lines)
     changes_needed = 0
     changes_found = 0
-
-    # Map of line positions to their expected states
-    expected_states = {}
     
     for old_line, new_line in zip_longest(hunk['old_block'], hunk['new_lines'], fillvalue=None):
         if old_line != new_line:
@@ -880,6 +895,23 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     already_applied_hunks = set()
     hunk_failures = []
     stripped_original = [ln.rstrip('\n') for ln in original_lines]
+    
+    # First check if all hunks are already applied
+    all_already_applied = True
+    for h in hunks:
+        hunk_applied = False
+        # Check if this hunk is already applied anywhere in the file
+        for pos in range(len(stripped_original)):
+            if is_hunk_already_applied(stripped_original, h, pos):
+                hunk_applied = True
+                break
+        if not hunk_applied:
+            all_already_applied = False
+            break
+    
+    if all_already_applied:
+        logger.info("All hunks already applied, returning original content")
+        return original_lines
 
     # For first line replacement, we need a completely different approach
     # This is a general solution for any diff that modifies the first line
@@ -887,34 +919,35 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     if first_hunk and first_hunk['old_start'] == 1:
         logger.debug(f"First hunk starts at line 1, using complete replacement approach")
         
-        # Create a new file from scratch with the correct content
-        result = []
-        
-        # Add the new content from the first hunk
-        for line in first_hunk['new_lines']:
-            result.append(line)
-        
-        # Add the remaining content from the original file, skipping what was replaced
-        if len(stripped_original) > first_hunk['old_count']:
-            result.extend(stripped_original[first_hunk['old_count']:])
+        # Check if first hunk is already applied
+        if is_hunk_already_applied(stripped_original, first_hunk, 0):
+            logger.info("First hunk already applied, skipping replacement")
+            result = stripped_original.copy()
+        else:
+            # Create a new file from scratch with the correct content
+            result = []
+            
+            # Add the new content from the first hunk
+            for line in first_hunk['new_lines']:
+                result.append(line)
+            
+            # Add the remaining content from the original file, skipping what was replaced
+            if len(stripped_original) > first_hunk['old_count']:
+                result.extend(stripped_original[first_hunk['old_count']:])
         
         # Process remaining hunks
         for i, hunk in enumerate(hunks[1:], 1):
-            old_start = hunk['old_start'] - 1  # Convert to 0-based indexing
-            old_count = len(hunk['old_block'])
+            # Check if this hunk is already applied
+            hunk_applied = False
+            for pos in range(len(result)):
+                if is_hunk_already_applied(result, hunk, pos):
+                    hunk_applied = True
+                    break
             
-            # Adjust for previous hunks
-            adjusted_start = old_start
-            
-            # Replace the content
-            if adjusted_start < len(result):
-                result = result[:adjusted_start] + hunk['new_lines'] + result[adjusted_start + old_count:]
-        
-        # Return with proper line endings
-        return [line if line.endswith('\n') else line + '\n' for line in result]
-        
-        # Process remaining hunks
-        for i, hunk in enumerate(hunks[1:], 1):
+            if hunk_applied:
+                logger.info(f"Hunk #{i+1} already applied, skipping")
+                continue
+                
             old_start = hunk['old_start'] - 1  # Convert to 0-based indexing
             old_count = len(hunk['old_block'])
             
@@ -1010,11 +1043,11 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             continue
 
         # First check if this hunk is already applied anywhere in the file
-        for pos in range(len(stripped_original)):
-            if is_hunk_already_applied(stripped_original, h, pos):
+        for pos in range(len(final_lines)):
+            if is_hunk_already_applied(final_lines, h, pos):
                 # Verify we have the exact new content, not just similar content
-                window = stripped_original[pos:pos+len(h['new_lines'])]
-                if all(line.rstrip() == new_line.rstrip() for line, new_line in zip(window, h['new_lines'])):
+                window = final_lines[pos:pos+len(h['new_lines'])]
+                if len(window) == len(h['new_lines']) and all(line.rstrip() == new_line.rstrip() for line, new_line in zip(window, h['new_lines'])):
                     logger.info(f"Hunk #{hunk_idx} already present at position {pos}")
                     already_applied_hunks.add(hunk_key)
                     logger.debug(f"Verified hunk #{hunk_idx} is already applied")
@@ -1041,6 +1074,13 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             new_pos, old_pos = result
             if new_pos is not None:  # Only update position if we got a valid match
                 remove_pos = new_pos
+
+        # Check if the new content is already present at the target position
+        if remove_pos + len(h['new_lines']) <= len(final_lines):
+            target_window = final_lines[remove_pos:remove_pos + len(h['new_lines'])]
+            if len(target_window) == len(h['new_lines']) and all(line.rstrip() == new_line.rstrip() for line, new_line in zip(target_window, h['new_lines'])):
+                logger.info(f"Hunk #{hunk_idx} already present at target position {remove_pos}")
+                continue
 
         # Use actual line counts from the blocks
         old_count = len(h['old_block'])
