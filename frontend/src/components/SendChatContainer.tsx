@@ -163,14 +163,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     };
 
     return (
-        <div className={`input-container ${empty ? 'empty-state' : ''}`}>
+        <div className={`input-container ${empty ? 'empty-state' : ''} ${isProcessing || streamingConversations.has(currentConversationId) ? 'sending' : ''}`}>
             <TextArea
                 ref={textareaRef}
                 value={question}
 		onChange={handleQuestionChange}
                 placeholder="Enter your question.."
                 autoComplete="off"
-		autoSize={{ minRows: 1, maxRows: 6 }}
+		autoSize={{ minRows: 1 }}
                 className="input-textarea"
                 onPressEnter={(event) => {
 		    if (!event.shiftKey && !isQuestionEmpty(question)) {

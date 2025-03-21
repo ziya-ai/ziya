@@ -49,6 +49,8 @@ body {
   --folder-panel-width: 30vw;
   --folder-panel-max-width: 450px;
   --header-height: 60px;
+  --input-max-height: 200px;
+  --input-expanded-max-height: 50vh;
 }
 
 body.dark {
@@ -358,6 +360,19 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 .input-container textarea {
   width: 100%;
+  max-height: 200px;
+  overflow-y: auto !important;
+  transition: max-height 0.3s ease;
+}
+
+/* When actively typing, allow the textarea to grow larger */
+.input-container:not(.sending) textarea {
+  max-height: 50vh;
+}
+
+/* When sending or after submission, constrain the height */
+.input-container.sending textarea {
+  max-height: 200px;
 }
 
 .dark .ant-input {

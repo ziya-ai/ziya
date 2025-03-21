@@ -213,7 +213,11 @@ export const App = () => {
 		ghost={!isDarkMode}
             >{isPanelCollapsed ? '›' : '‹'}</Button>
             <div style={{ height: 'var(--app-header-height)' }}>
-                <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
+                <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
+                    style={{
+                        position: 'fixed',
+                        width: '100%',
+                        zIndex: 1000}}>
                     <h2 style={{
                         color: isDarkMode ? '#fff' : '#000',
                         transition: 'color 0.3s ease',
@@ -242,7 +246,10 @@ export const App = () => {
                     </div>
                 </div>
             </div>
-            <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}>
+            <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
+                style={{
+                    marginTop: 'var(--app-header-height)',
+                    height: 'calc(100vh - var(--app-header-height))'}}>
                 <FolderTree isPanelCollapsed={isPanelCollapsed}/>
                 <div className="chat-container">
 		    <div className="chat-content-stabilizer">
@@ -250,6 +257,7 @@ export const App = () => {
                     </div>
                 </div>
             </div>
+            
         </ConfigProvider>
 	</ExtensionErrorBoundary>
     );
