@@ -10,7 +10,12 @@ import json
 import tempfile
 import shutil
 import difflib
+import logging
 from app.utils.code_util import use_git_to_apply_code_diff, PatchApplicationError
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class DiffRegressionTest(unittest.TestCase):
     """Regression tests for diff application using real-world examples"""
@@ -241,6 +246,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test handling of long multi-part changes with empty lines and complex indentation"""
         self.run_diff_test('long_multipart_emptylines')
 
+    def test_alarm_actions_refactor(self):
+        """Test refactoring alarm actions in CloudFormation template"""
+        self.run_diff_test('alarm_actions_refactor')
+
     def test_d3_network_typescript(self):
         """Test TypeScript fixes for D3 network diagram plugin"""
         self.run_diff_test('d3_network_typescript')
@@ -313,6 +322,79 @@ class PrettyTestResult(unittest.TestResult):
         print("\n" + "=" * 80)
         print(f"Summary: \033[92m{len(passed_tests)} passed\033[0m, \033[91m{len(failed_tests)} failed\033[0m, {len(self.test_results)} total")
         print("=" * 80 + "\n")
+        
+        # Print detailed mode summary table
+        self.print_mode_summary()
+        
+    def print_mode_summary(self, mode_name="Test"):
+        """Print a summary table for a single test mode."""
+        # ANSI color codes
+        GREEN = "\033[92m"
+        RED = "\033[91m"
+        RESET = "\033[0m"
+        
+        # Helper function to calculate visible width of a string with ANSI codes
+        def visible_len(s):
+            # Remove ANSI escape sequences when calculating length
+            s = s.replace(GREEN, "").replace(RED, "").replace(RESET, "")
+            return len(s)
+        
+        # Helper function to center text with ANSI codes
+        def ansi_center(text, width):
+            visible_text_len = visible_len(text)
+            padding = width - visible_text_len
+            left_padding = padding // 2
+            right_padding = padding - left_padding
+            return " " * left_padding + text + " " * right_padding
+        
+        # Define column widths
+        test_name_width = 40
+        status_width = 20
+        
+        # Print table header
+        print("\n" + "=" * 70)
+        print(f"{mode_name} Mode Summary")
+        print("=" * 70)
+        
+        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+")
+        print("| {:<38} | {:^18} |".format("Test Name", "Status"))
+        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+")
+        
+        # Count passes and failures
+        pass_count = 0
+        fail_count = 0
+        
+        # Print results for each test
+        for test, status, _ in self.test_results:
+            test_name = test._testMethodName
+            
+            if status == 'PASS':
+                pass_count += 1
+                status_display = f"{GREEN}PASS{RESET}"
+                test_name_display = f"{GREEN}{test_name}{RESET}"
+            else:
+                fail_count += 1
+                status_display = f"{RED}FAIL{RESET}"
+                test_name_display = f"{RED}{test_name}{RESET}"
+            
+            # Calculate padding for test name to account for ANSI codes
+            test_name_padding = test_name_width - visible_len(test_name_display) - 2  # -2 for the spaces around the cell content
+            status_centered = ansi_center(status_display, status_width-2)
+            
+            print("| {} | {} |".format(
+                test_name_display + " " * test_name_padding,
+                status_centered
+            ))
+        
+        # Print summary
+        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+")
+        total_tests = len(self.test_results)
+        summary = f"{GREEN}{pass_count}{RESET}/{total_tests} passed ({RED}{fail_count}{RESET} failed)"
+        summary_centered = ansi_center(summary, status_width-2)
+        
+        print("| {:<38} | {} |".format("TOTAL", summary_centered))
+        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+")
+        print("=" * 70)
 
 if __name__ == '__main__':
     import argparse
@@ -364,6 +446,8 @@ if __name__ == '__main__':
                       help='Set the log level')
     parser.add_argument('--force-difflib', action='store_true',
                       help='Bypass system patch and use difflib directly')
+    parser.add_argument('--multi-entry', action='store_true',
+                      help='Run all tests in both normal and force-difflib modes with comparison table')
     args = parser.parse_args()
  
     os.environ['ZIYA_LOG_LEVEL'] = args.log_level
@@ -373,15 +457,166 @@ if __name__ == '__main__':
         print_test_case_details(args.test_filter)
         sys.exit(0)
 
-    if args.force_difflib:
+    if args.multi_entry:
+        # Run tests in both modes and show comparison table
+        print("\n" + "=" * 80)
+        print("Running tests in normal mode...")
+        print("=" * 80)
+        
+        # Clear any existing ZIYA_FORCE_DIFFLIB setting
+        if 'ZIYA_FORCE_DIFFLIB' in os.environ:
+            del os.environ['ZIYA_FORCE_DIFFLIB']
+            
+        # Run normal mode
+        suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
+        if args.test_filter:
+            suite = unittest.TestLoader().loadTestsFromName(args.test_filter, DiffRegressionTest)
+        normal_result = PrettyTestResult()
+        suite.run(normal_result)
+        normal_result.print_mode_summary("Normal")
+        
+        print("\n" + "=" * 80)
+        print("Running tests in force-difflib mode...")
+        print("=" * 80)
+        
+        # Set force difflib mode
         os.environ['ZIYA_FORCE_DIFFLIB'] = '1'
- 
-    # Otherwise run the tests normally
-    suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
-    if args.test_filter:
-        suite = unittest.TestLoader().loadTestsFromName(args.test_filter, DiffRegressionTest)
-    result = PrettyTestResult()
-    suite.run(result)
-    result.printSummary()
-    # Exit with appropriate status code
-    sys.exit(len([r for r in result.test_results if r[1] != 'PASS']))
+        
+        # Run force-difflib mode
+        suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
+        if args.test_filter:
+            suite = unittest.TestLoader().loadTestsFromName(args.test_filter, DiffRegressionTest)
+        difflib_result = PrettyTestResult()
+        suite.run(difflib_result)
+        difflib_result.print_mode_summary("Force Difflib")
+        
+        # Print comparison table
+        print("\n" + "=" * 80)
+        print("Test Results Comparison")
+        print("=" * 80)
+        
+        # Get all test names from both runs
+        all_tests = set()
+        for test, _, _ in normal_result.test_results:
+            all_tests.add(test._testMethodName)
+        for test, _, _ in difflib_result.test_results:
+            all_tests.add(test._testMethodName)
+        
+        # Create results dictionaries
+        normal_results = {test._testMethodName: status for test, status, _ in normal_result.test_results}
+        difflib_results = {test._testMethodName: status for test, status, _ in difflib_result.test_results}
+        
+        # Define column widths
+        test_name_width = 40
+        mode_width = 20
+        total_tests = len(all_tests)
+        
+        # ANSI color codes
+        GREEN = "\033[92m"
+        RED = "\033[91m"
+        ORANGE = "\033[93m"
+        RESET = "\033[0m"
+        
+        # Helper function to calculate visible width of a string with ANSI codes
+        def visible_len(s):
+            # Remove ANSI escape sequences when calculating length
+            s = s.replace(GREEN, "").replace(RED, "").replace(ORANGE, "").replace(RESET, "")
+            return len(s)
+        
+        # Helper function to center text with ANSI codes
+        def ansi_center(text, width):
+            visible_text_len = visible_len(text)
+            padding = width - visible_text_len
+            left_padding = padding // 2
+            right_padding = padding - left_padding
+            return " " * left_padding + text + " " * right_padding
+        
+        # Print table header
+        print("+" + "-" * test_name_width + "+" + "-" * mode_width + "+" + "-" * mode_width + "+")
+        print("| {:<38} | {:^18} | {:^18} |".format("Test Name", "Normal Mode", "Force Difflib"))
+        print("+" + "-" * test_name_width + "+" + "-" * mode_width + "+" + "-" * mode_width + "+")
+        
+        # Print results for each test
+        normal_pass_count = 0
+        difflib_pass_count = 0
+        
+        for test_name in sorted(all_tests):
+            normal_status = normal_results.get(test_name, 'N/A')
+            difflib_status = difflib_results.get(test_name, 'N/A')
+            
+            # Determine test name color based on both statuses
+            if normal_status == 'PASS' and difflib_status == 'PASS':
+                test_name_color = GREEN
+            elif normal_status != 'PASS' and difflib_status != 'PASS':
+                test_name_color = RED
+            else:
+                test_name_color = ORANGE
+                
+            # Format test name with color and proper padding
+            colored_test_name = f"{test_name_color}{test_name}{RESET}"
+            
+            if normal_status == 'PASS':
+                normal_pass_count += 1
+                normal_display = f"{GREEN}PASS{RESET}"
+            elif normal_status == 'N/A':
+                normal_display = "-"
+            else:
+                normal_display = f"{RED}FAIL{RESET}"
+                
+            if difflib_status == 'PASS':
+                difflib_pass_count += 1
+                difflib_display = f"{GREEN}PASS{RESET}"
+            elif difflib_status == 'N/A':
+                difflib_display = "-"
+            else:
+                difflib_display = f"{RED}FAIL{RESET}"
+            
+            # Format with fixed width, accounting for ANSI color codes
+            normal_centered = ansi_center(normal_display, mode_width-2)  # -2 for the spaces around the cell content
+            difflib_centered = ansi_center(difflib_display, mode_width-2)
+            
+            # Calculate padding for test name to account for ANSI codes
+            ansi_padding = len(colored_test_name) - visible_len(colored_test_name)
+            test_name_padding = test_name_width - visible_len(colored_test_name) - 2  # -2 for the spaces around the cell content
+            
+            print("| {} | {} | {} |".format(
+                colored_test_name + " " * test_name_padding,
+                normal_centered,
+                difflib_centered
+            ))
+        
+        # Print summary
+        print("+" + "-" * test_name_width + "+" + "-" * mode_width + "+" + "-" * mode_width + "+")
+        
+        # Format summary with color
+        normal_summary = f"{GREEN}{normal_pass_count}{RESET}/{total_tests} passed"
+        difflib_summary = f"{GREEN}{difflib_pass_count}{RESET}/{total_tests} passed"
+        
+        normal_summary_centered = ansi_center(normal_summary, mode_width-2)
+        difflib_summary_centered = ansi_center(difflib_summary, mode_width-2)
+        
+        print("| {:<38} | {} | {} |".format(
+            "TOTAL",
+            normal_summary_centered,
+            difflib_summary_centered
+        ))
+        
+        print("+" + "-" * test_name_width + "+" + "-" * mode_width + "+" + "-" * mode_width + "+")
+        print("=" * 80)
+        
+        # Exit with appropriate status code - fail if any test failed in either mode
+        sys.exit(1 if (normal_pass_count < total_tests or difflib_pass_count < total_tests) else 0)
+    else:
+        # Regular test run
+        if args.force_difflib:
+            os.environ['ZIYA_FORCE_DIFFLIB'] = '1'
+     
+        # Otherwise run the tests normally
+        suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
+        if args.test_filter:
+            suite = unittest.TestLoader().loadTestsFromName(args.test_filter, DiffRegressionTest)
+        result = PrettyTestResult()
+        suite.run(result)
+        result.printSummary()
+        # Exit with appropriate status code
+        sys.exit(len([r for r in result.test_results if r[1] != 'PASS']))
