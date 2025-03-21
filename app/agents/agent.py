@@ -489,6 +489,10 @@ class RetryingChatBedrock(Runnable):
         """Stream responses with retries and proper message formatting."""
         max_retries = 3
         base_retry_delay = 1
+        
+        # Add AWS credential debugging
+        from app.utils.aws_utils import debug_aws_credentials
+        debug_aws_credentials()
 
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None

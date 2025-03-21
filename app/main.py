@@ -335,6 +335,7 @@ def start_server(args):
         logger.error(f"Failed to start server: {str(e)}")
         sys.exit(1)
 
+
 def check_auth(args):
     """Check authentication setup without starting the server."""
     # Set up environment variables first
