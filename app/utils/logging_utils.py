@@ -9,6 +9,9 @@ def get_logger():
 
    # Remove any existing handlers
    logger.handlers.clear()
+   
+   # Prevent propagation to the root logger to avoid duplicate logs
+   logger.propagate = False
 
    formatter = logging.Formatter("\033[35mZIYA\033[0m: %(levelname)-8s %(message)s")
    handler = logging.StreamHandler()
