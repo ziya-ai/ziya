@@ -898,6 +898,115 @@ class DiffRegressionTest(unittest.TestCase):
                 self.assertTrue(len(second_result['details']['already_applied']) > 0, 
                                f"Second application should report hunks as already_applied for {case_name}")
 
+    # MRE test cases
+    def test_MRE_binary_file_changes(self):
+        """Test handling of binary file changes"""
+        self.run_diff_test('MRE_binary_file_changes')
+        
+    def test_MRE_comment_only_changes(self):
+        """Test handling of comment-only changes"""
+        self.run_diff_test('MRE_comment_only_changes')
+        
+    def test_MRE_empty_file_changes(self):
+        """Test handling of changes to empty files"""
+        self.run_diff_test('MRE_empty_file_changes')
+        
+    def test_MRE_escape_sequence_regression(self):
+        """Test handling of escape sequence regression"""
+        self.run_diff_test('MRE_escape_sequence_regression')
+        
+    def test_MRE_identical_adjacent_blocks(self):
+        """Test handling of identical adjacent code blocks"""
+        self.run_diff_test('MRE_identical_adjacent_blocks')
+        
+    def test_MRE_inconsistent_indentation(self):
+        """Test handling of inconsistent indentation"""
+        self.run_diff_test('MRE_inconsistent_indentation')
+        
+    def test_MRE_inconsistent_line_endings(self):
+        """Test handling of inconsistent line endings"""
+        self.run_diff_test('MRE_inconsistent_line_endings')
+        
+    def test_MRE_incorrect_hunk_offsets(self):
+        """Test handling of incorrect hunk offsets"""
+        self.run_diff_test('MRE_incorrect_hunk_offsets')
+        
+    def test_MRE_incorrect_line_numbers(self):
+        """Test handling of incorrect line numbers"""
+        self.run_diff_test('MRE_incorrect_line_numbers')
+        
+    def test_MRE_interleaved_changes(self):
+        """Test handling of interleaved additions and deletions"""
+        self.run_diff_test('MRE_interleaved_changes')
+        
+    def test_MRE_invisible_unicode(self):
+        """Test handling of invisible Unicode characters"""
+        self.run_diff_test('MRE_invisible_unicode')
+        
+    def test_MRE_large_indentation_shifts(self):
+        """Test handling of large indentation shifts"""
+        self.run_diff_test('MRE_large_indentation_shifts')
+        
+    def test_MRE_malformed_diff_header(self):
+        """Test handling of malformed diff headers"""
+        self.run_diff_test('MRE_malformed_diff_header')
+        
+    def test_MRE_missing_newline_at_eof(self):
+        """Test handling of missing newline at end of file"""
+        self.run_diff_test('MRE_missing_newline_at_eof')
+        
+    def test_MRE_mixed_line_endings(self):
+        """Test handling of mixed line endings"""
+        self.run_diff_test('MRE_mixed_line_endings')
+        
+    def test_MRE_mixed_line_endings_crlf_lf(self):
+        """Test handling of mixed CRLF and LF line endings"""
+        self.run_diff_test('MRE_mixed_line_endings_crlf_lf')
+        
+    def test_MRE_multiple_file_changes(self):
+        """Test handling of changes to multiple files"""
+        self.run_diff_test('MRE_multiple_file_changes')
+        
+    def test_MRE_nested_indentation_mismatch(self):
+        """Test handling of nested indentation mismatches"""
+        self.run_diff_test('MRE_nested_indentation_mismatch')
+        
+    def test_MRE_non_existent_file(self):
+        """Test handling of changes to non-existent files"""
+        self.run_diff_test('MRE_non_existent_file')
+        
+    def test_MRE_overlapping_hunks(self):
+        """Test handling of overlapping hunks"""
+        self.run_diff_test('MRE_overlapping_hunks')
+        
+    def test_MRE_recursive_function_changes(self):
+        """Test handling of changes to recursive functions"""
+        self.run_diff_test('MRE_recursive_function_changes')
+        
+    def test_MRE_special_regex_characters(self):
+        """Test handling of special regex characters"""
+        self.run_diff_test('MRE_special_regex_characters')
+        
+    def test_MRE_trailing_whitespace_issues(self):
+        """Test handling of trailing whitespace issues"""
+        self.run_diff_test('MRE_trailing_whitespace_issues')
+        
+    def test_MRE_unicode_characters(self):
+        """Test handling of Unicode characters"""
+        self.run_diff_test('MRE_unicode_characters')
+        
+    def test_MRE_whitespace_only_changes(self):
+        """Test handling of whitespace-only changes"""
+        self.run_diff_test('MRE_whitespace_only_changes')
+        
+    def test_MRE_zero_context_hunks(self):
+        """Test handling of hunks with zero context"""
+        self.run_diff_test('MRE_zero_context_hunks')
+        
+    def test_MRE_hunk_context_mismatch(self):
+        """Test handling of hunk context mismatches"""
+        self.run_diff_test('MRE_hunk_context_mismatch')
+
 
 class PrettyTestResult(unittest.TestResult):
     def __init__(self):
