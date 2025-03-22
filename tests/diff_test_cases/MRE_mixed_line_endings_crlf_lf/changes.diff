@@ -1,0 +1,16 @@
+diff --git a/test.py b/test.py
+index 1234567..abcdefg 100644
+--- a/test.py
++++ b/test.py
+@@ -1,9 +1,9 @@
+ def windows_style_function():
+     # This function has CRLF line endings
+-    print("Windows style")
++    print("Windows style modified")
+     return True
+ 
+ def unix_style_function():
+     # This function has LF line endings
+-    print("Unix style")
++    print("Unix style modified")
+     return True

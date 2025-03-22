@@ -1,0 +1,48 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -10,13 +10,17 @@ def process_order(order):
+     # Calculate subtotal
+     subtotal = 0
+     for item in order.items:
++        # Skip items with zero quantity
++        if item.quantity <= 0:
++            continue
+         subtotal += item.price * item.quantity
+     
+     # Calculate tax
+-    tax_rate = 0.08  # 8% tax rate
++    tax_rate = get_tax_rate(order.shipping_address)
+     tax = subtotal * tax_rate
+     
+-    # Calculate total
++    # Calculate shipping cost
++    shipping = calculate_shipping(order)
+     total = subtotal + tax
+     
+     # Apply any discounts
+@@ -27,6 +31,7 @@ def process_order(order):
+     # Update order object
+     order.subtotal = subtotal
+     order.tax = tax
++    order.shipping = shipping
+     order.total = total
+     
+     return order
+@@ -37,4 +42,12 @@ def calculate_discount(order, subtotal):
+     elif order.discount_type == "fixed":
+         return min(order.discount_value, subtotal)
+     else:
+-        return 0
+\ No newline at end of file
++        return 0
++
++def get_tax_rate(address):
++    """Get tax rate based on shipping address"""
++    # Default tax rate
++    return 0.08  # 8% tax rate
++
++def calculate_shipping(order):
++    """Calculate shipping cost based on order weight and destination"""
++    base_rate = 5.00
++    return base_rate

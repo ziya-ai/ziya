@@ -1,0 +1,33 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -8,9 +8,9 @@ def generate_text():
+     text += "With multiple lines\n"
+     
+     # Add text with escape sequences
+-    text += "Tab character: \\t\n"
+-    text += "Newline character: \\n\n"
+-    text += "Backslash character: \\\\\n"
++    text += "Tab character: \\t (horizontal tab)\n"
++    text += "Newline character: \\n (line feed)\n"
++    text += "Backslash character: \\\\ (backslash)\n"
+     
+     # Add text with actual escape sequences
+     text += "Actual tab:\t<tab>\n"
+@@ -21,8 +21,12 @@ def parse_escaped_text(text):
+     """Parse text with escape sequences"""
+     
+     # Replace escape sequences with actual characters
+-    result = text.replace("\\n", "\n")
+-    result = result.replace("\\t", "\t")
+-    result = result.replace("\\\\", "\\")
++    result = text
++    
++    # Process escape sequences in order
++    replacements = [
++        ("\\\\", "\\"),  # Must process backslash first
++        ("\\n", "\n"),
++        ("\\t", "\t")
++    ]
+     
+-    return result

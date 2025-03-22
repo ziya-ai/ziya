@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with changes to recursive functions that can break the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "recursive_function_changes_test"
+}

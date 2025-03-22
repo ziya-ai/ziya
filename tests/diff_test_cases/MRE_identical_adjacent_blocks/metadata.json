@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with changes to identical adjacent code blocks that can confuse the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "identical_adjacent_blocks_test"
+}
