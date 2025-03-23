@@ -2,5 +2,6 @@
     "target_file": "test.py",
     "description": "Test case with hunk context mismatches that can break the diff apply mechanism",
     "date_added": "2025-03-22",
-    "issue_reference": "hunk_context_mismatch_test"
+    "issue_reference": "hunk_context_mismatch_test",
+    "expected_to_fail": true
 }

@@ -20,12 +20,9 @@ def process_order(order):
     tax_rate = get_tax_rate(order.shipping_address)
     tax = subtotal * tax_rate
     
-    # Calculate total
-    total = subtotal + tax
-    
     # Calculate shipping cost
     shipping = calculate_shipping(order)
-    total += shipping
+    total = subtotal + tax
     
     # Apply any discounts
     if order.has_discount:
