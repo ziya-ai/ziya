@@ -4,7 +4,7 @@ AWS utility functions for Ziya.
 import os
 import sys
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError
 from app.utils.logging_utils import logger
 
 class ThrottleSafeBedrock:
@@ -23,16 +23,174 @@ class ThrottleSafeBedrock:
                 raise ValueError("AWS Bedrock is currently throttling requests. Please try again later.")
             raise
 
-def check_aws_credentials():
-    """Check if AWS credentials are valid."""
+def check_aws_credentials(is_server_startup=True, profile_name=None):
+    """Check if AWS credentials are valid.
+    
+    Args:
+        is_server_startup (bool): Whether this check is being performed during server startup
+                                 or during a query in an already running server.
+        profile_name (str): Optional AWS profile name to use
+    """
     try:
+        # Create a session with the specified profile if provided
+        if profile_name:
+            session = boto3.Session(profile_name=profile_name)
+            sts = session.client('sts')
+        else:
+            sts = boto3.client('sts')
+            
         # Try to get caller identity
-        sts = boto3.client('sts')
-        sts.get_caller_identity()
-        return True
+        identity = sts.get_caller_identity()
+        logger.debug(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
+        return True, None
+    except NoCredentialsError:
+        error_msg = "⚠️ AWS CREDENTIALS ERROR: No AWS credentials found. Please set up your AWS credentials."
+        logger.error(f"AWS credentials check failed: No credentials found")
+        return False, error_msg
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code') == 'InvalidClientTokenId':
+            error_msg = "⚠️ AWS CREDENTIALS ERROR: Invalid AWS credentials. Please check your AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
+            logger.error(f"AWS credentials check failed: Invalid token")
+            return False, error_msg
+        else:
+            error_msg = f"⚠️ AWS CREDENTIALS ERROR: {str(e)}"
+            logger.error(f"AWS credentials check failed: {e}")
+            return False, error_msg
     except Exception as e:
         logger.error(f"AWS credentials check failed: {e}")
-        raise ValueError(f"AWS credentials check failed: {e}. Please check your AWS credentials and try again.")
+        
+        # Create a more user-friendly error message
+        error_msg = str(e)
+        
+        # Log the full error message for debugging
+        logger.debug(f"Full error message: {error_msg}")
+        
+        # For Amazon internal users, always try to get the mwinit message directly from AWS CLI
+        # This is more reliable than parsing the boto3 error message
+        try:
+            import subprocess
+            import os
+            
+            # Get the profile from environment or use default
+            profile = os.environ.get("ZIYA_AWS_PROFILE", "default")
+            
+            # Run AWS CLI directly to get the full error message
+            cmd = f"aws sts get-caller-identity --profile {profile} 2>&1"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            
+            # If we got an error, use that message instead as it's more detailed
+            if result.returncode != 0:
+                cli_error = result.stdout + result.stderr
+                logger.debug(f"Got more detailed error from AWS CLI: {cli_error}")
+                
+                # If the CLI error contains mwinit, use that message but format it nicely
+                if "mwinit" in cli_error.lower():
+                    # Create a simplified, user-friendly message with different text based on context
+                    if is_server_startup:
+                        return False, """⚠️ AWS CREDENTIALS ERROR: Your Amazon internal credentials have expired.
+
+Please run the following command to refresh your credentials:
+
+    mwinit
+
+Then try running Ziya again."""
+                    else:
+                        return False, """⚠️ AWS CREDENTIALS ERROR: Your Amazon internal credentials have expired.
+
+Please run the following command to refresh your credentials:
+
+    mwinit
+
+Then try your query again."""
+        except Exception as cli_error:
+            logger.debug(f"Failed to get detailed error from AWS CLI: {cli_error}")
+        
+        # If we couldn't get a better message from the CLI, use our standard error handling
+        # For Amazon internal users, we should always suggest mwinit for credential errors
+        # Check if this is an Amazon internal environment first
+        is_amazon_internal = False
+        try:
+            # Check for common Amazon internal environment indicators
+            import os
+            is_amazon_internal = (
+                os.path.exists('/apollo') or 
+                os.path.exists('/home/ec2-user') or
+                'AWS_PROFILE' in os.environ and 'isengard' in os.environ.get('AWS_PROFILE', '').lower() or
+                'AWS_CONFIG_FILE' in os.environ and 'midway' in os.environ.get('AWS_CONFIG_FILE', '').lower() or
+                any(pattern in error_msg for pattern in ["amazon.com", "corp.amazon", "midway", "isengard"])
+            )
+        except:
+            pass
+            
+        # If we're in an Amazon internal environment, always suggest mwinit for credential errors
+        if is_amazon_internal and ("InvalidClientTokenId" in error_msg or "ExpiredToken" in error_msg or 
+                                  "AccessDenied" in error_msg or "NoCredentialProviders" in error_msg):
+            if is_server_startup:
+                return False, """⚠️ AWS CREDENTIALS ERROR: Your Amazon internal credentials have expired.
+
+Please run the following command to refresh your credentials:
+
+    mwinit
+
+Then try running Ziya again."""
+            else:
+                return False, """⚠️ AWS CREDENTIALS ERROR: Your Amazon internal credentials have expired.
+
+Please run the following command to refresh your credentials:
+
+    mwinit
+
+Then try your query again."""
+            
+        # Standard error detection for non-Amazon environments
+        if any(pattern in error_msg.lower() for pattern in ["mwinit", "midway-auth", "iibs-midway", "authenticate by running"]):
+            # Format the error message nicely but preserve the original content
+            return False, f"⚠️ AWS CREDENTIALS ERROR: {error_msg}"
+        elif "ExpiredToken" in error_msg:
+            return False, "⚠️ AWS CREDENTIALS ERROR: Your AWS credentials have expired. Please refresh your credentials."
+        elif "InvalidClientTokenId" in error_msg:
+            return False, "⚠️ AWS CREDENTIALS ERROR: Invalid AWS credentials. Please check your AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
+        elif "AccessDenied" in error_msg:
+            return False, "⚠️ AWS CREDENTIALS ERROR: Access denied. Your AWS credentials don't have sufficient permissions."
+        elif "NoCredentialProviders" in error_msg:
+            return False, "⚠️ AWS CREDENTIALS ERROR: No AWS credentials found. Please set up your AWS credentials."
+        else:
+            # Generic error message for other cases
+            return False, f"⚠️ AWS CREDENTIALS ERROR: {e}. Please check your AWS credentials and try again."
+        
+        # For Amazon internal users, we should always suggest mwinit for credential errors
+        # Check if this is an Amazon internal environment first
+        is_amazon_internal = False
+        try:
+            # Check for common Amazon internal environment indicators
+            import os
+            is_amazon_internal = (
+                os.path.exists('/apollo') or 
+                os.path.exists('/home/ec2-user') or
+                'AWS_PROFILE' in os.environ and 'isengard' in os.environ.get('AWS_PROFILE', '').lower() or
+                'AWS_CONFIG_FILE' in os.environ and 'midway' in os.environ.get('AWS_CONFIG_FILE', '').lower() or
+                any(pattern in error_msg for pattern in ["amazon.com", "corp.amazon", "midway", "isengard"])
+            )
+        except:
+            pass
+            
+        # If we're in an Amazon internal environment, always suggest mwinit for credential errors
+        if is_amazon_internal and ("InvalidClientTokenId" in error_msg or "ExpiredToken" in error_msg or 
+                                  "AccessDenied" in error_msg or "NoCredentialProviders" in error_msg):
+            return False, "⚠️ AWS CREDENTIALS ERROR: Your Amazon internal credentials have expired. Please run 'mwinit' to refresh them."
+            
+        # Standard error detection for non-Amazon environments
+        if "ExpiredToken" in error_msg:
+            return False, "⚠️ AWS CREDENTIALS ERROR: Your AWS credentials have expired. Please refresh your credentials."
+        elif "InvalidClientTokenId" in error_msg:
+            return False, "⚠️ AWS CREDENTIALS ERROR: Invalid AWS credentials. Please check your AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
+        elif "AccessDenied" in error_msg:
+            return False, "⚠️ AWS CREDENTIALS ERROR: Access denied. Your AWS credentials don't have sufficient permissions."
+        elif "NoCredentialProviders" in error_msg:
+            return False, "⚠️ AWS CREDENTIALS ERROR: No AWS credentials found. Please set up your AWS credentials."
+        else:
+            # Generic error message for other cases
+            return False, f"⚠️ AWS CREDENTIALS ERROR: {e}. Please check your AWS credentials and try again."
 
 def debug_aws_credentials():
     """Debug function to print AWS credential information."""
