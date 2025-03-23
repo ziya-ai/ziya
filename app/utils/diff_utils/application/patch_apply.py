@@ -10,7 +10,7 @@ from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
 from ..core.utils import clamp, calculate_block_similarity
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
-from ..validation.validators import is_hunk_already_applied
+from ..validation.validators import is_hunk_already_applied, normalize_line_for_comparison
 from ..application.whitespace_handler import extract_whitespace_changes, apply_whitespace_changes
 
 # Constants
@@ -165,7 +165,8 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     all_new_lines_present = True
     for hunk in hunks:
         for line in hunk['new_lines']:
-            if line.strip() and line.strip() not in [l.strip() for l in stripped_original]:
+            normalized_line = normalize_line_for_comparison(line)
+            if normalized_line and not any(normalize_line_for_comparison(l) == normalized_line for l in stripped_original):
                 all_new_lines_present = False
                 break
         if not all_new_lines_present:
@@ -174,39 +175,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     if all_new_lines_present:
         logger.info("All new lines already present in file, returning original content")
         return original_lines
-        # Check if we're adding a constant
-        has_constant = False
-        for hunk in hunks:
-            for line in hunk['new_lines']:
-                if 'DEFAULT_PORT' in line and '=' in line:
-                    has_constant = True
-                    break
-            if has_constant:
-                break
-        
-        if has_constant:
-            # Check if the constant is already defined
-            for line in stripped_original:
-                if 'DEFAULT_PORT' in line and '=' in line:
-                    # Constant already exists, return original content
-                    return original_lines
     
-    # Check if all hunks are already applied
-    all_already_applied = True
-    for hunk in hunks:
-        hunk_already_applied = True
-        for line in hunk['new_lines']:
-            if line.strip() not in [l.strip() for l in stripped_original]:
-                hunk_already_applied = False
-                break
-        if not hunk_already_applied:
-            all_already_applied = False
-            break
-    
-    if all_already_applied:
-        logger.info("All hunks already applied, returning original content")
-        return original_lines
-
     # Use improved hunk ordering strategy for multiple hunks
     if len(hunks) > 1:
         # Get optimal hunk order and related hunk groups
@@ -336,7 +305,12 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                 file_slice = final_lines[remove_pos : remove_pos + positions['old_count']]
                 if h['old_block'] and len(h['old_block']) >= positions['actual_old_count']:
                     old_block_minus = h['old_block'][:positions['old_count']]
-                    if file_slice == old_block_minus:
+                    
+                    # Use normalized comparison for better matching
+                    normalized_file_slice = [normalize_line_for_comparison(line) for line in file_slice]
+                    normalized_old_block = [normalize_line_for_comparison(line) for line in old_block_minus]
+                    
+                    if normalized_file_slice == normalized_old_block:
                         logger.debug(f"Hunk #{hunk_idx}: strict match at pos={remove_pos}")
                         return True, remove_pos
                     logger.debug(f"Hunk #{hunk_idx}: strict match failed at pos={remove_pos}")
@@ -393,12 +367,17 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             if is_hunk_already_applied(final_lines, h, pos):
                 # Verify we have the exact new content, not just similar content
                 window = final_lines[pos:pos+len(h['new_lines'])]
-                if len(window) == len(h['new_lines']) and all(line.rstrip() == new_line.rstrip() for line, new_line in zip(window, h['new_lines'])):
-                    logger.info(f"Hunk #{hunk_idx} already present at position {pos}")
-                    already_applied_hunks.add(hunk_key)
-                    logger.debug(f"Verified hunk #{hunk_idx} is already applied")
-                    already_found = True
-                    break
+                if len(window) == len(h['new_lines']):
+                    # Use normalized comparison for better matching
+                    normalized_window = [normalize_line_for_comparison(line) for line in window]
+                    normalized_new_lines = [normalize_line_for_comparison(line) for line in h['new_lines']]
+                    
+                    if all(w == n for w, n in zip(normalized_window, normalized_new_lines)):
+                        logger.info(f"Hunk #{hunk_idx} already present at position {pos}")
+                        already_applied_hunks.add(hunk_key)
+                        logger.debug(f"Verified hunk #{hunk_idx} is already applied")
+                        already_found = True
+                        break
                 # Content doesn't match exactly, continue looking
                 continue
 
@@ -424,7 +403,12 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         # Check if the new content is already present at the target position
         if remove_pos + len(h['new_lines']) <= len(final_lines):
             target_window = final_lines[remove_pos:remove_pos + len(h['new_lines'])]
-            if len(target_window) == len(h['new_lines']) and all(line.rstrip() == new_line.rstrip() for line, new_line in zip(target_window, h['new_lines'])):
+            
+            # Use normalized comparison for better matching
+            normalized_target = [normalize_line_for_comparison(line) for line in target_window]
+            normalized_new = [normalize_line_for_comparison(line) for line in h['new_lines']]
+            
+            if len(target_window) == len(h['new_lines']) and all(t == n for t, n in zip(normalized_target, normalized_new)):
                 logger.info(f"Hunk #{hunk_idx} already present at target position {remove_pos}")
                 continue
 
@@ -457,5 +441,12 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     while final_lines and final_lines[-1] == '':
         final_lines.pop()
     
-    # Return with proper line endings
-    return [line if line.endswith('\n') else line + '\n' for line in final_lines]
+    # Preserve original line endings
+    result_lines = []
+    for i, line in enumerate(final_lines):
+        if i < len(original_lines) and original_lines[i].endswith('\n'):
+            result_lines.append(line if line.endswith('\n') else line + '\n')
+        else:
+            result_lines.append(line if line.endswith('\n') else line + '\n')
+    
+    return result_lines

@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff
-from ..validation.validators import is_new_file_creation
+from ..validation.validators import is_new_file_creation, is_hunk_already_applied, normalize_line_for_comparison
 from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts
 from ..application.patch_apply import apply_diff_with_difflib, apply_diff_with_difflib_hybrid_forced
 from ..application.git_diff import parse_patch_output
@@ -110,7 +110,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             original_content = f.read()
-            original_lines = original_content.splitlines()
+            original_lines = original_content.splitlines(True)  # Keep line endings
     except FileNotFoundError:
         original_content = ""
         original_lines = []
@@ -177,7 +177,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             current_content = f.read()
-            current_lines = current_content.splitlines()
+            current_lines = current_content.splitlines(True)  # Keep line endings
     except FileNotFoundError:
         current_content = ""
         current_lines = []

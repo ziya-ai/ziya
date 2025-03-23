@@ -4,6 +4,7 @@ Validation utilities for diffs and patches.
 
 from typing import List, Dict, Any
 from itertools import zip_longest
+import re
 
 from app.utils.logging_utils import logger
 from ..core.utils import calculate_block_similarity, normalize_escapes
@@ -45,6 +46,37 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
     logger.debug("No new file indicators found")
     return False
 
+def normalize_line_for_comparison(line: str) -> str:
+    """
+    Normalize a line for comparison, handling whitespace and invisible characters.
+    
+    Args:
+        line: The line to normalize
+        
+    Returns:
+        The normalized line
+    """
+    if not line:
+        return ""
+    
+    # Remove invisible Unicode characters
+    # Zero-width space (U+200B), zero-width non-joiner (U+200C), zero-width joiner (U+200D)
+    # Left-to-right mark (U+200E), right-to-left mark (U+200F)
+    # And other zero-width/invisible characters
+    invisible_chars = [
+        '\u200B', '\u200C', '\u200D', '\u200E', '\u200F',
+        '\u2060', '\u2061', '\u2062', '\u2063', '\u2064',
+        '\uFEFF'  # Zero-width no-break space (BOM)
+    ]
+    result = line
+    for char in invisible_chars:
+        result = result.replace(char, '')
+    
+    # Normalize escape sequences
+    result = normalize_escapes(result)
+    
+    return result.rstrip()
+
 def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int) -> bool:
     """
     Check if a hunk is already applied at the given position with improved handling
@@ -69,11 +101,18 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         window_size = len(file_lines) - pos
     available_lines = file_lines[pos:pos + window_size]
     
-    # First check: exact match of the entire new content block
+    # First check: exact match of the entire new content block with normalized comparison
     if len(available_lines) >= len(hunk['new_lines']):
         exact_match = True
         for i, new_line in enumerate(hunk['new_lines']):
-            if i >= len(available_lines) or available_lines[i].rstrip() != new_line.rstrip():
+            if i >= len(available_lines):
+                exact_match = False
+                break
+                
+            normalized_file_line = normalize_line_for_comparison(available_lines[i])
+            normalized_new_line = normalize_line_for_comparison(new_line)
+            
+            if normalized_file_line != normalized_new_line:
                 exact_match = False
                 break
         
@@ -89,12 +128,15 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         
         # Check if we're adding a constant after a comment
         if old_line.startswith('#') and '=' in new_line and not new_line.startswith('#'):
-            # Look for the constant anywhere in the file
-            constant_name = new_line.split('=')[0].strip()
-            for line in file_lines:
-                if line.strip().startswith(constant_name) and '=' in line:
-                    logger.debug(f"Found constant {constant_name} already defined in file")
-                    return True
+            # Extract constant name more robustly
+            constant_match = re.match(r'^([A-Za-z0-9_]+)\s*=', new_line)
+            if constant_match:
+                constant_name = constant_match.group(1)
+                # Look for the constant anywhere in the file
+                for line in file_lines:
+                    if re.search(rf'\b{re.escape(constant_name)}\s*=', line):
+                        logger.debug(f"Found constant {constant_name} already defined in file")
+                        return True
     
     # Special case for escape sequences
     # This handles the escape_sequence_content test case
@@ -103,7 +145,8 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         text_lines = [line for line in hunk['new_lines'] if 'text +=' in line]
         all_found = True
         for text_line in text_lines:
-            if not any(normalize_escapes(line.strip()) == normalize_escapes(text_line.strip()) for line in file_lines):
+            normalized_text_line = normalize_line_for_comparison(text_line)
+            if not any(normalize_line_for_comparison(line) == normalized_text_line for line in file_lines):
                 all_found = False
                 break
         
@@ -122,10 +165,17 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         logger.debug("No actual changes in hunk")
         return True
     
-    # Check if all changed lines match their target state
+    # Check if all changed lines match their target state with normalized comparison
     all_changes_applied = True
     for idx, _, new_line in changes:
-        if idx >= len(available_lines) or available_lines[idx].rstrip() != (new_line or '').rstrip():
+        if idx >= len(available_lines):
+            all_changes_applied = False
+            break
+            
+        normalized_file_line = normalize_line_for_comparison(available_lines[idx])
+        normalized_new_line = normalize_line_for_comparison(new_line or '')
+        
+        if normalized_file_line != normalized_new_line:
             all_changes_applied = False
             break
     
@@ -135,10 +185,11 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     
     # Third check: calculate overall similarity for fuzzy matching
     if len(available_lines) >= len(hunk['new_lines']):
-        similarity = calculate_block_similarity(
-            available_lines[:len(hunk['new_lines'])], 
-            hunk['new_lines']
-        )
+        # Normalize both sides for comparison
+        normalized_available = [normalize_line_for_comparison(line) for line in available_lines[:len(hunk['new_lines'])]]
+        normalized_new = [normalize_line_for_comparison(line) for line in hunk['new_lines']]
+        
+        similarity = calculate_block_similarity(normalized_available, normalized_new)
         
         # Very high similarity suggests the changes are already applied
         if similarity >= 0.98:

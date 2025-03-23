@@ -24,6 +24,13 @@ def normalize_whitespace(content: str) -> str:
     # Normalize line endings
     content = content.replace('\r\n', '\n')
     
+    # Handle invisible Unicode characters
+    content = content.replace('\u200b', '')  # Zero-width space
+    content = content.replace('\u200c', '')  # Zero-width non-joiner
+    content = content.replace('\u200d', '')  # Zero-width joiner
+    content = content.replace('\u2060', '')  # Word joiner
+    content = content.replace('\ufeff', '')  # Zero-width no-break space (BOM)
+    
     return content
 
 def is_whitespace_only_change(old_line: str, new_line: str) -> bool:
@@ -37,6 +44,14 @@ def is_whitespace_only_change(old_line: str, new_line: str) -> bool:
     Returns:
         True if the only difference is whitespace
     """
+    # Handle tab vs space differences
+    normalized_old = old_line.replace('\t', '    ')
+    normalized_new = new_line.replace('\t', '    ')
+    
+    # If they're equal after tab normalization, it's a whitespace change
+    if normalized_old == normalized_new:
+        return True
+    
     # Remove all whitespace and compare
     old_no_space = re.sub(r'\s+', '', old_line)
     new_no_space = re.sub(r'\s+', '', new_line)
@@ -138,29 +153,43 @@ def process_whitespace_changes(original_content: str, diff_content: str) -> Opti
     whitespace_changes = []
     current_line = 0
     
-    for line in diff_content.splitlines():
-        # Track line numbers from hunk headers
-        if line.startswith('@@'):
-            # Extract line numbers from hunk header
-            match = re.search(r'@@ -(\d+)', line)
-            if match:
-                current_line = int(match.group(1)) - 1
-        # Process removed lines
-        elif line.startswith('-') and not line.startswith('---'):
-            removed_line = line[1:]
-            current_line += 1
-        # Process added lines
+    # Split the diff into lines for processing
+    diff_lines = diff_content.splitlines()
+    
+    # First pass: identify all removed and added lines
+    removed_lines = []
+    added_lines = []
+    
+    for i, line in enumerate(diff_lines):
+        if line.startswith('-') and not line.startswith('---'):
+            removed_lines.append((i, line[1:]))
         elif line.startswith('+') and not line.startswith('+++'):
-            added_line = line[1:]
-            # Find the corresponding removed line
-            for i, prev_line in enumerate(diff_content.splitlines()):
-                if prev_line.startswith('-') and not prev_line.startswith('---'):
-                    if is_whitespace_only_change(prev_line[1:], added_line):
-                        whitespace_changes.append((current_line, prev_line[1:], added_line))
-                        break
-        # Process context lines
-        elif line.startswith(' '):
-            current_line += 1
+            added_lines.append((i, line[1:]))
+    
+    # Second pass: match removed and added lines that are whitespace-only changes
+    matched_indices = set()
+    
+    for r_idx, (r_line_idx, r_line) in enumerate(removed_lines):
+        for a_idx, (a_line_idx, a_line) in enumerate(added_lines):
+            if a_idx in matched_indices:
+                continue
+                
+            if is_whitespace_only_change(r_line, a_line):
+                # Find the line number in the original file
+                line_num = 0
+                for i in range(r_line_idx):
+                    if diff_lines[i].startswith('@@'):
+                        match = re.search(r'@@ -(\d+)', diff_lines[i])
+                        if match:
+                            line_num = int(match.group(1)) - 1
+                    elif diff_lines[i].startswith(' '):
+                        line_num += 1
+                    elif diff_lines[i].startswith('-') and not diff_lines[i].startswith('---'):
+                        line_num += 1
+                
+                whitespace_changes.append((line_num, r_line, a_line))
+                matched_indices.add(a_idx)
+                break
     
     # Apply the whitespace changes
     if whitespace_changes:
