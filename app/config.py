@@ -30,13 +30,59 @@ GLOBAL_MODEL_DEFAULTS = {
     }
 }
 
+# Model families define common characteristics and parameter ranges
+MODEL_FAMILIES = {
+    "claude": {
+        "wrapper_class": "ThrottleSafeBedrock",
+        "supported_parameters": {
+            "temperature": {"min": 0.0, "max": 1.0, "default": 0.3},
+            "top_k": {"min": 0, "max": 200, "default": 15},
+            "max_tokens": {"min": 1, "max": 4096, "default": 1024}
+        },
+        "internal_parameters": {
+            "stop_sequences": {"default": []}
+        }
+    },
+    "nova": {
+        "wrapper_class": "NovaBedrock",
+        "supported_parameters": {
+            "temperature": {"min": 0.00001, "max": 1.0, "default": 0.7},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.9},
+            "max_tokens": {"min": 1, "max": 5000, "default": 1000}
+        },
+        "internal_parameters": {
+            "stop_sequences": {"default": []}
+        },
+        "message_format": "nova",  # Add message format for Nova family
+        "max_output_tokens": 5000,
+        "supports_max_input_tokens": True,
+        "supports_multimodal": True,
+        "context_window": 300000,
+        "inference_parameters": {
+            "temperature": 0.7,
+            "topP": 0.9,
+            "maxTokens": 1000
+        }
+    },
+    "nova-pro": {
+        "wrapper_class": "NovaBedrock",
+        "parent": "nova",
+        "supports_thinking": True  # Only Nova-Pro supports thinking
+    },
+    "nova-lite": {
+        "wrapper_class": "NovaBedrock",
+        "parent": "nova",
+        "supports_thinking": False
+    }
+}
+
 # Endpoint-specific defaults that override globals
 ENDPOINT_DEFAULTS = {
     "bedrock": {
         "token_limit": 200000,
         "max_output_tokens": 4096,
         "top_k": 15,
-        "supported_params": ["temperature", "top_k", "max_tokens"],
+        "supported_params": ["temperature", "top_k", "max_tokens", "top_p"],
         "parameter_mappings": {
             "max_output_tokens": ["max_tokens"]  # Bedrock uses max_tokens
         },
@@ -61,37 +107,45 @@ MODEL_CONFIGS = {
             "max_output_tokens": 128000,  # Override endpoint default
             "supports_max_input_tokens": True,  # Override global default
             "supports_thinking": True,  # Override global default
+            "family": "claude"
         },
         "sonnet3.5-v2": {
             "model_id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "family": "claude"
         },
         "sonnet3.5": {
             "model_id": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "family": "claude"
         },
         "opus": {
             "model_id": "us.anthropic.claude-3-opus-20240229-v1:0",
+            "family": "claude"
         }, 
         "sonnet": {
             "model_id": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+            "family": "claude"
         },
         "haiku": {
             "model_id": "us.anthropic.claude-3-haiku-20240307-v1:0",
+            "family": "claude"
         },
         "nova-pro": {
             "model_id": "us.amazon.nova-pro-v1:0",
-            "max_output_tokens": 4096,
-            "supports_max_input_tokens": True,
-            "supports_thinking": True,
+            "family": "nova-pro"  # Use nova-pro family which includes top_k
         },
         "nova-lite": {
             "model_id": "us.amazon.nova-lite-v1:0",
-            "max_output_tokens": 4096,
-            "supports_max_input_tokens": True,
+            "family": "nova"  # Use nova family which doesn't include top_k
         },
         "nova-micro": {
             "model_id": "us.amazon.nova-micro-v1:0",
-            "max_output_tokens": 4096,
-            "supports_max_input_tokens": True,
+            "family": "nova",  # Use nova family which doesn't include top_k
+            "supports_multimodal": False,  # Override the family default
+            "context_window": 128000  # Override the family default
+        },
+        "deepseek-r1": {
+            "model_id": "us.deepseek.r1-v1:0",
+            "max_input_tokens": 128000,
         },
     },
     "google": {
@@ -144,11 +198,228 @@ MODEL_CONFIGS = {
 ENV_VAR_MAPPING = {
     "ZIYA_TEMPERATURE": "temperature",
     "ZIYA_TOP_K": "top_k",
+    "ZIYA_TOP_P": "top_p",
     "ZIYA_MAX_OUTPUT_TOKENS": "max_output_tokens",
     "ZIYA_THINKING_MODE": "thinking_mode",
     "ZIYA_MAX_TOKENS": "max_tokens",
+    "ZIYA_MODEL_ID_OVERRIDE": "model_id",
     "AWS_REGION": "region"
 }
 
 # Default request size limits
 DEFAULT_MAX_REQUEST_SIZE_MB = 10
+
+# Helper functions for model parameter validation
+
+def get_supported_parameters(endpoint, model_name):
+    """
+    Get the supported parameters for a model.
+    
+    Args:
+        endpoint: The endpoint name (e.g., "bedrock", "google")
+        model_name: The model name (e.g., "nova-lite", "sonnet3.5")
+        
+    Returns:
+        dict: Dictionary of parameter names to their constraints
+    """
+    if endpoint not in MODEL_CONFIGS or model_name not in MODEL_CONFIGS[endpoint]:
+        return {}
+    
+    model_config = MODEL_CONFIGS[endpoint][model_name]
+    
+    # If no family is specified, return empty dict
+    if "family" not in model_config:
+        return {}
+    
+    family_name = model_config["family"]
+    if family_name not in MODEL_FAMILIES:
+        return {}
+    
+    family_config = MODEL_FAMILIES[family_name]
+    
+    # Start with an empty dict
+    params = {}
+    
+    # Add parameters from parent family if it exists
+    if "parent" in family_config and family_config["parent"] in MODEL_FAMILIES:
+        parent_family = MODEL_FAMILIES[family_config["parent"]]
+        if "supported_parameters" in parent_family:
+            params.update(parent_family["supported_parameters"])
+    
+    # Add or override with family's own parameters
+    if "supported_parameters" in family_config:
+        params.update(family_config["supported_parameters"])
+    
+    return params
+
+def validate_model_parameters(endpoint, model_name, params):
+    """
+    Validate parameters for a model.
+    
+    Args:
+        endpoint: The endpoint name (e.g., "bedrock", "google")
+        model_name: The model name (e.g., "nova-lite", "sonnet3.5")
+        params: Dictionary of parameter names to values
+        
+    Returns:
+        tuple: (is_valid, error_message, filtered_params)
+    """
+    supported_params = get_supported_parameters(endpoint, model_name)
+    
+    # Check for unsupported parameters
+    unsupported = []
+    for param_name in params:
+        if param_name not in supported_params:
+            unsupported.append(param_name)
+    
+    # If there are unsupported parameters, return an error
+    if unsupported:
+        # Get the family name for better error messages
+        family_name = MODEL_CONFIGS[endpoint][model_name].get("family", "unknown")
+        
+        # Build a helpful error message
+        error_msg = f"The following parameters are not supported by the {model_name} model: {', '.join(unsupported)}"
+        
+        # Add information about which family supports the parameters
+        for param in unsupported:
+            for family, config in MODEL_FAMILIES.items():
+                if family == family_name:
+                    continue
+                
+                # Check if this family supports the parameter
+                has_param = False
+                if "supported_parameters" in config and param in config["supported_parameters"]:
+                    has_param = True
+                elif "parent" in config and config["parent"] in MODEL_FAMILIES:
+                    parent = MODEL_FAMILIES[config["parent"]]
+                    if "supported_parameters" in parent and param in parent["supported_parameters"]:
+                        has_param = True
+                
+                if has_param:
+                    error_msg += f"\nParameter '{param}' is only available in the {family} family."
+                    break
+        
+        # Add information about supported parameters
+        error_msg += f"\n\nSupported parameters for {model_name}:"
+        for param, constraints in supported_params.items():
+            param_info = f"\n  --{param}"
+            if "min" in constraints and "max" in constraints:
+                param_info += f" ({constraints['min']}-{constraints['max']}"
+                if "default" in constraints:
+                    param_info += f", default: {constraints['default']}"
+                param_info += ")"
+            elif "default" in constraints:
+                param_info += f" (default: {constraints['default']})"
+            error_msg += param_info
+        
+        return False, error_msg, {}
+    
+    # Filter out unsupported parameters and validate ranges
+    filtered_params = {}
+    for param_name, value in params.items():
+        constraints = supported_params[param_name]
+        
+        # Validate range if min/max are specified
+        if "min" in constraints and value < constraints["min"]:
+            return False, f"Parameter '{param_name}' value {value} is below the minimum of {constraints['min']}", {}
+        if "max" in constraints and value > constraints["max"]:
+            return False, f"Parameter '{param_name}' value {value} is above the maximum of {constraints['max']}", {}
+        
+        # Add to filtered parameters
+        filtered_params[param_name] = value
+    
+    return True, "", filtered_params
+
+def get_cli_parameter_name(param_name):
+    """
+    Convert a parameter name to its CLI argument form.
+    
+    Args:
+        param_name: The parameter name
+        
+    Returns:
+        str: The CLI argument name
+    """
+    # Map internal parameter names to CLI argument names
+    param_map = {
+        "temperature": "--temperature",
+        "top_p": "--top-p",
+        "top_k": "--top-k",
+        "max_tokens": "--max-output-tokens",
+        "stop_sequences": "--stop-sequences",
+    }
+    
+    return param_map.get(param_name, f"--{param_name.replace('_', '-')}")
+
+def list_model_capabilities(endpoint=None, model_name=None):
+    """
+    List the capabilities of models.
+    
+    Args:
+        endpoint: Optional endpoint name to filter by
+        model_name: Optional model name to filter by
+        
+    Returns:
+        str: Formatted string with model capabilities
+    """
+    result = []
+    
+    # Filter by endpoint if specified
+    endpoints = [endpoint] if endpoint else MODEL_CONFIGS.keys()
+    
+    for ep in endpoints:
+        if ep not in MODEL_CONFIGS:
+            continue
+        
+        # Filter by model if specified
+        models = [model_name] if model_name and model_name in MODEL_CONFIGS[ep] else MODEL_CONFIGS[ep].keys()
+        
+        for model in models:
+            if model not in MODEL_CONFIGS[ep]:
+                continue
+            
+            model_config = MODEL_CONFIGS[ep][model]
+            result.append(f"Model: {model} ({ep})")
+            
+            # Add model ID
+            if "model_id" in model_config:
+                result.append(f"  Model ID: {model_config['model_id']}")
+            
+            # Add family
+            if "family" in model_config:
+                result.append(f"  Family: {model_config['family']}")
+            
+            # Add supported parameters
+            params = get_supported_parameters(ep, model)
+            if params:
+                result.append("  Supported parameters:")
+                for param, constraints in params.items():
+                    param_info = f"    {get_cli_parameter_name(param)}"
+                    if "min" in constraints and "max" in constraints:
+                        param_info += f" ({constraints['min']}-{constraints['max']}"
+                        if "default" in constraints:
+                            param_info += f", default: {constraints['default']}"
+                        param_info += ")"
+                    elif "default" in constraints:
+                        param_info += f" (default: {constraints['default']})"
+                    result.append(param_info)
+            
+            # Add other capabilities
+            capabilities = []
+            if model_config.get("supports_thinking", False):
+                capabilities.append("thinking mode")
+            if model_config.get("supports_multimodal", False):
+                capabilities.append("multimodal")
+            if model_config.get("supports_max_input_tokens", False):
+                capabilities.append("max input tokens")
+            
+            if capabilities:
+                result.append(f"  Capabilities: {', '.join(capabilities)}")
+            
+            # Add context window
+            if "context_window" in model_config:
+                result.append(f"  Context window: {model_config['context_window']} tokens")
+            
+            result.append("")  # Empty line between models
+    
+    return "\n".join(result)

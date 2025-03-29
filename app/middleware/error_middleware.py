@@ -11,6 +11,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.responses import Response, JSONResponse
 from app.utils.logging_utils import logger
 from app.utils.error_handlers import detect_error_type, format_error_response, is_critical_error
+from app.utils.custom_exceptions import KnownCredentialException
 
 class ErrorHandlingMiddleware:
     """
@@ -49,6 +50,65 @@ class ErrorHandlingMiddleware:
         # Try to run the app, catch any exceptions
         try:
             await self.app(scope, receive, send_wrapper)
+        except KnownCredentialException as exc:
+            # For known credential issues, just return the message without traceback
+            error_message = str(exc)
+            logger.warning(f"Authentication error: {error_message}")
+            
+            # Check if this is a streaming request (based on Accept header)
+            is_streaming_request = False
+            for key, value in scope.get("headers", []):
+                if key.lower() == b"accept" and b"text/event-stream" in value.lower():
+                    is_streaming_request = True
+                    break
+                    
+            # Handle the credential exception with appropriate formatting
+            error_type, detail, status_code, retry_after = "auth_error", error_message, 401, None
+            
+            if is_streaming_request:
+                # For streaming responses, send SSE format
+                try:
+                    # Send headers
+                    await send({
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [
+                            (b"content-type", b"text/event-stream"),
+                            (b"cache-control", b"no-cache"),
+                        ]
+                    })
+                    
+                    # Send error message as SSE data
+                    error_content = format_error_response(
+                        error_type=error_type,
+                        detail=detail,
+                        status_code=status_code,
+                        retry_after=retry_after
+                    )
+                    
+                    await send({
+                        "type": "http.response.body",
+                        "body": f"data: {json.dumps(error_content)}\n\ndata: [DONE]\n\n".encode('utf-8'),
+                        "more_body": False
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to send streaming error response: {e}")
+            else:
+                # For non-streaming responses, use JSONResponse
+                try:
+                    response = JSONResponse(
+                        content=format_error_response(
+                            error_type=error_type,
+                            detail=detail,
+                            status_code=status_code,
+                            retry_after=retry_after
+                        ),
+                        status_code=status_code
+                    )
+                    await response(scope, receive, send)
+                except Exception as e:
+                    logger.error(f"Failed to send JSON response: {e}")
+                    
         except Exception as exc:
             error_message = str(exc)
             logger.error(f"ErrorHandlingMiddleware caught: {error_message}")

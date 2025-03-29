@@ -12,6 +12,8 @@ import google.auth.exceptions
 import google.auth
 from dotenv import load_dotenv
 from dotenv.main import find_dotenv
+from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
+from app.agents.callbacks import EmptyMessageFilter
 
 from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
@@ -20,13 +22,46 @@ from langchain_core.messages import HumanMessage
 # Import configuration from the central config module
 import app.config as config
 
-class EmptyMessageFilter(BaseCallbackHandler):
-    """Filter out empty messages before they reach the model."""
+class ModelManager:
+    """Manages model initialization and configuration."""
     
-    def on_chat_model_start(self, *args, **kwargs):
-        messages = kwargs.get('messages', [])
-        if not messages:
-            raise ValueError("No messages provided")
+    def __init__(self):
+        """Initialize the model manager."""
+        # Load environment variables
+        load_dotenv(find_dotenv())
+        
+        # Initialize state
+        self._endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
+        self._model = os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS[self._endpoint])
+        self._model_id_override = os.environ.get("ZIYA_MODEL_ID_OVERRIDE")
+        self._llm = None
+        
+        # Initialize model parameters
+        self._temperature = float(os.environ.get("ZIYA_TEMPERATURE", 0.3))
+        self._top_p = float(os.environ.get("ZIYA_TOP_P", 0.9))
+        self._top_k = int(os.environ.get("ZIYA_TOP_K", 40))
+        self._max_output_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))
+        
+        # Initialize the LLM
+        self._initialize_llm()
+    
+    def get_model_config(self):
+        """Get the current model configuration."""
+        model_config = config.MODEL_CONFIGS[self._endpoint][self._model].copy()
+        
+        # Override model ID if specified
+        if self._model_id_override:
+            model_config["model_id"] = self._model_id_override
+        
+        # Update parameters
+        model_config.update({
+            "temperature": self._temperature,
+            "top_p": self._top_p,
+            "top_k": self._top_k,
+            "max_output_tokens": self._max_output_tokens
+        })
+        
+        return model_config
         for message in messages:
             if not message.content or not message.content.strip():
                 raise ValueError("Empty message content detected")
@@ -51,7 +86,8 @@ class ModelManager:
         'process_id': None,
         'llm_with_stop': None,
         'agent': None,
-        'agent_executor': None
+        'agent_executor': None,
+        'last_auth_error': None  # Add this to store the last authentication error
     }
     
     @classmethod
@@ -91,6 +127,7 @@ class ModelManager:
         1. Start with global defaults
         2. Override with endpoint defaults
         3. Override with model-specific config
+        4. Apply family-specific settings if available
         
         Args:
             endpoint: The endpoint name (e.g., "bedrock", "google")
@@ -120,9 +157,30 @@ class ModelManager:
         if endpoint in cls.ENDPOINT_DEFAULTS:
             config_dict.update(cls.ENDPOINT_DEFAULTS[endpoint])
         
-        # Apply model-specific config if it exists
-        if endpoint in cls.MODEL_CONFIGS and model_name in cls.MODEL_CONFIGS[endpoint]:
-            config_dict.update(cls.MODEL_CONFIGS[endpoint][model_name])
+        # Get the model-specific config
+        model_specific_config = cls.MODEL_CONFIGS[endpoint][model_name].copy()
+        
+        # Check if the model belongs to a family
+        family = model_specific_config.get("family")
+        if family and hasattr(cls, "MODEL_FAMILIES") and family in cls.MODEL_FAMILIES:
+            # Apply family-specific settings
+            family_config = cls.MODEL_FAMILIES[family].copy()
+            
+            # Don't override parameter_ranges yet
+            parameter_ranges = family_config.pop("parameter_ranges", {})
+            
+            # Apply other family settings
+            config_dict.update(family_config)
+            
+            # Apply parameter ranges
+            if "parameter_ranges" not in config_dict:
+                config_dict["parameter_ranges"] = {}
+            
+            for param, range_info in parameter_ranges.items():
+                config_dict["parameter_ranges"][param] = range_info.copy()
+        
+        # Apply model-specific config
+        config_dict.update(model_specific_config)
             
         # Add name for reference
         config_dict["name"] = model_name
@@ -370,6 +428,9 @@ class ModelManager:
         model_config = cls.get_model_config(endpoint, model_name)
         model_id = model_config.get("model_id", model_name)
         
+        # Reset any previous error flags
+        KnownCredentialException._error_displayed = False
+        
         # Initialize the model based on the endpoint - only authenticate with the specific endpoint
         logger.info(f"Starting authentication flow for endpoint: {endpoint}")
         if endpoint == "bedrock":
@@ -408,11 +469,12 @@ class ModelManager:
             ChatBedrock: The initialized Bedrock model
         """
         from app.utils.aws_utils import ThrottleSafeBedrock, check_aws_credentials
+        from app.utils.custom_exceptions import KnownCredentialException
         
         logger.info("Initializing Bedrock model")
         
-        # Get AWS profile from environment
-        aws_profile = os.environ.get("ZIYA_AWS_PROFILE")
+        # Get AWS profile from environment or config
+        aws_profile = os.environ.get("ZIYA_AWS_PROFILE") or model_config.get("profile")
         if aws_profile:
             logger.info(f"Using AWS profile: {aws_profile}")
             os.environ["AWS_PROFILE"] = aws_profile
@@ -428,6 +490,13 @@ class ModelManager:
             
         # Get model ID and parameters
         model_id = model_config.get("model_id")
+        
+        # Check for model ID override from environment
+        model_id_override = os.environ.get("ZIYA_MODEL_ID_OVERRIDE")
+        if model_id_override:
+            logger.info(f"Using model ID override: {model_id_override} instead of {model_id}")
+            model_id = model_id_override
+            
         temperature = model_config.get("temperature", 0.3)
         top_k = model_config.get("top_k", 15)
         max_tokens = model_config.get("max_output_tokens", 4096)
@@ -443,20 +512,52 @@ class ModelManager:
             
         logger.info(f"Initializing Bedrock model: {model_id} with kwargs: {{'temperature': {temperature}, 'top_k': {top_k}, 'max_tokens': {max_tokens}}}")
         
-        # Check AWS credentials
-        check_aws_credentials()
+        # Reset any previous error flags
+        KnownCredentialException._error_displayed = False
         
-        # Create the model
-        model = ChatBedrock(
-            model_id=model_id,
-            client=None,  # Will be created internally
-            region_name=region,
-            model_kwargs={
-                "top_k": top_k
-            },
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
+        # Check AWS credentials
+        creds_valid, error_msg = check_aws_credentials(profile_name=aws_profile)
+        if not creds_valid:
+            # Log the full error message for debugging
+            logger.error(f"AWS credentials check failed: {error_msg}")
+            
+            # Store the error message in a class variable for consistent reporting
+            cls._state['last_auth_error'] = error_msg
+            
+            # Raise a KnownCredentialException instead of ValueError
+            # The exception will handle printing the message only once
+            from app.utils.custom_exceptions import KnownCredentialException
+            raise KnownCredentialException(error_msg)
+        
+        # Check if this is a Nova model
+        family = model_config.get("family")
+        
+        # Create the appropriate model based on family
+        if family == "nova":
+            from app.agents.nova_wrapper import NovaBedrock
+            logger.info(f"Initializing Nova model: {model_id}")
+            model = NovaBedrock(
+                model_id=model_id,
+                client=None,  # Will be created internally
+                region_name=region,
+                model_kwargs={
+                    "top_k": top_k
+                },
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+        else:
+            # Default to standard Bedrock model
+            model = ChatBedrock(
+                model_id=model_id,
+                client=None,  # Will be created internally
+                region_name=region,
+                model_kwargs={
+                    "top_k": top_k
+                },
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
         
         return model
 

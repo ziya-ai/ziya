@@ -1,6 +1,26 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 # import pydevd_pycharm
 from app.utils.logging_utils import logger
+import os
+import importlib.util
+
+# Import AST capabilities if available
+try:
+    # First check if the required packages are installed
+    ast_deps_available = (
+        importlib.util.find_spec("cssutils") is not None and
+        importlib.util.find_spec("html5lib") is not None
+    )
+    
+    if not ast_deps_available:
+        logger.info("AST dependencies not found. They will be installed automatically on next 'fbuild'.")
+        raise ImportError("AST dependencies not installed")
+        
+    from app.utils.ast_parser.integration import is_ast_available
+    AST_AVAILABLE = True
+except ImportError:
+    AST_AVAILABLE = False
+    logger.info("AST capabilities not available. They will be installed automatically on next 'fbuild'.")
 
 template = """
 
@@ -191,7 +211,7 @@ CRITICAL: After generating each hunk diff, carefully review and verify the follo
 6. When deleting a file, include `deleted file mode` to indicate that the file has been removed. Each line in the 
 deleted file should be prefixed with `-` to indicate the content removal.
 7. Lines ending with a newline (\n) should not be interpreted as an additional line. Treat \n as the end of the current 
-line’s content, not as a new line in the file.
+line's content, not as a new line in the file.
 
 Do not include any explanatory text within the diff blocks. If you need to provide explanations or comments, do so outside the diff blocks.
 
@@ -214,6 +234,32 @@ Codebase ends here.
 Remember to strictly adhere to the Git diff format guidelines provided above when suggesting code changes.
 
 """
+
+# Add AST capabilities to the template if available
+if os.environ.get("ZIYA_ENABLE_AST") == "true" and AST_AVAILABLE and is_ast_available():
+    ast_template = """
+
+ENHANCED CODE UNDERSTANDING CAPABILITIES:
+You have access to AST-based code understanding capabilities, which allow you to:
+1. Understand the structure of the code beyond simple text analysis
+2. Find references to symbols across the codebase
+3. Analyze dependencies between files
+4. Generate semantic code summaries
+
+When answering questions about code, you will use these capabilities to provide more accurate and insightful responses.
+You can analyze:
+- Function and class hierarchies
+- Symbol references and definitions
+- Type information (where available)
+- Code relationships and dependencies
+
+This allows you to provide deeper insights about:
+- How different parts of the code interact
+- Where and how functions and classes are used
+- The impact of potential changes
+- Architectural patterns in the codebase
+"""
+    template += ast_template
 
 # Create a wrapper around the original template
 original_template = template

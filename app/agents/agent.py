@@ -1,5 +1,6 @@
 import os
 import os.path
+import re
 from typing import Dict, List, Tuple, Set, Union, Optional, Any
 
 import json
@@ -85,48 +86,78 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
     logger.debug(f"Final formatted messages: {[type(m).__name__ for m in buffer]}")
     return buffer
 
+def _extract_content(x: Any) -> str:
+    """Extract content from various response formats."""
+    # If x has a content attribute (standard case)
+    if hasattr(x, 'content'):
+        content = x.content
+        # Handle callable content
+        if callable(content):
+            content = content()
+        return _extract_content(content)  # Recursively extract from content
+        
+    # Handle None
+    if x is None:
+        return ""
+    
+    # Handle string
+    if isinstance(x, str):
+        return x
+        
+    # If x is a list of dicts with text field (Nova-Lite case)
+    if isinstance(x, list) and x:
+        if isinstance(x[0], dict) and 'text' in x[0]:
+            return str(x[0]['text'])
+        # Combine all text fields if multiple chunks
+        texts = []
+        for chunk in x:
+            if isinstance(chunk, dict) and 'text' in chunk:
+                texts.append(str(chunk['text']))
+        if texts:
+            return ''.join(texts)  # Direct concatenation without spaces
+            
+    # If x is a dict with text field
+    if isinstance(x, dict) and 'text' in x:
+        return str(x['text'])
+    
+    # If x is a dict with output structure (Nova format)
+    if isinstance(x, dict) and 'output' in x:
+        output = x['output']
+        if isinstance(output, dict) and 'message' in output:
+            message = output['message']
+            if 'content' in message and isinstance(message['content'], list):
+                texts = []
+                for block in message['content']:
+                    if 'text' in block:
+                        texts.append(str(block['text']))
+                if texts:
+                    return ''.join(texts)
+        
+    # Last resort: convert to string
+    return str(x)
+
 def parse_output(message):
     """Parse and sanitize the output from the language model."""
     logger.info("parse_output called with type: %s", type(message))
+    
     try:
-        logger.info(f"Raw response from model: {message}")
-        # Get the content based on the object type
-        content = None
-        if hasattr(message, 'text'):
-            content = message.text
-        elif hasattr(message, 'content'):
-            content = message.content
-        else:
-            content = str(message)
-
-        # If content is a method (from Gemini), get the actual content
-        if callable(content):
-            try:
-                content = content()
-            except Exception as e:
-                logger.error(f"Error calling content method: {str(e)}")
-
+        # Extract content using the helper function
+        content = _extract_content(message)
+        
         logger.debug("Content inspection:")
         logger.debug(f"Type: {type(content)}")
-        if isinstance(content, str):
-            logger.debug(f"Has diff marker: {'```diff' in content}")
-        else:
-            logger.debug("Content is not a string, skipping diff marker check.")
+        logger.debug(f"Has diff marker: {'```diff' in content}")
         logger.debug(f"Content starts with: {content[:100]}")
         logger.debug(f"Content ends with: {content[-100:]}")
         logger.debug(f"Raw content length: {len(content)}")
 
-    finally:
-        if not content:
-            return AgentFinish(return_values={"output": ""}, log="")
-
+        # Check if this is an error message
         try:
-            # Check if this is an error message
             error_data = json.loads(content)
             if error_data.get('error') == 'validation_error':
                 logger.info(f"Detected validation error in output: {content}")
                 return AgentFinish(return_values={"output": content}, log=content)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError, AttributeError):
             pass
 
         # Extract diff content from markdown code fence if present
@@ -140,14 +171,17 @@ def parse_output(message):
 
                 diff_content = parts[1].split("```")[0].strip()
                 return AgentFinish(return_values={"output": diff_content}, log=diff_content)
-        else:
-            text = clean_backtick_sequences(content)
-            return AgentFinish(return_values={"output": text}, log=text)
-
+        
         # If not a diff or error, clean and return the content
         text = clean_backtick_sequences(content)
         logger.info(f"parse_output extracted content size: {len(content)} chars, cleaned size: {len(text)} chars")
         return AgentFinish(return_values={"output": text}, log=text)
+    
+    except Exception as e:
+        logger.error(f"Error in parse_output: {str(e)}")
+        # Provide a safe fallback
+        error_message = f"Error processing response: {str(e)}"
+        return AgentFinish(return_values={"output": error_message}, log=error_message)
 
 # Create a wrapper class that adds retries
 class RetryingChatBedrock(Runnable):
@@ -288,6 +322,49 @@ class RetryingChatBedrock(Runnable):
     def _is_streaming(self, func) -> bool:
         """Check if this is a streaming operation."""
         return hasattr(func, '__name__') and func.__name__ == 'astream'
+        
+    def _get_model_config(self):
+        """Get the configuration for the current model."""
+        from app.config import MODEL_CONFIGS, MODEL_FAMILIES
+        
+        if not hasattr(self.model, 'model_id'):
+            return {}
+            
+        model_id = self.model.model_id.lower()
+        
+        # Check each model configuration
+        for endpoint, models in MODEL_CONFIGS.items():
+            for model_name, config in models.items():
+                if config.get('model_id', '').lower() == model_id:
+                    # Get the base configuration
+                    model_config = config.copy()
+                    
+                    # If the model has a family, merge with family configuration
+                    if "family" in model_config:
+                        family_name = model_config["family"]
+                        if family_name in MODEL_FAMILIES:
+                            family_config = MODEL_FAMILIES[family_name].copy()
+                            
+                            # Merge family config with model config (model config takes precedence)
+                            for key, value in family_config.items():
+                                if key not in model_config:
+                                    model_config[key] = value
+                                    
+                            # If family has a parent, merge with parent configuration
+                            if "parent" in family_config:
+                                parent_name = family_config["parent"]
+                                if parent_name in MODEL_FAMILIES:
+                                    parent_config = MODEL_FAMILIES[parent_name].copy()
+                                    
+                                    # Merge parent config with model config (model and family configs take precedence)
+                                    for key, value in parent_config.items():
+                                        if key not in model_config and key not in family_config:
+                                            model_config[key] = value
+                    
+                    return model_config
+        
+        # Default empty config if not found
+        return {}
 
     def _format_message_content(self, message: Any) -> str:
         """Ensure message content is properly formatted as a string."""
@@ -577,14 +654,117 @@ class RetryingChatBedrock(Runnable):
         return [msg for msg in messages if msg.get('content')]
 
     def invoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
-        try:
-            if isinstance(input, dict) and "messages" in input:
-                messages = self._convert_to_messages(input["messages"])
-                input = {**input, "messages": messages}
-            return self.model.invoke(input, config, **kwargs)
-        except Exception as e:
-            self.logger.error(f"Error in invoke: {str(e)}")
-            raise
+        """Invoke the model with retries and proper message formatting."""
+        max_retries = 3
+        base_retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Get message format from model configuration
+                model_config = self._get_model_config()
+                message_format = model_config.get("message_format")
+                model_id = getattr(self.model, 'model_id', 'unknown')
+                logger.info(f"Using model: {model_id}")
+                
+                # Format messages based on configuration
+                if message_format:
+                    from app.utils.message_formatter import format_messages
+                    formatted_input = format_messages(input, message_format)
+                    logger.info(f"Formatted messages for {message_format} format")
+                    
+                    # Debug log the formatted input
+                    if isinstance(formatted_input, list):
+                        logger.info(f"Sending {len(formatted_input)} messages to model")
+                        for i, msg in enumerate(formatted_input):
+                            if hasattr(msg, 'content'):
+                                logger.info(f"Message {i}: type={type(msg)}, content_type={type(msg.content)}")
+                                # Log content details for debugging
+                                content = msg.content
+                                if isinstance(content, list) and len(content) > 0:
+                                    logger.info(f"Content[0]: {content[0]}")
+                            else:
+                                logger.info(f"Message {i}: type={type(msg)}")
+                else:
+                    formatted_input = input
+                
+                # Apply model-specific inference parameters from config
+                if model_config.get("inference_parameters"):
+                    inference_params = model_config.get("inference_parameters", {})
+                    logger.info(f"Applying model-specific inference parameters from config")
+                    
+                    # Ensure we have inferenceConfig
+                    if "inferenceConfig" not in kwargs:
+                        kwargs["inferenceConfig"] = {}
+                    
+                    # Apply parameters from config
+                    for param_name, param_value in inference_params.items():
+                        if param_name not in kwargs["inferenceConfig"]:
+                            kwargs["inferenceConfig"][param_name] = param_value
+                            logger.info(f"Setting {param_name}={param_value} from model config")
+                    
+                    logger.info(f"Updated inference parameters: {kwargs['inferenceConfig']}")
+                
+                # Log the kwargs being sent to the model
+                logger.info(f"Model kwargs: {kwargs}")
+                
+                # Continue with the original method using the formatted messages
+                response = self.model.invoke(formatted_input, config, **kwargs)
+                
+                # Log the response
+                if hasattr(response, 'content'):
+                    content = response.content
+                    logger.info(f"Response content type: {type(content)}")
+                    logger.info(f"Response content preview: {str(content)[:100]}...")
+                else:
+                    logger.info(f"Response type: {type(response)}")
+                
+                return response
+                
+            except Exception as e:
+                # Handle retries and errors
+                error_str = str(e)
+                logger.error(f"Error in invoke (attempt {attempt+1}/{max_retries}): {error_str}")
+                
+                # Log more details about the error
+                if "ValidationException" in error_str:
+                    logger.error("Validation error detected. Checking messages...")
+                    
+                    # Check for content field errors
+                    if "content field" in error_str:
+                        if isinstance(input, list):
+                            for i, msg in enumerate(input):
+                                if hasattr(msg, 'content'):
+                                    content = msg.content
+                                    logger.error(f"Message {i}: content_type={type(content)}, empty={not bool(content)}")
+                    
+                    # Check for text field errors
+                    elif "text field" in error_str:
+                        if isinstance(formatted_input, list):
+                            for i, msg in enumerate(formatted_input):
+                                if hasattr(msg, 'content'):
+                                    content = msg.content
+                                    logger.error(f"Message {i}: content={content}")
+                                    if isinstance(content, list) and len(content) > 0:
+                                        text = content[0].get('text', '')
+                                        logger.error(f"Message {i} text: '{text}', empty={not bool(text)}")
+                    
+                    # Print the full formatted input for debugging
+                    logger.error("Full formatted input:")
+                    if isinstance(formatted_input, list):
+                        for i, msg in enumerate(formatted_input):
+                            logger.error(f"Message {i}: {msg}")
+                    else:
+                        logger.error(f"Input: {formatted_input}")
+                
+                if attempt < max_retries - 1:
+                    # Exponential backoff
+                    retry_delay = base_retry_delay * (2 ** attempt)
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    # Last attempt failed, raise the exception
+                    logger.error(f"All {max_retries} attempts failed")
+                    raise
 
     async def ainvoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
         return await self.model.ainvoke(input, config, **kwargs)
@@ -779,8 +959,8 @@ def create_agent_chain(chat_model: BaseChatModel):
         | conversational_prompt
         | chat_model.bind(stop=["</tool_input>"])
         | (lambda x: AgentFinish(
-            return_values={"output": x.content if hasattr(x, 'content') else str(x)},
-            log=x.content if hasattr(x, 'content') else str(x)
+            return_values={"output": _extract_content(x)},
+            log=_extract_content(x)
         ))
     )
     return chain

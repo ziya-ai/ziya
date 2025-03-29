@@ -1,12 +1,9 @@
 """
-Middleware package for the Ziya application.
+Middleware for the Ziya API.
 """
 
-from app.middleware.request_size import RequestSizeLimiter as RequestSizeMiddleware
-from app.middleware.error_middleware import ErrorHandlingMiddleware
+from app.middleware.streaming import StreamingMiddleware
+from app.middleware.request_size import RequestSizeMiddleware
+from app.middleware.error_handling import ErrorHandlingMiddleware
 
-# Export both the new name and the old name for backward compatibility
-__all__ = ['RequestSizeMiddleware', 'RequestSizeLimiter', 'ErrorHandlingMiddleware']
-
-# Alias for backward compatibility
-RequestSizeLimiter = RequestSizeMiddleware
+__all__ = ["StreamingMiddleware", "RequestSizeMiddleware", "ErrorHandlingMiddleware"]

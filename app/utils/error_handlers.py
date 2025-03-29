@@ -71,6 +71,10 @@ def create_json_response(
 
 def create_sse_error_response(error_type: str, detail: str) -> Dict[str, Any]:
     """Create a Server-Sent Events (SSE) error response."""
+    # Ensure the detail is a string to avoid serialization issues
+    if not isinstance(detail, str):
+        detail = str(detail)
+    
     return {"error": {"type": error_type, "detail": detail}}
 
 
@@ -236,6 +240,9 @@ def detect_error_type(error_message: str) -> Tuple[str, str, int, Optional[str]]
 
 def format_error_response(error_type: str, detail: str) -> Dict[str, Any]:
     """Format an error response for the API."""
+    # Ensure detail is a string to avoid serialization issues
+    if not isinstance(detail, str):
+        detail = str(detail)
     return {"error": {"type": error_type, "detail": detail}}
 
 

@@ -1,7 +1,9 @@
 import os
+import re
 import time
 import json
 import asyncio
+import traceback
 from typing import Dict, Any, List, Tuple, Optional, Union
 
 import tiktoken
@@ -109,61 +111,538 @@ else:
 templates = Jinja2Templates(directory=templates_dir)
 
 # Add a route for the frontend
-add_routes(app, agent_executor, disabled_endpoints=["playground"], path="/ziya")
+add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log"], path="/ziya")
+
+# Add custom stream_log endpoint for compatibility
+@app.post("/ziya/stream_log")
+async def stream_log_endpoint(request: Request, body: dict):
+    """Stream log endpoint with proper diff parameter handling."""
+    try:
+        # Debug logging
+        logger.info("Stream log endpoint request body:")
+        
+        # Extract and store diff parameter if present
+        diff_content = None
+        if 'diff' in body:
+            diff_content = body['diff']
+            # Create a copy of the body without the diff parameter
+            body_copy = {k: v for k, v in body.items() if k != 'diff'}
+        else:
+            body_copy = body
+            
+        # Extract input from body if present
+        if 'input' in body_copy:
+            input_data = body_copy['input']
+            
+            # Get the question from input_data
+            question = input_data.get('question', 'EMPTY')
+            logger.info(f"Question from input: '{question}'")
+            
+            # Handle chat_history
+            chat_history = input_data.get('chat_history', [])
+            if not isinstance(chat_history, list):
+                logger.warning(f"Chat history is not a list: {type(chat_history)}")
+                chat_history = []
+            
+            # Log chat history details for debugging
+            logger.info(f"Chat history length: {len(chat_history)}")
+            for i, msg in enumerate(chat_history):
+                if isinstance(msg, dict):
+                    logger.info(f"Input chat history item {i}: type={msg.get('type', 'unknown')}")
+                else:
+                    logger.info(f"Input chat history item {i}: type={type(msg)}")
+            
+            input_data['chat_history'] = chat_history
+            
+            # Handle config and files
+            config = input_data.get('config', {})
+            files = []
+            if isinstance(config, dict):
+                files = config.get("files", [])
+            elif isinstance(config, list):
+                logger.warning("Config is a list, assuming it's the files list")
+                files = config
+            
+            if not isinstance(files, list):
+                logger.warning(f"Files is not a list: {type(files)}")
+                files = []
+                
+            # Count string files for summary logging
+            string_file_count = sum(1 for f in files if isinstance(f, str))
+            if string_file_count > 0:
+                logger.info(f"Files count: {len(files)} ({string_file_count} are strings)")
+            else:
+                logger.info(f"Files count: {len(files)}")
+            # Don't log individual file details here - too verbose
+            
+            # Update input_data with normalized values
+            input_data['chat_history'] = chat_history
+            input_data['config'] = {'files': files} if isinstance(config, list) else config
+            
+            # Ensure we use the current question from input_data
+            input_data['question'] = question
+            body_copy = input_data
+        
+        # Use direct streaming with StreamingResponse
+        return StreamingResponse(
+            stream_chunks(body_copy),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Content-Type": "text/event-stream"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error in stream_log_endpoint: {str(e)}")
+        # Return error as streaming response
+        error_json = json.dumps({"error": str(e)})
+        return StreamingResponse(
+            (f"data: {error_json}\n\ndata: {json.dumps({'done': True})}\n\n" for _ in range(1)),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Content-Type": "text/event-stream"
+            }
+        )
+
+async def stream_chunks(body):
+    """Stream chunks from the agent executor."""
+    # Send heartbeat to keep connection alive (don't send processing message as it appears in the UI)
+    yield f"data: {json.dumps({'heartbeat': True})}\n\n"
+    
+    try:
+        # Log the entire body structure for debugging
+        logger.info(f"[INSTRUMENTATION] stream_chunks body structure: {type(body)}")
+        if isinstance(body, dict):
+            # Only log key names, not values (which could be large)
+            logger.info(f"[INSTRUMENTATION] stream_chunks body keys: {', '.join(body.keys())}")
+        
+        # Get the question from the request body
+        question = body.get("question", "")
+        logger.info(f"[INSTRUMENTATION] stream_chunks question: '{question[:50]}...' (truncated)")
+        conversation_id = body.get("conversation_id", "default")
+        chat_history = body.get("chat_history", [])
+        
+        # Get the files from the config if available
+        config = body.get("config", {})
+        files = []
+        
+        # Handle different possible formats of config and files
+        if isinstance(config, dict):
+            files = config.get("files", [])
+        elif isinstance(config, list):
+            # If config is a list, assume it's the files list
+            logger.warning("[INSTRUMENTATION] stream_chunks config is a list, assuming it's the files list")
+            files = config
+        
+        # Ensure files is a list
+        if not isinstance(files, list):
+            logger.warning(f"[INSTRUMENTATION] stream_chunks files is not a list: {type(files)}")
+            files = []
+        
+        # Log the request details
+        logger.info(f"[INSTRUMENTATION] stream_chunks processing request: conversation_id={conversation_id}, question={question[:50]}...")
+        logger.info(f"[INSTRUMENTATION] stream_chunks chat history length: {len(chat_history)}")
+        logger.info(f"[INSTRUMENTATION] stream_chunks files count: {len(files)}")
+        
+        # Get the model instance using the proper method
+        from app.agents.agent import model
+        logger.info("[INSTRUMENTATION] stream_chunks getting model instance")
+        model_instance = model.get_model()
+        logger.info(f"[INSTRUMENTATION] stream_chunks got model instance: {type(model_instance)}")
+        
+        # Prepare the messages for the model
+        messages = []
+        
+        # Add system message with file context if available
+        if files:
+            from langchain_core.messages import SystemMessage
+            logger.info(f"[INSTRUMENTATION] stream_chunks adding system message with {len(files)} files")
+            file_context = "Here are the files in the codebase:\n\n"
+            
+            # Count string files to avoid excessive logging
+            string_file_count = 0
+            
+            for i, file in enumerate(files):
+                # Check if file is a dictionary with path and content
+                if isinstance(file, dict):
+                    file_path = file.get("path", "")
+                    file_content = file.get("content", "")
+                    if file_path and file_content:
+                        file_context += f"File: {file_path}\n```\n{file_content}\n```\n\n"
+                # Handle case where file might be a string or other format
+                elif isinstance(file, str):
+                    file_context += f"File: {file}\n\n"
+                    string_file_count += 1
+            
+            # Log summary of string files instead of individual warnings
+            if string_file_count > 0:
+                logger.warning(f"[INSTRUMENTATION] stream_chunks found {string_file_count} file entries as strings instead of dicts")
+            
+            # Add system message with file context
+            messages.append(SystemMessage(content=file_context))
+            logger.info(f"[INSTRUMENTATION] stream_chunks added system message with {len(files)} files")
+        
+        # Add chat history if available
+        if chat_history:
+            from langchain_core.messages import HumanMessage, AIMessage
+            
+            # Log the chat history for debugging
+            logger.info(f"[INSTRUMENTATION] stream_chunks processing chat history with {len(chat_history)} messages")
+            # Only log details for first few messages
+            for i, msg in enumerate(chat_history):
+                if i >= 5:  # Only log first 5 messages in detail
+                    break
+                    
+                if isinstance(msg, dict):
+                    logger.info(f"[INSTRUMENTATION] stream_chunks chat history item {i}: type={msg.get('type', 'unknown')}")
+                elif isinstance(msg, list):
+                    logger.info(f"[INSTRUMENTATION] stream_chunks chat history item {i}: type=list, length={len(msg)}")
+                    if len(msg) > 0:
+                        logger.info(f"[INSTRUMENTATION] stream_chunks first element: {msg[0][:50]}...")  # Limit length of logged content
+                else:
+                    logger.info(f"[INSTRUMENTATION] stream_chunks chat history item {i}: type={type(msg)}")
+            
+            for msg in chat_history:
+                # Check if msg is a dictionary with 'type' and 'content' keys
+                if isinstance(msg, dict) and 'type' in msg and 'content' in msg:
+                    msg_type = msg["type"]
+                    msg_content = msg["content"]
+                    # Only log first few characters of content
+                    logger.info(f"[INSTRUMENTATION] stream_chunks adding message of type {msg_type} with content: {msg_content[:30]}...")
+                    
+                    if msg_type == "human":
+                        messages.append(HumanMessage(content=msg_content))
+                    elif msg_type == "ai":
+                        messages.append(AIMessage(content=msg_content))
+                # Handle case where msg is a list (common format from frontend)
+                elif isinstance(msg, list):
+                    # Format is typically [question, answer]
+                    if len(msg) >= 2:
+                        question = msg[0]
+                        answer = msg[1]
+                        logger.info(f"[INSTRUMENTATION] stream_chunks adding list-format message pair - Q: {question[:30]}... A: {answer[:30]}...")
+                        
+                        # Add as separate human and AI messages
+                        messages.append(HumanMessage(content=question))
+                        messages.append(AIMessage(content=answer))
+                # Handle case where msg is a tuple (format from cleaned chat history)
+                elif isinstance(msg, tuple) and len(msg) == 2:
+                    # Format is typically (human_message, ai_message)
+                    human_msg, ai_msg = msg
+                    logger.info(f"[INSTRUMENTATION] stream_chunks adding tuple-format message pair - Human: {human_msg[:30]}... AI: {ai_msg[:30]}...")
+                    
+                    # Add as separate human and AI messages
+                    messages.append(HumanMessage(content=human_msg))
+                    messages.append(AIMessage(content=ai_msg))
+                # Handle other formats
+                else:
+                    logger.warning(f"[INSTRUMENTATION] stream_chunks unexpected message format in chat history: {type(msg)}")
+                    # Try other formats as a fallback
+                    try:
+                        if hasattr(msg, 'role') and hasattr(msg, 'content'):
+                            role = getattr(msg, 'role')
+                            content = getattr(msg, 'content')
+                            if role == "human" or role == "user":
+                                messages.append(HumanMessage(content=content))
+                            elif role == "ai" or role == "assistant":
+                                messages.append(AIMessage(content=content))
+                    except Exception as e:
+                        logger.error(f"[INSTRUMENTATION] stream_chunks failed to process chat history message: {e}")
+                        # Continue with other messages
+        # Add the current question
+        from langchain_core.messages import HumanMessage
+        logger.info(f"[INSTRUMENTATION] stream_chunks adding current question: {question[:50]}...")
+        
+        # Double-check that we're using the most recent question
+        if not question:
+            logger.error("[INSTRUMENTATION] stream_chunks CRITICAL ERROR: Question is empty!")
+            logger.info(f"[INSTRUMENTATION] stream_chunks body keys: {body.keys() if isinstance(body, dict) else type(body)}")
+            if isinstance(body, dict) and 'input' in body and isinstance(body['input'], dict):
+                input_question = body['input'].get('question', '')
+                if input_question:
+                    logger.info(f"[INSTRUMENTATION] stream_chunks found question in body['input']: {input_question[:50]}...")
+                    question = input_question
+        
+        messages.append(HumanMessage(content=question))
+        
+        # Log the final message list for debugging
+        logger.info(f"[INSTRUMENTATION] stream_chunks final message list contains {len(messages)} messages:")
+        # Only log a few messages in detail
+        for i, msg in enumerate(messages):
+            if i >= 10:  # Only log first 10 messages
+                logger.info(f"[INSTRUMENTATION] stream_chunks ... and {len(messages) - 10} more messages")
+                break
+                
+            try:
+                logger.info(f"[INSTRUMENTATION] stream_chunks message {i}: type={msg.__class__.__name__}, content_preview={str(msg.content)[:30]}...")
+            except Exception as e:
+                logger.error(f"[INSTRUMENTATION] stream_chunks error logging message {i}: {e}")
+                logger.info(f"[INSTRUMENTATION] stream_chunks message {i}: type={type(msg)}")
+        
+        # Stream directly from the model
+        logger.info("[INSTRUMENTATION] stream_chunks starting model.astream()")
+        chunk_count = 0
+        full_response = ""
+        
+        # Flag to track if we've sent the done marker
+        done_marker_sent = False
+        
+        # Set up the model with the stop sequence
+        # This ensures the model will properly stop at the sentinel
+        model_with_stop = model_instance.bind(stop=["</tool_input>"])
+        
+        try:
+            async for chunk in model_with_stop.astream(messages):
+                # Skip processing if we've already sent the done marker
+                if done_marker_sent:
+                    logger.info("[INSTRUMENTATION] stream_chunks skipping chunk after done marker sent")
+                    continue
+                    
+                chunk_count += 1
+                
+                # Extract content from the chunk
+                if hasattr(chunk, 'content'):
+                    logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} has content attribute")
+                    content = chunk.content
+                    # Handle callable content
+                    if callable(content):
+                        logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is callable")
+                        content = content()
+                    
+                    # Check for stop sentinel in the content
+                    content_str = str(content) if content else ""
+                    if "</tool_input>" in content_str:
+                        logger.info(f"[INSTRUMENTATION] stream_chunks detected stop sentinel in content")
+                        # Send the done marker and stop processing more chunks
+                        if not done_marker_sent:
+                            logger.info("[INSTRUMENTATION] stream_chunks sending done marker after stop sentinel detected")
+                            yield f"data: {json.dumps({'done': True})}\n\n"
+                            done_marker_sent = True
+                            break  # Exit the loop but not the function
+                    
+                    # Check if this chunk has generation_info with stop_reason
+                    if hasattr(chunk, 'generation_info') and chunk.generation_info:
+                        gen_info = chunk.generation_info
+                        if 'finish_reason' in gen_info or 'stop_reason' in gen_info:
+                            stop_reason = gen_info.get('finish_reason') or gen_info.get('stop_reason')
+                            if stop_reason:
+                                logger.info(f"[INSTRUMENTATION] stream_chunks detected stop_reason: {stop_reason}")
+                                # Send the done marker and stop processing more chunks
+                                if not done_marker_sent:
+                                    logger.info("[INSTRUMENTATION] stream_chunks sending done marker after stop reason detected")
+                                    yield f"data: {json.dumps({'done': True})}\n\n"
+                                    done_marker_sent = True
+                                    break  # Exit the loop but not the function
+                
+                # Handle Nova model format (list of content blocks)
+                if isinstance(content, list) and len(content) > 0:
+                    logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is list of length {len(content)}")
+                    for content_block in content:
+                        if isinstance(content_block, dict) and 'text' in content_block:
+                            text = content_block.get('text', '')
+                            # Clean up the text - remove any [] markers
+                            if text == "[]":
+                                logger.info(f"[INSTRUMENTATION] stream_chunks skipping empty brackets")
+                                continue  # Skip empty brackets
+                            
+                            # Remove [] from the beginning and end of the text if present
+                            text = text.strip("[]")
+                            
+                            if text:  # Only send non-empty text
+                                # Accumulate the full response for later use
+                                full_response += text
+                                
+                                # Use the format that the frontend expects for streamed output
+                                ops = [
+                                    {
+                                        "op": "add",
+                                        "path": "/streamed_output_str/-",
+                                        "value": text
+                                    }
+                                ]
+                                
+                                # Only log every 10th chunk or first/last chunks
+                                if chunk_count <= 1 or chunk_count % 10 == 0:
+                                    logger.info(f"[INSTRUMENTATION] stream_chunks sending Nova chunk #{chunk_count}: text={text[:20]}...")
+                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                else:
+                    # Handle standard text content
+                    logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is standard text")
+                    text = str(content)
+                    # Clean up the text - remove any [] markers
+                    if text == "[]":
+                        logger.info(f"[INSTRUMENTATION] stream_chunks skipping empty brackets")
+                        continue  # Skip empty brackets
+                    
+                    # Remove [] from the beginning and end of the text if present
+                    text = text.strip("[]")
+                    
+                    if text:
+                        # Accumulate the full response for later use
+                        full_response += text
+                        
+                        # Use the format that the frontend expects for streamed output
+                        ops = [
+                            {
+                                "op": "add",
+                                "path": "/streamed_output_str/-",
+                                "value": text
+                            }
+                        ]
+                        
+                        # Only log every 10th chunk or first/last chunks
+                        if chunk_count <= 1 or chunk_count % 10 == 0:
+                            logger.info(f"[INSTRUMENTATION] stream_chunks sending chunk #{chunk_count}: text={text[:20]}...")
+                        yield f"data: {json.dumps({'ops': ops})}\n\n"
+            else:
+                logger.info(f"[INSTRUMENTATION] stream_chunks skipping chunk #{chunk_count} without content: {type(chunk)}")
+                
+            # Check for stop sentinel in the full response so far
+            if "</tool_input>" in full_response and not done_marker_sent:
+                logger.info(f"[INSTRUMENTATION] stream_chunks detected stop sentinel in full response")
+                # Send the done marker and stop processing more chunks
+                logger.info("[INSTRUMENTATION] stream_chunks sending done marker after stop sentinel detected")
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                done_marker_sent = True
+                # We need to break out of the async for loop
+                return  # Exit the entire generator function
+                    
+            # End of the async for loop iteration
+            
+            # If we've processed all chunks without sending the done marker, send it now
+            if not done_marker_sent and chunk_count > 0:
+                logger.info(f"[INSTRUMENTATION] stream_chunks total chunks sent: {chunk_count}")
+                logger.info("[INSTRUMENTATION] stream_chunks sending done marker after all chunks")
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                
+        except Exception as e:
+            # Handle any exceptions during streaming
+            logger.error(f"[INSTRUMENTATION] stream_chunks exception during streaming loop: {str(e)}")
+            logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
+            logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
+            if not done_marker_sent:
+                logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                done_marker_sent = True
+            
+        # Update conversation state after streaming is complete
+        try:
+            # Note: update_conversation_state only takes 2 args (conversation_id and file_paths)
+            # We're not updating any files, so pass an empty list
+            logger.info(f"[INSTRUMENTATION] stream_chunks updating conversation state for {conversation_id}")
+            update_conversation_state(conversation_id, [])
+        except Exception as e:
+            logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
+            
+    except Exception as e:
+        logger.error(f"[INSTRUMENTATION] stream_chunks exception during streaming: {str(e)}")
+        logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
+        logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        
+        # Update conversation state after streaming is complete
+        try:
+            # Note: update_conversation_state only takes 2 args (conversation_id and file_paths)
+            # We're not updating any files, so pass an empty list
+            logger.info(f"[INSTRUMENTATION] stream_chunks updating conversation state for {conversation_id}")
+            update_conversation_state(conversation_id, [])
+        except Exception as e:
+            logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
+            
+    except Exception as e:
+        logger.error(f"[INSTRUMENTATION] stream_chunks exception during streaming: {str(e)}")
+        logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
+        logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")
 async def stream_endpoint(request: Request, body: dict):
     """Stream endpoint with centralized error handling."""
     try:
         # Debug logging
-        logger.info("Stream endpoint request body:")
-        logger.info(f"Question: '{body.get('question', 'EMPTY')}'")
-        logger.info(f"Chat history length: {len(body.get('chat_history', []))}")
-        logger.info(f"Files count: {len(body.get('config', {}).get('files', []))}")
+        logger.info("[INSTRUMENTATION] /ziya/stream received request")
+        logger.info(f"[INSTRUMENTATION] /ziya/stream question: '{body.get('question', 'EMPTY')[:50]}...' (truncated)")
+        logger.info(f"[INSTRUMENTATION] /ziya/stream chat_history length: {len(body.get('chat_history', []))}")
+        logger.info(f"[INSTRUMENTATION] /ziya/stream files count: {len(body.get('config', {}).get('files', []))}")
+        
+        # Log body structure
+        logger.info(f"[INSTRUMENTATION] /ziya/stream body keys: {body.keys() if isinstance(body, dict) else type(body)}")
+        
+        # Log chat history structure if present
+        chat_history = body.get('chat_history', [])
+        if chat_history and len(chat_history) > 0:
+            logger.info(f"[INSTRUMENTATION] /ziya/stream first history item type: {type(chat_history[0])}")
+            if isinstance(chat_history[0], list) and len(chat_history[0]) >= 2:
+                logger.info(f"[INSTRUMENTATION] /ziya/stream first history format: ['{chat_history[0][0][:20]}...', '{chat_history[0][1][:20]}...'] (truncated)")
+            elif isinstance(chat_history[0], dict):
+                logger.info(f"[INSTRUMENTATION] /ziya/stream first history keys: {chat_history[0].keys()}")
 
         # Check if the question is empty or missing
         if not body.get("question") or not body.get("question").strip():
-            logger.warning("Empty question detected")
+            logger.warning("[INSTRUMENTATION] /ziya/stream empty question detected")
             raise ValidationError("Please provide a question to continue.")
             
         # Clean chat history if present
         if "chat_history" in body:
+            logger.info(f"[INSTRUMENTATION] /ziya/stream cleaning chat history of length {len(chat_history)}")
             cleaned_history = []
             for pair in body["chat_history"]:
                 try:
                     if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-                        logger.warning(f"Invalid chat history pair format: {pair}")
+                        logger.warning(f"[INSTRUMENTATION] /ziya/stream invalid chat history pair format: {type(pair)}")
                         continue
                         
                     human, ai = pair
                     if not isinstance(human, str) or not isinstance(ai, str):
-                        logger.warning(f"Non-string message in pair: human={type(human)}, ai={type(ai)}")
+                        logger.warning(f"[INSTRUMENTATION] /ziya/stream non-string message in pair: human={type(human)}, ai={type(ai)}")
                         continue
                         
                     if human.strip() and ai.strip():
                         cleaned_history.append((human.strip(), ai.strip()))
+                        logger.info(f"[INSTRUMENTATION] /ziya/stream added valid pair: ['{human[:20]}...', '{ai[:20]}...'] (truncated)")
                     else:
-                        logger.warning(f"Empty message in pair: {pair}")
+                        logger.warning(f"[INSTRUMENTATION] /ziya/stream empty message in pair")
                 except Exception as e:
-                    logger.error(f"Error processing chat history pair: {str(e)}")
+                    logger.error(f"[INSTRUMENTATION] /ziya/stream error processing chat history pair: {str(e)}")
             
-            logger.debug(f"Cleaned chat history from {len(body['chat_history'])} to {len(cleaned_history)} pairs")
+            logger.info(f"[INSTRUMENTATION] /ziya/stream cleaned chat history from {len(body['chat_history'])} to {len(cleaned_history)} pairs")
             body["chat_history"] = cleaned_history
             
-        logger.info("Starting stream endpoint with body size: %d", len(str(body)))
+        logger.info("[INSTRUMENTATION] /ziya/stream starting stream endpoint with body size: %d", len(str(body)))
         
         # Convert to ChatPromptValue if needed
         if isinstance(body, dict) and "messages" in body:
             from langchain_core.prompt_values import ChatPromptValue
             from langchain_core.messages import HumanMessage
+            logger.info(f"[INSTRUMENTATION] /ziya/stream converting {len(body['messages'])} messages to ChatPromptValue")
             body["messages"] = [HumanMessage(content=msg) for msg in body["messages"]]
             body = ChatPromptValue(messages=body["messages"])
+            logger.info(f"[INSTRUMENTATION] /ziya/stream converted body to {type(body)}")
         
         # Return the streaming response
+        logger.info("[INSTRUMENTATION] /ziya/stream calling stream_chunks()")
         return StreamingResponse(
-            stream_agent_response(body, request),
+            stream_chunks(body),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache"}
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
         )
     except Exception as e:
         # Handle any exceptions using the centralized error handler
@@ -184,19 +663,21 @@ async def stream_agent_response(body, request):
                     cleaned_output = parsed_chunk.return_values.get("output", "")
                     if cleaned_output:
                         first_chunk = False
-                        yield f"data: {cleaned_output}\n\n"
+                        # Use proper JSON format for SSE
+                        yield f"data: {json.dumps({'text': cleaned_output})}\n\n"
                         continue
                 
                 # Fall back to original chunk if parsing fails
                 chunk_content = chunk.content if hasattr(chunk, 'content') else str(chunk)
                 first_chunk = False
-                yield f"data: {chunk_content}\n\n"
+                # Use proper JSON format for SSE
+                yield f"data: {json.dumps({'text': chunk_content})}\n\n"
             except Exception as e:
                 logger.error(f"Error processing chunk: {e}")
                 continue
         
         # Send the [DONE] marker
-        yield "data: [DONE]\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
         
     except Exception as e:
         # Use the centralized error handler for streaming errors
@@ -437,6 +918,70 @@ if __name__ == "__main__":
     uvicorn.run(app, host=args.host, port=args.port)
 
 @app.get('/api/default-included-folders')
+async def get_default_included_folders():
+    """Get the default included folders."""
+    return []
+
+@app.post('/api/chat')
+async def chat_endpoint(request: Request):
+    """Handle chat requests from the frontend.
+    
+    This is a thin wrapper around the /ziya/stream endpoint that formats
+    the request data appropriately and forwards it to the stream endpoint.
+    """
+    try:
+        body = await request.json()
+        
+        # Extract data from the request
+        messages = body.get('messages', [])
+        question = body.get('question', '')
+        files = body.get('files', [])
+        
+        logger.info(f"[INSTRUMENTATION] /api/chat received request with {len(messages)} messages and {len(files)} files")
+        logger.info(f"[INSTRUMENTATION] /api/chat question: '{question[:50]}...' (truncated)")
+        
+        # Log message structure for debugging
+        if messages and len(messages) > 0:
+            logger.info(f"[INSTRUMENTATION] First message structure: {type(messages[0])}")
+            if isinstance(messages[0], list) and len(messages[0]) >= 2:
+                logger.info(f"[INSTRUMENTATION] First message format: ['{messages[0][0][:20]}...', '{messages[0][1][:20]}...'] (truncated)")
+            elif isinstance(messages[0], dict):
+                logger.info(f"[INSTRUMENTATION] First message keys: {messages[0].keys()}")
+        
+        # Format the data for the stream endpoint
+        formatted_body = {
+            'question': question,
+            'chat_history': messages,
+            'config': {
+                'files': files
+            }
+        }
+        
+        logger.info(f"[INSTRUMENTATION] /api/chat formatted body structure: {formatted_body.keys()}")
+        logger.info(f"[INSTRUMENTATION] /api/chat forwarding to /ziya/stream")
+        
+        # Forward the request to the /ziya/stream endpoint
+        # This ensures all validation and normalization logic is applied
+        stream_request = Request(scope=request.scope)
+        stream_request._body = json.dumps(formatted_body).encode()
+        
+        # Call the stream endpoint directly
+        return await stream_endpoint(stream_request, formatted_body)
+    except Exception as e:
+        logger.error(f"Error in chat_endpoint: {str(e)}")
+        # Return error as streaming response
+        error_json = json.dumps({"error": str(e)})
+        return StreamingResponse(
+            (f"data: {error_json}\n\ndata: {json.dumps({'done': True})}\n\n" for _ in range(1)),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Content-Type": "text/event-stream"
+            }
+        )
 
 @app.get('/api/current-model')
 def get_current_model():
