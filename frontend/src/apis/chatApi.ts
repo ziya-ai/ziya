@@ -476,13 +476,14 @@ export const sendPayload = async (
                             }
                         }
                         
-                        // First check if this is a proper SSE message with data: prefix
-                        if (chunk.includes('data: {')) {
-                            const errorResponse = extractErrorFromSSE(chunk);
-                            if (errorResponse) {
-                                console.log("Error detected in raw chunk:", errorResponse);
+                        // Check for errors using our new function
+                        try {
+                            // Check for nested errors in LangChain ops structure
+                            const nestedError = extractErrorFromNestedOps(chunk);
+                            if (nestedError) {
+                                console.log("Nested error detected in ops structure:", nestedError);
                                 message.error({
-                                    content: errorResponse.detail || 'An error occurred',
+                                    content: nestedError.detail || 'An error occurred',
                                     duration: 10,
                                     key: 'stream-error'
                                 });
@@ -490,6 +491,8 @@ export const sendPayload = async (
                                 removeStreamingConversation(conversationId);
                                 break;
                             }
+                        } catch (error) {
+                            console.warn("Error checking for nested errors:", error);
                         }
                         
                         // Check for auth error specifically - use more precise detection

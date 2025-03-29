@@ -33,13 +33,46 @@ from langchain_core.messages import HumanMessage
 # Import configuration from the central config module
 import app.config as config
 
-class EmptyMessageFilter(BaseCallbackHandler):
-    """Filter out empty messages before they reach the model."""
+class ModelManager:
+    """Manages model initialization and configuration."""
     
-    def on_chat_model_start(self, *args, **kwargs):
-        messages = kwargs.get('messages', [])
-        if not messages:
-            raise ValueError("No messages provided")
+    def __init__(self):
+        """Initialize the model manager."""
+        # Load environment variables
+        load_dotenv(find_dotenv())
+        
+        # Initialize state
+        self._endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
+        self._model = os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS[self._endpoint])
+        self._model_id_override = os.environ.get("ZIYA_MODEL_ID_OVERRIDE")
+        self._llm = None
+        
+        # Initialize model parameters
+        self._temperature = float(os.environ.get("ZIYA_TEMPERATURE", 0.3))
+        self._top_p = float(os.environ.get("ZIYA_TOP_P", 0.9))
+        self._top_k = int(os.environ.get("ZIYA_TOP_K", 40))
+        self._max_output_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))
+        
+        # Initialize the LLM
+        self._initialize_llm()
+    
+    def get_model_config(self):
+        """Get the current model configuration."""
+        model_config = config.MODEL_CONFIGS[self._endpoint][self._model].copy()
+        
+        # Override model ID if specified
+        if self._model_id_override:
+            model_config["model_id"] = self._model_id_override
+        
+        # Update parameters
+        model_config.update({
+            "temperature": self._temperature,
+            "top_p": self._top_p,
+            "top_k": self._top_k,
+            "max_output_tokens": self._max_output_tokens
+        })
+        
+        return model_config
         for message in messages:
             if not message.content or not message.content.strip():
                 raise ValueError("Empty message content detected")
