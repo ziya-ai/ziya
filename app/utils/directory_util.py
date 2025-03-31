@@ -1,9 +1,10 @@
 import glob
 import os
+import re
 from typing import List, Set, Tuple, Dict
 
 from app.utils.gitignore_parser import parse_gitignore_patterns
-
+from app.utils.logging_utils import logger
 
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     ignored_patterns: List[Tuple[str, str]] = [
@@ -33,10 +34,16 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             patterns.extend(read_gitignore(gitignore_path))
 
         for subdir in glob.glob(os.path.join(path, "*/")):
-            patterns.extend(get_patterns_recursive(subdir))
+            # Skip excluded directories early
+            if any(pattern[0] in subdir for pattern in ignored_patterns):
+                logger.debug(f"Skipping excluded directory: {subdir}")
+                continue
+            try:
+                patterns.extend(get_patterns_recursive(subdir))
+            except re.error:
+                logger.warning(f"Skipping directory due to pattern error: {subdir}")
 
         return patterns
-
     ignored_patterns.extend(get_patterns_recursive(directory))
     return ignored_patterns
 
