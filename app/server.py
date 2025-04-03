@@ -309,8 +309,11 @@ async def stream_chunks(body):
                 # Check if file is a dictionary with path and content
                 if isinstance(file, dict):
                     file_path = file.get("path", "")
+                    logger.info(f"Processing file: {file_path}")
                     file_content = file.get("content", "")
                     if file_path and file_content:
+                        logger.info(f"Adding content for {file_path}, size: {len(content)}")
+                        logger.info(f"Content preview:\n{content[:200]}...")
                         file_context += f"File: {file_path}\n```\n{file_content}\n```\n\n"
                 # Handle case where file might be a string or other format
                 elif isinstance(file, str):
@@ -430,6 +433,8 @@ async def stream_chunks(body):
         # Set up the model with the stop sequence
         # This ensures the model will properly stop at the sentinel
         model_with_stop = model_instance.bind(stop=["</tool_input>"])
+        
+
         
         try:
             async for chunk in model_with_stop.astream(messages):
@@ -1978,6 +1983,21 @@ async def apply_changes(request: ApplyChangesRequest):
 
         logger.info(request.diff[:100])
         logger.info(f"Full diff content: \n{request.diff}")
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        
+        # Prioritize extracting the file path from the diff content itself
+        extracted_path = extract_target_file_from_diff(request.diff)
+
+        if extracted_path:
+            file_path = os.path.join(user_codebase_dir, extracted_path)
+            logger.info(f"Extracted target file from diff: {extracted_path}")
+        elif request.filePath:
+            # Fallback to using the provided filePath if extraction fails
+            file_path = os.path.join(user_codebase_dir, request.filePath)
+            logger.info(f"Using provided file path: {request.filePath}")
+        else:
+            raise ValueError("Could not determine target file path from diff or request")
 
         # --- SUGGESTION: Add secure path validation ---
         user_codebase_dir = os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR"))
