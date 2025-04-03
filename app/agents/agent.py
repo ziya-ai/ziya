@@ -1,24 +1,62 @@
 import os
 import os.path
 import re
-from typing import Dict, List, Tuple, Set, Union, Optional, Any
+import sys
+from typing import Dict, List, Tuple, Set, Union, Optional, Any, cast
+
+def _extract_content(x: Any) -> str:
+    """Extract content from various response formats."""
+    # If x has a content attribute (standard case)
+    if hasattr(x, 'content'):
+        return str(x.content)
+        
+    # If x is a list of dicts with text field (Nova-Lite case)
+    if isinstance(x, list) and x:
+        if isinstance(x[0], dict) and 'text' in x[0]:
+            return str(x[0]['text'])
+        # Combine all text fields if multiple chunks
+        texts = []
+        for chunk in x:
+            if isinstance(chunk, dict) and 'text' in chunk:
+                texts.append(str(chunk['text']))
+        if texts:
+            return ' '.join(texts)
+            
+    # If x is a dict with text field
+    if isinstance(x, dict) and 'text' in x:
+        return str(x['text'])
+        
+    # Last resort: convert to string
+    return str(x)
 
 import json
 import time
 import botocore
 import asyncio
 import tiktoken
-from langchain.agents import AgentExecutor
-from langchain.agents.format_scratchpad import format_xml
-from langchain_aws import ChatBedrock
-from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
-from google.api_core.exceptions import ResourceExhausted
-from langchain_community.document_loaders import TextLoader
-from langchain_core.agents import AgentFinish
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, BaseMessage
-from langchain_core.outputs import Generation
-from langchain_core.runnables import RunnablePassthrough, Runnable
+
+# Import custom exceptions first to ensure they're available for error handling
+from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
+
+# Wrap imports in try/except to catch credential errors early
+try:
+    from langchain.agents import AgentExecutor
+    from langchain.agents.format_scratchpad import format_xml
+    from langchain_aws import ChatBedrock
+    from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+    from google.api_core.exceptions import ResourceExhausted
+    from langchain_community.document_loaders import TextLoader
+    from langchain_core.agents import AgentFinish
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, BaseMessage
+    from langchain_core.outputs import Generation
+    from langchain_core.runnables import RunnablePassthrough, Runnable
+except KnownCredentialException as e:
+    # Print clean error message without traceback
+    print("\n" + "=" * 80)
+    print(str(e))
+    print("=" * 80 + "\n")
+    sys.exit(1)
 from langserve import add_routes
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,14 +64,28 @@ from pydantic import BaseModel, Field
 from botocore.exceptions import ClientError
 
 from app.agents.prompts import conversational_prompt
+from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
 from app.agents.models import ModelManager
 from app.middleware import RequestSizeMiddleware
 from app.utils.sanitizer_util import clean_backtick_sequences
+from app.utils.context_enhancer import initialize_ast, enhance_query_context
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file
 from app.utils.file_state_manager import FileStateManager
 from app.utils.error_handlers import format_error_response, detect_error_type
+from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
+
+# Wrap model initialization in try/except to catch credential errors early
+try:
+    # Initialize the model
+    model = ModelManager()
+except KnownCredentialException as e:
+    # Print clean error message without traceback
+    print("\n" + "=" * 80)
+    print(str(e))
+    print("=" * 80 + "\n")
+    sys.exit(1)
 
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -138,28 +190,20 @@ def _extract_content(x: Any) -> str:
 
 def parse_output(message):
     """Parse and sanitize the output from the language model."""
-    logger.info("parse_output called with type: %s", type(message))
-    
+    # Import the enhanced parse_output function
+    from app.agents.parse_output import parse_output as enhanced_parse_output
+    return enhanced_parse_output(message)
+
     try:
-        # Extract content using the helper function
-        content = _extract_content(message)
-        
-        logger.debug("Content inspection:")
-        logger.debug(f"Type: {type(content)}")
-        logger.debug(f"Has diff marker: {'```diff' in content}")
-        logger.debug(f"Content starts with: {content[:100]}")
-        logger.debug(f"Content ends with: {content[-100:]}")
-        logger.debug(f"Raw content length: {len(content)}")
-
         # Check if this is an error message
-        try:
-            error_data = json.loads(content)
-            if error_data.get('error') == 'validation_error':
-                logger.info(f"Detected validation error in output: {content}")
-                return AgentFinish(return_values={"output": content}, log=content)
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            pass
+        error_data = json.loads(content)
+        if error_data.get('error') == 'validation_error':
+            logger.info(f"Detected validation error in output: {content}")
+            return AgentFinish(return_values={"output": content}, log=content)
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
 
+    try:
         # Extract diff content from markdown code fence if present
         if "```diff" in content:
             parts = content.split("```diff")
@@ -176,12 +220,10 @@ def parse_output(message):
         text = clean_backtick_sequences(content)
         logger.info(f"parse_output extracted content size: {len(content)} chars, cleaned size: {len(text)} chars")
         return AgentFinish(return_values={"output": text}, log=text)
-    
     except Exception as e:
-        logger.error(f"Error in parse_output: {str(e)}")
+        logger.error(f"Error in parse_output content processing: {str(e)}")
         # Provide a safe fallback
-        error_message = f"Error processing response: {str(e)}"
-        return AgentFinish(return_values={"output": error_message}, log=error_message)
+        return AgentFinish(return_values={"output": content}, log=content)
 
 # Create a wrapper class that adds retries
 class RetryingChatBedrock(Runnable):
@@ -500,8 +542,27 @@ class RetryingChatBedrock(Runnable):
                                 logger.info(f"Signer has session token of length: {token_length}")
 
                 async for chunk in self.model.astream(messages, config, **kwargs):
-                    if isinstance(chunk, AIMessageChunk):
+                    if isinstance(chunk, ChatGoogleGenerativeAIError):
+                        # Format Gemini errors as structured error payload within a chunk
+                        error_msg = {
+                            "error": "server_error",
+                            "detail": str(chunk),
+                            "status_code": 500
+                        }
+                        # Yield the error payload as content in an AIMessageChunk
+                        yield AIMessageChunk(content=json.dumps(error_msg))
+                        # Signal termination by yielding a specific marker (optional, stream_chunks can also detect error type)
+                        # yield AIMessageChunk(content="[STREAM_ERROR_SENTINEL]") # Alternative approach
+                        return
+
+                    elif isinstance(chunk, AIMessageChunk):
+                        raw_chunk_content_repr = repr(chunk.content)[:200]
+                        logger.debug(f"RetryingChatBedrock - Received AIMessageChunk, raw content preview: {raw_chunk_content_repr}")
                         content = chunk.content() if callable(chunk.content) else chunk.content
+                        full_content_str = str(content) # Ensure it's a string
+                        logger.debug(f"RetryingChatBedrock - Extracted FULL content string (len={len(full_content_str)}): '{full_content_str}'")
+                        extracted_content_repr = repr(content)[:200]
+                        logger.debug(f"RetryingChatBedrock - Extracted content preview: {extracted_content_repr}")
                         yield AIMessageChunk(content=content)
                     else:
                         yield chunk
@@ -512,13 +573,24 @@ class RetryingChatBedrock(Runnable):
                 raise
                 # Format as proper SSE message
                 sse_message = f"data: {error_json}\n\n"
-                logger.info(f"[ERROR_SSE] Sending throttling error message: {sse_message}")
+                logger.info(f"[ERROR_SSE] Preparing throttling error message: {sse_message}")
                 yield AIMessageChunk(content=sse_message)
                 
                 # Send DONE marker
                 done_message = "data: [DONE]\n\n"
-                logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
+                logger.info(f"[ERROR_SSE] Preparing DONE marker after throttle error: {done_message}")
                 yield AIMessageChunk(content=done_message)
+                return
+
+            except ChatGoogleGenerativeAIError as e:
+                # Format Gemini errors as structured error payload within a chunk
+                error_msg = {
+                    "error": "server_error",
+                    "detail": str(e),
+                    "status_code": 500
+                }
+                # Yield the error payload as content in an AIMessageChunk
+                yield AIMessageChunk(content=json.dumps(error_msg))
                 return
 
             except ClientError as e:
@@ -544,14 +616,14 @@ class RetryingChatBedrock(Runnable):
                 error_json = json.dumps(error_message)
                 logger.info(f"[ERROR_TRACE] Preparing error response JSON: {error_json}")
                 
-                # Format as proper SSE message
-                sse_message = f"data: {error_json}\n\n"
-                logger.info(f"[ERROR_SSE] Sending error SSE message: {sse_message}")
+                # Yield the error payload as content in an AIMessageChunk
+                # sse_message = f"data: {error_json}\n\n" # Don't format here
+                logger.info(f"[ERROR_SSE] Yielding structured error chunk: {error_json}")
                 
                 # Log the exact message we're about to yield
                 logger.info("[ERROR_TRACE] About to yield AIMessageChunk with error content")
-                yield AIMessageChunk(content=sse_message)
-                logger.info("[ERROR_TRACE] Yielded error message")
+                yield AIMessageChunk(content=error_json)
+                logger.info("[ERROR_TRACE] Yielded error chunk")
                 
                 # Send DONE marker as proper SSE message
                 done_message = "data: [DONE]\n\n"
@@ -576,14 +648,14 @@ class RetryingChatBedrock(Runnable):
                     }
                     
                     error_json = json.dumps(error_message)
-                    logger.info(f"[ERROR_TRACE] Preparing throttling error response: {error_json}")
+                    logger.info(f"[ERROR_TRACE] Yielding structured throttling error response: {error_json}")
                     
                     # Format as proper SSE message
-                    sse_message = f"data: {error_json}\n\n"
-                    logger.info(f"[ERROR_SSE] Sending throttling error message: {sse_message}")
-                    yield AIMessageChunk(content=sse_message)
+                    # sse_message = f"data: {error_json}\n\n" # Don't format here
+                    logger.info(f"[ERROR_SSE] Yielding throttling error chunk: {error_json}")
+                    yield AIMessageChunk(content=error_json)
                     
-                    # Send DONE marker
+                    # Send DONE marker chunk
                     done_message = "data: [DONE]\n\n"
                     logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
                     yield AIMessageChunk(content=done_message)
@@ -609,11 +681,10 @@ class RetryingChatBedrock(Runnable):
                     error_message["retry_after"] = retry_after
                 
                 logger.info(f"Yielding final error response: {error_message}")
-                # Format as proper SSE message
-                sse_message = f"data: {json.dumps(error_message)}\n\n"
-                yield AIMessageChunk(content=sse_message)
+                # Yield the error payload as content in an AIMessageChunk
+                yield AIMessageChunk(content=json.dumps(error_message))
                 
-                # Send DONE marker
+                # Send DONE marker chunk
                 done_message = "data: [DONE]\n\n"
                 yield AIMessageChunk(content=done_message)
                 return
@@ -807,21 +878,54 @@ llm_with_stop = model.bind(stop=["</tool_input>"])
 file_state_manager = FileStateManager()
 
 def get_combined_docs_from_files(files, conversation_id: str = "default") -> str:
+    logger.info("=== get_combined_docs_from_files called ===")
+    logger.info(f"Called with files: {files}")
     combined_contents: str = ""
     logger.debug("Processing files:")
     print_file_tree(files if isinstance(files, list) else files.get("config", {}).get("files", []))
+    
+    # Log the raw files input
+    logger.info(f"Raw files input type: {type(files)}")
+    logger.info(f"Files to process: {files}")
+    
     logger.info(f"Processing files with conversation_id: {conversation_id}")
+
+    # Initialize AST capabilities if enabled
+    if os.environ.get("ZIYA_ENABLE_AST") == "true":
+        try:
+            logger.info("AST initialization requested via ZIYA_ENABLE_AST=true")
+            codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
+            logger.info(f"Using codebase directory: {codebase_dir}")
+            
+            ignored_patterns = get_ignored_patterns(codebase_dir)
+            logger.info(f"Using ignored patterns: {ignored_patterns}")
+            
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+            logger.info(f"Using max depth: {max_depth}")
+            
+            ast_init_result = initialize_ast(codebase_dir, ignored_patterns, max_depth)
+            logger.info(f"AST initialization result: {ast_init_result}")
+        except Exception as e:
+            logger.error(f"Failed to initialize AST capabilities: {e}")
+            import traceback
+            logger.error(f"AST initialization traceback: {traceback.format_exc()}")
 
     user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
     for file_path in files:
         full_path = os.path.join(user_codebase_dir, file_path)
         # Skip directories
         if os.path.isdir(full_path):
+            logger.debug(f"Skipping directory: {full_path}")
             continue
         try:
             # Get annotated content with change tracking
+            logger.info(f"Getting annotated content for {file_path}")
             annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
+            logger.info(f"Got {len(annotated_lines) if annotated_lines else 0} lines for {file_path}, success={success}")
             if success:
+                # Log a preview of the content
+                preview = "\n".join(annotated_lines[:5]) if annotated_lines else "NO CONTENT"
+                logger.info(f"Content preview for {file_path}:\n{preview}\n...")
                 combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
@@ -829,6 +933,10 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     print(f"Codebase word count: {len(combined_contents.split()):,}")
     token_count = len(tiktoken.get_encoding("cl100k_base").encode(combined_contents))
     print(f"Codebase token count: {token_count:,}")
+    
+    # Log the first and last part of combined contents
+    logger.info(f"Combined contents starts with:\n{combined_contents[:500]}")
+    logger.info(f"Combined contents ends with:\n{combined_contents[-500:]}")
     print(f"Max Claude Token limit: 200,000")
     print("--------------------------------------------------------")
     return combined_contents
@@ -947,22 +1055,60 @@ def log_codebase_wrapper(x):
 def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
     llm_with_stop = model.bind(stop=["</tool_input"])
+    
+    # Check if AST is enabled
+    ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
+    logger.info(f"Creating agent chain with AST enabled: {ast_enabled}")
+    
+    # Get model information for prompt extensions
+    model_info = get_model_info_from_config()
+    model_name = model_info["model_name"]
+    model_family = model_info["model_family"]
+    endpoint = model_info["endpoint"]
+    
+    logger.info(f"Creating agent chain for model: {model_name}, family: {model_family}, endpoint: {endpoint}")
+    
+    # Get the extended prompt with model-specific extensions
+    prompt_template = get_extended_prompt(
+        model_name=model_name,
+        model_family=model_family,
+        endpoint=endpoint
+    )
+    
+    # Define the input mapping with conditional AST context
+    input_mapping = {
+        "codebase": log_codebase_wrapper,
+        "question": lambda x: x["question"],
+        "chat_history": lambda x: _format_chat_history(x.get("chat_history", [])),
+        "agent_scratchpad": lambda x: [
+            AIMessage(content=format_xml([]))
+        ]
+    }
+    
+    # Add AST context enhancement if enabled
+    if ast_enabled:
+        logger.info("Adding AST context to agent chain input mapping")
+        input_mapping["ast_context"] = lambda x: enhance_query_context(x["question"])
+        logger.info(f"AST context lambda added to input mapping: {input_mapping.get('ast_context')}")
+    else:
+        logger.info("AST context not added to agent chain (disabled)")
+        # Add empty AST context to avoid template errors
+        input_mapping["ast_context"] = lambda x: {}
+    
     chain = (
-        {
-            "codebase": log_codebase_wrapper,
-            "question": lambda x: x["question"],
-            "chat_history": lambda x: _format_chat_history(x.get("chat_history", [])),
-            "agent_scratchpad": lambda x: [
-                AIMessage(content=format_xml([]))
-            ]
-        }
-        | conversational_prompt
+        input_mapping
+        | prompt_template  # Use the extended prompt template with model-specific extensions
         | chat_model.bind(stop=["</tool_input>"])
         | (lambda x: AgentFinish(
             return_values={"output": _extract_content(x)},
             log=_extract_content(x)
         ))
     )
+    
+    # Log information about AST context if enabled
+    if ast_enabled:
+        logger.info("AST context enhancement enabled for agent chain")
+    
     return chain
  
 # Initialize the agent chain
@@ -1004,12 +1150,169 @@ def update_and_return(input_data: Dict[str, Any]) -> Dict[str, Any]:
 # Finally create the executor
 def create_agent_executor(agent_chain: Runnable):
     """Create a new agent executor with the given agent."""
-    return AgentExecutor(
+    from langchain_core.runnables import RunnableConfig, Runnable as LCRunnable
+    from langchain_core.tracers.log_stream import RunLogPatch
+    
+    # Create the original executor
+    original_executor = AgentExecutor(
         agent=agent_chain,
         tools=[],
         verbose=False,
         handle_parsing_errors=True
     ).with_types(input_type=AgentInput) | RunnablePassthrough.assign(output=update_and_return)
+    
+    # Create a Runnable wrapper class that adds our safe streaming
+    class SafeAgentExecutor(LCRunnable):
+        def __init__(self, wrapped_executor):
+            self.executor = wrapped_executor
+            
+        async def astream_log(self, input_data, config=None, **kwargs):
+            """Safe wrapper for astream_log that ensures chunks have id attributes."""
+            try:
+                # Remove any unexpected parameters that might cause errors
+                if isinstance(input_data, dict) and "diff" in input_data:
+                    logger.warning("Removing unexpected 'diff' parameter from input data")
+                    input_data = {k: v for k, v in input_data.items() if k != "diff"}
+                
+                # Call the original astream and convert to RunLogPatch
+                from langchain_core.tracers.log_stream import RunLogPatch
+                async for chunk in self.executor.astream(input_data, config, **kwargs):
+                    # Process the chunk safely
+                    safe_chunk = self._ensure_safe_chunk(chunk)
+                    # Convert to RunLogPatch format
+                    if isinstance(safe_chunk, (AIMessageChunk, str)):
+                        content = safe_chunk.content if hasattr(safe_chunk, 'content') else str(safe_chunk)
+                        log_patch = RunLogPatch(
+                            ops=[{
+                                'op': 'add',
+                                'path': '/streamed_output',
+                                'value': content
+                            }]
+                        )
+                        yield log_patch
+                    else:
+                        # If it's already a RunLogPatch, yield it directly
+                        yield safe_chunk
+            except Exception as e:
+                logger.error(f"Error in safe_astream_log: {str(e)}")
+                # Create an error chunk
+                error_content = f"Error in streaming: {str(e)}"
+                error_chunk = AIMessageChunk(content=error_content)
+                object.__setattr__(error_chunk, 'id', f"error-{hash(error_content) % 10000}")
+                object.__setattr__(error_chunk, 'message', error_content)
+                yield error_chunk
+        
+        def _ensure_safe_chunk(self, chunk):
+            """Ensure the chunk has all required attributes."""
+            try:
+                # Special handling for RunLogPatch objects
+                if isinstance(chunk, RunLogPatch):
+                    logger.info(f"Processing RunLogPatch: {type(chunk)}")
+                    # Add id attribute if it doesn't exist
+                    if not hasattr(chunk, 'id'):
+                        # Generate a unique ID based on the object's hash
+                        chunk_id = f"log-{hash(str(chunk)) % 10000}"
+                        try:
+                            object.__setattr__(chunk, 'id', chunk_id)
+                            logger.info(f"Added id to RunLogPatch: {chunk_id}")
+                        except Exception as e:
+                            logger.warning(f"Could not add id to RunLogPatch: {str(e)}")
+                            # Create a new object with the same data but with an id
+                            if hasattr(chunk, 'data'):
+                                new_chunk = AIMessageChunk(content=str(chunk.data))
+                                object.__setattr__(new_chunk, 'id', chunk_id)
+                                object.__setattr__(new_chunk, 'message', str(chunk.data))
+                                logger.info(f"Created new chunk with id: {new_chunk.id}")
+                                return new_chunk
+                    return chunk
+                # If chunk is a string, wrap it in an AIMessageChunk
+                elif isinstance(chunk, str):
+                    logger.info(f"Converting string chunk to AIMessageChunk: {chunk[:50]}...")
+                    # Use ZiyaString to preserve attributes
+                    from app.agents.custom_message import ZiyaString
+                    ziya_str = ZiyaString(chunk, id=f"str-{hash(chunk) % 10000}", message=chunk)
+                    message_chunk = AIMessageChunk(content=ziya_str)
+                    object.__setattr__(message_chunk, 'id', ziya_str.id)
+                    object.__setattr__(message_chunk, 'message', ziya_str.message)
+                    
+                    # Add to_generation method for compatibility
+                    def to_generation():
+                        from langchain_core.outputs import Generation
+                        gen = Generation(text=chunk, generation_info={})
+                        object.__setattr__(gen, 'id', message_chunk.id)
+                        object.__setattr__(gen, 'message', chunk)
+                        return gen
+                    object.__setattr__(message_chunk, 'to_generation', to_generation)
+                    
+                    logger.info(f"Created AIMessageChunk with id: {message_chunk.id}")
+                    return message_chunk
+                # If chunk is None, create an empty chunk
+                elif chunk is None:
+                    logger.info("Received None chunk, creating empty AIMessageChunk")
+                    empty_chunk = AIMessageChunk(content="")
+                    object.__setattr__(empty_chunk, 'id', "empty-chunk")
+                    object.__setattr__(empty_chunk, 'message', "")
+                    return empty_chunk
+                # If chunk doesn't have an id attribute, add one
+                elif not hasattr(chunk, 'id'):
+                    logger.info(f"Adding id to chunk of type: {type(chunk)}")
+                    try:
+                        content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                        if callable(content):
+                            content = content()
+                        object.__setattr__(chunk, 'id', f"exec-{hash(str(content)) % 10000}")
+                        object.__setattr__(chunk, 'message', content)
+                        return chunk
+                    except Exception as e:
+                        logger.warning(f"Could not add id to chunk: {str(e)}")
+                        # Create a new chunk with the content
+                        new_content = str(chunk)
+                        new_chunk = AIMessageChunk(content=new_content)
+                        object.__setattr__(new_chunk, 'id', f"fallback-{hash(new_content) % 10000}")
+                        object.__setattr__(new_chunk, 'message', new_content)
+                        logger.info(f"Created fallback chunk with id: {new_chunk.id}")
+                        return new_chunk
+                else:
+                    # Chunk already has an id, ensure it has a message attribute
+                    if not hasattr(chunk, 'message'):
+                        try:
+                            content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                            if callable(content):
+                                content = content()
+                            object.__setattr__(chunk, 'message', content)
+                        except Exception as e:
+                            logger.warning(f"Could not add message to chunk: {str(e)}")
+                    return chunk
+            except Exception as e:
+                logger.error(f"Error in _ensure_safe_chunk: {str(e)}")
+                # Create a fallback chunk
+                fallback_content = f"Error processing chunk: {str(e)}"
+                fallback_chunk = AIMessageChunk(content=fallback_content)
+                object.__setattr__(fallback_chunk, 'id', f"error-{hash(fallback_content) % 10000}")
+                object.__setattr__(fallback_chunk, 'message', fallback_content)
+                return fallback_chunk
+        
+        # Forward all required Runnable methods to the wrapped executor
+        async def ainvoke(self, input, config=None, **kwargs):
+            return await self.executor.ainvoke(input, config, **kwargs)
+            
+        def invoke(self, input, config=None, **kwargs):
+            return self.executor.invoke(input, config, **kwargs)
+            
+        async def astream(self, input, config=None, **kwargs):
+            async for chunk in self.executor.astream(input, config, **kwargs):
+                yield chunk
+                
+        def stream(self, input, config=None, **kwargs):
+            for chunk in self.executor.stream(input, config, **kwargs):
+                yield chunk
+                
+        # Forward any other methods or attributes
+        def __getattr__(self, name):
+            return getattr(self.executor, name)
+    
+    # Return a new instance of our safe executor
+    return SafeAgentExecutor(original_executor)
 
 agent_executor = create_agent_executor(agent)
 
@@ -1076,4 +1379,3 @@ def initialize_langserve(app, executor):
         
     logger.info(f"Successfully reinitialized app with {len(new_app.routes)} routes")
     return True
- 

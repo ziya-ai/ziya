@@ -70,6 +70,11 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     if isinstance(chunk, AIMessageChunk):
                         logger.info("Processing AIMessageChunk")
                         content = chunk.content
+                        # Let stream_chunks handle structured error detection within content
+                        if content: # Avoid sending empty data chunks
+                            yield f"data: {content}\n\n"
+                            continue
+                        
                         yield f"data: {content}\n\n"
                         continue
                     
@@ -83,6 +88,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         logger.info("Processing ChatGeneration")
                         if hasattr(chunk, 'message'):
                             content = chunk.message.content
+                        if content:
                             yield f"data: {content}\n\n"
                             continue
                     
@@ -95,14 +101,26 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 if op.get('op') == 'add' and 'value' in op and 'content' in op['value']:
                                     content = op['value']['content']
                                     yield f"data: {content}\n\n"
-                                    continue
                         # If we couldn't extract content, skip this chunk
                         continue
                     
+                    # This string chunk handling might be redundant if stream_chunks formats everything
                     # Handle string chunks
                     if isinstance(chunk, str):
                         logger.info("Processing string chunk")
-                        yield f"data: {chunk}\n\n"
+                        # Check if it's already an SSE message
+                        if chunk.startswith('data:'):
+                            yield chunk
+                        else:
+                            yield f"data: {chunk}\n\n"
+                        
+
+                        # Log chunk content preview
+                        if len(chunk) > 200:
+                            logger.info(f"String chunk preview:\n{chunk[:200]}...")
+                            logger.info(f"...and ends with:\n{chunk[-200:]}")
+                        else:
+                            logger.info(f"Full string chunk:\n{chunk}")
                         continue
                     
                     # If we get here, try to extract content from the chunk
@@ -111,17 +129,20 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         content = chunk.content
                         if callable(content):
                             content = content()
-                        yield f"data: {content}\n\n"
-                        continue
+                        if content:
+                            yield f"data: {content}\n\n"
+                            continue
                     
                     # Last resort: convert to string
                     logger.info("Converting chunk to string")
-                    yield f"data: {str(chunk)}\n\n"
+                    str_chunk = str(chunk)
+                    if str_chunk: # Avoid empty data chunks
+                        yield f"data: {str_chunk}\n\n"
                     
                 except Exception as chunk_error:
                     logger.error(f"Error processing chunk: {str(chunk_error)}")
-                    error_msg = f"Error processing response: {str(chunk_error)}"
-                    yield f"data: {error_msg}\n\n"
+                    str_chunk = str(chunk)
+                    raise chunk_error
                     continue
                     
             # Send the [DONE] marker
@@ -129,6 +150,3 @@ class StreamingMiddleware(BaseHTTPMiddleware):
             
         except Exception as e:
             logger.error(f"Error in safe_stream: {str(e)}")
-            error_msg = {"error": "server_error", "detail": str(e), "status_code": 500}
-            yield f"data: {json.dumps(error_msg)}\n\n"
-            yield "data: [DONE]\n\n"

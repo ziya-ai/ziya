@@ -92,6 +92,10 @@ app.add_middleware(
 # Add error handling middleware
 app.add_middleware(ErrorHandlingMiddleware)
 
+# Import and include AST routes
+from app.routes.ast_routes import router as ast_router
+app.include_router(ast_router)
+
 # Get the directory of the current file
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -264,6 +268,7 @@ async def stream_chunks(body):
         if files:
             from langchain_core.messages import SystemMessage
             logger.info(f"[INSTRUMENTATION] stream_chunks adding system message with {len(files)} files")
+            logger.info("=== System Message Content Debug ===")
             file_context = "Here are the files in the codebase:\n\n"
             
             # Count string files to avoid excessive logging
@@ -273,13 +278,28 @@ async def stream_chunks(body):
                 # Check if file is a dictionary with path and content
                 if isinstance(file, dict):
                     file_path = file.get("path", "")
+                    logger.info(f"Processing file: {file_path}")
                     file_content = file.get("content", "")
                     if file_path and file_content:
+                        logger.info(f"Adding content for {file_path}, size: {len(content)}")
+                        logger.info(f"Content preview:\n{content[:200]}...")
                         file_context += f"File: {file_path}\n```\n{file_content}\n```\n\n"
                 # Handle case where file might be a string or other format
                 elif isinstance(file, str):
-                    file_context += f"File: {file}\n\n"
-                    string_file_count += 1
+                    logger.info(f"String only file: {file}")
+                    try:
+                        full_path = os.path.join(os.environ.get("ZIYA_USER_CODEBASE_DIR", ""), file)
+                        if os.path.exists(full_path):
+                             with open(full_path, 'r', encoding='utf-8') as f:
+                               file_content = f.read()
+                             logger.info(f"Adding content for {file}, size: {len(file_content)}")
+                             logger.info(f"Content preview:\n{file_content[:200]}...")
+                             file_context += f"File: {file}\n```\n{file_content}\n```\n\n"
+                             string_file_count += 1
+                        else:
+                             logger.warning(f"File not found: {full_path}")
+                    except Exception as e:
+                         logger.error(f"Error reading file {file}: {str(e)}")
             
             # Log summary of string files instead of individual warnings
             if string_file_count > 0:
@@ -374,23 +394,25 @@ async def stream_chunks(body):
         
         # Log the final message list for debugging
         logger.info(f"[INSTRUMENTATION] stream_chunks final message list contains {len(messages)} messages:")
-        # Only log a few messages in detail
+        # Log details for the first few and lest few messages
+        log_limit = 5
         for i, msg in enumerate(messages):
-            if i >= 10:  # Only log first 10 messages
-                logger.info(f"[INSTRUMENTATION] stream_chunks ... and {len(messages) - 10} more messages")
-                break
+            if i < log_limit or i >= len(messages) - log_limit:
+                try:
+                    # Increase preview length and replace newlines for better logging
+                    content_preview = str(msg.content)[:150].replace('\n', '\\n') + ('...' if len(str(msg.content)) > 150 else '')
+                    logger.info(f"[INSTRUMENTATION] stream_chunks message {i}: type={msg.__class__.__name__}, content_preview='{content_preview}'")
+                except Exception as e:
+                    logger.error(f"[INSTRUMENTATION] stream_chunks error logging message {i}: {e}")
+                    logger.info(f"[INSTRUMENTATION] stream_chunks message {i}: type={type(msg)}")
+            elif i == log_limit:
+                 logger.info(f"[INSTRUMENTATION] stream_chunks ... ({len(messages) - 2 * log_limit} messages omitted) ...")
                 
-            try:
-                logger.info(f"[INSTRUMENTATION] stream_chunks message {i}: type={msg.__class__.__name__}, content_preview={str(msg.content)[:30]}...")
-            except Exception as e:
-                logger.error(f"[INSTRUMENTATION] stream_chunks error logging message {i}: {e}")
-                logger.info(f"[INSTRUMENTATION] stream_chunks message {i}: type={type(msg)}")
-        
         # Stream directly from the model
-        logger.info("[INSTRUMENTATION] stream_chunks starting model.astream()")
+        logger.info("[INSTRUMENTATION] stream_chunks calling model.astream()")
         chunk_count = 0
         full_response = ""
-        
+
         # Flag to track if we've sent the done marker
         done_marker_sent = False
         
@@ -398,19 +420,49 @@ async def stream_chunks(body):
         # This ensures the model will properly stop at the sentinel
         model_with_stop = model_instance.bind(stop=["</tool_input>"])
         
+
+        
         try:
             async for chunk in model_with_stop.astream(messages):
+                
+                # Check if the chunk contains a structured error message first
+                is_error_chunk = False
+                error_data = None
+                if hasattr(chunk, 'content'):
+                    content_str = str(chunk.content) if callable(chunk.content) else str(chunk.content)
+                    if content_str.startswith('{') and '"error":' in content_str:
+                        try:
+                            error_data = json.loads(content_str)
+                            if "error" in error_data and "detail" in error_data:
+                                is_error_chunk = True
+                        except json.JSONDecodeError:
+                            pass # Not a valid JSON error structure
+
+                if is_error_chunk and error_data:
+                    logger.warning(f"[INSTRUMENTATION] stream_chunks detected structured error chunk: {error_data}")
+                    # Ensure we yield the error data correctly formatted for SSE
+                    error_sse_data = f"data: {json.dumps(error_data)}\n\n"
+                    logger.info(f"[INSTRUMENTATION] Yielding SSE Error: {error_sse_data.strip()}")
+                    yield error_sse_data # Send formatted error
+                    yield "data: [DONE]\n\n" # Send DONE marker immediately after error
+                    done_marker_sent = True # Mark as sent
+                    break # Terminate the stream after sending error and DONE
                 # Skip processing if we've already sent the done marker
                 if done_marker_sent:
+                    # Check if chunk is already an SSE message
+                    if isinstance(chunk, str) and chunk.startswith('data: {"error"'):
+                        yield chunk
+                        continue
                     logger.info("[INSTRUMENTATION] stream_chunks skipping chunk after done marker sent")
                     continue
                     
-                chunk_count += 1
+                chunk_count += 1 # Only increment for non-error chunks
                 
                 # Extract content from the chunk
                 if hasattr(chunk, 'content'):
                     logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} has content attribute")
                     content = chunk.content
+                    
                     # Handle callable content
                     if callable(content):
                         logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is callable")
@@ -441,66 +493,68 @@ async def stream_chunks(body):
                                     done_marker_sent = True
                                     break  # Exit the loop but not the function
                 
-                # Handle Nova model format (list of content blocks)
-                if isinstance(content, list) and len(content) > 0:
-                    logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is list of length {len(content)}")
-                    for content_block in content:
-                        if isinstance(content_block, dict) and 'text' in content_block:
-                            text = content_block.get('text', '')
-                            # Clean up the text - remove any [] markers
-                            if text == "[]":
-                                logger.info(f"[INSTRUMENTATION] stream_chunks skipping empty brackets")
-                                continue  # Skip empty brackets
+                    # Handle Nova model format (list of content blocks)
+                    if isinstance(content, list) and len(content) > 0:
+                        logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is list of length {len(content)}")
+                        for content_block in content:
+                            if isinstance(content_block, dict) and 'text' in content_block:
+                                text = content_block.get('text', '')
+                                # Clean up the text - remove any [] markers
+                                if text == "[]":
+                                    logger.info(f"[INSTRUMENTATION] stream_chunks skipping empty brackets")
+                                    continue  # Skip empty brackets
                             
-                            # Remove [] from the beginning and end of the text if present
-                            text = text.strip("[]")
+                                # Remove [] from the beginning and end of the text if present
+                                # text = text.strip("[]")
+                                # commented out as this seems to be too aggressively clipping square brackets
+                                
+                                if text:  # Only send non-empty text
+                                    # Accumulate the full response for later use
+                                    full_response += text
+                                    
+                                    # Use the format that the frontend expects for streamed output
+                                    ops = [
+                                        {
+                                            "op": "add",
+                                            "path": "/streamed_output_str/-",
+                                            "value": text
+                                        }
+                                    ]
+                                    
+                                    # Only log every 10th chunk or first/last chunks
+                                    if chunk_count <= 1 or chunk_count % 10 == 0:
+                                        logger.info(f"[INSTRUMENTATION] stream_chunks sending Nova chunk #{chunk_count}: text={text[:20]}...")
+                                    yield f"data: {json.dumps({'ops': ops})}\n\n"
+                    else:
+                        # Handle standard text content
+                        logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is standard text")
+                        text = str(content)
+                        # Clean up the text - remove any [] markers
+                        if text == "[]":
+                            logger.info(f"[INSTRUMENTATION] stream_chunks skipping empty brackets")
+                            continue  # Skip empty brackets
+                        
+                        # Remove [] from the beginning and end of the text if present
+                        #text = text.strip("[]")
+                        # commented out as this seems to be too aggressively clipping square brackets
+                        
+                        if text:
+                            # Accumulate the full response for later use
+                            full_response += text
                             
-                            if text:  # Only send non-empty text
-                                # Accumulate the full response for later use
-                                full_response += text
-                                
-                                # Use the format that the frontend expects for streamed output
-                                ops = [
-                                    {
-                                        "op": "add",
-                                        "path": "/streamed_output_str/-",
-                                        "value": text
-                                    }
-                                ]
-                                
-                                # Only log every 10th chunk or first/last chunks
-                                if chunk_count <= 1 or chunk_count % 10 == 0:
-                                    logger.info(f"[INSTRUMENTATION] stream_chunks sending Nova chunk #{chunk_count}: text={text[:20]}...")
-                                yield f"data: {json.dumps({'ops': ops})}\n\n"
-                else:
-                    # Handle standard text content
-                    logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is standard text")
-                    text = str(content)
-                    # Clean up the text - remove any [] markers
-                    if text == "[]":
-                        logger.info(f"[INSTRUMENTATION] stream_chunks skipping empty brackets")
-                        continue  # Skip empty brackets
-                    
-                    # Remove [] from the beginning and end of the text if present
-                    text = text.strip("[]")
-                    
-                    if text:
-                        # Accumulate the full response for later use
-                        full_response += text
-                        
-                        # Use the format that the frontend expects for streamed output
-                        ops = [
-                            {
-                                "op": "add",
-                                "path": "/streamed_output_str/-",
-                                "value": text
-                            }
-                        ]
-                        
-                        # Only log every 10th chunk or first/last chunks
-                        if chunk_count <= 1 or chunk_count % 10 == 0:
-                            logger.info(f"[INSTRUMENTATION] stream_chunks sending chunk #{chunk_count}: text={text[:20]}...")
-                        yield f"data: {json.dumps({'ops': ops})}\n\n"
+                            # Use the format that the frontend expects for streamed output
+                            ops = [
+                                {
+                                    "op": "add",
+                                    "path": "/streamed_output_str/-",
+                                    "value": text
+                                }
+                            ]
+                            
+                            # Only log every 10th chunk or first/last chunks
+                            if chunk_count <= 1 or chunk_count % 10 == 0:
+                                logger.info(f"[INSTRUMENTATION] stream_chunks sending chunk #{chunk_count}: text={text[:20]}...")
+                            yield f"data: {json.dumps({'ops': ops})}\n\n"
             else:
                 logger.info(f"[INSTRUMENTATION] stream_chunks skipping chunk #{chunk_count} without content: {type(chunk)}")
                 
@@ -516,11 +570,30 @@ async def stream_chunks(body):
                     
             # End of the async for loop iteration
             
-            # If we've processed all chunks without sending the done marker, send it now
-            if not done_marker_sent and chunk_count > 0:
+            # After successful streaming, log the complete response
+            if full_response:
+                logger.info("=== FULL SERVER RESPONSE ===")
+                logger.info(f"Response length: {len(full_response)}")
+                logger.info(f"Response content:\n{full_response}")
+                logger.info("=== END SERVER RESPONSE ===")
+            
+            # If the loop finished normally (no error break) and we sent content, send DONE
+            if not done_marker_sent and chunk_count > 0 and not is_error_chunk:
                 logger.info(f"[INSTRUMENTATION] stream_chunks total chunks sent: {chunk_count}")
                 logger.info("[INSTRUMENTATION] stream_chunks sending done marker after all chunks")
                 yield f"data: {json.dumps({'done': True})}\n\n"
+
+        except ChatGoogleGenerativeAIError as e:
+            error_msg = {
+                "error": "server_error",
+                "detail": str(e),
+                "status_code": 500
+            }
+            yield f"data: {json.dumps(error_msg)}\n\n"
+            # Send DONE only if not already sent
+            if not done_marker_sent:
+                yield "data: [DONE]\n\n"
+            return
                 
         except Exception as e:
             # Handle any exceptions during streaming
@@ -528,11 +601,13 @@ async def stream_chunks(body):
             logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
             logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
             if not done_marker_sent:
-                logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
+                # Let the middleware handle formatting this unexpected error and sending DONE
+                # logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                yield f"data: {json.dumps({'done': True})}\n\n"
-                done_marker_sent = True
-            
+
+                # yield f"data: {json.dumps({'done': True})}\n\n" # Middleware will send DONE
+                # done_marker_sent = True
+            raise # Re-raise for middleware to catch
         # Update conversation state after streaming is complete
         try:
             # Note: update_conversation_state only takes 2 args (conversation_id and file_paths)
@@ -546,9 +621,7 @@ async def stream_chunks(body):
         logger.error(f"[INSTRUMENTATION] stream_chunks exception during streaming: {str(e)}")
         logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
         logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        yield f"data: {json.dumps({'done': True})}\n\n"
-        
+        raise # re-raise for middleware to catch        
         # Update conversation state after streaming is complete
         try:
             # Note: update_conversation_state only takes 2 args (conversation_id and file_paths)
@@ -562,8 +635,9 @@ async def stream_chunks(body):
         logger.error(f"[INSTRUMENTATION] stream_chunks exception during streaming: {str(e)}")
         logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
         logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        # Let the middleware handle formatting this unexpected error and sending DONE
+        # yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        # yield f"data: {json.dumps({'done': True})}\n\n"
 
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")
@@ -859,8 +933,51 @@ async def apply_patch(request: PatchRequest):
             return {"error": "Could not determine target file from diff"}
             
         # Apply the patch
-        result = use_git_to_apply_code_diff(request.diff, target_file)
-        return {"success": True, "result": result}
+        try:
+            result = use_git_to_apply_code_diff(request.diff, target_file)
+
+            # Check if result contains error information
+            if isinstance(result, dict) and result.get('status') == 'error':
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": "error",
+                        "type": result.get("type", "patch_error"),
+                        "message": result.get("message", "Failed to apply patch"),
+                        "details": result.get("details", {})
+                    }
+                )
+
+            # Check for partial success with failed hunks
+            if isinstance(result, dict) and result.get('hunk_statuses'):
+                failed_hunks = [
+                    hunk_num for hunk_num, status in result['hunk_statuses'].items()
+                    if status.get('status') == 'failed'
+                ]
+                if failed_hunks:
+                    return JSONResponse(
+                        status_code=207,
+                        content={
+                            "status": "partial",
+                            "message": "Some hunks failed to apply",
+                            "details": {
+                                "failed": failed_hunks,
+                                "hunk_statuses": result['hunk_statuses']
+                            }
+                        }
+                    )
+
+            # All hunks succeeded
+            return JSONResponse(
+                content={
+                    "status": "success",
+                    "message": "Changes applied successfully",
+                    "details": result
+                }
+            )
+        except Exception as e:
+            logger.error("Error in apply_path: {e}")
+
     except PatchApplicationError as e:
         logger.error(f"Error applying patch: {e}")
         return {"error": str(e), "type": "patch_error"}
@@ -936,6 +1053,22 @@ async def chat_endpoint(request: Request):
         messages = body.get('messages', [])
         question = body.get('question', '')
         files = body.get('files', [])
+
+        logger.info("=== File Processing Debug ===")
+        logger.info(f"Files received: {files}")
+        if files:
+            for file_path in files:
+                try:
+                    full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
+                    if os.path.exists(full_path):
+                        with open(full_path, 'r') as f:
+                            content = f.read()
+                            logger.info(f"File {file_path} exists, size: {len(content)} bytes")
+                            logger.info(f"Preview: {content[:200]}...")
+                    else:
+                        logger.warning(f"File not found: {full_path}")
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {e}")
         
         logger.info(f"[INSTRUMENTATION] /api/chat received request with {len(messages)} messages and {len(files)} files")
         logger.info(f"[INSTRUMENTATION] /api/chat question: '{question[:50]}...' (truncated)")
@@ -1381,6 +1514,21 @@ async def apply_changes(request: ApplyChangesRequest):
         logger.info("First 100 chars of raw diff:")
         logger.info(request.diff[:100])
         logger.info(f"Full diff content: \n{request.diff}")
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        
+        # Prioritize extracting the file path from the diff content itself
+        extracted_path = extract_target_file_from_diff(request.diff)
+
+        if extracted_path:
+            file_path = os.path.join(user_codebase_dir, extracted_path)
+            logger.info(f"Extracted target file from diff: {extracted_path}")
+        elif request.filePath:
+            # Fallback to using the provided filePath if extraction fails
+            file_path = os.path.join(user_codebase_dir, request.filePath)
+            logger.info(f"Using provided file path: {request.filePath}")
+        else:
+            raise ValueError("Could not determine target file path from diff or request")
 
         # Extract individual diffs if multiple are present
         individual_diffs = split_combined_diff(request.diff)
@@ -1392,7 +1540,7 @@ async def apply_changes(request: ApplyChangesRequest):
             target_diff = None
             for diff in individual_diffs:
                 target_file = extract_target_file_from_diff(diff)
-                if target_file and os.path.normpath(target_file) == os.path.normpath(request.filePath):
+                if target_file and os.path.normpath(target_file) == os.path.normpath(extracted_path or request.filePath):
                     target_diff = diff
                     break
 
@@ -1410,13 +1558,6 @@ async def apply_changes(request: ApplyChangesRequest):
             target_diff = individual_diffs[0]
 
         request.diff = target_diff
-        logger.info(f"Using diff for {request.filePath}")
-
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
-        if not user_codebase_dir:
-            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
-
-        file_path = os.path.join(user_codebase_dir, request.filePath)
         use_git_to_apply_code_diff(request.diff, file_path)
         return {'status': 'success', 'message': 'Changes applied successfully'}
     except Exception as e:
