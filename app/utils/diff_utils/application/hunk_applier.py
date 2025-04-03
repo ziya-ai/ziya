@@ -1,141 +1,151 @@
 """
-Module for applying hunks with improved handling of special cases.
+Hunk application utilities.
 """
 
-import re
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 
-# Configure logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("ZIYA")
 
-def apply_hunk_with_deduplication(file_lines: List[str], hunk: Dict[str, Any], position: int) -> List[str]:
+def apply_hunk(file_lines: List[str], hunk: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
-    Apply a hunk to file lines with deduplication detection to prevent duplicate code.
+    Apply a single hunk to file lines.
     
     Args:
-        file_lines: The lines of the file
+        file_lines: The file lines to modify
         hunk: The hunk to apply
-        position: The position to apply the hunk
         
     Returns:
-        The modified file lines
+        A tuple of (success, modified_lines)
     """
-    # Extract the old and new blocks
-    old_block = hunk.get('old_block', [])
-    new_block = hunk.get('new_block', [])
+    logger.debug(f"Applying hunk at source lines {hunk['src_start']}-{hunk['src_start'] + hunk['src_count'] - 1}")
+    
+    # Make a copy of the file lines
+    modified_lines = file_lines.copy()
+    
+    # Check if the hunk is already applied
+    if is_hunk_already_applied(file_lines, hunk):
+        logger.info("Hunk is already applied")
+        return True, modified_lines
+    
+    # Get the source line range
+    src_start = hunk['src_start'] - 1  # Convert to 0-based index
+    src_end = src_start + hunk['src_count']
+    
+    # Check if the source range is valid
+    if src_start < 0 or src_end > len(file_lines):
+        logger.error(f"Invalid source range: {src_start}-{src_end} (file has {len(file_lines)} lines)")
+        return False, file_lines
     
     # Extract the lines to remove and add
-    old_lines = [line[1:] for line in old_block if line.startswith('-')]
-    new_lines = [line[1:] for line in new_block if line.startswith('+')]
+    removed_lines = []
+    added_lines = []
     
-    # Check if the new lines are already present in the file
-    # This helps prevent duplicate code when applying hunks
-    result = file_lines.copy()
-    
-    # Check for duplicates in the surrounding context
-    context_size = 5  # Look 5 lines before and after
-    start_check = max(0, position - context_size)
-    end_check = min(len(result), position + context_size)
-    
-    # Extract the context to check
-    context_to_check = result[start_check:end_check]
-    
-    # Check if all new lines are already present in the right order
-    for i in range(len(context_to_check) - len(new_lines) + 1):
-        if all(context_to_check[i+j].rstrip() == new_lines[j].rstrip() for j in range(len(new_lines))):
-            logger.info(f"Detected duplicate code at position {start_check + i}, skipping hunk application")
-            return result
-    
-    # Apply the hunk normally
-    # Remove old lines
-    for i, line in enumerate(old_block):
+    for line in hunk['lines']:
         if line.startswith('-'):
-            if position + i < len(result):
-                result.pop(position + i)
+            removed_lines.append(line[1:])
+        elif line.startswith('+'):
+            added_lines.append(line[1:])
     
-    # Add new lines
-    for i, line in enumerate(new_block):
-        if line.startswith('+'):
-            result.insert(position + i, line[1:])
+    # Check if the lines to remove match the file content
+    file_section = file_lines[src_start:src_end]
     
-    return result
+    # Count the context lines (lines that are not added or removed)
+    context_lines = [line for line in hunk['lines'] if not line.startswith('+') and not line.startswith('-')]
+    
+    # Check if we have the right number of lines
+    if len(file_section) != len(removed_lines) + len(context_lines):
+        logger.warning(f"Line count mismatch: file has {len(file_section)} lines, hunk expects {len(removed_lines) + len(context_lines)}")
+        
+        # Try to find the best match for the hunk
+        best_match = find_best_match(file_lines, hunk)
+        if best_match is not None:
+            logger.info(f"Found better match at line {best_match + 1}")
+            src_start = best_match
+            src_end = src_start + hunk['src_count']
+            file_section = file_lines[src_start:src_end]
+    
+    # Create the new section by replacing removed lines with added lines
+    new_section = []
+    file_idx = 0
+    hunk_idx = 0
+    
+    while file_idx < len(file_section) and hunk_idx < len(hunk['lines']):
+        hunk_line = hunk['lines'][hunk_idx]
+        
+        if hunk_line.startswith('-'):
+            # This is a line to remove
+            if file_idx < len(file_section) and file_section[file_idx].rstrip() == hunk_line[1:].rstrip():
+                # Skip this line (remove it)
+                file_idx += 1
+            else:
+                # The line to remove doesn't match the file content
+                logger.warning(f"Line to remove doesn't match: '{file_section[file_idx].rstrip()}' != '{hunk_line[1:].rstrip()}'")
+                return False, file_lines
+            
+            hunk_idx += 1
+        elif hunk_line.startswith('+'):
+            # This is a line to add
+            new_section.append(hunk_line[1:])
+            hunk_idx += 1
+        else:
+            # This is a context line
+            if file_idx < len(file_section) and file_section[file_idx].rstrip() == hunk_line.rstrip():
+                # Keep this line
+                new_section.append(file_section[file_idx])
+                file_idx += 1
+                hunk_idx += 1
+            else:
+                # The context line doesn't match the file content
+                logger.warning(f"Context line doesn't match: '{file_section[file_idx].rstrip()}' != '{hunk_line.rstrip()}'")
+                return False, file_lines
+    
+    # Replace the old section with the new section
+    modified_lines = file_lines[:src_start] + new_section + file_lines[src_end:]
+    
+    return True, modified_lines
 
-def apply_hunk_with_context_matching(file_lines: List[str], hunk: Dict[str, Any]) -> Tuple[List[str], bool]:
+def find_best_match(file_lines: List[str], hunk: Dict[str, Any]) -> Optional[int]:
     """
-    Apply a hunk using context matching to find the best position.
+    Find the best match for a hunk in the file.
     
     Args:
-        file_lines: The lines of the file
-        hunk: The hunk to apply
+        file_lines: The file lines
+        hunk: The hunk to match
         
     Returns:
-        Tuple of (modified_lines, success)
+        The line index of the best match, or None if no match found
     """
-    # Extract context lines from the hunk
-    context_before = []
-    context_after = []
+    # Extract the context lines from the hunk
+    context_lines = []
     
-    old_block = hunk.get('old_block', [])
+    for line in hunk['lines']:
+        if not line.startswith('+') and not line.startswith('-'):
+            context_lines.append(line)
     
-    # Find context lines before and after the changes
-    in_before = True
-    for line in old_block:
-        if line.startswith('-'):
-            in_before = False
-        elif line.startswith(' '):
-            if in_before:
-                context_before.append(line[1:])
-            else:
-                context_after.append(line[1:])
+    if not context_lines:
+        return None
     
-    # Find the best position to apply the hunk
-    best_pos = None
+    # Try to find the best match for the context lines
+    best_match = None
     best_score = 0
     
-    for i in range(len(file_lines) - len(context_before) - len(context_after) + 1):
-        # Check context before
-        before_score = 0
-        for j, ctx_line in enumerate(context_before):
-            if i + j < len(file_lines) and file_lines[i + j].rstrip() == ctx_line.rstrip():
-                before_score += 1
+    for i in range(len(file_lines) - len(context_lines) + 1):
+        file_section = file_lines[i:i+len(context_lines)]
         
-        # Check context after
-        after_pos = i + len(context_before) + len([l for l in old_block if l.startswith('-')])
-        after_score = 0
-        for j, ctx_line in enumerate(context_after):
-            if after_pos + j < len(file_lines) and file_lines[after_pos + j].rstrip() == ctx_line.rstrip():
-                after_score += 1
+        # Calculate the match score
+        score = 0
+        for file_line, context_line in zip(file_section, context_lines):
+            if file_line.rstrip() == context_line.rstrip():
+                score += 1
         
-        # Calculate total score
-        total_score = before_score + after_score
-        if total_score > best_score:
-            best_score = total_score
-            best_pos = i
+        # Update the best match if this is better
+        if score > best_score:
+            best_score = score
+            best_match = i
     
-    # If we found a good position, apply the hunk
-    if best_pos is not None and best_score > 0:
-        return apply_hunk_with_deduplication(file_lines, hunk, best_pos), True
+    # Only return the match if it's good enough
+    if best_score >= len(context_lines) * 0.7:  # At least 70% match
+        return best_match
     
-    return file_lines, False
-
-def handle_duplicate_code_detection(file_lines: List[str], hunks: List[Dict[str, Any]]) -> List[str]:
-    """
-    Apply hunks with duplicate code detection to prevent code duplication.
-    
-    Args:
-        file_lines: The lines of the file
-        hunks: The hunks to apply
-        
-    Returns:
-        The modified file lines
-    """
-    result = file_lines.copy()
-    
-    for hunk in hunks:
-        # Try to apply the hunk with context matching
-        new_result, success = apply_hunk_with_context_matching(result, hunk)
-        if success:
-            result = new_result
-    
-    return result
+    return None

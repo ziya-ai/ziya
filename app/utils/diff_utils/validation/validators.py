@@ -2,12 +2,16 @@
 Validation utilities for diffs and patches.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from itertools import zip_longest
 import re
+import logging
 
-from app.utils.logging_utils import logger
+logger = logging.getLogger("ZIYA")
 from ..core.utils import calculate_block_similarity, normalize_escapes
+from ..core.unicode_handling import normalize_unicode
+from ..core.escape_handling import normalize_escape_sequences
+from ..core.text_normalization import normalize_text_for_comparison
 
 def is_new_file_creation(diff_lines: List[str]) -> bool:
     """
@@ -48,7 +52,7 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
 
 def normalize_line_for_comparison(line: str) -> str:
     """
-    Normalize a line for comparison, handling whitespace and invisible characters.
+    Normalize a line for comparison, handling whitespace, invisible characters, and escape sequences.
     
     Args:
         line: The line to normalize
@@ -59,28 +63,35 @@ def normalize_line_for_comparison(line: str) -> str:
     if not line:
         return ""
     
-    # Remove invisible Unicode characters
-    # Zero-width space (U+200B), zero-width non-joiner (U+200C), zero-width joiner (U+200D)
-    # Left-to-right mark (U+200E), right-to-left mark (U+200F)
-    # And other zero-width/invisible characters
-    invisible_chars = [
-        '\u200B', '\u200C', '\u200D', '\u200E', '\u200F',
-        '\u2060', '\u2061', '\u2062', '\u2063', '\u2064',
-        '\uFEFF'  # Zero-width no-break space (BOM)
-    ]
-    result = line
-    for char in invisible_chars:
-        result = result.replace(char, '')
+    # Use the core text normalization function for consistent handling
+    from ..core.text_normalization import normalize_text_for_comparison
+    return normalize_text_for_comparison(line)
+
+def extract_diff_changes(hunk: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """
+    Extract the removed and added lines from a hunk.
     
-    # Normalize escape sequences
-    result = normalize_escapes(result)
+    Args:
+        hunk: The hunk to extract changes from
+        
+    Returns:
+        A tuple of (removed_lines, added_lines)
+    """
+    removed_lines = []
+    added_lines = []
     
-    return result.rstrip()
+    for line in hunk.get('lines', []):
+        if line.startswith('-'):
+            removed_lines.append(line[1:])
+        elif line.startswith('+'):
+            added_lines.append(line[1:])
+    
+    return removed_lines, added_lines
 
 def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int) -> bool:
     """
     Check if a hunk is already applied at the given position with improved handling
-    of special cases like constants after comments.
+    for invisible Unicode characters, escape sequences, and whitespace.
     
     Args:
         file_lines: List of lines from the file
@@ -90,111 +101,177 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     Returns:
         True if the hunk is already applied, False otherwise
     """
+    # --- MODIFIED: Log type and content for EVERY call ---
+    hunk_old_start = hunk.get('old_start', 'N/A') if isinstance(hunk, dict) else 'N/A'
+    logger.debug(f"is_hunk_already_applied called for pos={pos}, hunk_old_start={hunk_old_start}")
+    logger.debug(f"  Hunk type: {type(hunk)}")
+    logger.debug(f"  Hunk content (preview): {repr(hunk)[:200]}...")
+    # --- END MODIFIED ---
     # Handle edge cases
-    if not hunk['new_lines'] or pos >= len(file_lines):
+    if not hunk.get('new_lines') or pos > len(file_lines):
         logger.debug(f"Empty hunk or position {pos} beyond file length {len(file_lines)}")
         return False
 
     # Get the lines we're working with
-    window_size = max(len(hunk['old_block']), len(hunk['new_lines']))
+    window_size = max(len(hunk.get('old_block', [])), len(hunk.get('new_lines', [])))
     if pos + window_size > len(file_lines):
         window_size = len(file_lines) - pos
     available_lines = file_lines[pos:pos + window_size]
     
-    # First check: exact match of the entire new content block with normalized comparison
-    if len(available_lines) >= len(hunk['new_lines']):
-        exact_match = True
-        for i, new_line in enumerate(hunk['new_lines']):
-            if i >= len(available_lines):
-                exact_match = False
-                break
+    # Extract the removed and added lines from the hunk
+    removed_lines, added_lines = extract_diff_changes(hunk)
+    
+    # If there are no actual changes (no removed or added lines), it's a no-op
+    if not removed_lines and not added_lines:
+        logger.debug("No actual changes in hunk (no removed or added lines)")
+        return True
+    
+    # If this is a completely new file or section, it can't be already applied
+    if all(line.startswith('+') for line in hunk.get('old_block', [])):
+        logger.debug("Hunk is adding completely new content, can't be already applied")
+        return False
+    
+    # If this is a simple replacement (one line removed, one line added)
+    # Check if the added line is already in the file at this position
+    if len(removed_lines) == 1 and len(added_lines) == 1:
+        if pos < len(file_lines):
+            # Use the core text normalization for consistent handling
+            from ..core.text_normalization import normalize_text_for_comparison
+            
+            normalized_file_line = normalize_text_for_comparison(file_lines[pos])
+            normalized_added_line = normalize_text_for_comparison(added_lines[0])
+            normalized_removed_line = normalize_text_for_comparison(removed_lines[0])
+            
+            # If the file already has the added line (not the removed line)
+            if normalized_file_line == normalized_added_line and normalized_file_line != normalized_removed_line:
+                logger.debug(f"Found added line already in file at position {pos}")
+                return True
+    
+    # Check if the file content at this position matches what we expect after applying the hunk
+    if len(available_lines) >= len(hunk.get('new_lines', [])):
+        # Extract the expected content after applying the hunk
+        expected_lines = hunk.get('new_lines', [])
+        
+        # If there are no expected lines, this can't be applied
+        if not expected_lines:
+            # If it's a pure deletion, this check isn't sufficient.
+            # For now, assume if new_lines is empty, it's not "already applied" in the sense of content matching.
+            logger.debug("Hunk results in empty content (deletion), cannot match based on new_lines.")
+            pass # Continue to other checks
+            return False
+        
+        # Check if the available lines match the expected lines
+        if len(available_lines) >= len(expected_lines):
+            exact_match = True
+            for i, expected_line in enumerate(expected_lines):
+                if i >= len(available_lines):
+                    exact_match = False
+                    break
                 
-            normalized_file_line = normalize_line_for_comparison(available_lines[i])
-            normalized_new_line = normalize_line_for_comparison(new_line)
+                normalized_file_line = normalize_unicode(available_lines[i].strip())
+                normalized_expected_line = normalize_unicode(expected_line.strip())
+                if normalized_file_line != normalized_expected_line:
+                    # Try a more lenient comparison that ignores all whitespace
+                    # If normalized versions don't match, it's definitely not applied
+                    # Normalized versions match, but raw lines differ (whitespace difference)
+                    # Therefore, it's NOT already applied in its target state.
+                    exact_match = False
+                    break
+                # else: both normalized and raw lines match for this line, continue checking next line
             
-            if normalized_file_line != normalized_new_line:
-                exact_match = False
-                break
-        
-        if exact_match:
-            logger.debug(f"Exact match of new content found at position {pos}")
-            return True
+            if exact_match:
+                logger.debug(f"Exact match of expected content found at position {pos}")
+                return True
+    
 
-    # Special case for constant definitions after comments
-    # This handles the constant_duplicate_check test case
-    if len(hunk['new_lines']) == 1 and len(hunk['old_block']) == 1:
-        new_line = hunk['new_lines'][0].strip()
-        old_line = hunk['old_block'][0].strip()
-        
-        # Check if we're adding a constant after a comment
-        if old_line.startswith('#') and '=' in new_line and not new_line.startswith('#'):
-            # Extract constant name more robustly
-            constant_match = re.match(r'^([A-Za-z0-9_]+)\s*=', new_line)
-            if constant_match:
-                constant_name = constant_match.group(1)
-                # Look for the constant anywhere in the file
-                for line in file_lines:
-                    if re.search(rf'\b{re.escape(constant_name)}\s*=', line):
-                        logger.debug(f"Found constant {constant_name} already defined in file")
-                        return True
-    
-    # Special case for escape sequences
-    # This handles the escape_sequence_content test case
-    if any('text +=' in line for line in hunk['new_lines']):
-        # Check if all the new lines with text += are already in the file
-        text_lines = [line for line in hunk['new_lines'] if 'text +=' in line]
-        all_found = True
-        for text_line in text_lines:
-            normalized_text_line = normalize_line_for_comparison(text_line)
-            if not any(normalize_line_for_comparison(line) == normalized_text_line for line in file_lines):
-                all_found = False
+    # Check if this is a whitespace-only change
+    if len(removed_lines) == len(added_lines):
+        whitespace_only = True
+        for removed, added in zip(removed_lines, added_lines):
+            # Compare non-whitespace content
+            if normalize_line_for_comparison(removed).strip() != normalize_line_for_comparison(added).strip():
+                whitespace_only = False
                 break
         
-        if all_found:
-            logger.debug("All text += lines already found in file")
-            return True
+        if whitespace_only and removed_lines:  # Only if there are actual changes
+            # For whitespace-only changes, check if the file already has the correct whitespace
+            if len(available_lines) >= len(added_lines):
+                all_match = True
+                for i, added_line in enumerate(added_lines):
+                    if i >= len(available_lines):
+                        all_match = False
+                        break
+                    
+                    # Compare with exact whitespace
+                    if available_lines[i].rstrip('\r\n') != added_line.rstrip('\r\n'):
+                        # Try normalizing invisible characters
+                        if normalize_unicode(available_lines[i].rstrip('\r\n')) != normalize_unicode(added_line.rstrip('\r\n')):
+                            all_match = False
+                            break
+                
+                if all_match:
+                    logger.debug("Whitespace-only changes already applied")
+                    return True
     
-    # Second check: identify actual changes and see if they're already applied
-    changes = []
-    for i, (old_line, new_line) in enumerate(zip_longest(hunk['old_block'], hunk['new_lines'], fillvalue=None)):
-        if old_line != new_line:
-            changes.append((i, old_line, new_line))
-    
-    # If no actual changes in this hunk, consider it applied
-    if not changes:
-        logger.debug("No actual changes in hunk")
-        return True
-    
-    # Check if all changed lines match their target state with normalized comparison
-    all_changes_applied = True
-    for idx, _, new_line in changes:
-        if idx >= len(available_lines):
-            all_changes_applied = False
-            break
+    # Check for invisible Unicode characters
+    if any('\u200B' in line or '\u200C' in line or '\u200D' in line or '\uFEFF' in line for line in added_lines):
+        # This hunk contains invisible Unicode characters
+        # Check if the file already has the content with or without the invisible characters
+        if len(available_lines) >= len(added_lines):
+            all_match = True
+            for i, added_line in enumerate(added_lines):
+                if i >= len(available_lines):
+                    all_match = False
+                    break
+                
+                # Normalize both lines to remove invisible characters
+                normalized_file_line = normalize_unicode(available_lines[i])
+                normalized_added_line = normalize_unicode(added_line)
+                
+                # Compare normalized content
+                if normalize_line_for_comparison(normalized_file_line) != normalize_line_for_comparison(normalized_added_line):
+                    all_match = False
+                    break
             
-        normalized_file_line = normalize_line_for_comparison(available_lines[idx])
-        normalized_new_line = normalize_line_for_comparison(new_line or '')
-        
-        if normalized_file_line != normalized_new_line:
-            all_changes_applied = False
-            break
+            if all_match:
+                logger.debug("Content with invisible Unicode characters already applied (normalized)")
+                return True
     
-    if all_changes_applied:
-        logger.debug(f"All {len(changes)} changes already applied at pos {pos}")
-        return True
+    # Check for escape sequences
+    if any('\\n' in line or '\\r' in line or '\\t' in line or '\\\\' in line for line in added_lines):
+        # This hunk contains escape sequences
+        # Check if the file already has the content with properly handled escape sequences
+        if len(available_lines) >= len(added_lines):
+            all_match = True
+            for i, added_line in enumerate(added_lines):
+                if i >= len(available_lines):
+                    all_match = False
+                    break
+                
+                # Normalize both lines to handle escape sequences
+                normalized_file_line = normalize_escape_sequences(available_lines[i])
+                normalized_added_line = normalize_escape_sequences(added_line)
+                
+                # Compare normalized content
+                if normalize_line_for_comparison(normalized_file_line) != normalize_line_for_comparison(normalized_added_line):
+                    all_match = False
+                    break
+            
+            if all_match:
+                logger.debug("Content with escape sequences already applied (normalized)")
+                return True
     
-    # Third check: calculate overall similarity for fuzzy matching
-    if len(available_lines) >= len(hunk['new_lines']):
+    # Calculate overall similarity for fuzzy matching
+    if len(available_lines) >= len(added_lines) and added_lines:
         # Normalize both sides for comparison
-        normalized_available = [normalize_line_for_comparison(line) for line in available_lines[:len(hunk['new_lines'])]]
-        normalized_new = [normalize_line_for_comparison(line) for line in hunk['new_lines']]
+        normalized_available = [normalize_line_for_comparison(line) for line in available_lines[:len(added_lines)]]
+        normalized_added = [normalize_line_for_comparison(line) for line in added_lines]
         
-        similarity = calculate_block_similarity(normalized_available, normalized_new)
+        similarity = calculate_block_similarity(normalized_available, normalized_added)
         
         # Very high similarity suggests the changes are already applied
-        if similarity >= 0.98:
+        if similarity >= 0.95:
             logger.debug(f"Very high similarity ({similarity:.2f}) suggests hunk already applied")
             return True
     
-    logger.debug(f"Hunk not applied at position {pos}")
     return False

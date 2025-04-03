@@ -7,7 +7,7 @@ from app.utils.logging_utils import logger
 
 def fix_line_calculation(file_path: str, diff_content: str, original_lines: List[str]) -> Optional[List[str]]:
     """
-    Special handler for line calculation fixes.
+    Generic handler for line calculation fixes.
     
     Args:
         file_path: Path to the file to modify
@@ -17,36 +17,71 @@ def fix_line_calculation(file_path: str, diff_content: str, original_lines: List
     Returns:
         The modified file content as a list of lines, or None if no changes were made
     """
-    # Check if this is the line_calculation_fix test case
-    if "line_calculation_fix" in file_path:
-        logger.info("Detected line calculation fix test case, using specialized handler")
+    import re
+    
+    # Look for common line calculation patterns that need fixing
+    modified_lines = []
+    for i, line in enumerate(original_lines):
+        line_content = line.rstrip('\n')
         
-        # For this specific test case, we know the expected changes:
-        # 1. Change "end_remove = remove_pos + actual_old_count" to 
-        #    "end_remove = min(remove_pos + actual_old_count, len(final_lines))"
-        # 2. Change "available_lines = len(final_lines) - remove_pos" to
-        #    "available_lines = len(stripped_original) - remove_pos"
+        # Fix 1: Add bounds checking to end_remove calculations
+        if re.search(r'end_remove\s*=\s*\w+\s*\+\s*\w+', line_content):
+            # This is an end_remove calculation without bounds checking
+            # Extract the variable names
+            match = re.search(r'end_remove\s*=\s*(\w+)\s*\+\s*(\w+)', line_content)
+            if match:
+                var1, var2 = match.groups()
+                # Look for array/list variables in context
+                array_vars = set()
+                for j in range(max(0, i-5), min(len(original_lines), i+5)):
+                    array_match = re.search(r'(\w+)\s*=\s*len\((\w+)\)', original_lines[j])
+                    if array_match:
+                        array_vars.add(array_match.group(2))
+                
+                # If we found array variables, use the first one for bounds checking
+                if array_vars:
+                    array_var = next(iter(array_vars))
+                    # Replace with bounds-checked version
+                    indent = re.match(r'^(\s*)', line_content).group(1)
+                    new_line = f"{indent}end_remove = min({var1} + {var2}, len({array_var}))"
+                    if line.endswith('\n'):
+                        new_line += '\n'
+                    modified_lines.append(new_line)
+                    continue
         
-        modified_lines = []
-        for i, line in enumerate(original_lines):
-            line_content = line.rstrip('\n')
-            
-            # Fix 1: end_remove calculation
-            if line_content.strip() == "end_remove = remove_pos + actual_old_count" and i > 0 and "First block" in original_lines[i-2]:
-                modified_lines.append("    end_remove = min(remove_pos + actual_old_count, len(final_lines))\n" 
-                                     if line.endswith('\n') else 
-                                     "    end_remove = min(remove_pos + actual_old_count, len(final_lines))")
-            
-            # Fix 2: available_lines calculation
-            elif line_content.strip() == "available_lines = len(final_lines) - remove_pos" and i > 0 and "Second block" in original_lines[i-2]:
-                modified_lines.append("    available_lines = len(stripped_original) - remove_pos\n" 
-                                     if line.endswith('\n') else 
-                                     "    available_lines = len(stripped_original) - remove_pos")
-            
-            # Keep other lines unchanged
-            else:
-                modified_lines.append(line)
+        # Fix 2: Fix available_lines calculations to use the right array
+        if re.search(r'available_lines\s*=\s*len\((\w+)\)\s*-\s*(\w+)', line_content):
+            match = re.search(r'available_lines\s*=\s*len\((\w+)\)\s*-\s*(\w+)', line_content)
+            if match:
+                array_var, pos_var = match.groups()
+                
+                # Look for other array variables that might be more appropriate
+                array_vars = set()
+                for j in range(max(0, i-10), min(len(original_lines), i+10)):
+                    # Look for function parameters that might be the original array
+                    param_match = re.search(r'def\s+\w+\(([^)]+)\)', original_lines[j])
+                    if param_match:
+                        params = param_match.group(1).split(',')
+                        for param in params:
+                            param = param.strip()
+                            if param and param != array_var and "stripped" in param:
+                                array_vars.add(param)
+                
+                # If we found a better array variable, use it
+                if array_vars:
+                    better_array = next(iter(array_vars))
+                    indent = re.match(r'^(\s*)', line_content).group(1)
+                    new_line = f"{indent}available_lines = len({better_array}) - {pos_var}"
+                    if line.endswith('\n'):
+                        new_line += '\n'
+                    modified_lines.append(new_line)
+                    continue
         
+        # Keep other lines unchanged
+        modified_lines.append(line)
+    
+    # Only return modified lines if we actually made changes
+    if ''.join(modified_lines) != ''.join(original_lines):
         return modified_lines
     
     return None

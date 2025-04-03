@@ -12,18 +12,22 @@ from ..core.utils import clamp, calculate_block_similarity
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from ..validation.validators import is_hunk_already_applied, normalize_line_for_comparison
 from ..application.whitespace_handler import extract_whitespace_changes, apply_whitespace_changes
+from .hunk_utils import find_best_chunk_position, fix_hunk_context
 
 # Constants
 MIN_CONFIDENCE = 0.72  # what confidence level we cut off forced diff apply after fuzzy match
 MAX_OFFSET = 5         # max allowed line offset before considering a hunk apply failed
 
-def apply_diff_with_difflib(file_path: str, diff_content: str) -> None:
+def apply_diff_with_difflib(file_path: str, diff_content: str) -> str:
     """
     Apply a diff to a file using an improved difflib implementation.
     
     Args:
         file_path: Path to the file to modify
         diff_content: The diff content to apply
+        
+    Returns:
+        The modified file content as a string
     """
     # Read the original file content
     try:
@@ -44,10 +48,14 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> None:
     
     for hunk_idx, h in enumerate(hunks, start=1):
         old_start = h['old_start'] - 1  # Convert to 0-based indexing
-        old_count = len(h['old_block'])
+        
+        # Count actual lines in the old block (excluding the prefix)
+        old_count = 0
+        for line in h['old_block']:
+            if line.startswith(('-', ' ')):
+                old_count += 1
         
         # Extract context and changes
-        removed_lines = h['old_block']
         added_lines = h['new_lines']
         
         # Find the position to apply the changes
@@ -80,39 +88,87 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> None:
                 # Ensure the file ends with a newline
                 if not result.endswith('\n'):
                     f.write('\n')
-            return
+            return result
             
         # If not whitespace-only, proceed with normal difflib application
-        result = difflib.ndiff(original_lines, expected_lines)
-        diff_result = ''.join(result)
-        
-        # Apply the diff
-        patched_content = []
-        for line in diff_result.splitlines():
-            if line.startswith('+ '):
-                patched_content.append(line[2:])
-            elif line.startswith('- '):
-                continue
-            elif line.startswith('  '):
-                patched_content.append(line[2:])
+        # Read original content preserving line endings
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                original_content = f.read()
+        except FileNotFoundError:
+            original_content = ""
+        original_lines = original_content.splitlines(True) # Keep line endings+
+        # Parse the diff to get expected content
+        hunks = list(parse_unified_diff_exact_plus(diff_content, file_path))
+
+        # Create a copy of the original content to modify
+        expected_lines = original_lines.copy()
+
+        # Apply each hunk to get the expected content
+        line_offset = 0  # Track the offset caused by adding/removing lines
+
+        for hunk_idx, h in enumerate(hunks, start=1):
+            old_start = h['old_start'] - 1  # Convert to 0-based indexing
+            old_count = len(h['old_block']) # Use the length of the parsed old_block
+            # Extract added lines (without the '+' prefix)
+            added_lines_content = h['new_lines'] # Assumes parser returns lines without '+' and without trailing newline
+
+            # Ensure added lines have a newline character
+            added_lines_with_newlines = [line + '\n' for line in added_lines_content]
+            # Find the position to apply the changes
+            expected_pos = old_start + line_offset
+            expected_pos = max(0, min(expected_pos, len(expected_lines))) # Clamp position
+
+            # Calculate the end position for removal
+            end_position = min(expected_pos + old_count, len(expected_lines))
+
+            # Apply the changes
+            logger.debug(f"Applying hunk {hunk_idx}: Replacing lines {expected_pos} to {end_position} with {len(added_lines_with_newlines)} new lines.")
+            expected_lines = expected_lines[:expected_pos] + added_lines_with_newlines + expected_lines[end_position:]
+
+            # Update the line offset
+            line_offset += len(added_lines_with_newlines) - old_count
+
+        # Use the calculated expected_lines directly as the final content
+        final_content = ''.join(expected_lines)
+
+        # Ensure the final content ends with a newline IF the original did OR if the diff added lines at the end
+        # (A more sophisticated check might be needed based on diff markers)
+        # Let's simplify: always ensure a final newline if content exists
+        if final_content and not final_content.endswith('\n'):
+            final_content += '\n'
                 
         # Write the result back to the file
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(patched_content))
-            # Ensure the file ends with a newline
-            if patched_content:
-                f.write('\n')
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(final_content)
             logger.info(
                 f"Successfully applied diff to {file_path}. "
-                f"Wrote {len(patched_content)} lines."
+                f"Wrote {len(final_content.splitlines())} lines."
             )
+        except Exception as write_error:
+             logger.error(f"Error writing patched content to {file_path}: {write_error}")
+             raise PatchApplicationError(f"Failed to write patched file: {write_error}", {
+                 "status": "error",
+                 "type": "write_error",+                 "details": str(write_error)
+             })
+        return final_content
     except Exception as e:
         logger.error(f"Error applying diff with difflib: {str(e)}")
-        raise PatchApplicationError(f"Failed to apply diff: {str(e)}", {
+        error_details = {
             "status": "error",
             "type": "difflib_error",
-            "details": str(e)
-        })
+            "details": str(e),
+            "file_path": file_path,
+            "diff_preview": diff_content[:200] + "..."
+        }
+        # If it's already a PatchApplicationError, merge details
+        if isinstance(e, PatchApplicationError):
+            e.details.update(error_details)
+            raise e
+        else:
+            raise PatchApplicationError(f"Failed to apply diff using difflib: {str(e)}", error_details)
+
 
 def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, original_lines: List[str]) -> List[str]:
     """
@@ -144,39 +200,6 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
     hunk_failures = []
     stripped_original = [ln.rstrip('\n') for ln in original_lines]
     
-    # First check if all hunks are already applied
-    all_already_applied = True
-    for h in hunks:
-        hunk_applied = False
-        # Check if this hunk is already applied anywhere in the file
-        for pos in range(len(stripped_original) + 1):  # +1 to allow checking at EOF
-            if is_hunk_already_applied(stripped_original, h, pos):
-                hunk_applied = True
-                break
-        if not hunk_applied:
-            all_already_applied = False
-            break
-    
-    if all_already_applied:
-        logger.info("All hunks already applied, returning original content")
-        return original_lines
-
-    # Check if all new lines are already in the file (in any order)
-    all_new_lines_present = True
-    for hunk in hunks:
-        for line in hunk['new_lines']:
-            normalized_line = normalize_line_for_comparison(line)
-            if normalized_line and not any(normalize_line_for_comparison(l) == normalized_line for l in stripped_original):
-                all_new_lines_present = False
-                break
-        if not all_new_lines_present:
-            break
-    
-    if all_new_lines_present:
-        logger.info("All new lines already present in file, returning original content")
-        return original_lines
-    
-    # Use improved hunk ordering strategy for multiple hunks
     if len(hunks) > 1:
         # Get optimal hunk order and related hunk groups
         optimal_order = optimize_hunk_order(hunks)
@@ -206,7 +229,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                         
                     old_start = hunk['old_start'] - 1  # Convert to 0-based
                     old_count = len(hunk['old_block'])
-                    
+
                     # Replace the content
                     if old_start < len(result):
                         result[old_start:old_start + old_count] = hunk['new_lines']
@@ -221,57 +244,10 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             hunks = ordered_hunks
             logger.info("Using optimized hunk order for sequential application")
     
-    # For first line replacement, we need a completely different approach
-    first_hunk = hunks[0] if hunks else None
-    if first_hunk and first_hunk['old_start'] == 1:
-        logger.debug(f"First hunk starts at line 1, using complete replacement approach")
-        
-        # Check if first hunk is already applied
-        if is_hunk_already_applied(stripped_original, first_hunk, 0):
-            logger.info("First hunk already applied, skipping replacement")
-            result = stripped_original.copy()
-        else:
-            # Create a new file from scratch with the correct content
-            result = []
-            
-            # Add the new content from the first hunk
-            for line in first_hunk['new_lines']:
-                result.append(line)
-            
-            # Add the remaining content from the original file, skipping what was replaced
-            if len(stripped_original) > first_hunk['old_count']:
-                result.extend(stripped_original[first_hunk['old_count']:])
-        
-        # Process remaining hunks
-        for i, hunk in enumerate(hunks[1:], 1):
-            # Check if this hunk is already applied
-            hunk_applied = False
-            for pos in range(len(result)):
-                if is_hunk_already_applied(result, hunk, pos):
-                    hunk_applied = True
-                    break
-            
-            if hunk_applied:
-                logger.info(f"Hunk #{i+1} already applied, skipping")
-                continue
-                
-            old_start = hunk['old_start'] - 1  # Convert to 0-based indexing
-            old_count = len(hunk['old_block'])
-            
-            # Adjust for previous hunks
-            adjusted_start = old_start
-            
-            # Replace the content
-            if adjusted_start < len(result):
-                result = result[:adjusted_start] + hunk['new_lines'] + result[adjusted_start + old_count:]
-        
-        # Return with proper line endings
-        return [line if line.endswith('\n') else line + '\n' for line in result]
-        
     # Normal case - process hunks sequentially
     final_lines = stripped_original.copy()
     offset = 0
-    
+        
     # Sort hunks by old_start to ensure proper ordering
     hunks.sort(key=lambda h: h['old_start'])
     
@@ -296,7 +272,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                 'actual_old_count': actual_old_count,
                 'end_remove': end_remove
             }
-
+            
         def try_strict_match(positions):
             """Attempt a strict match of the hunk content."""
             remove_pos = positions['remove_pos']
@@ -317,21 +293,17 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                 else:
                     logger.debug(f"Hunk #{hunk_idx}: old_block is smaller than old_count => strict match not possible")
             return False, remove_pos
-
+    
         def try_fuzzy_match(positions):
             """Attempt a fuzzy match if strict match fails."""
             remove_pos = positions['remove_pos']
             logger.debug(f"Hunk #{hunk_idx}: Attempting fuzzy near line {remove_pos}")
 
             from ..application.hunk_utils import find_best_chunk_position
-            best_pos, best_ratio = find_best_chunk_position(stripped_original, h['old_block'], remove_pos)
 
-            # First check if changes are already applied (with high confidence threshold)
-            if any(new_line in stripped_original for new_line in h['new_lines']):
-                already_applied = sum(1 for line in h['new_lines'] if line in stripped_original)
-                if already_applied / len(h['new_lines']) >= 0.98:  # Require near-exact match
-                    logger.info(f"Hunk #{hunk_idx} appears to be already applied")
-                    return None, remove_pos  # Signal skip to next hunk
+            # Use current final_lines for fuzzy matching, not the original stripped content
+            current_stripped_lines = [ln.rstrip('\n') for ln in final_lines]
+            best_pos, best_ratio = find_best_chunk_position(current_stripped_lines, h['old_block'], remove_pos)
 
             # Then check if we have enough confidence in our match position
             # Use a lower threshold for line calculation fixes
@@ -359,30 +331,6 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             tuple(h['old_block']),
             tuple(h['new_lines'])
         )
-        if hunk_key in already_applied_hunks:
-            continue
-
-        # First check if this hunk is already applied anywhere in the file
-        for pos in range(len(final_lines)):
-            if is_hunk_already_applied(final_lines, h, pos):
-                # Verify we have the exact new content, not just similar content
-                window = final_lines[pos:pos+len(h['new_lines'])]
-                if len(window) == len(h['new_lines']):
-                    # Use normalized comparison for better matching
-                    normalized_window = [normalize_line_for_comparison(line) for line in window]
-                    normalized_new_lines = [normalize_line_for_comparison(line) for line in h['new_lines']]
-                    
-                    if all(w == n for w, n in zip(normalized_window, normalized_new_lines)):
-                        logger.info(f"Hunk #{hunk_idx} already present at position {pos}")
-                        already_applied_hunks.add(hunk_key)
-                        logger.debug(f"Verified hunk #{hunk_idx} is already applied")
-                        already_found = True
-                        break
-                # Content doesn't match exactly, continue looking
-                continue
-
-        if already_found:
-            continue
 
         # Calculate initial positions
         positions = calculate_initial_positions()
@@ -398,19 +346,40 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                 continue  # Skip this hunk (already applied)
             new_pos, old_pos = result
             if new_pos is not None:  # Only update position if we got a valid match
-                remove_pos = new_pos
+                # Check if the offset is too large
+                offset_diff = abs(new_pos - old_pos)
+                if offset_diff > MAX_OFFSET:
+                    msg = f"Hunk #{hunk_idx} => large offset ({offset_diff} > {MAX_OFFSET}) after fuzzy match, can't safely apply chunk"
+                    logger.error(msg)
+                    failure_info = {
+                        "status": "error",
+                        "type": "large_offset",
+                        "hunk": hunk_idx,
+                        "offset": offset_diff
+                    }
+                    hunk_failures.append((msg, failure_info))
+                    # Don't apply this hunk, continue to next or raise later
+                    continue # Skip applying this hunk
+                else:
+                    # Use the position found by fuzzy matching
+                    remove_pos = new_pos
+                # *** ADDED VERIFICATION STEP for fuzzy match ***
+                # Before replacing, verify that the content at the fuzzy-found position
+                # actually matches the old_block content we intend to replace.
+                if remove_pos != positions['remove_pos']: # Only verify if fuzzy match changed position
+                    logger.debug(f"Hunk #{hunk_idx}: Verifying content at fuzzy pos={remove_pos}")
+                    # Ensure slice indices are valid
+                    slice_start = max(0, remove_pos)
+                    slice_end = min(len(final_lines), remove_pos + len(h['old_block']))
+                    fuzzy_file_slice = final_lines[slice_start:slice_end]
+                    normalized_fuzzy_file_slice = [normalize_line_for_comparison(line) for line in fuzzy_file_slice]
+                    normalized_old_block = [normalize_line_for_comparison(line) for line in h['old_block']]
 
-        # Check if the new content is already present at the target position
-        if remove_pos + len(h['new_lines']) <= len(final_lines):
-            target_window = final_lines[remove_pos:remove_pos + len(h['new_lines'])]
-            
-            # Use normalized comparison for better matching
-            normalized_target = [normalize_line_for_comparison(line) for line in target_window]
-            normalized_new = [normalize_line_for_comparison(line) for line in h['new_lines']]
-            
-            if len(target_window) == len(h['new_lines']) and all(t == n for t, n in zip(normalized_target, normalized_new)):
-                logger.info(f"Hunk #{hunk_idx} already present at target position {remove_pos}")
-                continue
+                    if normalized_fuzzy_file_slice != normalized_old_block:
+                        logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {remove_pos}, but content doesn't match old_block. Skipping.")
+                        continue # Skip applying this hunk as verification failed
+                    logger.debug(f"Hunk #{hunk_idx}: Content verified at fuzzy pos={remove_pos}")
+            # else: If fuzzy match didn't find a position, keep the original remove_pos
 
         # Use actual line counts from the blocks
         old_count = len(h['old_block'])
@@ -435,7 +404,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                 "failures": [{"message": msg, "details": details} for msg, details in hunk_failures]
             }
         )
-    
+        
     # Clean up trailing empty lines to match expected output
     # This is important for tests that expect exact line counts
     while final_lines and final_lines[-1] == '':

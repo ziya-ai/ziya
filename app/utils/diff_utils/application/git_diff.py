@@ -203,14 +203,14 @@ def correct_git_diff(git_diff: str, file_path: str) -> str:
             # Process each hunk while preserving structure
             for hunk in original_hunks:
                 hunk_header = hunk[0]
-                match = re.match(r'^@@ -(\d+),\d+ \+(\d+),\d+ @@', hunk_header)
+                match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', hunk_header)
                 if not match:
                     continue
                 old_start = int(match.group(1))
-                new_start = int(match.group(2))
+                new_start = int(match.group(3))
                 # Count actual changes in this hunk
-                old_count = sum(1 for line in hunk[1:] if line.startswith(' ') or line.startswith('-'))
-                new_count = sum(1 for line in hunk[1:] if line.startswith(' ') or line.startswith('+'))
+                old_count = sum(1 for line in hunk[1:] if line.startswith((' ', '-')))
+                new_count = sum(1 for line in hunk[1:] if line.startswith((' ', '+')))
                 # Output corrected hunk
                 result.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@")
                 result.extend(hunk[1:])
@@ -370,7 +370,7 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
             # Only start collecting if this hunk failed
             if hunk_count in hunk_status and not hunk_status[hunk_count]:
                 logger.debug(f"Including failed hunk #{hunk_count}")
-                current_hunk = [f"{line} Hunk #{hunk_count}"]
+                current_hunk = [line] # Keep original header, don't append Hunk #N
                 in_hunk = True
             else:
                 logger.debug(f"Skipping successful hunk #{hunk_count}")
@@ -391,7 +391,12 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
     # Build final result with proper spacing
     result = []
     result.extend(headers)
-    for _, hunk_lines in hunks:
+    for hunk_data in hunks:
+        # Handle both tuple format (hunk_id, lines) and just lines format
+        if isinstance(hunk_data, tuple) and len(hunk_data) == 2:
+            _, hunk_lines = hunk_data
+        else:
+            hunk_lines = hunk_data
         result.extend(hunk_lines)
 
     if not result:
@@ -431,7 +436,8 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
     results = {
         "succeeded": [],
         "failed": [],
-        "already_applied": []
+        "already_applied": [],
+        "hunk_statuses": {}
     }
     
     # Correct the diff using existing functionality

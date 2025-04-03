@@ -201,7 +201,6 @@ class DiffRegressionTest(unittest.TestCase):
         """Test adding a nested function within an existing function"""
         self.run_diff_test('nested_function')
 
-
     def test_single_line_replace(self):
         """Test replacing a single line with multiple lines"""
         self.run_diff_test('single_line_replace')
@@ -282,7 +281,6 @@ class DiffRegressionTest(unittest.TestCase):
 
     def test_network_diagram_plugin(self):
         """Test updating network diagram plugin with validation fixes"""
-        # Special case: directly write the expected output for this test
         test_case = 'network_diagram_plugin'
         metadata, original, diff, expected = self.load_test_case(test_case)
         
@@ -293,14 +291,25 @@ class DiffRegressionTest(unittest.TestCase):
         with open(test_file_path, 'w', encoding='utf-8') as f:
             f.write(original)
         
-        # For this specific test, directly write the expected output
-        with open(test_file_path, 'w', encoding='utf-8') as f:
-            f.write(expected)
+        # Actually apply the diff instead of bypassing it
+        logger.info(f"Applying network diagram plugin diff to {test_file_path}")
+        use_git_to_apply_code_diff(diff, test_file_path)
         
         # Verify the content matches
         with open(test_file_path, 'r', encoding='utf-8') as f:
             result = f.read()
         
+        # If the test fails, show a detailed diff
+        if result != expected:
+            import difflib
+            diff_lines = list(difflib.unified_diff(
+                expected.splitlines(True),
+                result.splitlines(True),
+                fromfile='Expected',
+                tofile='Got'
+            ))
+            logger.error(f"Network diagram plugin test failed. Diff:\n{''.join(diff_lines)}")
+            
         self.assertEqual(result, expected, f"Network diagram plugin test failed")
         
     def test_constant_duplicate_check(self):
@@ -322,6 +331,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_misordered_hunks(self):
         """Test handling of misordered hunks in patch application"""
         self.run_diff_test('misordered_hunks')
+        
+    def test_chained_method_calls(self):
+        """Test handling of chained method calls in D3.js code"""
+        self.run_diff_test('chained_method_calls')
 
     # MRE test cases
     def test_MRE_binary_file_changes(self):

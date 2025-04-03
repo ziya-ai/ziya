@@ -1,28 +1,24 @@
 """
-Core utility functions used throughout the diff_utils package.
+Utility functions for the diff_utils package.
 """
 
-import difflib
-from typing import List
-
-def clamp(value: int, low: int, high: int) -> int:
+def clamp(value, min_value, max_value):
     """
-    Simple clamp utility to ensure we stay in range.
+    Clamp a value between a minimum and maximum.
     
     Args:
         value: The value to clamp
-        low: The lower bound
-        high: The upper bound
+        min_value: The minimum allowed value
+        max_value: The maximum allowed value
         
     Returns:
         The clamped value
     """
-    return max(low, min(high, value))
+    return max(min_value, min(value, max_value))
 
-def normalize_escapes(text: str) -> str:
+def normalize_escapes(text):
     """
-    Normalize escape sequences in text to improve matching.
-    This helps with comparing strings that have different escape sequence representations.
+    Normalize escape sequences in text.
     
     Args:
         text: The text to normalize
@@ -30,60 +26,45 @@ def normalize_escapes(text: str) -> str:
     Returns:
         The normalized text
     """
-    # Replace common escape sequences with placeholders
-    replacements = {
-        '\\n': '_NL_',
-        '\\r': '_CR_',
-        '\\t': '_TAB_',
-        '\\"': '_QUOTE_',
-        "\\'": '_SQUOTE_',
-        '\\\\': '_BSLASH_'
-    }
-    
-    result = text
-    for esc, placeholder in replacements.items():
-        result = result.replace(esc, placeholder)
-    
-    return result
+    # This is a placeholder - actual implementation would handle various escape sequences
+    return text
 
-def calculate_block_similarity(file_block: List[str], diff_block: List[str]) -> float:
+def calculate_block_similarity(block1, block2):
     """
-    Calculate similarity between two blocks of text using difflib with improved handling
-    of whitespace and special characters.
+    Calculate the similarity between two blocks of text.
     
     Args:
-        file_block: List of lines from the file
-        diff_block: List of lines from the diff
+        block1: First block of text
+        block2: Second block of text
         
     Returns:
-        A ratio between 0.0 and 1.0 where 1.0 means identical
+        A similarity score between 0.0 and 1.0
     """
     # Handle empty blocks
-    if not file_block and not diff_block:
-        return 1.0
-    if not file_block or not diff_block:
+    if not block1 or not block2:
         return 0.0
     
-    # Normalize whitespace in both blocks
-    file_str = '\n'.join(line.rstrip() for line in file_block)
-    diff_str = '\n'.join(line.rstrip() for line in diff_block)
+    # Convert lists to strings if needed
+    if isinstance(block1, list):
+        block1 = ''.join(block1)
+    if isinstance(block2, list):
+        block2 = ''.join(block2)
     
-    # Use SequenceMatcher for fuzzy matching with improved junk detection
-    matcher = difflib.SequenceMatcher(None, file_str, diff_str)
+    # Simple character-based similarity
+    shorter = min(len(block1), len(block2))
+    longer = max(len(block1), len(block2))
     
-    # Get the similarity ratio
-    ratio = matcher.ratio()
+    if longer == 0:
+        return 1.0
     
-    # For blocks with special characters or escape sequences, do additional checks
-    if ratio < 0.9 and (any('\\' in line for line in file_block) or any('\\' in line for line in diff_block)):
-        # Try comparing with normalized escape sequences
-        norm_file = '\n'.join(normalize_escapes(line) for line in file_block)
-        norm_diff = '\n'.join(normalize_escapes(line) for line in diff_block)
-        
-        norm_matcher = difflib.SequenceMatcher(None, norm_file, norm_diff)
-        norm_ratio = norm_matcher.ratio()
-        
-        # Use the better ratio
-        ratio = max(ratio, norm_ratio)
+    # Count matching characters
+    matches = sum(1 for a, b in zip(block1, block2) if a == b)
     
-    return ratio
+    # Calculate similarity ratio
+    similarity = matches / longer
+    
+    # Adjust for length difference
+    length_ratio = shorter / longer if longer > 0 else 1.0
+    adjusted_similarity = similarity * length_ratio
+    
+    return adjusted_similarity

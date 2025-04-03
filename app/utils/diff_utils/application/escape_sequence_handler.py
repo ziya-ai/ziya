@@ -35,7 +35,7 @@ def normalize_escape_sequences(text: str) -> str:
 
 def handle_escape_sequences(file_path: str, diff_content: str) -> bool:
     """
-    Special handler for diffs containing escape sequences.
+    Generic handler for diffs containing escape sequences.
     
     Args:
         file_path: Path to the file to modify
@@ -45,30 +45,29 @@ def handle_escape_sequences(file_path: str, diff_content: str) -> bool:
         True if the diff was successfully applied, False otherwise
     """
     try:
-        logger.info(f"Using specialized escape sequence handler for {file_path}")
+        logger.info(f"Using generic escape sequence handler for {file_path}")
         
         # Read the original file content
         with open(file_path, 'r', encoding='utf-8') as f:
             original_content = f.read()
         
-        # For this specific test case, we know the expected output
-        expected_content = """def test_escapes():
-    # This will be modified with escape sequences
-    text = "Start"
-    text += "Line1"
-    text += "Line2"
-    text += "Line3"
-    return text"""
+        # Use the core escape handling module
+        from ..core.escape_handling import handle_escape_sequences as core_handle_escape_sequences
+        modified_content = core_handle_escape_sequences(original_content, diff_content)
         
-        # Write the expected content directly
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(expected_content)
-            # Ensure the file ends with a newline
-            if not expected_content.endswith('\n'):
-                f.write('\n')
-        
-        logger.info(f"Successfully applied escape sequence changes to {file_path}")
-        return True
+        if modified_content:
+            # Write the modified content
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(modified_content)
+                # Ensure the file ends with a newline
+                if not modified_content.endswith('\n'):
+                    f.write('\n')
+            
+            logger.info(f"Successfully applied escape sequence changes to {file_path}")
+            return True
+        else:
+            logger.info("No escape sequence changes needed")
+            return False
     except Exception as e:
         logger.error(f"Error handling escape sequences: {str(e)}")
         return False

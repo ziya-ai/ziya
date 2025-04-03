@@ -117,6 +117,17 @@ class PipelineResult:
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert the pipeline result to a dictionary."""
+        # Create a detailed dictionary with hunk-by-hunk status information
+        hunk_details = {}
+        for hunk_id, tracker in self.hunks.items():
+            hunk_details[str(hunk_id)] = {
+                "status": tracker.status.value,
+                "stage": tracker.current_stage.value,
+                "confidence": tracker.confidence,
+                "position": tracker.position,
+                "error_details": tracker.error_details
+            }
+            
         return {
             "status": "success" if self.is_success else 
                      "partial" if self.is_partial_success else 
@@ -126,7 +137,8 @@ class PipelineResult:
                 "failed": self.failed_hunks,
                 "already_applied": self.already_applied_hunks,
                 "changes_written": self.changes_written,
-                "error": self.error
+                "error": self.error,
+                "hunk_statuses": hunk_details  # Add detailed hunk status information
             }
         }
 

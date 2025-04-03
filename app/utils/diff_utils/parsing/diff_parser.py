@@ -53,32 +53,28 @@ def split_combined_diff(diff_content: str) -> List[str]:
     Returns:
         A list of individual diff strings
     """
-    logger.info(f"Splitting diff content of length {len(diff_content)}")
+    if not diff_content:
+        return []
+        
+    # Split on diff --git lines
+    parts = re.split(r'(?m)^diff --git ', diff_content)
+    
+    # First part might be empty or contain header info
+    if parts and not parts[0].strip():
+        parts.pop(0)
+        
+    # Reconstruct the individual diffs
     diffs = []
-    current_diff = []
-    lines = diff_content.splitlines(True)  # Keep line endings
-    
-    # First, identify all actual diff headers
-    diff_header_indices = []
-    for i, line in enumerate(lines):
-        if line.startswith('diff --git'):
-            diff_header_indices.append(i)
-    
-    # If no diff headers found, treat the whole content as one diff
-    if not diff_header_indices:
-        return [diff_content]
-    
-    # Process each diff section
-    for start_idx, end_idx in zip(diff_header_indices, diff_header_indices[1:] + [len(lines)]):
-        current_diff = lines[start_idx:end_idx]
-        diffs.append(''.join(current_diff))
-        logger.info(f"Extracted diff from line {start_idx} to {end_idx-1}")
-    
+    for part in parts:
+        if part.strip():
+            diffs.append('diff --git ' + part)
+            
     return diffs
 
 def parse_unified_diff(diff_content: str) -> List[Dict[str, Any]]:
     """
-    Parse a unified diff format and extract hunks.
+    Parse a unified diff format and extract hunks with their content.
+    If we can't parse anything, we return an empty list.
     
     Args:
         diff_content: The diff content to parse
@@ -86,67 +82,56 @@ def parse_unified_diff(diff_content: str) -> List[Dict[str, Any]]:
     Returns:
         A list of dictionaries representing hunks
     """
-    lines = diff_content.splitlines()
+    if not diff_content:
+        return []
+        
     hunks = []
-    in_hunk = False
     current_hunk = None
-
-    for line in lines:
-        if line.startswith(('diff --git', 'index ', 'new file mode', '--- ', '+++ ')):
-            continue
-        if line.startswith('@@'):
-            # close old hunk if any
-            if in_hunk and current_hunk:
+    
+    for line in diff_content.splitlines():
+        if line.startswith('@@ '):
+            # Start of a new hunk
+            if current_hunk:
                 hunks.append(current_hunk)
-            current_hunk = {
-                'header': line,
-                'start_line': 1,
-                'old_lines': [],
-                'new_lines': []
-            }
-            match = re.match(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+                
+            # Parse the hunk header
+            match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@', line)
             if match:
-                current_hunk['start_line'] = int(match.group(1))
-            else:
-                logger.warning(f"Invalid hunk header: {line}")
-            in_hunk = True
-            continue
-
-        if in_hunk and current_hunk:
-            if line.startswith('+'):
-                current_hunk['new_lines'].append(line[1:])
-            elif line.startswith('-'):
-                current_hunk['old_lines'].append(line[1:])
-            else:
-                # Context line
-                content = line[1:] if line.startswith(' ') else line
-                current_hunk['old_lines'].append(content)
-                current_hunk['new_lines'].append(content)
-        else:
-            # Lines outside hunks
-            pass
-
-    if in_hunk and current_hunk:
+                old_start = int(match.group(1))
+                old_count = int(match.group(2))
+                new_start = int(match.group(3))
+                new_count = int(match.group(4))
+                
+                current_hunk = {
+                    'old_start': old_start,
+                    'old_count': old_count,
+                    'new_start': new_start,
+                    'new_count': new_count,
+                    'header': line,
+                    'content': []
+                }
+        elif current_hunk is not None:
+            current_hunk['content'].append(line)
+            
+    # Add the last hunk
+    if current_hunk:
         hunks.append(current_hunk)
-
+        
     return hunks
 
-def strip_leading_dotslash(rel_path: str) -> str:
+def strip_leading_dotslash(path: str) -> str:
     """
-    Remove leading '../' or './' segments from the relative path
-    so it matches patch lines that are always 'frontend/...', not '../frontend/...'.
+    Strip leading ./ from a path.
     
     Args:
-        rel_path: The relative path to normalize
+        path: The path to strip
         
     Returns:
-        The normalized path
+        The path without leading ./
     """
-    # Repeatedly strip leading '../' or './'
-    pattern = re.compile(r'^\.\.?/')
-    while pattern.match(rel_path):
-        rel_path = rel_path[rel_path.index('/')+1:]
-    return rel_path
+    if path.startswith('./'):
+        return path[2:]
+    return path
 
 def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[Dict[str, Any]]:
     """
@@ -221,13 +206,15 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                     'new_start': new_start,
                     'new_count': new_count,
                     'number': hunk_num,
+                    'lines': [],
                     'old_block': [],
                     'original_hunk': hunk_num,  # Store original hunk number
-                    'new_lines': []
+                    'new_lines': [],
+                    'removed_lines': [],  # Track removed lines
+                    'added_lines': []     # Track added lines
                 }
 
                 # Start collecting content for this hunk
-                current_lines = []
                 in_hunk = True
                 hunks.append(hunk)  # Add the hunk to our list immediately
                 current_hunk = hunk
@@ -247,19 +234,26 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                 i += 1
                 continue
             if current_hunk:
+                current_hunk['lines'].append(line)
                 if line.startswith('-'):
                     text = line[1:]
-                    current_hunk['old_block'].append(text)
+                    current_hunk['old_block'].append(text) # Add removed line to old_block
+                    current_hunk['removed_lines'].append(text)
                 elif line.startswith('+'):
                     text = line[1:]
                     current_hunk['new_lines'].append(text)
+                    current_hunk['added_lines'].append(text)  # Store without prefix
                 elif line.startswith(' '):
                     text = line[1:]
-                    current_hunk['old_block'].append(text)
                     current_hunk['new_lines'].append(text)
+                    current_hunk['old_block'].append(text)
                 # Skip lines starting with '\'
-
-        i += 1
+            
+            # Always increment the counter inside the hunk processing
+            i += 1
+        else:
+            # Only increment if we're not in a hunk
+            i += 1
     
     # Sort hunks by old_start to ensure they're processed in the correct order
     hunks.sort(key=lambda h: h['old_start'])
