@@ -209,6 +209,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     return;
                 }
             }
+                
+                // Log the parsed spec for debugging
+                console.debug('D3Renderer: Successfully parsed spec:', {
+                    type: parsed.type,
+                    renderer: parsed.renderer
+                });
 
             // If we have a parsed spec, determine if it's complete enough to render
             if (parsed) {
