@@ -429,6 +429,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     container.style.overflow = 'visible';
                 }
 
+                // Set container dimensions
+                container.style.width = `${width}px`;
+                container.style.height = `${height}px`;
+                container.style.position = 'relative';
+                container.style.overflow = 'hidden';
+
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');
                 tempContainer.style.width = '100%';
@@ -473,6 +479,16 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                                 height: height || 400,
                                 isStreaming: isStreaming && !isMarkdownBlockClosed,
                                 forceRender: attemptRender
+                            }, isDarkMode);
+                            renderSuccessful = true;
+                        }
+                    } else if (parsed.type === 'network') {
+                        const plugin = findPlugin(parsed);
+                        if (plugin) {
+                            plugin.render(tempContainer, d3, {
+                                ...parsed,
+                                width: width || 600,
+                                height: height || 400
                             }, isDarkMode);
                             renderSuccessful = true;
                         }
