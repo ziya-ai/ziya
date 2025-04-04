@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, CSSProperties } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { Spin } from 'antd';
 import vegaEmbed from 'vega-embed';
@@ -61,6 +61,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // First useEffect for cleanup
 useEffect(() => {
     return () => {
+        mounted.current = false;
         console.debug('D3Renderer cleanup triggered');
         if (vegaViewRef.current) {
             try {
@@ -76,6 +77,11 @@ useEffect(() => {
                 simulationRef.current.stop();
                 simulationRef.current = null;
             }
+            // Remove all D3 event listeners
+            d3.select(d3ContainerRef.current)
+                .selectAll('*')
+                .on('.', null);
+                
             d3ContainerRef.current.innerHTML = '';
             if (cleanupRef.current) {
                 cleanupRef.current();
@@ -95,6 +101,7 @@ useEffect(() => {
         try {
             if (!spec) {
                 throw new Error('No specification provided');
+                    return;
             }
 
             let parsed: any;
@@ -102,6 +109,7 @@ useEffect(() => {
 
             try {
                 if (typeof spec === 'string') {
+                        console.debug('Parsing string spec:', spec.substring(0, 100) + '...');
                     // Clean up the spec string
                     specLines = spec
                         .replace(/\r\n/g, '\n')
@@ -110,7 +118,7 @@ useEffect(() => {
                         .filter(line => !line.trim().startsWith('//') && line.trim() !== '');
 
                     // Check if we have a complete code block
-                    if (!specLines.length || !specLines.some(line => line.includes('}'))) {
+                        if (!specLines.length) {
                         setIsLoading(true);
                         return; // Exit early if code block is incomplete
                     }
@@ -118,6 +126,7 @@ useEffect(() => {
                     const cleanSpec = specLines.join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
                     parsed = JSON.parse(cleanSpec);
                 } else {
+                        console.debug('Using object spec directly');
                     parsed = spec;
                 }
             } catch (parseError) {
@@ -125,6 +134,12 @@ useEffect(() => {
                 console.debug('Waiting for complete spec:', parseError);
                 return;
             }
+                
+                // Log the parsed spec for debugging
+                console.debug('D3Renderer: Successfully parsed spec:', {
+                    type: parsed.type,
+                    renderer: parsed.renderer
+                });
 
             // Only proceed with rendering if we have a valid parsed spec
             if (!parsed) return;
@@ -132,7 +147,7 @@ useEffect(() => {
             if (type === 'd3' || parsed.renderer === 'd3' || typeof parsed.render === 'function') {
                 const container = d3ContainerRef.current;
                 if (!container) return;
-
+                
                 if (currentRender !== renderIdRef.current) {
                     console.debug(`Skipping stale render #${currentRender}`);
                     return;
@@ -148,6 +163,12 @@ useEffect(() => {
                     }
                 }
 
+                // Set container dimensions
+                container.style.width = `${width}px`;
+                container.style.height = `${height}px`;
+                container.style.position = 'relative';
+                container.style.overflow = 'hidden';
+
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');
                 tempContainer.style.width = '100%';
@@ -156,7 +177,15 @@ useEffect(() => {
                 let renderSuccessful = false;
 
                 try {
-                    if (parsed.render && typeof parsed.render === 'function') {
+                    // Clear any existing content
+                    while (container.firstChild) {
+                        container.removeChild(container.firstChild);
+                    }
+
+                    // Initialize D3 selection for the container
+                    const d3Container = d3.select(tempContainer);
+
+                    if (typeof parsed.render === 'function') {
                         const result = parsed.render.call(parsed, tempContainer, d3);
                         renderSuccessful = true;
 
@@ -164,12 +193,24 @@ useEffect(() => {
                         if (typeof result === 'function') {
                             cleanupRef.current = result;
                         }
+                    } else if (parsed.type === 'network') {
+                        const plugin = findPlugin(parsed);
+                        if (plugin) {
+                            plugin.render(tempContainer, d3, {
+                                ...parsed,
+                                width: width || 600,
+                                height: height || 400
+                            }, isDarkMode);
+                            renderSuccessful = true;
+                        }
                     } else {
                         const plugin = findPlugin(parsed);
                         if (!plugin) {
                             throw new Error('No render function or compatible plugin found');
                         }
-                        plugin.render(tempContainer, d3, parsed);
+                        
+                        console.debug('Using plugin:', plugin.name);
+                        plugin.render(tempContainer, d3, parsed, isDarkMode);
                         renderSuccessful = true;
                     }
 
@@ -255,26 +296,47 @@ useEffect(() => {
 }, [spec, type, width, height, isDarkMode]);
 
 
-    const isD3Mode = type === 'd3' || (typeof spec === 'object' && (spec.renderer === 'd3' || typeof spec.render === 'function'));
+    const isD3Render = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return type === 'd3' || (typeof spec === 'object' && (spec?.renderer === 'd3' || !!plugin));
+    }, [type, spec]);
+
+    // Determine if it's specifically a Mermaid render
+    const isMermaidRender = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return plugin?.name === 'mermaid-renderer';
+    }, [spec]);
+
+    // Define base container style
+    const containerBaseStyle: CSSProperties = {
+        minWidth: '200px',
+        minHeight: '150px', // Minimum height for loading/error
+        padding: '0', // Remove padding from outer container
+        position: 'relative',
+        boxSizing: 'border-box',
+        overflow: 'auto', // Always allow scrolling if needed
+        maxWidth: '100%', // Don't exceed parent width
+    };
+
+    // Apply fixed dimensions only if NOT Mermaid, otherwise let it size naturally
+    const containerDynamicStyle: CSSProperties = isMermaidRender
+        ? { width: 'auto', height: 'auto', display: 'inline-block' } // Let Mermaid container size itself
+        : { width: width || '100%', height: height || 'auto' }; // Use props/defaults for others
 
     return (
         <div
             id={containerId || 'd3-container'}
-            style={{
-                width: '100%',
-                height: height || '300px',
-                minHeight: '200px',
-                padding: '16px',
-                position: 'relative'
-            }}
+            style={{ ...containerBaseStyle, ...containerDynamicStyle }}
         >
-            {isD3Mode ? (
+            {isD3Render? (
                 <div 
                     ref={d3ContainerRef}
                     className="d3-container"
                     style={{
-                        width: '100%',
-                        height: '100%',
+                        display: isD3Render ? 'block' : 'none', // Use calculated value
+                        width: width || '100%',
+                        height: isMermaidRender ? 'auto' : '100%',
+                        overflow: 'visible',
                         position: 'relative'
                     }}
                 />
@@ -283,6 +345,7 @@ useEffect(() => {
                     ref={vegaContainerRef}
                     id="vega-container"
                     style={{
+                        display: !isD3Render ? 'block' : 'none',
                         position: 'relative',
                         width: '100%',
                         height: height || '100%'

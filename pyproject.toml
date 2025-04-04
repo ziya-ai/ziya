@@ -4,7 +4,7 @@ version = "0.1.45"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>"]
 readme = "README.md"
-include = ["templates/**/*", "pyproject.toml" ,"ziya_exec.py"]
+include = ["templates/**/*", "pyproject.toml" ,"ziya_exec.py", "app/utils/ast_parser/ts_parser"]
 packages = [
     { include = "app" },
 ]
@@ -27,6 +27,10 @@ langchain-cli = ">=0.0.15"
 pydevd-pycharm = "^243.18137.19"
 langchain-community = "^0.3.1"
 transformers = "^4.36.2"
+# AST parsing dependencies
+cssutils = ">=2.6.0"
+html5lib = ">=1.1"
+tqdm = "^4.66.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
@@ -41,3 +45,6 @@ dev = 'ziya_exec:dev'
 finstall = "ziya_exec:frontend_install"
 fstart = "ziya_exec:frontend_start"
 fbuild = "ziya_exec:frontend_build"
+
+[build-system.hooks.typescript-install]
+install-script = "scripts/install_typescript.py"
