@@ -307,37 +307,44 @@ useEffect(() => {
         return plugin?.name === 'mermaid-renderer';
     }, [spec]);
 
-    // Define base container style
-    const containerBaseStyle: CSSProperties = {
-        minWidth: '200px',
-        minHeight: '150px', // Minimum height for loading/error
-        padding: '0', // Remove padding from outer container
-        position: 'relative',
-        boxSizing: 'border-box',
-        overflow: 'auto', // Always allow scrolling if needed
-        maxWidth: '100%', // Don't exceed parent width
-    };
+    const containerStyles = useMemo(() =>
+        isMermaidRender ? {
+            height: 'auto !important',
+            minHeight: 'unset',
+            overflow: 'visible'
+        } : {
+            height: height || '400px',
+            overflow: 'auto'
+        }, [isMermaidRender, height]);
 
-    // Apply fixed dimensions only if NOT Mermaid, otherwise let it size naturally
-    const containerDynamicStyle: CSSProperties = isMermaidRender
-        ? { width: 'auto', height: 'auto', display: 'inline-block' } // Let Mermaid container size itself
-        : { width: width || '100%', height: height || 'auto' }; // Use props/defaults for others
+    const outerContainerStyle: CSSProperties = {
+        position: 'relative',
+        width: '100%',
+        height: 'auto',
+        display: 'block',
+        overflow: 'visible',
+        margin: 'lem 0',
+        padding: 0,
+        boxSizing: 'border-box',
+    };
 
     return (
         <div
             id={containerId || 'd3-container'}
-            style={{ ...containerBaseStyle, ...containerDynamicStyle }}
+            style={outerContainerStyle}
         >
             {isD3Render? (
                 <div 
                     ref={d3ContainerRef}
-                    className="d3-container"
+                    className={`d3-container ${isMermaidRender ? 'mermaid-container' : ''}`}
                     style={{
-                        display: isD3Render ? 'block' : 'none', // Use calculated value
-                        width: width || '100%',
-                        height: isMermaidRender ? 'auto' : '100%',
-                        overflow: 'visible',
-                        position: 'relative'
+                        ...containerStyles,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        width: '100%',
+                        position: 'relative',
+                        boxSizing: 'border-box'
                     }}
                 />
             ) : (

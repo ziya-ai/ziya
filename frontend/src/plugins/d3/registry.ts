@@ -1,11 +1,15 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { networkDiagramPlugin } from './networkDiagram';
+import { basicChartPlugin } from './basicChart';
+import { mermaidPlugin } from './mermaidPlugin';
+
 // Registry for D3 visualization plugins
 const pluginRegistry: D3RenderPlugin[] = [
-    networkDiagramPlugin
+    networkDiagramPlugin,
+    basicChartPlugin,
+    mermaidPlugin
     // Add more plugins here as needed
 ];
-// Validate plugins on load
 pluginRegistry.forEach(plugin => {
     if (!plugin.name) {
         throw new Error('Plugin missing required name property');

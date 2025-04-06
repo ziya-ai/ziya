@@ -3,7 +3,7 @@ export interface D3RenderPlugin {
     name: string;
     priority: number;  // Higher number = higher priority
     canHandle: (spec: any) => boolean;
-    render: (container: HTMLElement, d3: any, spec: any) => void;
+    render: (container: HTMLElement, d3: any, spec: any, isDarkMode: boolean) => void | (() => void) | Promise<void | (() => void)>;
 }
 // Common types used across D3 visualizations
 export interface D3Node {

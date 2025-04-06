@@ -1,5 +1,6 @@
 import mermaid from 'mermaid';
 import { D3RenderPlugin } from '../../types/d3';
+import { PictureOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Spin } from 'antd'; // For loading indicator
 
 // Define the specification for Mermaid diagrams
@@ -20,81 +21,138 @@ const isMermaidSpec = (spec: any): spec is MermaidSpec => {
     );
 };
 
-// Mermaid plugin implementation
 export const mermaidPlugin: D3RenderPlugin = {
     name: 'mermaid-renderer',
-    priority: 5, // Give it a reasonable priority
+    priority: 5,
 
     canHandle: (spec: any): boolean => {
         return isMermaidSpec(spec);
     },
 
     render: async (container: HTMLElement, d3: any, spec: MermaidSpec, isDarkMode: boolean): Promise<void> => {
-        console.debug('Mermaid plugin rendering:', { spec, isDarkMode });
-
-        // Clear previous content and show loading indicator
-        container.innerHTML = ''; // Clear container
-        const loadingDiv = document.createElement('div');
-        loadingDiv.style.display = 'flex';
-        loadingDiv.style.justifyContent = 'center';
-        loadingDiv.style.alignItems = 'center';
-        loadingDiv.style.minHeight = '150px'; // Ensure spinner is visible
-        loadingDiv.innerHTML = `<span style="margin-right: 8px;">Rendering diagram...</span>`; // Basic text indicator
-        container.appendChild(loadingDiv);
-        // Note: Using Ant Design Spin directly here is complex, using simple text
-
         try {
-            // Determine the theme
-            const mermaidTheme = spec.theme || (isDarkMode ? 'dark' : 'default');
+            container.innerHTML = '';
 
-            // Initialize Mermaid (safe to call multiple times)
+            // Initialize mermaid with graph-specific settings
             mermaid.initialize({
-                startOnLoad: false, // We manually render
-                theme: mermaidTheme,                // Security level can be adjusted if needed, e.g., 'loose' if using complex HTML
-                securityLevel: 'strict',
-                // Add font settings if needed
+                startOnLoad: false,
+                theme: isDarkMode ? 'dark' : 'default',
+                securityLevel: 'loose',
                 fontFamily: '"Arial", sans-serif',
-                // Log level for mermaid debugging
-                logLevel: 'warn',
-            });            // Generate a unique ID for Mermaid rendering
-            // Mermaid needs a unique ID to render into, even if we discard the temporary element
+                fontSize: 14,
+                flowchart: {
+                    htmlLabels: true,
+                    curve: 'basis',
+                    padding: 15,
+                    nodeSpacing: 50,
+                    rankSpacing: 50,
+                    diagramPadding: 8,
+                },
+                sequence: {
+                    diagramMarginX: 50,
+                    diagramMarginY: 30,
+                    actorMargin: 50,
+                    width: 150,
+                    height: 65,
+                    boxMargin: 10,
+                    boxTextMargin: 5,
+                    noteMargin: 10,
+                    messageMargin: 35,
+                    mirrorActors: true,
+                    bottomMarginAdj: 1,
+                    useMaxWidth: true,
+                },
+                gantt: {
+                    titleTopMargin: 25,
+                    barHeight: 20,
+                    barGap: 4,
+                    topPadding: 50,
+                    leftPadding: 75,
+                    gridLineStartPadding: 35,
+                    fontSize: 11,
+                    sectionFontSize: 11,
+                    numberSectionStyles: 4,
+                    axisFormat: '%Y-%m-%d',
+                    topAxis: false,
+                },
+            });
+
+            // Render the diagram
             const mermaidId = `mermaid-${Date.now()}-${Math.random().toString(16).substring(2)}`;
+            const { svg } = await mermaid.render(mermaidId, spec.definition);
 
-            // Render the diagram using the async API
-            const { svg } = await mermaid.render(mermaidId, spec.definition);            // Render successful, replace loading indicator with SVG
-            container.innerHTML = svg; // Replace container content with the rendered SVG
+            // Create wrapper div
+            const wrapper = document.createElement('div');
+            wrapper.className = 'mermaid-wrapper';
+            wrapper.style.cssText = `
+                width: 100%;
+                max-width: 100%;
+                overflow: auto;
+                padding: 1em;
+                display: flex;
+                justify-content: center;
+            `;
+            wrapper.innerHTML = svg;
 
-            const svgElement = container.querySelector('svg');
-            if (svgElement) {
-                // Let the SVG use its natural dimensions determined by Mermaid
-                // The container's CSS will handle overflow and max-width
-                svgElement.style.display = 'block'; // Good practice for SVG layout
-                svgElement.style.margin = '0 auto'; // Center if container is wider
+            // Get SVG element
+            const svgElement = wrapper.querySelector('svg');
+            if (!svgElement) {
+                throw new Error('Failed to render SVG');
             }
 
-            // Add "Open in New Window" button
+            // Set SVG attributes
+            svgElement.style.cssText = `
+                width: auto;
+                height: auto;
+                max-width: 100%;
+                display: block;
+            `;
+
+            // Add the wrapper to the container
+            container.appendChild(wrapper);
+
+            // Add action buttons
+            const actionsContainer = document.createElement('div');
+            actionsContainer.className = 'diagram-actions';
+
+            // Add Open button
             const openButton = document.createElement('button');
-            openButton.innerText = 'Open Diagram';
-            openButton.className = 'mermaid-open-button'; // Add class for styling
+            openButton.innerHTML = '↗️ Open';
+            openButton.className = 'diagram-action-button mermaid-open-button';
             openButton.onclick = () => {
-                const svgString = container.innerHTML; // Get the current SVG content
-                const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgString)))}`;
+                const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
                 window.open(dataUri, '_blank');
-            }
-            container.appendChild(openButton);
+            };
+            actionsContainer.appendChild(openButton);
 
-            console.debug('Mermaid diagram rendered successfully.');
+            // Add Save button
+            const saveButton = document.createElement('button');
+            saveButton.innerHTML = '💾 Save';
+            saveButton.className = 'diagram-action-button mermaid-save-button';
+            saveButton.onclick = () => {
+                const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+                const link = document.createElement('a');
+                link.href = dataUri;
+                link.download = `mermaid-diagram-${Date.now()}.svg`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+            actionsContainer.appendChild(saveButton);
+
+            // Add actions container
+            container.insertBefore(actionsContainer, wrapper);
 
         } catch (error: any) {
             console.error('Mermaid rendering error:', error);
-            // Display error message in the container
             container.innerHTML = `
-                <div class="mermaid-error" style="padding: 16px; border: 1px solid red; color: red; background-color: #ffeeee; border-radius: 4px;">
+                <div class="mermaid-error">
                     <strong>Mermaid Error:</strong>
-                    <pre style="white-space: pre-wrap; word-wrap: break-word; margin-top: 8px;">${error.message || 'Unknown error'}</pre>
-                    <details style="margin-top: 12px;">
-                        <summary style="cursor: pointer;">Show Definition</summary>
-                        <pre style="background-color: #f0f0f0; padding: 8px; border-radius: 4px; margin-top: 8px; color: #333;"><code>${spec.definition}</code></pre>                    </details>
+                    <pre>${error.message || 'Unknown error'}</pre>
+                    <details>
+                        <summary>Show Definition</summary>
+                        <pre><code>${spec.definition}</code></pre>
+                    </details>
                 </div>
             `;
         }
