@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, CSSProperties } from 'react';
 import { useTheme } from '../context/ThemeContext';
-import { Spin } from 'antd';
+import { Spin, Modal } from 'antd';
 import vegaEmbed from 'vega-embed';
 import * as d3 from 'd3';
 import { D3RenderPlugin } from '../types/d3';
@@ -55,6 +55,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const [errorDetails, setErrorDetails] = useState<string[]>([]);
     const cleanupRef = useRef<(() => void) | null>(null);
     const simulationRef = useRef<any>(null);
+    const [isSourceModalVisible, setIsSourceModalVisible] = useState(false);
     const renderIdRef = useRef<number>(0);
     const mounted = useRef(true);
 
@@ -328,6 +329,100 @@ useEffect(() => {
         boxSizing: 'border-box',
     };
 
+    useEffect(() => {
+        const addSourceButton = () => {
+            const existingButtons = d3ContainerRef.current?.querySelector('.diagram-actions');
+            if (existingButtons && !existingButtons.querySelector('.source-button')) {
+                const sourceButton = document.createElement('button');
+                sourceButton.className = 'diagram-action-button source-button';
+                sourceButton.innerHTML = '📝 Source';
+                sourceButton.onclick = () => setIsSourceModalVisible(true);
+                existingButtons.appendChild(sourceButton);
+            }
+        };
+        // Add button after a short delay to ensure container exists
+        setTimeout(addSourceButton, 100);
+    }, []);
+
+    const formatSource = (source: any): string => {
+        try {
+            return JSON.stringify(JSON.parse(typeof source === 'string' ? source : JSON.stringify(source)), null, 2);
+        } catch (e) {
+            return typeof source === 'string' ? source : JSON.stringify(source, null, 2);
+        }
+    };
+
+    // Add source modal component
+    const SourceModal = () => (
+        <Modal
+            title="Visualization Source"
+            open={isSourceModalVisible}
+            onCancel={() => setIsSourceModalVisible(false)}
+            footer={null}
+            width={800}
+        >
+            <pre style={{
+                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                padding: '16px',
+                borderRadius: '4px',
+                overflow: 'auto',
+                maxHeight: '60vh',
+                color: isDarkMode ? '#e6e6e6' : '#24292e'
+            }}>
+                <code>{typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code>
+            </pre>
+        </Modal>
+    );
+
+    // Add action buttons container
+    const ActionButtons = () => (
+        <div className="diagram-actions">
+            <button
+                className="diagram-action-button"
+                onClick={() => {
+                    const container = d3ContainerRef.current;
+                    if (container) {
+                        const svg = container.querySelector('svg');
+                        if (svg) {
+                            const svgData = new XMLSerializer().serializeToString(svg);
+                            const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgData)))}`;
+                            window.open(dataUri, '_blank');
+                        }
+                    }
+                }}
+            >
+                ↗️ Open
+            </button>
+            <button
+                className="diagram-action-button"
+                onClick={() => {
+                    const container = d3ContainerRef.current;
+                    if (container) {
+                        const svg = container.querySelector('svg');
+                        if (svg) {
+                            const svgData = new XMLSerializer().serializeToString(svg);
+                            const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgData)))}`;
+                            const link = document.createElement('a');
+                            link.href = dataUri;
+                            link.download = `visualization-${Date.now()}.svg`;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                        }
+                    }
+                }}
+            >
+                💾 Save
+            </button>
+            <button
+                className="diagram-action-button"
+                onClick={() => setIsSourceModalVisible(true)}
+            >
+                📝 Source
+            </button>
+        </div>
+    );
+
     return (
         <div
             id={containerId || 'd3-container'}
@@ -347,7 +442,7 @@ useEffect(() => {
                         boxSizing: 'border-box'
                     }}
                 />
-            ) : (
+             ) : (
                 <div
                     ref={vegaContainerRef}
                     id="vega-container"
@@ -398,6 +493,24 @@ useEffect(() => {
                     )}
                 </div>
             )}
+            <Modal
+                title="Visualization Source"
+                open={isSourceModalVisible}
+                onCancel={() => setIsSourceModalVisible(false)}
+                footer={null}
+                width={800}
+            >
+                <pre style={{
+                    backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                    padding: '16px',
+                    borderRadius: '4px',
+                    overflow: 'auto',
+                    maxHeight: '60vh',
+                    color: isDarkMode ? '#e6e6e6' : '#24292e'
+                }}>
+                    <code>{typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code>
+                </pre>
+            </Modal>
         </div>
     );
 };

@@ -21,6 +21,12 @@ const isMermaidSpec = (spec: any): spec is MermaidSpec => {
     );
 };
 
+const SCALE_CONFIG = {
+    TARGET_FONT_SIZE: 14,   // Target font size in pixels
+    MIN_FONT_SIZE: 12,      // Minimum font size in pixels
+    MAX_SCALE: 1.0         // Maximum scale (natural size)
+};
+
 export const mermaidPlugin: D3RenderPlugin = {
     name: 'mermaid-renderer',
     priority: 5,
@@ -94,22 +100,33 @@ export const mermaidPlugin: D3RenderPlugin = {
             `;
             wrapper.innerHTML = svg;
 
-            // Get SVG element
+            // Add wrapper to container
+            container.appendChild(wrapper);
+
+            // Get the SVG element after it's in the DOM
             const svgElement = wrapper.querySelector('svg');
             if (!svgElement) {
-                throw new Error('Failed to render SVG');
+                throw new Error('Failed to get SVG element');
             }
 
-            // Set SVG attributes
-            svgElement.style.cssText = `
-                width: auto;
-                height: auto;
-                max-width: 100%;
-                display: block;
-            `;
+            // Wait for next frame to ensure SVG is rendered
+            requestAnimationFrame(() => {
+                // Find all text elements
+                const textElements = svgElement.querySelectorAll('text');
+                if (textElements.length === 0) return;
+                // Get the computed font size of the first text element
+                const computedStyle = window.getComputedStyle(textElements[0]);
+                const currentFontSize = parseFloat(computedStyle.fontSize);
 
-            // Add the wrapper to the container
-            container.appendChild(wrapper);
+                // Calculate scale based on target font size
+                const scale = SCALE_CONFIG.TARGET_FONT_SIZE / currentFontSize;
+
+                // Apply transform scale to the SVG
+                svgElement.style.transform = `scale(${scale})`;
+                svgElement.style.transformOrigin = 'center';
+                svgElement.style.width = '100%';
+                svgElement.style.height = 'auto';
+            });
 
             // Add action buttons
             const actionsContainer = document.createElement('div');
