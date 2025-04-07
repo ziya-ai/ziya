@@ -1155,7 +1155,7 @@ ${svgData}`;
                         boxSizing: 'border-box'
                     }}
                 />
-            ) : (
+             ) : (
                 <div
                     ref={vegaContainerRef}
                     id="vega-container"
