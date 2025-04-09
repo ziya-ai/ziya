@@ -3,7 +3,7 @@ body {
   font-family: Arial, sans-serif;
   margin: 0;
   padding: 0;
-  background-color: #f5f5f5;
+  background-color: #ffffff;
   transition: background-color 0.3s ease, color 0.3s ease;
   --model-display-height: 35px;
   overflow: hidden;
@@ -1312,9 +1312,15 @@ body:not(.dark) .token.attr-name {
 /* D3 Visualization Styles */
 .d3-container {
    margin: 1em 0;
-   padding: 1em;
    border-radius: 6px;
    overflow: auto;
+   box-sizing: border-box;
+   /* Allow container to size based on content, up to 100% width */
+   display: block; 
+   height: auto;
+   min-height: 50px;
+   max-width: 100%;
+   position: relative; /* Needed for positioning the button */
 }
 
 .dark .d3-container {
@@ -1324,6 +1330,8 @@ body:not(.dark) .token.attr-name {
 .d3-container svg {
    display: block;
    margin: 0 auto;
+   max-width: 100%;
+   height: auto;
 }
 
 /* D3 Axis Styles */
@@ -1354,6 +1362,139 @@ body:not(.dark) .token.attr-name {
    border: 1px solid #ffa39e;
    color: #cf1322;
 }
+
+/* Graphviz Styles */
+.graphviz-container {
+   margin: 1em 0;   
+   padding: 1em;
+   border-radius: 6px;
+   overflow: auto; /* Crucial for large graphs */
+   background-color: #ffffff; /* Default light mode background */
+   border: 1px solid #e1e4e8; /* Optional border */
+   box-sizing: border-box;
+}
+
+.dark .graphviz-container {
+   background-color: #1f1f1f; /* Dark mode background */
+   border-color: #30363d;
+}
+
+/* Ensure SVG scales correctly within the container */
+.graphviz-container svg {
+   display: block; /* Prevents extra space below SVG */
+   max-width: none; /* Allows SVG to be wider than container for scrolling */
+   height: auto; /* Maintain aspect ratio */
+   margin: 0 auto; /* Center smaller graphs */
+}
+
+/* Graphviz Loading State (Optional but good UX) */
+.graphviz-container.loading {
+   display: flex;
+   justify-content: center;
+   align-items: center;
+   min-height: 150px;
+   background-color: rgba(255, 255, 255, 0.8); /* Light overlay */
+}
+.dark .graphviz-container.loading {
+   background-color: rgba(31, 31, 31, 0.8); /* Dark overlay */
+}
+
+/* Graphviz Error State */
+.graphviz-error {
+   padding: 16px;
+   margin: 16px 0;
+   border-radius: 6px;
+   background-color: #fff2f0; /* Light error background */
+   border: 1px solid #ffa39e; /* Light error border */
+   color: #cf1322; /* Light error text */
+}
+
+.dark .graphviz-error {
+   background-color: #2a1f1f; /* Dark error background */
+   border-color: #a61d24; /* Dark error border */
+   color: #ff7875; /* Dark error text */
+}
+
+.graphviz-error p {
+    margin-bottom: 8px;
+}
+
+.graphviz-error details {
+    margin-top: 12px;
+}
+
+.graphviz-error summary {
+    cursor: pointer;
+    font-weight: bold;
+    color: inherit; /* Use parent color */
+}
+
+.graphviz-error pre code {
+   display: block; /* Ensure pre takes block layout */
+   white-space: pre-wrap; /* Wrap long lines */
+   word-break: break-all; /* Break long words/identifiers */
+   background-color: rgba(0,0,0,0.05); /* Slight background for code */
+   padding: 8px;
+   border-radius: 4px;
+   margin-top: 8px;
+   color: inherit; /* Use parent color */
+}
+
+.dark .graphviz-error pre code {
+    background-color: rgba(255,255,255,0.1);
+}
+
+/* Diagram Action Buttons Styling */
+.diagram-actions {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    z-index: 10; /* Ensure it's above the SVG */
+    display: flex;
+    gap: 5px;
+    background: rgba(240, 240, 240, 0.8); /* Light background for visibility */
+    padding: 3px;
+    border-radius: 4px;
+    opacity: 0; /* Hidden by default */
+    transition: opacity 0.2s ease-in-out;
+}
+
+.d3-container:hover .diagram-actions {
+    opacity: 1; /* Show on hover */
+}
+
+.diagram-action-button {
+    padding: 3px 8px;
+    font-size: 11px;
+    background-color: rgba(200, 200, 200, 0.7);
+    border: 1px solid rgba(150, 150, 150, 0.8);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: opacity 0.2s ease-in-out;
+    opacity: 0.8;
+}
+
+.diagram-action-button:hover {
+    background-color: rgba(180, 180, 180, 0.9);
+    border-color: rgba(120, 120, 120, 0.9);
+    opacity: 1;
+}
+
+.dark .diagram-actions {
+    background: rgba(40, 40, 40, 0.8);
+}
+
+.dark .diagram-action-button {     
+    background-color: rgba(50, 50, 50, 0.7);
+    border-color: rgba(100, 100, 100, 0.8);
+    color: #ccc;
+}
+
+.dark .diagram-action-button:hover {
+    background-color: rgba(70, 70, 70, 0.9);
+    border-color: rgba(120, 120, 120, 0.9);
+}
+
 
 /* dark theme scrollbars */
 .dark .chat-container::-webkit-scrollbar,
@@ -1434,4 +1575,84 @@ body:not(.dark) .token.attr-name {
 }
 .chat-history-list .ant-list-item:has(> div[style*="width"] > div > .chat-history-title:first-child:nth-last-child(1):not(:only-child)) {
     max-width: 180px;  /* Approximately 20 characters in typical font */
+}
+/* Markdown text styling */
+.markdown-text .list-item {
+  display: block;
+  margin-left: 1em;
+  position: relative;
+}
+
+.markdown-text .list-item + .list-item {
+  margin-top: 0.25em;
+}
+
+/* Add proper spacing between list items */
+.markdown-text br + .list-item {
+  margin-top: 0.25em;
+}
+
+/* Ensure proper spacing for consecutive list items */
+.markdown-text span.list-item + br + span.list-item {
+  margin-top: 0.25em;
+}
+
+/* Mermaid container styles */
+.d3-container.mermaid-container {
+    height: auto !important;
+    min-height: unset !important;
+    max-height: none !important;
+}
+
+.mermaid-wrapper {
+    width: 100%;
+    max-width: 100%;
+    overflow: auto;
+    padding: 1em;
+    display: flex;
+    justify-content: center;
+}
+
+.mermaid-wrapper svg {
+    max-width: 100% !important;
+    height: auto !important;
+    width: auto !important;
+    min-width: 200px;
+    max-height: 600px;
+}
+
+.mermaid-container {
+    width: 100% !important;
+    height: auto !important;
+    overflow: auto !important;
+    padding: 1em 0 !important;
+    max-height: 800px !important;
+}
+
+.mermaid-container svg {
+    max-width: 100% !important;
+    height: auto !important;
+}
+
+.diagram-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    display: flex;
+    gap: 4px;
+}
+
+.diagram-action-button {
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    background: rgba(255, 255, 255, 0.9);
+    cursor: pointer;
+}
+
+.dark .diagram-action-button {
+    background: rgba(0, 0, 0, 0.7);
+    border-color: #444;
+    color: #fff;
 }

@@ -46,6 +46,52 @@ export const mermaidPlugin: D3RenderPlugin = {
                 securityLevel: 'loose',
                 fontFamily: '"Arial", sans-serif',
                 fontSize: 14,
+                themeVariables: isDarkMode ? {
+                    // High contrast dark theme
+                    primaryColor: '#81a1c1',
+                    primaryTextColor: '#ffffff',
+                    primaryBorderColor: '#88c0d0',
+                    lineColor: '#88c0d0',
+                    secondaryColor: '#5e81ac',
+                    tertiaryColor: '#2e3440',
+                    
+                    // Text colors
+                    textColor: '#eceff4',
+                    loopTextColor: '#eceff4',
+                    
+                    // Node colors
+                    mainBkg: '#3b4252',
+                    secondBkg: '#434c5e',
+                    nodeBorder: '#88c0d0',
+                    
+                    // Edge colors
+                    edgeLabelBackground: '#4c566a',
+                    
+                    // Contrast colors
+                    altBackground: '#2e3440',
+                    
+                    // Flowchart specific
+                    nodeBkg: '#3b4252',
+                    clusterBkg: '#2e3440',
+                    titleColor: '#88c0d0',
+                    
+                    // Class diagram specific
+                    classText: '#ffffff',
+                    
+                    // State diagram specific
+                    labelColor: '#ffffff',
+                    
+                    // Sequence diagram specific
+                    actorBkg: '#4c566a',
+                    actorBorder: '#88c0d0',
+                    activationBkg: '#5e81ac',
+                    
+                    // Gantt chart specific
+                    sectionBkgColor: '#3b4252',
+                    altSectionBkgColor: '#434c5e',
+                    gridColor: '#eceff4',
+                    todayLineColor: '#88c0d0'
+                } : {},
                 flowchart: {
                     htmlLabels: true,
                     curve: 'basis',
@@ -107,6 +153,54 @@ export const mermaidPlugin: D3RenderPlugin = {
             const svgElement = wrapper.querySelector('svg');
             if (!svgElement) {
                 throw new Error('Failed to get SVG element');
+            }
+
+            // Enhance dark theme visibility for specific elements
+            if (isDarkMode && svgElement) {
+                requestAnimationFrame(() => {
+                    // Enhance specific elements that might still have poor contrast
+                    svgElement.querySelectorAll('.edgePath path').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('stroke-width', '1.5');
+                    });
+                    
+                    // Fix for arrow markers in dark mode
+                    svgElement.querySelectorAll('defs marker path').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('fill', '#88c0d0');
+                    });
+                    
+                    // Fix for all SVG paths and lines
+                    svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('stroke-width', '1.5');
+                    });
+                    
+                    // Text on darker backgrounds should be black for contrast
+                    svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
+                        el.setAttribute('fill', '#000000');
+                    });
+                    
+                    // Text on lighter backgrounds should be white for contrast
+                    svgElement.querySelectorAll('.edgeLabel text, text:not(.node .label text):not(.cluster .label text)').forEach(el => {
+                        el.setAttribute('fill', '#eceff4');
+                    });
+
+                    svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('stroke-width', '1.5');
+                    });
+                    
+                    svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
+                        el.setAttribute('stroke', '#81a1c1');
+                        el.setAttribute('fill', '#5e81ac');
+                    });
+                    
+                    svgElement.querySelectorAll('.cluster rect').forEach(el => {
+                        el.setAttribute('stroke', '#81a1c1');
+                        el.setAttribute('fill', '#4c566a');
+                    });
+                });
             }
 
             // Wait for next frame to ensure SVG is rendered
