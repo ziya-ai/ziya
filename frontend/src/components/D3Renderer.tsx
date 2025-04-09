@@ -580,6 +580,48 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
         return plugin?.name === 'mermaid-renderer';
     }, [spec]);
+    
+    // Add a specific effect for theme changes to force re-rendering of Mermaid diagrams
+    useEffect(() => {
+        // Only run this effect when theme changes and we have a Mermaid diagram
+        if (isMermaidRender && d3ContainerRef.current) {
+            console.debug('Theme changed for Mermaid diagram, applying post-render fixes');
+            
+            // Apply fixes for arrow markers and other elements that might not update properly
+            const svgElement = d3ContainerRef.current.querySelector('svg');
+            if (svgElement) {
+                if (isDarkMode) {
+                    // Fix for arrow markers in dark mode
+                    svgElement.querySelectorAll('defs marker path').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('fill', '#88c0d0');
+                    });
+                    
+                    // Fix for all SVG paths and lines
+                    svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('stroke-width', '1.5');
+                    });
+                    
+                    // Text on darker backgrounds should be black for contrast
+                    svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
+                        el.setAttribute('fill', '#000000');
+                    });
+                    
+                    // Node and cluster styling
+                    svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
+                        el.setAttribute('stroke', '#81a1c1');
+                        el.setAttribute('fill', '#5e81ac');
+                    });
+                    
+                    svgElement.querySelectorAll('.cluster rect').forEach(el => {
+                        el.setAttribute('stroke', '#81a1c1');
+                        el.setAttribute('fill', '#4c566a');
+                    });
+                }
+            }
+        }
+    }, [isDarkMode, isMermaidRender]);
 
     // Determine if it's specifically a Graphviz render
     const isGraphvizRender = useMemo(() => {
