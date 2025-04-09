@@ -526,6 +526,54 @@ export const mermaidPlugin: D3RenderPlugin = {
                 applyCustomStyles(svgElement);
             }
 
+            // Enhance dark theme visibility for specific elements
+            if (isDarkMode && svgElement) {
+                requestAnimationFrame(() => {
+                    // Enhance specific elements that might still have poor contrast
+                    svgElement.querySelectorAll('.edgePath path').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('stroke-width', '1.5');
+                    });
+                    
+                    // Fix for arrow markers in dark mode
+                    svgElement.querySelectorAll('defs marker path').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('fill', '#88c0d0');
+                    });
+                    
+                    // Fix for all SVG paths and lines
+                    svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('stroke-width', '1.5');
+                    });
+                    
+                    // Text on darker backgrounds should be black for contrast
+                    svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
+                        el.setAttribute('fill', '#000000');
+                    });
+                    
+                    // Text on lighter backgrounds should be white for contrast
+                    svgElement.querySelectorAll('.edgeLabel text, text:not(.node .label text):not(.cluster .label text)').forEach(el => {
+                        el.setAttribute('fill', '#eceff4');
+                    });
+
+                    svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
+                        el.setAttribute('stroke', '#88c0d0');
+                        el.setAttribute('stroke-width', '1.5');
+                    });
+                    
+                    svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
+                        el.setAttribute('stroke', '#81a1c1');
+                        el.setAttribute('fill', '#5e81ac');
+                    });
+                    
+                    svgElement.querySelectorAll('.cluster rect').forEach(el => {
+                        el.setAttribute('stroke', '#81a1c1');
+                        el.setAttribute('fill', '#4c566a');
+                    });
+                });
+            }
+
             // Wait for next frame to ensure SVG is rendered
             requestAnimationFrame(() => {
                 // Find all text elements
