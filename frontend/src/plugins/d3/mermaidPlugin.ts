@@ -157,6 +157,30 @@ export const mermaidPlugin: D3RenderPlugin = {
             };
             actionsContainer.appendChild(saveButton);
 
+            // Add Source button
+            let showingSource = false;
+            const originalContent = wrapper.innerHTML;
+            const sourceButton = document.createElement('button');
+            sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
+            sourceButton.className = 'diagram-action-button mermaid-source-button';
+            sourceButton.onclick = () => {
+                showingSource = !showingSource;
+                sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
+
+                if (showingSource) {
+                    wrapper.innerHTML = `<pre style="
+                        background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+                        padding: 16px;
+                        border-radius: 4px;
+                        overflow: auto;
+                        color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
+                    "><code>${spec.definition}</code></pre>`;
+                } else {
+                    wrapper.innerHTML = originalContent;
+                }
+            };
+            actionsContainer.appendChild(sourceButton);
+
             // Add actions container
             container.insertBefore(actionsContainer, wrapper);
 

@@ -329,21 +329,6 @@ useEffect(() => {
         boxSizing: 'border-box',
     };
 
-    useEffect(() => {
-        const addSourceButton = () => {
-            const existingButtons = d3ContainerRef.current?.querySelector('.diagram-actions');
-            if (existingButtons && !existingButtons.querySelector('.source-button')) {
-                const sourceButton = document.createElement('button');
-                sourceButton.className = 'diagram-action-button source-button';
-                sourceButton.innerHTML = '📝 Source';
-                sourceButton.onclick = () => setIsSourceModalVisible(true);
-                existingButtons.appendChild(sourceButton);
-            }
-        };
-        // Add button after a short delay to ensure container exists
-        setTimeout(addSourceButton, 100);
-    }, []);
-
     const formatSource = (source: any): string => {
         try {
             return JSON.stringify(JSON.parse(typeof source === 'string' ? source : JSON.stringify(source)), null, 2);
@@ -493,6 +478,24 @@ useEffect(() => {
                     )}
                 </div>
             )}
+            <Modal
+                title="Visualization Source"
+                open={isSourceModalVisible}
+                onCancel={() => setIsSourceModalVisible(false)}
+                footer={null}
+                width={800}
+            >
+                <pre style={{
+                    backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                    padding: '16px',
+                    borderRadius: '4px',
+                    overflow: 'auto',
+                    maxHeight: '60vh',
+                    color: isDarkMode ? '#e6e6e6' : '#24292e'
+                }}>
+                    <code>{typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code>
+                </pre>
+            </Modal>
             <Modal
                 title="Visualization Source"
                 open={isSourceModalVisible}
