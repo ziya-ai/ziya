@@ -1025,6 +1025,300 @@ class DiffRegressionTest(unittest.TestCase):
     def test_MRE_hunk_context_mismatch(self):
         """Test handling of hunk context mismatches"""
         self.run_diff_test('MRE_hunk_context_mismatch')
+        
+    def test_apply_state_reporting(self):
+        """
+        Test that the apply state reporting is accurate across multiple test cases.
+        """
+        from app.utils.code_util import use_git_to_apply_code_diff
+        
+        # Test cases that should apply successfully
+        success_cases = [
+            'simple_nested',
+            'two_functions',
+            'single_line_replace'
+        ]
+        
+        # Test cases that should detect already applied changes
+        already_applied_cases = [
+            'already_applied_simple',
+            'constant_duplicate_check'
+        ]
+        
+        # Test success cases
+        for case_name in success_cases:
+            with self.subTest(case=f"{case_name}_apply_validation"):
+                metadata, original, diff, expected = self.load_test_case(case_name)
+                
+                # Set up the test file
+                test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+                os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+                
+                with open(test_file_path, 'w', encoding='utf-8') as f:
+                    f.write(original)
+                
+                # Store original content for comparison
+                original_content = original
+                
+                # Apply the diff and get the result
+                result_dict = use_git_to_apply_code_diff(diff, test_file_path)
+                
+                # Read the modified content
+                with open(test_file_path, 'r', encoding='utf-8') as f:
+                    modified_content = f.read()
+                
+                # Verify content actually changed
+                content_changed = original_content != modified_content
+                
+                # For cases that should apply, verify:
+                # 1. Content actually changed
+                # 2. Reported status is success or partial
+                # 3. changes_written flag is True
+                self.assertTrue(content_changed, 
+                               f"Content didn't change for {case_name} but should have")
+                self.assertIn(result_dict['status'], ['success', 'partial'], 
+                             f"Reported status should be success/partial for {case_name}, got {result_dict['status']}")
+                self.assertTrue(result_dict['details']['changes_written'], 
+                               f"changes_written should be True for {case_name}")
+        
+        # Test already applied cases
+        for case_name in already_applied_cases:
+            with self.subTest(case=f"{case_name}_already_applied_validation"):
+                metadata, original, diff, expected = self.load_test_case(case_name)
+                
+                # Set up the test file with the expected content (already applied state)
+                test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+                os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+                
+                with open(test_file_path, 'w', encoding='utf-8') as f:
+                    f.write(expected)
+                
+                # Store original content for comparison
+                original_content = expected
+                
+                # Apply the diff and get the result
+                result_dict = use_git_to_apply_code_diff(diff, test_file_path)
+                
+                # Read the modified content
+                with open(test_file_path, 'r', encoding='utf-8') as f:
+                    modified_content = f.read()
+                
+                # Verify content didn't change
+                content_unchanged = original_content == modified_content
+                
+                # For already applied cases, verify:
+                # 1. Content didn't change
+                # 2. Reported status is success (not error)
+                # 3. changes_written flag is False
+                # 4. At least one hunk is reported as already_applied
+                self.assertTrue(content_unchanged, 
+                               f"Content changed for {case_name} but shouldn't have")
+                self.assertEqual(result_dict['status'], 'success', 
+                               f"Reported status should be success for {case_name}, got {result_dict['status']}")
+                self.assertFalse(result_dict['details']['changes_written'], 
+                               f"changes_written should be False for {case_name}")
+                self.assertTrue(len(result_dict['details']['already_applied']) > 0, 
+                               f"No hunks reported as already_applied for {case_name}")
+        
+    def test_apply_state_reporting(self):
+        """
+        Test that the apply state reporting is accurate across multiple test cases.
+        This test ensures that when changes are made, we report success with changes_written=True,
+        and when no changes are made but hunks are already applied, we report success with changes_written=False.
+        """
+        from app.utils.code_util import use_git_to_apply_code_diff
+        
+        # Test cases that should apply successfully
+        success_cases = [
+            'simple_nested',
+            'two_functions',
+            'single_line_replace'
+        ]
+        
+        # Test cases that should detect already applied changes
+        already_applied_cases = [
+            'already_applied_simple',
+            'constant_duplicate_check'
+        ]
+        
+        # Test cases that should fail to apply
+        failure_cases = [
+            'MRE_incorrect_hunk_offsets',  # This should fail due to incorrect offsets
+            'MRE_malformed_diff_header'    # This should fail due to malformed header
+        ]
+        
+        # Test success cases
+        for case_name in success_cases:
+            with self.subTest(case=f"{case_name}_success_validation"):
+                metadata, original, diff, expected = self.load_test_case(case_name)
+                
+                # Set up the test file
+                test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+                os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+                
+                with open(test_file_path, 'w', encoding='utf-8') as f:
+                    f.write(original)
+                
+                # Store original content for comparison
+                original_content = original
+                
+                # Apply the diff and get the result
+                result_dict = use_git_to_apply_code_diff(diff, test_file_path)
+                
+                # Read the modified content
+                with open(test_file_path, 'r', encoding='utf-8') as f:
+                    modified_content = f.read()
+                
+                # Verify content actually changed
+                content_changed = original_content != modified_content
+                
+                # For success cases, verify:
+                # 1. Content actually changed
+                # 2. Reported status is success or partial
+                # 3. changes_written flag is True
+                self.assertTrue(content_changed, 
+                               f"Content didn't change for {case_name} but should have")
+                self.assertIn(result_dict['status'], ['success', 'partial'], 
+                             f"Reported status should be success/partial for {case_name}, got {result_dict['status']}")
+                self.assertTrue(result_dict['details']['changes_written'], 
+                               f"changes_written should be True for {case_name}")
+        
+        # Test already applied cases
+        for case_name in already_applied_cases:
+            with self.subTest(case=f"{case_name}_already_applied_validation"):
+                metadata, original, diff, expected = self.load_test_case(case_name)
+                
+                # Set up the test file with the expected content (already applied state)
+                test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+                os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+                
+                with open(test_file_path, 'w', encoding='utf-8') as f:
+                    f.write(expected)
+                
+                # Store original content for comparison
+                original_content = expected
+                
+                # Apply the diff and get the result
+                result_dict = use_git_to_apply_code_diff(diff, test_file_path)
+                
+                # Read the modified content
+                with open(test_file_path, 'r', encoding='utf-8') as f:
+                    modified_content = f.read()
+                
+                # Verify content didn't change
+                content_unchanged = original_content == modified_content
+                
+                # For already applied cases, verify:
+                # 1. Content didn't change
+                # 2. Reported status is success (not error)
+                # 3. changes_written flag is False
+                # 4. At least one hunk is reported as already_applied
+                self.assertTrue(content_unchanged, 
+                               f"Content changed for {case_name} but shouldn't have")
+                self.assertEqual(result_dict['status'], 'success', 
+                               f"Reported status should be success for {case_name}, got {result_dict['status']}")
+                self.assertFalse(result_dict['details']['changes_written'], 
+                               f"changes_written should be False for {case_name}")
+                self.assertTrue(len(result_dict['details']['already_applied']) > 0, 
+                               f"No hunks reported as already_applied for {case_name}")
+        
+        # Test failure cases
+        for case_name in failure_cases:
+            with self.subTest(case=f"{case_name}_failure_validation"):
+                try:
+                    metadata, original, diff, expected = self.load_test_case(case_name)
+                except FileNotFoundError:
+                    # Skip if test case doesn't exist
+                    continue
+                
+                # Set up the test file
+                test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+                os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+                
+                with open(test_file_path, 'w', encoding='utf-8') as f:
+                    f.write(original)
+                
+                # Store original content for comparison
+                original_content = original
+                
+                # Apply the diff and get the result
+                result_dict = use_git_to_apply_code_diff(diff, test_file_path)
+                
+                # Read the modified content
+                with open(test_file_path, 'r', encoding='utf-8') as f:
+                    modified_content = f.read()
+                
+                # Verify content didn't change or if it did, the status is not reported as success
+                content_changed = original_content != modified_content
+                
+                # For failure cases, verify:
+                # 1. If content didn't change, status should be error
+                # 2. If content changed, changes_written should be True
+                if not content_changed:
+                    self.assertEqual(result_dict['status'], 'error', 
+                                   f"No changes made but status was not error for {case_name}")
+                else:
+                    # If content changed (partial success), changes_written should be True
+                    self.assertTrue(result_dict['details']['changes_written'], 
+                                  f"Content changed but changes_written was False for {case_name}")
+    
+    def test_apply_state_consistency(self):
+        """
+        Test that the apply state reporting is consistent when applying the same diff twice.
+        First application should report success with changes_written=True,
+        second application should report success with changes_written=False and already_applied hunks.
+        """
+        from app.utils.code_util import use_git_to_apply_code_diff
+        
+        # Test cases for double application
+        test_cases = [
+            'simple_nested',
+            'two_functions',
+            'single_line_replace'
+        ]
+        
+        for case_name in test_cases:
+            with self.subTest(case=f"{case_name}_double_application"):
+                metadata, original, diff, expected = self.load_test_case(case_name)
+                
+                # Set up the test file
+                test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+                os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+                
+                with open(test_file_path, 'w', encoding='utf-8') as f:
+                    f.write(original)
+                
+                # First application
+                first_result = use_git_to_apply_code_diff(diff, test_file_path)
+                
+                # Read the modified content
+                with open(test_file_path, 'r', encoding='utf-8') as f:
+                    modified_content = f.read()
+                
+                # Verify first application reported success with changes_written=True
+                self.assertIn(first_result['status'], ['success', 'partial'], 
+                             f"First application should report success/partial for {case_name}")
+                self.assertTrue(first_result['details']['changes_written'], 
+                               f"First application should have changes_written=True for {case_name}")
+                
+                # Second application
+                second_result = use_git_to_apply_code_diff(diff, test_file_path)
+                
+                # Read the content after second application
+                with open(test_file_path, 'r', encoding='utf-8') as f:
+                    second_content = f.read()
+                
+                # Verify content didn't change after second application
+                self.assertEqual(modified_content, second_content, 
+                               f"Content changed after second application for {case_name}")
+                
+                # Verify second application reported success with changes_written=False
+                self.assertEqual(second_result['status'], 'success', 
+                               f"Second application should report success for {case_name}")
+                self.assertFalse(second_result['details']['changes_written'], 
+                                f"Second application should have changes_written=False for {case_name}")
+                self.assertTrue(len(second_result['details']['already_applied']) > 0, 
+                               f"Second application should report hunks as already_applied for {case_name}")
 
 
 class PrettyTestResult(unittest.TestResult):

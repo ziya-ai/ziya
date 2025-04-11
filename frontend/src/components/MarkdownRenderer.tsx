@@ -451,6 +451,9 @@ const normalizeGitDiff = (diff: string): string => {
         const normalizedLines: string[] = [];
         let fileIndex = 0;
 
+        console.log('=== normalizeGitDiff Debug ===');
+        console.log('Input diff preview:', diff.split('\n').slice(0, 5));
+
         // Check if this is a properly formatted diff
         const hasDiffHeaders = lines.some(line =>
             (line.startsWith('---') || line.startsWith('+++'))
@@ -461,8 +464,10 @@ const normalizeGitDiff = (diff: string): string => {
         const hasHunkHeader = lines.some(line =>
             /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line)
         );
+        console.log('Has hunk header:', hasHunkHeader);
 
         if (hasDiffHeaders && hasHunkHeader) {
+            console.log('Diff is already properly formatted, returning original');
             return diff;  // Return original diff if it's properly formatted
         }
 
@@ -1081,6 +1086,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 </tbody>
             </table>
         );
+    })}
+    </tbody>
+    </table>
+    );
     };
 
     // Handle parse error case
@@ -2673,8 +2682,8 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 } finally {
                     setIsLanguageLoaded(true);
                 }
-            };
-            loadLanguage();
+        };
+        loadLanguage();
         } else {
             setIsLanguageLoaded(true);
         }

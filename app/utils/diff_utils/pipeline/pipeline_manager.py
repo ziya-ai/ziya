@@ -1077,6 +1077,23 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         stage=PipelineStage.DIFFLIB,
                         status=HunkStatus.ALREADY_APPLIED
                     )
+            
+            # Explicitly add all hunks to already_applied_hunks
+            for i, hunk in enumerate(hunks, 1):
+                hunk_id = hunk.get('number', i)
+                if hunk_id not in pipeline.result.already_applied_hunks:
+                    pipeline.result.already_applied_hunks.append(hunk_id)
+            
+            # Set the status to success for already applied hunks
+            pipeline.result.status = "success"
+            pipeline.result.changes_written = False
+            
+            # Complete the pipeline and return success
+            pipeline.complete()
+            
+            # No need to modify the result_dict - the to_dict method will properly
+            # include the already_applied_hunks from the pipeline result
+            
             return False
         
         # Apply the diff with difflib
@@ -1117,6 +1134,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                     status=HunkStatus.ALREADY_APPLIED
                                 )
                                 logger.info(f"Marked hunk #{hunk_id} as ALREADY_APPLIED")
+                        # Set changes_written to False since no actual changes were made
+                        pipeline.result.changes_written = False
                         return False
                     else:
                         # Hunks were not applied and no changes were made
@@ -1130,6 +1149,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                     error_details={"error": "No changes were applied despite success claim"}
                                 )
                                 logger.info(f"Marked hunk #{hunk_id} as FAILED due to no actual changes")
+                        # Set changes_written to False since no actual changes were made
+                        pipeline.result.changes_written = False
                         return False
                 
                 logger.info("Successfully applied diff with hybrid forced mode - verified content changes")
