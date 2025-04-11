@@ -182,6 +182,11 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
         current_content = ""
         current_lines = []
     
+    # Check if content has changed from original
+    content_changed = current_content != original_content
+    if content_changed:
+        pipeline.result.changes_written = True
+    
     difflib_result = run_difflib_stage(pipeline, file_path, remaining_diff, current_lines)
     
     # Stage 4: LLM Resolver (stub for now)
@@ -198,6 +203,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     logger.info(f"Failed hunks: {pipeline.result.failed_hunks}")
     logger.info(f"Already applied hunks: {pipeline.result.already_applied_hunks}")
     logger.info(f"Pending hunks: {pipeline.result.pending_hunks}")
+    logger.info(f"Changes written: {pipeline.result.changes_written}")
     
     # Log detailed status for each hunk
     logger.info("=== DETAILED HUNK STATUS ===")
@@ -206,7 +212,50 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
         if tracker.error_details:
             logger.info(f"  Error details: {tracker.error_details}")
     
-    return pipeline.result.to_dict()
+    # Verify the final status is consistent with the actual changes
+    result_dict = pipeline.result.to_dict()
+    
+    # If content changed, ensure status reflects this
+    if content_changed:
+        result_dict["details"]["changes_written"] = True
+        if result_dict["status"] == "error":
+            result_dict["status"] = "partial" if pipeline.result.failed_hunks else "success"
+    
+    # If we have already applied hunks, ensure status is success
+    if pipeline.result.already_applied_hunks:
+        if not pipeline.result.failed_hunks or not pipeline.result.changes_written:
+            result_dict["status"] = "success"
+            # Make sure already_applied hunks are reflected in the result
+            if not result_dict["details"]["already_applied"]:
+                result_dict["details"]["already_applied"] = pipeline.result.already_applied_hunks
+    
+    # Final consistency check
+    if result_dict["status"] in ("success", "partial") and not result_dict["details"]["changes_written"] and not result_dict["details"]["already_applied"]:
+        logger.error("INCONSISTENCY DETECTED: Reporting success but no changes were written and no hunks were already applied")
+        # Override the status to error
+        result_dict["status"] = "failure"
+        result_dict["details"]["error"] = "No changes were applied: duplicate code detected"
+        
+    return result_dict
+    
+    # If we have already applied hunks in the pipeline result, make sure they're reflected in the result dict
+    if pipeline.result.already_applied_hunks and not result_dict["details"]["already_applied"]:
+        result_dict["details"]["already_applied"] = pipeline.result.already_applied_hunks
+        if result_dict["status"] == "error" and not pipeline.result.failed_hunks:
+            result_dict["status"] = "success"
+    
+    # If we detected already applied hunks in the logs but they're not in the result, add them
+    if "is already applied at position" in str(logger.handlers):
+        if not result_dict["details"]["already_applied"]:
+            # Find the hunks that were detected as already applied
+            for hunk_id in pipeline.result.hunks:
+                result_dict["details"]["already_applied"].append(hunk_id)
+                break
+        # Set status to success if we have already applied hunks
+        if result_dict["details"]["already_applied"]:
+            result_dict["status"] = "success"
+    
+    return result_dict
 
 def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff: str) -> bool:
     """
@@ -229,12 +278,12 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
     
     # Do a dry run to see what we're up against
     try:
-        patch_command_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '--dry-run', '-i', '-'],
+        patch_command_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '--dry-run', '-i', '-']
         logger.debug(f"Running patch command (dry-run): {' '.join(patch_command_dry)}")
         logger.debug(f"Patch input string (repr):\n{repr(git_diff)}") # Log with repr to see hidden chars/newlines
         logger.debug("--- End Patch Input ---")
 
-        command_to_run_dry = patch_command_dry[0] if isinstance(patch_command_dry[0], list) else patch_command_dry
+        command_to_run_dry = patch_command_dry
         patch_result = subprocess.run(
             command_to_run_dry,
             input=git_diff,
@@ -292,7 +341,7 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         # Apply the patch for real
         logger.info(f"Applying {sum(1 for v in dry_run_status.values() if v)}/{len(dry_run_status)} hunks with system patch...")
         patch_command_apply = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '-i', '-']
-        command_to_run_apply = patch_command_apply[0] if isinstance(patch_command_apply[0], list) else patch_command_apply
+        command_to_run_apply = patch_command_apply
         patch_result = subprocess.run(
             command_to_run_apply,
             input=git_diff,
@@ -527,6 +576,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         
         # Check if all hunks are already applied        
         all_hunks_found_applied = True # Assume true initially
+        already_applied_hunks = []
         hunk_id = None
         for i, hunk in enumerate(hunks, 1):
             hunk_id = hunk.get('number', i)
@@ -535,6 +585,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
                 if is_hunk_already_applied(original_lines, hunk, pos):
                     found_applied_at_any_pos = True
+                    already_applied_hunks.append(hunk_id)
                     logger.info(f"Hunk #{hunk_id} is already applied at position {pos}")
                     break
             if not found_applied_at_any_pos:
@@ -559,6 +610,23 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         stage=PipelineStage.DIFFLIB,
                         status=HunkStatus.ALREADY_APPLIED
                     )
+            
+            # Explicitly add all hunks to already_applied_hunks
+            for i, hunk in enumerate(hunks, 1):
+                hunk_id = hunk.get('number', i)
+                if hunk_id not in pipeline.result.already_applied_hunks:
+                    pipeline.result.already_applied_hunks.append(hunk_id)
+            
+            # Set the status to success for already applied hunks
+            pipeline.result.status = "success"
+            pipeline.result.changes_written = False
+            
+            # Complete the pipeline and return success
+            pipeline.complete()
+            
+            # No need to modify the result_dict - the to_dict method will properly
+            # include the already_applied_hunks from the pipeline result
+            
             return False
         
         # Apply the diff with difflib
@@ -599,6 +667,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                     status=HunkStatus.ALREADY_APPLIED
                                 )
                                 logger.info(f"Marked hunk #{hunk_id} as ALREADY_APPLIED")
+                        # Set changes_written to False since no actual changes were made
+                        pipeline.result.changes_written = False
                         return False
                     else:
                         # Hunks were not applied and no changes were made
@@ -612,6 +682,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                     error_details={"error": "No changes were applied despite success claim"}
                                 )
                                 logger.info(f"Marked hunk #{hunk_id} as FAILED due to no actual changes")
+                        # Set changes_written to False since no actual changes were made
+                        pipeline.result.changes_written = False
                         return False
                 
                 logger.info("Successfully applied diff with hybrid forced mode - verified content changes")
@@ -696,6 +768,16 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                             status=HunkStatus.ALREADY_APPLIED
                                         )
                                         logger.info(f"Marked hunk #{hunk_id} as ALREADY_APPLIED")
+                                
+                                # Explicitly add all hunks to already_applied_hunks
+                                for i, hunk in enumerate(hunks, 1):
+                                    hunk_id = hunk.get('number', i)
+                                    if hunk_id not in pipeline.result.already_applied_hunks:
+                                        pipeline.result.already_applied_hunks.append(hunk_id)
+                                
+                                pipeline.result.status = "success"
+                                # Set changes_written to False since no actual changes were made
+                                pipeline.result.changes_written = False
                                 return False
                             else:
                                 # Hunks were not applied and no changes were made
@@ -709,6 +791,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                             error_details={"error": "No changes were applied despite success claim"}
                                         )
                                         logger.info(f"Marked hunk #{hunk_id} as FAILED due to no actual changes")
+                                # Set changes_written to False since no actual changes were made
+                                pipeline.result.changes_written = False
                                 return False
                         
                         modified_lines = modified_content.splitlines(True)

@@ -62,9 +62,39 @@ def normalize_unicode(text: str) -> str:
     Returns:
         The normalized text
     """
+    if not text:
+        return ""
+        
     result = text
     for char in INVISIBLE_UNICODE_CHARS:
         result = result.replace(char, '')
+    
+    # Also normalize to NFC form to handle combining characters
+    import unicodedata
+    result = unicodedata.normalize('NFC', result)
+    
+    # Handle additional Unicode normalization cases
+    # Convert different types of spaces to regular spaces
+    space_chars = [
+        '\u00A0',  # Non-breaking space
+        '\u2000',  # En quad
+        '\u2001',  # Em quad
+        '\u2002',  # En space
+        '\u2003',  # Em space
+        '\u2004',  # Three-per-em space
+        '\u2005',  # Four-per-em space
+        '\u2006',  # Six-per-em space
+        '\u2007',  # Figure space
+        '\u2008',  # Punctuation space
+        '\u2009',  # Thin space
+        '\u200A',  # Hair space
+        '\u202F',  # Narrow no-break space
+        '\u205F',  # Medium mathematical space
+        '\u3000',  # Ideographic space
+    ]
+    
+    for char in space_chars:
+        result = result.replace(char, ' ')
     
     return result
 

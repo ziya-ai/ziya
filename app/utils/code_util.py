@@ -18,6 +18,41 @@ from app.utils.diff_utils.file_ops.file_handlers import create_new_file, cleanup
 from app.utils.diff_utils.pipeline import apply_diff_pipeline, DiffPipeline, PipelineStage, HunkStatus, PipelineResult
 
 # Define HunkData class for backward compatibility
+
+def clean_backtick_sequences(text):
+    """
+    Clean backtick sequences from text.
+    This is used by the parse_output function to clean code blocks.
+    """
+    if not text:
+        return ""
+    
+    # If the text starts with ```diff, it's a diff block
+    if "```diff" in text:
+        return text
+    
+    # If the text contains backtick code blocks, extract the content
+    if "```" in text:
+        # Simple extraction of code blocks
+        lines = text.split("\n")
+        in_code_block = False
+        cleaned_lines = []
+        
+        for line in lines:
+            if line.startswith("```") and not in_code_block:
+                in_code_block = True
+                # Skip the opening backticks line
+                continue
+            elif line.startswith("```") and in_code_block:
+                in_code_block = False
+                # Skip the closing backticks line
+                continue
+            else:
+                cleaned_lines.append(line)
+        
+        return "\n".join(cleaned_lines)
+    
+    return text
 class HunkData:
     """
     Stores data for a single hunk in the unified diff: header, start_line, old_lines, new_lines, etc.
@@ -61,14 +96,5 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str):
     Returns:
         A dictionary with the result of the operation
     """
-    # We need to handle the escape_sequence_content test case specially
-    # This is a legitimate case where we need to detect a specific pattern
-    # and use a different approach. The text += pattern is particularly challenging
-    # for the difflib implementation due to how it handles whitespace and indentation.
-    if 'text +=' in git_diff and 'def test_escapes' in git_diff:
-        # For text += patterns, use the original implementation which handles this case correctly
-        from app.utils.code_util import use_git_to_apply_code_diff as original_apply
-        return original_apply(git_diff, file_path)
-    
-    # For all other cases, use the new pipeline implementation
+    # For all cases, use the pipeline implementation
     return apply_diff_pipeline(git_diff, file_path)

@@ -46,25 +46,24 @@ def calculate_block_similarity(block1, block2):
     
     # Convert lists to strings if needed
     if isinstance(block1, list):
-        block1 = ''.join(block1)
+        block1_str = '\n'.join(str(line) for line in block1)
+    else:
+        block1_str = str(block1)
+        
     if isinstance(block2, list):
-        block2 = ''.join(block2)
+        block2_str = '\n'.join(str(line) for line in block2)
+    else:
+        block2_str = str(block2)
     
-    # Simple character-based similarity
-    shorter = min(len(block1), len(block2))
-    longer = max(len(block1), len(block2))
+    # Use difflib's SequenceMatcher for more accurate similarity calculation
+    import difflib
+    matcher = difflib.SequenceMatcher(None, block1_str, block2_str)
+    similarity = matcher.ratio()
     
-    if longer == 0:
-        return 1.0
+    # Apply stricter similarity scoring
+    if len(block1_str) != len(block2_str):
+        # Penalize length differences more heavily
+        length_ratio = min(len(block1_str), len(block2_str)) / max(len(block1_str), len(block2_str))
+        similarity = similarity * (0.5 + 0.5 * length_ratio)
     
-    # Count matching characters
-    matches = sum(1 for a, b in zip(block1, block2) if a == b)
-    
-    # Calculate similarity ratio
-    similarity = matches / longer
-    
-    # Adjust for length difference
-    length_ratio = shorter / longer if longer > 0 else 1.0
-    adjusted_similarity = similarity * length_ratio
-    
-    return adjusted_similarity
+    return similarity

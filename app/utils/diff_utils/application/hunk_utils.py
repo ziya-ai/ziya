@@ -89,8 +89,8 @@ def find_best_chunk_position(file_lines: List[str], chunk_lines: List[str], expe
     
     # Look in a window around the expected position
     window_size = len(chunk_lines)
-    search_start = max(0, expected_pos - 20)
-    search_end = min(len(file_lines), expected_pos + 20)
+    search_start = max(0, expected_pos - 15)
+    search_end = min(len(file_lines), expected_pos + 15)
     
     for i in range(search_start, search_end - window_size + 1):
         window = file_lines[i:i + window_size]

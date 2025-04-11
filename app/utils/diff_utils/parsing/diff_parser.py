@@ -210,8 +210,9 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                     'old_block': [],
                     'original_hunk': hunk_num,  # Store original hunk number
                     'new_lines': [],
-                    'removed_lines': [],  # Track removed lines
-                    'added_lines': []     # Track added lines
+                    'old_lines': old_count,     # Store old line count for patch application
+                    'removed_lines': [],        # Track removed lines
+                    'added_lines': []           # Track added lines
                 }
 
                 # Start collecting content for this hunk

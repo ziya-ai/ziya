@@ -1,0 +1,36 @@
+diff --git a/app/middleware/streaming.py b/app/middleware/streaming.py
+--- a/app/middleware/streaming.py
++++ b/app/middleware/streaming.py
+@@ -14,6 +14,10 @@ async def safe_stream(self, original_iterator: AsyncIterator[Any]) -> AsyncIterator
+             logger.info(f"Chunk type: {type(chunk)}")
+             
+             try:
++                # Check if chunk is already a Gemini error response
++                if isinstance(chunk, str) and chunk.startswith('data: {"error"'):
++                    yield chunk
++                    continue
+                     
+                 # Handle AIMessageChunk objects
+                 if isinstance(chunk, AIMessageChunk):
+@@ -21,6 +25,11 @@ async def safe_stream(self, original_iterator: AsyncIterator[Any]) -> AsyncIterator
+                     content = chunk.content
+                     
++                    # Check if content is an error message
++                    if isinstance(content, str) and content.startswith('data: {"error"'):
++                        yield content
++                        continue
++                        
+                     yield f"data: {content}\n\n"
+                     continue
+                 
+@@ -38,7 +47,11 @@ async def safe_stream(self, original_iterator: AsyncIterator[Any]) -> AsyncIterator
+                 # Handle string chunks
+                 if isinstance(chunk, str):
+                     logger.info("Processing string chunk")
+-                    yield f"data: {chunk}\n\n"
++                    # Check if it's already an SSE message
++                    if chunk.startswith('data:'):
++                        yield chunk
++                    else:
++                        yield f"data: {chunk}\n\n"
+                     continue

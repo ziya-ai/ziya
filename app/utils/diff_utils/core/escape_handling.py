@@ -2,17 +2,27 @@
 Escape sequence handling utilities for diff application.
 """
 
-def normalize_escape_sequences(text: str) -> str:
+def normalize_escape_sequences(text: str, preserve_literals: bool = True) -> str:
     """
     Normalize escape sequences in text.
     
     Args:
         text: The text to normalize
+        preserve_literals: If True, preserve escape sequences as literals (e.g., '\\n' stays as '\\n')
+                          If False, convert escape sequences to their actual characters (e.g., '\\n' becomes a newline)
         
     Returns:
         The normalized text
     """
-    # Common escape sequences to normalize
+    if not text:
+        return ""
+    
+    if preserve_literals:
+        # When preserving literals, we don't convert escape sequences
+        # This is important for code comparison where we want to compare the literal text
+        return text
+        
+    # Common escape sequences to normalize when not preserving literals
     escape_sequences = {
         '\\n': '\n',
         '\\r': '\r',
@@ -26,13 +36,15 @@ def normalize_escape_sequences(text: str) -> str:
         '\\a': '\a',
     }
     
+    # First handle literal backslash followed by escape character
+    # This is a special case for strings like "\\n" which should be treated as "\n"
     result = text
     for escaped, unescaped in escape_sequences.items():
         # Only replace if the escape sequence is properly escaped
         # (i.e., not already part of a larger escape sequence)
         i = 0
         while i < len(result):
-            if result[i:].startswith(escaped):
+            if i + len(escaped) <= len(result) and result[i:i+len(escaped)] == escaped:
                 # Check if this is part of a larger escape sequence
                 if i > 0 and result[i-1] == '\\':
                     i += 1

@@ -2,7 +2,7 @@ import React, { useState, useEffect, memo, useMemo, Suspense, useCallback } from
 import 'prismjs/themes/prism.css';
 import { Button, message, Radio, Space, Spin, RadioChangeEvent } from 'antd';
 import * as d3 from 'd3';
-import { marked } from 'marked';
+import { marked, Tokens, Marked } from 'marked';
 import type { Diff } from 'react-diff-view';
 import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
@@ -156,85 +156,118 @@ class ErrorBoundary extends React.Component<
     }
 }
 
-const GraphvizRenderer: React.FC<{ dot: string }> = ({ dot }) => {
+const GraphvizRenderer: React.FC<{ dot: string }> = memo(({ dot }) => {
     const { isDarkMode } = useTheme();
     const [svg, setSvg] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
-    const [isValidDot, setIsValidDot] = useState<boolean>(false);
+    const [isLoading, setIsLoading] = useState<boolean>(true);
+
+    const themeColors = {
+        light: {
+            text: '#1f1f1f',
+            background: 'transparent',
+            stroke: '#666666'
+        },
+        dark: {
+            text: '#e6e6e6',
+            background: 'transparent',
+            stroke: '#888888'
+        }
+    };
 
     useEffect(() => {
+        let mounted = true;
+        setIsLoading(true);
+        setError(null);
+
         const renderGraph = async () => {
+            if (!dot?.trim()) {
+                if (mounted) setIsLoading(false);
+                return;
+            }
+
             try {
-		// First validate DOT syntax
-                if (!dot.trim().startsWith('digraph') && !dot.trim().startsWith('graph')) {
-                    setError('Invalid DOT syntax');
-                    setIsValidDot(false);
-                    return;
+                const vizInstance = await Viz.instance();
+                const element = await vizInstance.renderSVGElement(addThemeAttributes(dot, isDarkMode));
+
+                if (mounted) {
+                    applyThemeToSvg(element, isDarkMode);
+                    const serializer = new XMLSerializer();
+                    setSvg(serializer.serializeToString(element));
+                    setError(null);
                 }
-
-                // Check for incomplete DOT syntax (missing closing brace)
-                if (!dot.includes('}')) {
-                    setIsValidDot(false);
-                    setSvg('');
-                    return;
+            } catch (e: any) {
+                console.error("Graphviz rendering error:", e);
+                if (mounted) {
+                    setError(e.message || 'Failed to render graph');
                 }
-
-                const dotSource = dot.trim();
-                const themedDot = isDarkMode ?
-                    dotSource.replace(/^(digraph|graph)\s+(.+?)\s*{/,
-                        '$1 $2 {\n' +
-                        '  bgcolor="transparent";\n' +
-                        '  node [style="filled", fillcolor="#1f1f1f", color="#e6e6e6", fontcolor="#e6e6e6"];\n' +
-                        '  edge [color="#e6e6e6", fontcolor="#e6e6e6"];\n' +
-                        '  graph [bgcolor="transparent", color="#e6e6e6", fontcolor="#e6e6e6"];\n'
-                    )
-                    : dotSource;
-
-		const instance = await Viz.instance();
-                const result = await instance.renderString(dot, {
-                    engine: 'dot',
-                    format: 'svg'
-                });
-                setSvg(result);
-		setIsValidDot(true);
-                setError(null);
-            } catch (err) {
-		const errorMessage = err instanceof Error
-                    ? err.message
-                    : 'Failed to render graph';
-
-                console.error('Graphviz rendering error:', errorMessage);
-		setIsValidDot(false);
-                setError(errorMessage);
+            } finally {
+                if (mounted) setIsLoading(false);
             }
         };
 
         renderGraph();
-    }, [dot]);
+        return () => { mounted = false; };
+    }, [dot, isDarkMode]);
 
-    if (!isValidDot) {
+    const addThemeAttributes = (dotString: string, isDark: boolean): string => {
+        const colors = isDark ? themeColors.dark : themeColors.light;
+
+        // Only add default attributes if they're not already specified
+        const graphAttributes = `
+            bgcolor="${colors.background}";
+            node [fontname="Arial"];
+            edge [fontname="Arial"];
+        `;
+
+        return dotString.replace(/^(\s*(?:di)?graph\s+[^{]*{)/, `$1\n${graphAttributes}`);
+    };
+
+    const applyThemeToSvg = (svgElement: SVGElement, isDark: boolean) => {
+        const colors = isDark ? themeColors.dark : themeColors.light;
+
+        const elements = svgElement.getElementsByTagName('*');
+        for (let i = 0; i < elements.length; i++) {
+            const el = elements[i];
+
+            const hasExplicitFill = el.hasAttribute('fill') && el.getAttribute('fill') !== 'none';
+            const hasExplicitStroke = el.hasAttribute('stroke');
+            const hasExplicitColor = el.hasAttribute('color');
+
+            if (el.tagName === 'text') {
+                if (!hasExplicitFill) {
+                    el.setAttribute('fill', colors.text);
+                }
+            } else if (el.tagName === 'path') {
+                if (!hasExplicitStroke) {
+                    el.setAttribute('stroke', colors.stroke);
+                }
+            } else if (el.tagName === 'polygon' || el.tagName === 'ellipse') {
+                if (!hasExplicitStroke) {
+                    el.setAttribute('stroke', colors.stroke);
+                }
+            }
+        }
+
+        svgElement.style.backgroundColor = colors.background;
+    };
+
+    if (isLoading) {
         return (
-	    <ErrorBoundary type="graphviz">
-            <div className="graphviz-container" style={{
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                minHeight: '100px'
-            }}>
-                <Spin tip="Rendering graph..." size="large">
-                    <div className="content" />
-                </Spin>
+            <div className="graphviz-container loading">
+                <Spin tip="Rendering graph..." size="large" />
             </div>
-	    </ErrorBoundary>
         );
     }
-
 
     if (error) {
         return (
             <div className="graphviz-error">
-                <p>Error rendering graph: {error}</p>
-                <pre><code>{dot}</code></pre>
+                <p><strong>Graphviz Error:</strong> {error}</p>
+                <details>
+                    <summary>Show DOT source</summary>
+                    <pre><code>{dot}</code></pre>
+                </details>
             </div>
         );
     }
@@ -246,11 +279,13 @@ const GraphvizRenderer: React.FC<{ dot: string }> = ({ dot }) => {
             style={{
                 maxWidth: '100%',
                 overflow: 'auto',
-		padding: '1em 0'
+                padding: '1em 0',
+                backgroundColor: 'transparent',
+                borderRadius: '6px',
             }}
         />
     );
-};
+});
 
 interface ApplyChangesButtonProps {
     diff: string;
@@ -286,7 +321,7 @@ const DiffControls = memo(({
 }: DiffControlsProps) => {
     const { isDarkMode } = useTheme();
     const handleDisplayModeChange = (e: RadioChangeEvent) => {
-	const newMode = e.target.value as DisplayMode;
+    	const newMode = e.target.value as DisplayMode;
         onDisplayModeChange(newMode);
     };
 
@@ -304,29 +339,29 @@ const DiffControls = memo(({
                         <Radio.Group
                             value={viewType}
                             buttonStyle="solid"
-			    style={{
-                                    backgroundColor: isDarkMode ? '#141414' : '#ffffff',
-                                    color: isDarkMode ? '#ffffff' : '#000000'
+                            style={{
+                                backgroundColor: isDarkMode ? '#141414' : '#ffffff',
+                                color: isDarkMode ? '#ffffff' : '#000000'
                             }}
                             onChange={e => {
                                 window.diffViewType = e.target.value;
                                 onViewTypeChange(e.target.value);
                             }}
                         >
-                            <Radio.Button value="unified">Unified View</Radio.Button>
-                            <Radio.Button value="split">Split View</Radio.Button>
+                        <Radio.Button value="unified">Unified View</Radio.Button>
+                        <Radio.Button value="split">Split View</Radio.Button>
                         </Radio.Group>
                         <Radio.Group
                             value={showLineNumbers}
                             buttonStyle="solid"
-			    style={{
+                            style={{
                                     backgroundColor: isDarkMode ? '#141414' : '#ffffff',
                                     color: isDarkMode ? '#ffffff' : '#000000'
                             }}
                             onChange={(e) => onLineNumbersChange(e.target.value)}
                         >
-                            <Radio.Button value={true}>Show Line Numbers</Radio.Button>
-                            <Radio.Button value={false}>Hide Line Numbers</Radio.Button>
+                        <Radio.Button value={true}>Show Line Numbers</Radio.Button>
+                        <Radio.Button value={false}>Hide Line Numbers</Radio.Button>
                         </Radio.Group>
                     </Space>
                 )}
@@ -334,43 +369,101 @@ const DiffControls = memo(({
             <Radio.Group
                 value={displayMode}
                 buttonStyle="solid"
-		style={{
+                style={{
                     backgroundColor: isDarkMode ? '#141414' : '#ffffff',
                     color: isDarkMode ? '#ffffff' : '#000000'
                 }}
                 onChange={handleDisplayModeChange}
             >
-                <Radio.Button value="pretty">Pretty</Radio.Button>
-                <Radio.Button value="raw">Raw</Radio.Button>
+            <Radio.Button value="pretty">Pretty</Radio.Button>
+            <Radio.Button value="raw">Raw</Radio.Button>
             </Radio.Group>
            </div>
     );
 });
 
 const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string => {
+
+    console.log('=== renderFileHeader Debug ===');
+    console.log('Input file object:', {
+        type: file.type,
+        oldPath: file.oldPath,
+        newPath: file.newPath,
+        hunks: file.hunks?.length
+    });
+
+    // If we have paths in the file object, use them directly
+    if (file.oldPath || file.newPath) {
+        const path = file.newPath || file.oldPath;
+        console.log('Using path from file object:', path);
+        return `File: ${path}`;
+    }
+
+    // Helper to extract paths from unified diff header
+    const extractPathFromUnifiedHeader = (line: string): string | null => {
+        // Handle unified diff format (--- a/path or +++ b/path)
+        const match = line.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?(.*?)(?:\s+|$)/);
+        return match ? match[1] : null;
+    };
+
     // Helper to extract paths from git diff header
     const extractPathsFromHeader = (diffHeader: string): [string | null, string | null] => {
-        const match = diffHeader.match(/^diff --git a\/(.*?) b\/(.*?)$/);
-
-        // If we have a standard git diff header match
-        if (match) {
+        // First try git diff format
+        const gitMatch = diffHeader.match(/^diff --git a\/(.*?) b\/(.*?)$/);
+        if (gitMatch) {
             // Check if this is a new file
-            if (match[1].includes('/dev/null')) {
-                return [null, match[2]];
+            if (gitMatch[1].includes('/dev/null')) {
+                return [null, gitMatch[2]];
             }
             // Check if this is a deletion
-            if (match[2].includes('/dev/null')) {
-                return [match[1], null];
+            if (gitMatch[2].includes('/dev/null')) {
+                return [gitMatch[1], null];
             }
-            return [match[1], match[2]];
+            return [gitMatch[1], gitMatch[2]];
         }
 
-        if (!match) return [null, null];
-        return [match[1], match[2]];
+        // If no git diff header, try to extract from unified diff format
+        const lines = diffHeader.split('\n');
+        let oldPath: string | null = null;
+        let newPath: string | null = null;
+
+        for (const line of lines) {
+            console.log('Examining line for path:', line);
+            if (line.startsWith('--- ')) {
+                oldPath = extractPathFromUnifiedHeader(line);
+            } else if (line.startsWith('+++ ')) {
+                newPath = extractPathFromUnifiedHeader(line);
+            }
+            // Stop looking after we find both paths or hit a hunk header
+            if ((oldPath && newPath) || line.startsWith('@@ ')) break;
+        }
+
+        console.log('Extracted paths from unified format:', { oldPath, newPath });
+        return [oldPath, newPath];
+    };
+
+    // Try to extract from content if no file header or git header
+    if (file.hunks?.[0]?.content) {
+        // Get all content from all hunks
+        const fullContent = file.hunks.map(h => h.content).join('\n');
+        console.log('Full content:', fullContent)
+
+        const [oldPath, newPath] = extractPathsFromHeader(fullContent);
+        console.log('Extracted paths from content:', { oldPath, newPath });
+
+        if (oldPath || newPath) {
+            const path = newPath || oldPath;
+            console.log('Using path:', path);
+            return path ? `File: ${path}` : 'Unknown file operation';
+        }
+
+        // Fallback for any other cases
+        console.log('No file path found in any format');
+        return 'Unknown file operation';
     };
 
     // Detect rename by comparing paths in diff header
-    const isRename = (oldPath: string, newPath: string): boolean => {
+    const isRename = (oldPath: string | null, newPath: string | null): boolean => {
         if (!oldPath || !newPath || oldPath === newPath) {
             return false;
         }
@@ -378,31 +471,35 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string =>
         return !oldPath.includes('/dev/null') && !newPath.includes('/dev/null');
     };
 
-    if (file.type === 'rename' && file.oldPath && file.newPath) {
-        const similarityIndex = file.similarity || 100;
-        return `Rename${similarityIndex < 100 ? ' with changes' : ''}: ${file.oldPath} → ${file.newPath} (${similarityIndex}% similar)`;
-    }
-    
-    // Check for renames in the git diff header if not already detected
-    if (file.hunks?.[0]?.content) {
-        const firstLine = file.hunks[0].content.split('\n')[0];
-        if (firstLine?.startsWith('diff --git') && !file.type) {
-            const [oldPath, newPath] = extractPathsFromHeader(firstLine);
-            if (oldPath && newPath && isRename(oldPath, newPath)) {
-                file.type = 'rename';
-                return `Rename: ${oldPath} → ${newPath}`;
-            }
+    // First try to use the paths from the file object
+    if (file.oldPath || file.newPath) {
+        if (file.type === 'rename') {
+            const similarityIndex = file.similarity || 100;
+            return `Rename${similarityIndex < 100 ? ' with changes' : ''}: ${file.oldPath} → ${file.newPath} (${similarityIndex}% similar)`;
+        } else if (file.type === 'delete') {
+            return `Delete: ${file.oldPath}`;
+        } else if (file.type === 'add') {
+            return `Create: ${file.newPath}`;
+        } else if (file.oldPath !== file.newPath) {
+            return `Rename: ${file.oldPath} → ${file.newPath}`;
+        } else {
+            return `File: ${file.oldPath || file.newPath}`;
         }
     }
-    
-    if (file.oldPath && file.newPath && file.oldPath !== file.newPath) {
-        return `Rename: ${file.oldPath} → ${file.newPath}`;
-    } else if (file.type === 'delete') {
-        return `Delete: ${file.oldPath}`;
-    } else if (file.type === 'add') {
-        return `Create: ${file.newPath}`;
-    } else if (file.type === 'modify' || (file.oldPath || file.newPath)) {
-        return `File: ${file.oldPath || file.newPath}`;
+
+    // If no paths in file object, try to extract from content
+    if (file.hunks?.[0]?.content) {
+        const [oldPath, newPath] = extractPathsFromHeader(file.hunks[0].content);
+
+        if (oldPath && newPath && isRename(oldPath, newPath)) {
+            return `Rename: ${oldPath} → ${newPath}`;
+        } else if (oldPath && !newPath) {
+            return `Delete: ${oldPath}`;
+        } else if (!oldPath && newPath) {
+            return `Create: ${newPath}`;
+        } else if (oldPath || newPath) {
+            return `File: ${newPath || oldPath}`;
+        }
     }
     
     // Fallback for any other cases
@@ -410,7 +507,7 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string =>
 };
 
 // Helper function to check if this is a deletion diff
-	const isDeletionDiff = (content: string) => {
+const isDeletionDiff = (content: string) => {
         return content.includes('diff --git') &&
                content.includes('/dev/null') &&
                content.includes('deleted file mode') &&
@@ -420,28 +517,53 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string =>
 
 const normalizeGitDiff = (diff: string): string => {
     // because LLMs tend to ignore instructions and get lazy
-    if (diff.startsWith('diff --git')) {
+    if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m)) {
         const lines: string[] = diff.split('\n');
         const normalizedLines: string[] = [];
+
+        console.log('=== normalizeGitDiff Debug ===');
+        console.log('Input diff preview:', diff.split('\n').slice(0, 5));
 
         // Check if this is a properly formatted diff
         const hasDiffHeaders = lines.some(line =>
             (line.startsWith('---') || line.startsWith('+++'))
             ) && lines.some(line => line.startsWith('--- a/') || line.startsWith('+++ b/'));
+        console.log('Has diff headers:', hasDiffHeaders);
+
         const hasHunkHeader = lines.some(line => 
             /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line)
         );
+        console.log('Has hunk header:', hasHunkHeader);
 
         if (hasDiffHeaders && hasHunkHeader) {
+            console.log('Diff is already properly formatted, returning original');
             return diff;  // Return original diff if it's properly formatted
         }
 
-        // Extract file paths from diff --git line
-        const gitMatch = lines[0].match(/diff --git a\/(.*?) b\/(.*?)$/);
-        if (!gitMatch) {
+        // Extract file path from unified diff headers if present
+        let filePath: string | null = null;
+        for (const line of lines) {
+            const unifiedMatch = line.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?(.+)$/);
+            console.log('Checking line for unified header:', { line, match: unifiedMatch });
+            if (unifiedMatch) {
+                filePath = unifiedMatch[1];
+                break;
+            }
+        }
+
+        // If no path found from unified headers, try git diff header
+        if (!filePath) {
+            console.log('No path found in unified headers, trying git diff header');
+            const gitMatch = lines[0].match(/diff --git a\/(.*?) b\/(.*?)$/);
+            if (gitMatch) {
+                filePath = gitMatch[1];
+            }
+        }
+
+        console.log('Final extracted filePath:', filePath);
+        if (!filePath) {
             return diff;  // Return original if we can't parse the git diff line
         }
-        const filePath = gitMatch[1];
 
         // If we have a diff --git line but missing proper headers, add them
         if (!hasDiffHeaders) {
@@ -565,6 +687,32 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         const parseAndSetFiles = () => {
             try {
                 let parsedFiles = parseDiff(normalizeGitDiff(diff));
+
+                console.log('parseDiff result:', {
+                    fileCount: parsedFiles.length,
+                    firstFile: parsedFiles[0] ? {
+                        type: parsedFiles[0].type,
+                        oldPath: parsedFiles[0].oldPath,
+                        newPath: parsedFiles[0].newPath,
+                        hunks: parsedFiles[0].hunks?.map(h => ({
+                            content: h.content.split('\n').slice(0, 3)
+                        }))
+                    } : null
+                });
+
+                // If we have a unified diff without git headers, try to extract the file path
+                if (parsedFiles.length > 0 && !parsedFiles[0].oldPath && !parsedFiles[0].newPath) {
+                    const lines = diff.split('\n');
+                    for (const line of lines) {
+                        if (line.startsWith('--- a/')) {
+                            parsedFiles[0].oldPath = line.substring(6);
+                        } else if (line.startsWith('+++ b/')) {
+                            parsedFiles[0].newPath = line.substring(6);
+                            break;
+                        }
+                    }
+                }
+
                 // Special handling for deletion diffs
                 if (parsedFiles.length === 0 && isDeletionDiff(diff)) {
                     const match = diff.match(/--- a\/(.*)\n/);
@@ -573,8 +721,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         parsedFiles = [{
                             type: 'delete',
                             oldPath: filePath,
-			    newPath: '/dev/null',
-			    oldRevision: 'HEAD',
+                            newPath: '/dev/null',
+                            oldRevision: 'HEAD',
                             newRevision: '0000000',
                             oldEndingNewLine: true,
                             newEndingNewLine: true,
@@ -584,10 +732,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                             hunks: [{
                                 content: diff,
                                 oldStart: 1,
-				oldLines: diff.split('\n').filter(line => line.startsWith('-')).length,
+                                oldLines: diff.split('\n').filter(line => line.startsWith('-')).length,
                                 newStart: 0,
                                 newLines: 0,
-				changes: diff.split('\n')
+                                changes: diff.split('\n')
                                     .filter(line => !line.match(/^(diff --git|index|---|^\+\+\+)/))
                                     .map((line, index: number) => ({
                                         type: 'delete' as const,
@@ -595,7 +743,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                         isDelete: true,
                                         isInsert: false,
                                         isNormal: false,
-					lineNumber: index + 1,
+                                        lineNumber: index + 1,
                                         oldLineNumber: index + 1,
                                         newLineNumber: undefined
                                     }))
@@ -606,6 +754,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 setParsedFiles(parsedFiles);
                 setParseError(false);
             } catch (error) {
+                console.error('Error parsing diff:', error);
                 setParseError(true);
                 setParsedFiles([]);
             }
@@ -721,11 +870,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             reason: 'Not attempted'
         }
 
-                        return (
-                            <React.Fragment key={hunk.content}>
-                                {/* Only show line count if there are lines between hunks */}
-				{showEllipsis && (
-				    <tr>
+        return (
+            <React.Fragment key={hunk.content}>
+            {/* Only show line count if there are lines between hunks */}
+            {showEllipsis && (
+                <tr>
 					<td
 					    colSpan={viewType === 'split' ? 4 : 3}
 					    className="diff-ellipsis"
@@ -736,30 +885,30 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 						padding: '4px 8px'
 					    }}
 					>
-					    <span>{ellipsisText}</span>
-					    {hunkStatus && (
-					        <span style={{
-						    color: hunkStatus.applied ? '#52c41a' : '#ff4d4f',
-						    display: 'flex',
-						    alignItems: 'center',
-						    gap: '4px'
-					        }}>
-                                            {hunkStatus.applied ?
-                                                <><CheckCircleOutlined /> Applied</> :
-                                                <><CloseCircleOutlined /> Failed: {hunkStatus.reason}</>
-                                            }
-					        </span>
+                        <span>{ellipsisText}</span>
+                        {hunkStatus && (
+                            <span style={{
+                                color: hunkStatus.applied ? '#52c41a' : '#ff4d4f',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                            }}>
+                                {hunkStatus.applied ?
+                                    <><CheckCircleOutlined /> Applied</> :
+                                    <><CloseCircleOutlined /> Failed: {hunkStatus.reason}</>
+                                }
+                            </span>
 					    )}
 					</td>
-				    </tr>
-				)}
-                                {renderContent(hunk, filePath)}
-                            </React.Fragment>
-                        );
-                    })}
-                </tbody>
-            </table>
+                </tr>
+            )}
+            {renderContent(hunk, filePath)}
+            </React.Fragment>
         );
+    })}
+    </tbody>
+    </table>
+    );
     };
 
     // Handle parse error case
@@ -854,33 +1003,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             }}
         >
 	    <div className="diff-header">
-                <div style={{
-	            position: 'sticky',
-		    left: 0,
-		    right: 0,
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    height: '32px',
-                    boxSizing: 'border-box'
-                }}>
-                    <b>{
-                        (() => {
-                            switch (file.type) {
-                                case 'delete':
-                                    return `Delete: ${file.oldPath}`;
-                                case 'add':
-                                    return `Create: ${file.newPath}`;
-                                case 'rename':
-                                    const similarity = file.similarity || 100;
-                                    return `Rename: ${file.oldPath} → ${file.newPath}${
-                                        similarity < 100 ? ` (${similarity}% similar)` : ''
-                                    }`;
-                                default:
-                                    return `File: ${file.oldPath || file.newPath}`;
-                            }
-                        })()
-                }</b>
+            <div className="diff-header-content">
+                <b>{renderFileHeader(file)}</b>
                 {!['delete'].includes(file.type) &&
                     <ApplyChangesButton
                         diff={diff}
@@ -889,6 +1013,33 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     />
                 }</div>
             </div>
+            <style>{`
+                .diff-header {
+                    background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+                    border-bottom: 1px solid ${isDarkMode ? '#303030' : '#e1e4e8'};
+                    padding: 8px 16px;
+                }
+
+                .diff-header-content {
+                    position: sticky;
+                    left: 0;
+                    right: 0;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    height: 32px;
+                    box-sizing: border-box;
+                }
+
+                .diff-header-content b {
+                    color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
+                    font-size: 14px;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    margin-right: 16px;
+                }
+            `}</style>
 	    <div className="diff-view" style={{
                 position: 'relative',
                 width: '100%',
@@ -998,40 +1149,55 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
                     message.success(`Changes applied successfully to ${filePath}`);
                 } else if (data.status === 'partial') {
-                    parseDiff(cleanDiff).forEach(file => {
-                        file.hunks.forEach((hunk, index) => {
-                            const statusData = data.details.hunks[index];
-                            hunkStatuses.set(hunk, {
-                                applied: statusData.status === 'success',
-                                reason: statusData.reason || 'Unknown error'
-                            });
-                        }); 
-		    });
+                    // Handle the new format with hunk_statuses
+                    parseDiff(cleanDiff).forEach((file, fileIndex) => {
+                        file.hunks.forEach((hunk, hunkIndex) => {
+                            // Get the hunk status from the response
+                            // The hunk IDs in the response are 1-based, but our hunkIndex is 0-based
+                            const hunkId = hunkIndex + 1;
+                            const hunkStatus = data.details?.hunk_statuses?.[hunkId];
+                            
+                            if (hunkStatus) {
+                                hunkStatuses.set(hunk, {
+                                    applied: hunkStatus.status === 'succeeded',
+                                    reason: hunkStatus.status === 'failed' 
+                                        ? `Failed in ${hunkStatus.stage} stage` 
+                                        : 'Successfully applied'
+                                });
+                            } else {
+                                // Fallback if we can't find the specific hunk status
+                                const isInFailedList = data.details?.failed?.includes(hunkId);
+                                hunkStatuses.set(hunk, {
+                                    applied: !isInFailedList,
+                                    reason: isInFailedList ? 'Failed to apply' : 'Successfully applied'
+                                });
+                            }
+                        });
+                    });
                     triggerDiffUpdate();
  
-		    // Show partial success message
+                    // Show partial success message with failed hunks
                     message.warning({
                         content: (
                             <div>
                                 <p>{data.message}</p>
-                                <p>{data.details?.summary}</p>
-				{data.details?.hunks && (
+                                {data.details?.failed && data.details.failed.length > 0 && (
                                     <div>
+                                        <p>Failed hunks:</p>
                                         <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
-                                            {data.details.hunks.map((hunk, i) => (
-                                                <li key={i}>
-						    {hunk.status === 'failed' ?
-                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} /> :
-                                                        <CheckCircleOutlined style={{ color: '#52c41a', marginRight: '8px' }} />
-                                                    }
-                                                    {hunk.status === 'failed' ? 
-                                                        `Failed at line ${hunk.start_line}: ${hunk.reason}` :
-                                                        `Successfully applied hunk at line ${hunk.start_line}`
-                                                    }
-                                                </li>
-                                            ))}
+                                            {data.details.failed.map((hunkId, index) => {
+                                                const hunkStatus = data.details?.hunk_statuses?.[hunkId];
+                                                return (
+                                                    <li key={index}>
+                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
+                                                        {`Hunk #${hunkId} failed`}
+                                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
+                                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
+                                                    </li>
+                                                );
+                                            })}
                                         </ul>
-                                </div>
+                                    </div>
                                 )}
                             </div>
                         ),
@@ -1110,15 +1276,22 @@ const extractFilePathFromDiff = (content: string): string | null => {
 };
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
+    console.log(">>> STEP 2: DiffToken received token", { index, lang: token.lang, textPreview: token.text?.substring(0, 100) });
     const isDiffValid = useMemo(() => {
-        if (!token.text.trim().startsWith('diff --git')) {
+        const trimmedText = token.text?.trim();
+        // Allow diffs starting with 'diff --git' OR '--- a/'
+        if (!trimmedText || (!trimmedText.startsWith('diff --git') && !trimmedText.startsWith('--- a/'))) {
+            console.log(">>> STEP 3: Diff text doesn't start with 'diff --git' or '--- a/', skipping parseDiff.");
             return false;
         }
         try {
-            // Log the full diff content for debugging
-            console.log('Processing diff content:', token.text);
-            const files = parseDiff(token.text);
-            return files && files.length > 0;
+            console.log(">>> STEP 3: Calling parseDiff with text preview:", token.text?.substring(0, 100));
+            // Ensure token.text is a string before passing
+            const diffInput = typeof token.text === 'string' ? token.text : '';
+            const files = parseDiff(diffInput); // From react-diff-view
+            console.log(">>> STEP 3: parseDiff raw result:", files); // Log the raw result
+            console.log(">>> STEP 3: parseDiff structured result:", { fileCount: files?.length, firstFileHunks: files?.[0]?.hunks?.length }); // Log structured result
+            return files && files.length > 0 && files[0].hunks && files[0].hunks.length > 0;
         } catch (e) {
             console.error('Error parsing diff:', e);
             return false;
@@ -1134,16 +1307,9 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
             />
         );
     } else {
-        // Return regular code block if not a valid diff
-        return (
-            <pre style={{
-                padding: '16px',
-                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                color: isDarkMode ? '#e6e6e6' : '#24292e',
-                borderRadius: '6px',
-                overflow: 'auto'
-            }}><code>{token.text}</code></pre>
-        );
+        // Fallback: Render as a plain code block if parseDiff failed or returned no files/hunks
+        console.warn("DiffToken: Rendering as plain code block because isDiffValid is false.", { textPreview: token.text?.substring(0,100) });
+        return <CodeBlock key={index} token={{...token, lang: 'plaintext'}} index={index} />;
     }
 });
 
@@ -1221,11 +1387,27 @@ interface CodeBlockProps {
 }
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
+    console.log('CodeBlock constructor called');
+    console.debug('CodeBlock mounting:', {
+        tokenType: token.type,
+        language: token.lang,
+        contentLength: token.text?.length,
+        prismLoaded: Boolean(window.Prism),
+        availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : []
+    });
+
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
     const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
     const [debugInfo, setDebugInfo] = useState<any>({});
+
+    console.debug('CodeBlock rendering:', {
+        tokenType: token.type,
+        language: token.lang,
+        contentLength: token.text?.length,
+        contentPreview: token.text?.substring(0, 50)
+    });
 
     // Get the effective language for highlighting
     const getEffectiveLang = (rawLang: string | undefined): string => {
@@ -1249,9 +1431,9 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 	    const loadLanguage = async () => {
                 setIsLanguageLoaded(false);
                 try {
-		    console.debug('CodeBlock language info:', {
+                    console.debug('CodeBlock language info:', {
                         originalLang: token.lang,
-			effectiveLang: getEffectiveLang(token.lang),
+		                effectiveLang: getEffectiveLang(token.lang),
                         tokenType: token.type,
                         prismLoaded: Boolean(window.Prism),
                         availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
@@ -1260,22 +1442,22 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                     // Load language and get Prism instance
                     await loadPrismLanguage(normalizedLang);
                     setPrismInstance(window.Prism);
-		    const effectiveLang = getEffectiveLang(token.lang);
-		    setDebugInfo({
+                    const effectiveLang = getEffectiveLang(token.lang);
+                    setDebugInfo({
                         loadedLang: token.lang,
                         prismAvailable: Boolean(window.Prism),
                         languagesAfterLoad: window.Prism ? Object.keys(window.Prism.languages) : [],
-			grammarAvailable: window.Prism?.languages[effectiveLang] ? true : false
+                        grammarAvailable: window.Prism?.languages[effectiveLang] ? true : false
                     });
                 } catch (error: unknown) {
                     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-	            setLoadError(`Error loading language ${normalizedLang}: ${errorMessage}`);
+                    setLoadError(`Error loading language ${normalizedLang}: ${errorMessage}`);
                     console.error(`Error loading language ${normalizedLang}:`, error);
-		} finally {
+                } finally {
                     setIsLanguageLoaded(true);
                 }
-            };
-            loadLanguage();
+        };
+        loadLanguage();
         } else {
             setIsLanguageLoaded(true);
         }
@@ -1289,7 +1471,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 	const effectiveLang = getEffectiveLang(token.lang);
 
         try {
-	    console.debug('Highlighting attempt:', {
+            console.debug('Highlighting attempt:', {
                 effectiveLang,
                 hasGrammar: Boolean(window.Prism.languages[effectiveLang]),
                 contentPreview: content.substring(0, 50)
@@ -1366,15 +1548,15 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
  
                          // If no Prism instance or no language specified, just escape HTML
                          if (!prismInstance || !token.lang) {
-			     return decodedText;
+                            return decodedText;
                          }
-			    const grammar = prismInstance.languages[token.lang] || prismInstance.languages.plaintext;
+                        const grammar = prismInstance.languages[token.lang] || prismInstance.languages.plaintext;
                             try {
-				const codeToHighlight = decodedText;
+                                const codeToHighlight = decodedText;
                                 return prismInstance.highlight(codeToHighlight, grammar, token.lang);
                             } catch (error) {
                                 console.warn(`Highlighting failed for ${token.lang}:`, error);
-				return decodedText;
+				                return decodedText;
                             }
                         })()
                     }}
@@ -1384,344 +1566,284 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     );
 };
 
+// Define the possible determined types
+type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' | 'd3' | 'mermaid' | 'code' | 'html' | 'text' | 'list' | 'table' | 'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' | 'br' | 'list_item' | 'unknown';
 
-const renderTokens = (tokens: TokenWithText[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode[] => {
-    return tokens.map((token, index) => {
-        if (token.type === 'code' && isCodeToken(token)) {
+// Helper function to determine the definitive type of a token
+function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
+    const tokenType = token.type as string;
 
-            // First check if it's an explicitly marked diff
-            const isDiffContent = (text: string): boolean => {
-                return text.startsWith('diff --git') ||
-                       text.match(/^---\s+a\/.*\n\+\+\+\s+b\/.*$/m) !== null ||
-                       text.match(/^@@.*@@/m) !== null;
-            };
+    // 1. Handle Code Blocks with explicit lang tags first
+    if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
 
-            if (token.lang === 'diff' || isDiffContent(token.text)) {
-                let processedText = token.text;
-
-                // If it's a unified diff without git headers, add them
-                if (!processedText.startsWith('diff --git')) {
-                    const filePath = processedText.match(/^---\s+a\/(.*)\n/)?.[1];
-                    if (filePath) {
-                        processedText = `diff --git a/${filePath} b/${filePath}\n${processedText}`;
-                    }
-                }
-                token = { ...token, text: processedText };
-                return <DiffToken key={index} token={token} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
-            }
-
-            // Then check for streaming diff content - either complete chunks or partial
-            const isDiffChunk = token.text.match(/^(?:diff --git |--- a\/|\+\+\+ b\/|@@ -\d+,\d+ \+\d+,\d+ @@)/m) ||
-                               // Also match individual diff lines that might come in chunks
-                               token.text.match(/^[-+\s].*$/m) && 
-                               // But make sure it looks like actual diff content
-                               (token.text.includes('--- ') || 
-                                token.text.includes('+++ ') || 
-                                token.text.match(/^[-+]/m));
-
-            if (isDiffChunk) {
-                console.debug('Detected streaming diff chunk:', {
-                    firstLine: token.text.split('\n')[0],
-                    hasGitHeader: token.text.includes('diff --git'),
-                    hasUnifiedHeader: token.text.includes('--- a/') || token.text.includes('+++ b/'),
-                    hasHunkHeader: token.text.includes('@@ -'),
-                    chunkLength: token.text.length
-                });
-
-                // Force diff language for streaming chunks
-                const diffToken = {
-                    ...token,
-                    lang: 'diff'
-                };
-
-                return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
-            }
-        }
-
-        if (token.type === 'code' && isCodeToken(token)) {
-            try {
-                // Extract file path and language from diff if possible
-                const extractFileInfo = (diffText: string) => {
-                    const lines = diffText.split('\n');
-                    let filePath: string | null = null;
-
-                    // Try git diff header first
-                    for (const line of lines) {
-                        if (line.startsWith('diff --git')) {
-                            const match = line.match(/diff --git a\/.*? b\/(.*?)$/);
-                            if (match) {
-                                filePath = match[1];
-                                break;
-                            }
-                        }
-
-                        // Try unified diff header
-                        if (line.startsWith('+++ b/')) {
-                            filePath = line.substring(6);
-                            break;
-                        }
-                    }
-
-                    if (filePath) {
-                        const ext = filePath.split('.').pop()?.toLowerCase();
-                        if (ext) {
-                            const langMap: { [key: string]: string } = {
-                                'ts': 'typescript',
-                                'tsx': 'typescript',
-                                'js': 'javascript',
-                                'jsx': 'javascript',
-                                'py': 'python',
-                                'rb': 'ruby',
-                                'php': 'php',
-                                'java': 'java',
-                                'go': 'go',
-                                'rs': 'rust',
-                                'cpp': 'cpp',
-                                'c': 'c',
-                                'cs': 'csharp',
-                                'css': 'css',
-                                'html': 'markup',
-                                'xml': 'markup',
-                                'md': 'markdown'
-                            };
-                            return { filePath, language: langMap[ext] || ext };
-                        }
-                    }
-                    return { filePath: null, language: null };
-                }
-
-                // Process the token
-                const { filePath, language } = extractFileInfo(token.text);
-                const processedToken = {
-                    ...token,
-                    lang: 'diff',  // Always set lang to diff for diff content
-                    filePath,      // Store extracted file path
-                    sourceLanguage: language  // Store detected source language
-                };
-
-                return <DiffToken
-                        key={index}
-                        token={processedToken}
-                        index={index}
-                        enableCodeApply={enableCodeApply}
-                        isDarkMode={isDarkMode}
-                       />;
-            } catch (error) {
-                console.error('Error parsing diff:', error, '\nDiff content:', token.text);
-                // If parsing fails, render as regular code
-                return (
-                    <pre key={index} style={{
-                        padding: '16px',
-                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                        color: isDarkMode ? '#e6e6e6' : '#24292e',
-                        borderRadius: '6px',
-                        overflow: 'auto'
-                    }}>
-                        <code>{token.text}</code>
-                    </pre>
-                );
-            }
-        }
-
-	// Handle Graphviz diagrams
-        if (token.type === 'code' && isCodeToken(token) && token.lang === 'graphviz') {
-            try {
-		    // First validate the DOT syntax
-                if (!token.text.trim().startsWith('digraph') &&
-                    !token.text.trim().startsWith('graph')) {
-                    return (
-                        <div key={index} className="graphviz-error">
-                            <p>Invalid Graphviz syntax. Must start with 'digraph' or 'graph'.</p>
-                            <pre><code>{token.text}</code></pre>
-                        </div>
-                    );
-                }
-
-                // Add theme-aware styling to the DOT source
-                const dotSource = token.text.trim();
-                const themedDot = isDarkMode
-                    ? dotSource.replace(/^(digraph|graph)\s+(.+?)\s*{/,
-                        '$1 $2 {\n' +
-                        '  bgcolor="transparent";\n' +
-                        '  node [style="filled", fillcolor="#1f1f1f", color="#e6e6e6", fontcolor="#e6e6e6"];\n' +
-                        '  edge [color="#e6e6e6", fontcolor="#e6e6e6"];\n' +
-                        '  graph [bgcolor="transparent", color="#e6e6e6", fontcolor="#e6e6e6"];\n'
-                      )
-                    : dotSource;
-
-                // Wrap Graphviz in error boundary
-                return (
-		    <div key={index} className="graphviz-container borderless" style={{ padding: '1em 0' }}>
-                        <GraphvizRenderer dot={themedDot} />
-                    </div>
-                );
-            } catch (error) {
-                console.error('Error in Graphviz rendering:', error);
-                return (
-                    <div key={index} className="graphviz-error">
-                        <p>Error rendering diagram</p>
-                        <pre><code>{token.text}</code></pre>
-                    </div>
-                );
-            }
-        }
-
-	// Handle D3.js via Vega-Lite specifications
-        if (token.type === 'code' && isCodeToken(token) && token.lang === 'vega-lite') {
-            try {
-                return (
-                    <div key={index} className="vega-lite-container">
-                        <D3Renderer spec={token.text} />
-                    </div>
-                );
-            } catch (error) {
-                return <pre key={index}><code>Error parsing Vega-Lite spec: {error instanceof Error ? error.message : String(error)}</code></pre>;
-            }
-        }
-
-
-// Handle direct D3.js visualizations
-if (token.type === 'code' && isCodeToken(token) && token.lang === 'd3') {
-    try {
-        // Return D3Renderer component directly
-        const containerId = `d3-viz-${Date.now()}`;
-        const SpinnerComponent = () => (
-            <div style={{
-                padding: '20px',
-                textAlign: 'center',
-                backgroundColor: isDarkMode ? '#141414' : '#f0f2f5',
-                border: '1px solid ' + (isDarkMode ? '#303030' : '#d9d9d9'),
-                borderRadius: '4px',
-                margin: '10px 0'
-            }}>
-                <Spin tip="Preparing visualization..." />
-            </div>
-        );
-
-        // Return the spinner immediately
-        const containerElement = (
-            <div key={index}>
-                <div id={containerId}>
-                    <SpinnerComponent />
-                </div>
-            </div>
-        );
-
-        return (
-            <D3Renderer
-                key={index}
-                spec={token.text}
-                width={800}
-                height={400}
-                type="d3"
-            />
-        );
-        return containerElement;
-    } catch (error) {
-        return <pre key={index}><code>Error rendering D3 visualization: {error instanceof Error ? error.message : String(error)}</code></pre>;
+        const lang = token.lang.toLowerCase().trim();
+        if (lang === 'diff') return 'diff';
+        if (lang === 'graphviz' || lang === 'dot') return 'graphviz';
+        if (lang === 'vega-lite') return 'vega-lite';
+        if (lang === 'mermaid') return 'mermaid';
+        if (lang === 'd3') return 'd3';
+        // If it has a specific lang tag but isn't special, it's 'code'
+        return 'code';
     }
+
+    // 2. Content-based detection for code blocks *without* specific lang tags
+    if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') { 
+        const text = token.text;
+        const trimmedText = text.trim();
+        // Strict Graphviz check
+        // Look for 'digraph' or 'graph' followed by an identifier and '{'
+        // Allows for optional whitespace and comments before the opening brace
+        const graphvizRegex = /^\s*(?:strict\s+)?(digraph|graph)\s+\w*\s*\{/i;
+        if (graphvizRegex.test(trimmedText)) {
+             console.log(">>> Content matched as Graphviz (strict regex)");
+             return 'graphviz';
+        }
+        // Fallback for simpler cases (might be less reliable)
+        if (trimmedText.startsWith('digraph') || trimmedText.startsWith('graph')) {
+            console.log(">>> Content matched as Graphviz (simple prefix)");
+            return 'graphviz';
+        }
+        const linesToCheck = text.split('\n').slice(0, 10); // Check first 10 lines
+        const hasGitHeader = linesToCheck.some(line => /^diff --git /m.test(line));
+        const hasMinusHeader = linesToCheck.some(line => /^--- a\//m.test(line));
+        const hasPlusHeader = linesToCheck.some(line => /^\+\+\+ b\//m.test(line));
+        const hasHunkHeader = linesToCheck.some(line => /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m.test(line));
+
+        // Check for common valid diff starting patterns
+        if (hasGitHeader || (hasMinusHeader && hasPlusHeader) || hasHunkHeader) {
+            // Log which condition matched for debugging
+            const matchReason = hasGitHeader ? "git header" : (hasMinusHeader && hasPlusHeader) ? "---/+++ headers" : "hunk header";
+            console.log(`>>> Content matched as Diff (reason: ${matchReason})`);
+            return 'diff';
+        }
+        // If no special content detected, treat as generic code
+        return 'code';
+    }
+
+    // 3. Map other standard marked token types directly
+    // Add more types from marked.Tokens here as needed
+    const knownTypes: DeterminedTokenType[] = [
+        'paragraph', 'heading', 'hr', 'blockquote', 'list', 'list_item', 'table',
+        'html', 'text', 'space', 'codespan', 'strong', 'em', 'del', 'link',
+        'image', 'br'
+    ];
+    if (knownTypes.includes(tokenType as DeterminedTokenType)) {
+        return tokenType as DeterminedTokenType;
+    }
+
+    // Fallback for unknown types
+    console.warn("Unknown token type encountered:", tokenType, token);
+    return 'unknown';
 }
 
-        if (token.type === 'code' && isCodeToken(token)) {
-            // Regular code blocks (non-diff)
-	    const decodedToken = {
-                ...token,
-                text: token.text.replace(/&(amp|lt|gt|quot|apos);/g, (match, entity) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[entity])
-            };
-            return <CodeBlock key={index} token={decodedToken} index={index} />;
-        }
+// Helper function to decode HTML entities using the browser's capabilities
+const decodeHtmlEntities = (text: string): string => {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    return textarea.value;
+};
 
-        // Handle tables specially
-        if (token.type === 'table' && 'header' in token && 'rows' in token) {
-            const tableToken = token as unknown as TableToken;
-            return (
-                <table key={index} style={{
-                    borderCollapse: 'collapse',
-                    width: '100%',
-                    marginBottom: '1em'
-                }}>
-                    <thead>
-                        <tr>
-                            {tableToken.header.map((cell, cellIndex) => (
-                                <th key={cellIndex} style={{
-                                    borderBottom: '2px solid #ddd',
-                                    padding: '8px',
-                                    textAlign: 'left'
-                                }}>
-                                    {typeof cell === 'string' ? cell : cell.text}
-                                </th>
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode => {
+    console.debug('renderTokens called with:', {
+        tokenCount: tokens.length,
+        tokenTypes: tokens.map(t => t.type)
+    });
+
+    return tokens.map((token, index) => {
+        // Determine the definitive type for rendering
+        const determinedType = determineTokenType(token);
+        const tokenWithText = token as TokenWithText; // Helper cast
+
+        console.log(`>>> Processing token index ${index}: Type=${token.type}, Determined=${determinedType}, Lang=${(token as any).lang}`);
+
+        try {
+            switch (determinedType) {
+                case 'diff':
+                    console.log(`>>> Rendering as Diff (lang: ${(token as any).lang})`, { tokenTextPreview: tokenWithText.text?.substring(0, 100) });
+                    // Ensure lang is set to 'diff' for the component
+                    const diffToken = { ...tokenWithText, lang: 'diff' };
+                    return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
+
+                case 'graphviz':
+                    console.log(`>>> Rendering as Graphviz (lang: ${(token as any).lang})`);
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return (
+                        // Wrap GraphvizRenderer in ErrorBoundary
+                        <ErrorBoundary key={index} type="graphviz" fallback={<pre><code>Error rendering Graphviz diagram.</code></pre>}>
+                            <GraphvizRenderer dot={tokenWithText.text} />
+                        </ErrorBoundary>
+                    );                
+                case 'mermaid':
+                    console.log(`>>> Rendering as Mermaid (lang: ${(token as any).lang})`);
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    // Pass the definition directly to D3Renderer, which will use the mermaidPlugin
+                    // We need a spec object that the mermaidPlugin can handle
+                    const mermaidSpec = { type: 'mermaid', definition: tokenWithText.text };
+                    return <D3Renderer key={index} spec={mermaidSpec} type="d3" />;
+                case 'vega-lite':
+                    console.log(`>>> Rendering as VegaLite (lang: ${(token as any).lang})`);
+                     if (!hasText(tokenWithText)) return null;
+                    return (
+                        <div key={index} className="vega-lite-container">
+                            <D3Renderer spec={tokenWithText.text} type="vega-lite" />
+                        </div>
+                    );
+
+                case 'd3':
+                    console.log(`>>> Rendering as D3 (lang: ${(token as any).lang})`);
+                    if (!hasText(tokenWithText)) return null;
+                    return (
+                         <D3Renderer key={index} spec={tokenWithText.text} type="d3" />
+                    );
+
+                case 'code':
+                    console.log(`>>> Rendering as CodeBlock (lang: ${(token as any).lang})`);
+                    if (!isCodeToken(tokenWithText)) return null; // Type guard
+                    // Pass the original lang tag (or plaintext) for highlighting
+                    const codeToken = { ...tokenWithText, lang: tokenWithText.lang || 'plaintext' };
+                     // Decode HTML entities before passing to CodeBlock
+                    const decodedToken = {
+                        ...codeToken,
+                        text: decodeHtmlEntities(codeToken.text)
+                    };                    
+                    return <CodeBlock key={index} token={decodedToken} index={index} />;
+
+                // --- Handle Standard Markdown Elements ---
+                case 'paragraph':
+                    // Render paragraph, processing inline tokens recursively
+                    const pTokens = (token as Tokens.Paragraph).tokens || [];
+                    // Filter out empty text tokens that might remain after processing
+                    const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as Tokens.Text).text.trim() !== '');
+                    if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
+                    return <p key={index}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode)}</p>;
+
+                case 'list':
+                    // Render list, processing items recursively
+                    const listToken = token as Tokens.List;
+                    const ListTag = listToken.ordered ? 'ol' : 'ul';
+                    return (
+                        <ListTag key={index} start={listToken.ordered ? (listToken.start || 1) : undefined}>
+                            {listToken.items.map((item, itemIndex) => (
+                                // Render list items using the 'list_item' case below
+                                <React.Fragment key={itemIndex}>
+                                    {renderTokens([item], enableCodeApply, isDarkMode)}
+                                </React.Fragment>
                             ))}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {tableToken.rows.map((row, rowIndex) => (
-                            <tr key={rowIndex}>
-                                {row.map((cell, cellIndex) => (
-                                    <td key={cellIndex} style={{
-                                        border: '1px solid #ddd',
-                                        padding: '8px'
-                                    }}>
-                                        {typeof cell === 'string' ? cell : cell.text}
-                                    </td>
+                        </ListTag>
+                    );
+
+                case 'list_item':
+                    const listItemToken = token as Tokens.ListItem;
+                    // --- DEBUG LOG for list item tokens ---
+                    console.log(`>>> List Item Index ${index} Tokens:`, listItemToken.tokens);
+                    // --- END DEBUG LOG ---
+                    
+                    // Handle task list items
+                    if (listItemToken.task) {
+                        return (
+                            <li key={index} style={{ listStyle: 'none' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={listItemToken.checked}
+                                    readOnly
+                                    style={{ marginRight: '0.5em', verticalAlign: 'middle' }}
+                                />
+                                {renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode)}
+                            </li>
+                        );
+                    }
+                    // Regular list item
+                    return <li key={index}>{renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode)}</li>;
+
+                case 'table':
+                    const tableToken = token as Tokens.Table;
+                    return (
+                        <table key={index} style={{ borderCollapse: 'collapse', width: '100%', marginBottom: '1em' }}>
+                            <thead>
+                                <tr>
+                                    {tableToken.header.map((cell, cellIndex) => (
+                                        <th key={cellIndex} style={{ borderBottom: '2px solid #ddd', padding: '8px', textAlign: tableToken.align[cellIndex] || 'left' }}>
+                                            {renderTokens(cell.tokens || [], enableCodeApply, isDarkMode)}
+                                        </th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {tableToken.rows.map((row, rowIndex) => (
+                                    <tr key={rowIndex}>
+                                        {row.map((cell, cellIndex) => (
+                                            <td key={cellIndex} style={{ border: '1px solid #ddd', padding: '8px', textAlign: tableToken.align[cellIndex] || 'left' }}>
+                                                {renderTokens(cell.tokens || [], enableCodeApply, isDarkMode)}
+                                            </td>
+                                        ))}
+                                    </tr>
                                 ))}
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            );
+                            </tbody>
+                        </table>
+                    );
+
+                case 'html':
+                    if (!hasText(tokenWithText)) return null;                    // Be cautious with dangerouslySetInnerHTML
+                    return <div key={index} dangerouslySetInnerHTML={{ __html: tokenWithText.text }} />;
+
+                case 'text':
+                    if (!hasText(tokenWithText)) return null;
+                    const textContent = tokenWithText.text;
+                    // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
+                    if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
+                        // If it has nested tokens, render them recursively
+                        return <>{renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode)}</>;
+                    } else {
+                        // Otherwise, just render the decoded text content
+                        return decodeHtmlEntities(tokenWithText.text);
+                    }
+
+                // --- Handle Inline Markdown Elements (Recursively) ---
+                case 'strong':
+                    return <strong key={index}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode)}</strong>;
+                case 'em':
+                    return <em key={index}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode)}</em>;
+                case 'codespan':
+                    if (!hasText(tokenWithText)) return null;
+                    // Basic escaping for codespan content
+                    const escapedCode = tokenWithText.text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    return <code key={index} dangerouslySetInnerHTML={{ __html: escapedCode }} />;
+                case 'br':
+                    return <br key={index} />;
+                case 'del':
+                    return <del key={index}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode)}</del>;
+                    
+                case 'link':
+                    const linkToken = token as Tokens.Link;
+                    return <a key={index} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode)}</a>;
+                case 'image':
+                    const imageToken = token as Tokens.Image;
+                    return <img key={index} src={imageToken.href} alt={imageToken.text} title={imageToken.title ?? undefined} />;
+
+                // --- Other Block Types ---
+                case 'heading':
+                    const headingToken = token as Tokens.Heading;
+                    const Tag = `h${headingToken.depth}` as keyof JSX.IntrinsicElements;
+                    return <Tag key={index}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode)}</Tag>;
+                case 'hr':
+                    return <hr key={index} />;
+                case 'blockquote':
+                    return <blockquote key={index}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode)}</blockquote>;
+                case 'space': // Usually ignored
+                    return null;
+
+                // --- Fallback ---
+                case 'unknown':
+                default:
+                    console.warn("Unhandled token type in renderTokens switch:", token.type, token);
+                    // Attempt to render raw text if available
+                    return hasText(tokenWithText) ? <span key={index}>{tokenWithText.text}</span> : null;
+            }
+        } catch (error) {
+            console.error(`Error rendering token index ${index} (type: ${token.type}):`, error);
+            // Fallback for errors during rendering a specific token
+            return <div key={index} style={{ color: 'red' }}>[Error rendering content]</div>;
         }
-
-        // Handle regular HTML content
-        if (token.type === 'html' && 'text' in token) {
-            return <div key={index} dangerouslySetInnerHTML={{ __html: token.text }} />;
-        }
-
-        // Handle ordered and unordered lists
-        if (token.type === 'list' && 'items' in token) {
-            const listToken = token as unknown as ListToken;
-            const ListTag = listToken.ordered ? 'ol' : 'ul';
-            return (
-                <ListTag key={index} 
-                    start={listToken.ordered ? (listToken.start || 1) : undefined}>
-                    {listToken.items.map((item, itemIndex) => {
-                        if ('tokens' in item && item.tokens) {
-                            // Handle nested content in list items
-                            return (
-                                <li key={itemIndex}>
-                                    {renderTokens(item.tokens, enableCodeApply, isDarkMode)}
-                                </li>
-                            );
-                        }
-                        // Handle simple text list items
-                        return <li key={itemIndex}>{item.text}</li>;
-                    })}
-                </ListTag>
-            );
-        }
-
-        // Handle regular text, only if it has content - wrap with pre tags for safety
-        if ('text' in token) {
-            const text = token.text?.trim() || '';
-            // Always escape HTML entities, but preserve existing escaped entities
-	    const escapedText = text
-                .replace(/&/g, '&amp;')  // Must be first to not double-escape other entities
-		        .replace(/&amp;(amp|lt|gt|quot|apos);/g, '&$1;')  // Fix double-escaped entities
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&apos;');
-
-            return text.trim() ?
-                (
-                <div
-                    key={index}
-                    style={{ marginBottom: '6px' }}
-                    dangerouslySetInnerHTML={{ __html: escapedText }}
-                />
-            ) : null;
-        }
-
-        return null;
     });
 };
 
@@ -1739,12 +1861,62 @@ marked.setOptions({
 });
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply }) => {
+    console.debug('MarkdownRenderer received:', {
+        markdownLength: markdown?.length || 0,
+        hasCodeBlock: markdown?.includes('```'),
+        firstLine: markdown?.split('\n')[0],
+        enableCodeApply
+    });
+    
     const { isDarkMode } = useTheme();
+
+    interface CodeToken {
+        type: 'code';
+        lang?: string;
+        text: string;
+    }
+
+    const isCodeToken = (token: Tokens.Generic): token is Tokens.Code => {
+        return token.type === 'code';
+    };
 
     const tokens = useMemo(() => {
         if (!markdown?.trim()) {
             return [];
         }
+
+        const lexedTokens = marked.lexer(markdown);
+        console.debug('Lexer output:', {
+            tokenCount: lexedTokens.length,
+            tokens: lexedTokens.map(t => ({
+                type: t.type,
+                lang: t.type === 'code' ? (t as any).lang : undefined,
+                preview: t.type === 'code' ?
+                    (t as any).text?.substring(0, 50) : undefined
+            }))
+        });
+        const codeBlocks = new Map<string, {lang?: string}>();
+
+        // Build a map of code block content to their detected languages
+        lexedTokens.filter(isCodeToken).forEach(token => {
+            codeBlocks.set(token.text, {lang: token.lang});
+        });
+
+        console.debug('Marked lexer found code blocks:', {
+            count: codeBlocks.size,
+            languages: Array.from(codeBlocks.values()).map(b => b.lang || 'text')
+        });
+
+        const processedTokens: TokenWithText[] = [];
+
+        const isDiffContent = (text: string): boolean => {
+            // Must have either git diff header or unified diff header
+            const hasGitHeader = text.trim().startsWith('diff --git');
+            const hasUnifiedHeader = text.match(/^---\s+a\/.*\n\+\+\+\s+b\/.*$/m) !== null;
+            const hasHunkHeader = text.match(/^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/m) !== null;
+
+            return (hasGitHeader || hasUnifiedHeader) && hasHunkHeader;
+        };
 
         // Split content by code blocks first
         const parts = markdown.split(/(```diff[\s\S]*?```|```[\s\S]*?```)/g);
@@ -1780,13 +1952,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             return cleanedLines.join('\n');
         };
 
-
-        const processedTokens: TokenWithText[] = [];
-
         parts.forEach((part, index) => {
             if (!part.trim()) return; // Skip empty parts
             // Check if this part is a diff code block
-            const isDiffBlock = part.startsWith('```diff');
+            const isDiffBlock = part.startsWith('```diff') || (part.startsWith('```') && isDiffContent(part));
             const isCodeBlock = part.startsWith('```');
 
             if (isDiffBlock) {
@@ -1802,10 +1971,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 // Handle other code blocks
                 const match = part.match(/^```(\w+)?\n([\s\S]*?)```$/);
                 if (match) {
+                    const content = match[2];
+                    // use lexer-detected language if available, otherwise use the one from markdown
+                    const detectedBlock = codeBlocks.get(content);
                     processedTokens.push({
                         type: 'code',
-                        text: match[2],
-                        lang: match[1] || 'plaintext'
+                        text: content,
+                        lang: detectedBlock?.lang || match[1] || 'plaintext'
                     });
                 }
             } else {

@@ -4,6 +4,9 @@ Utilities for applying patches to files.
 
 import os
 import difflib
+import re
+from datetime import datetime
+import shutil
 from typing import List, Dict, Any, Optional
 
 from app.utils.logging_utils import logger
@@ -13,10 +16,11 @@ from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from ..validation.validators import is_hunk_already_applied, normalize_line_for_comparison
 from ..application.whitespace_handler import extract_whitespace_changes, apply_whitespace_changes
 from .hunk_utils import find_best_chunk_position, fix_hunk_context
+from ..language_handlers import LanguageHandlerRegistry
 
 # Constants
-MIN_CONFIDENCE = 0.72  # what confidence level we cut off forced diff apply after fuzzy match
-MAX_OFFSET = 5         # max allowed line offset before considering a hunk apply failed
+MIN_CONFIDENCE = 0.78  # Increased from 0.72 to reduce incorrect matches while allowing for LLM-generated diffs
+MAX_OFFSET = 3         # max allowed line offset before considering a hunk apply failed
 
 def apply_diff_with_difflib(file_path: str, diff_content: str) -> str:
     """
@@ -29,6 +33,15 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> str:
     Returns:
         The modified file content as a string
     """
+    # Create backup before applying changes
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = f"{file_path}.{timestamp}.bak"
+    try:
+        shutil.copy2(file_path, backup_path)
+        logger.info(f"Created backup at {backup_path}")
+    except Exception as e:
+        logger.warning(f"Failed to create backup: {str(e)}")
+    
     # Read the original file content
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -74,6 +87,28 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> str:
     original_content = '\n'.join(original_lines)
     expected_content = '\n'.join(expected_lines)
     
+    # Get the appropriate language handler for this file
+    handler = LanguageHandlerRegistry.get_handler(file_path)
+    
+    # Check for duplicates using the language-specific handler
+    has_duplicates, duplicates = handler.detect_duplicates(original_content, expected_content)
+    if has_duplicates:
+        error_msg = f"Applying diff would create duplicate code: {', '.join(duplicates)}"
+        raise PatchApplicationError(error_msg, {
+            "status": "error",
+            "type": "duplicate_code",
+            "details": {"duplicates": duplicates}
+        })
+    
+    # Verify changes using the language-specific handler
+    is_valid, error_msg = handler.verify_changes(original_content, expected_content, file_path)
+    if not is_valid:
+        raise PatchApplicationError(error_msg, {
+            "status": "error",
+            "type": "verification_failed",
+            "details": error_msg
+        })
+    
     # Apply the diff
     try:
         # First try to handle whitespace-only changes
@@ -88,7 +123,237 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> str:
                 # Ensure the file ends with a newline
                 if not result.endswith('\n'):
                     f.write('\n')
+            
+            logger.info(f"Successfully applied {len(whitespace_changes)} whitespace-only changes")
             return result
+        
+        # If not just whitespace changes, try to apply the hunks directly
+        file_lines = original_content.splitlines()
+        result_lines = file_lines.copy()
+        
+        # Keep track of successful hunks for reporting
+        successful_hunks = 0
+        total_hunks = len(hunks)
+        failed_hunks = []
+        fallback_methods_used = []
+        
+        # Track line offsets as we apply hunks
+        line_offset = 0
+        
+        for hunk_idx, h in enumerate(hunks, start=1):
+            old_start = h['old_start'] - 1 + line_offset  # Convert to 0-based indexing and adjust for previous hunks
+            old_lines = h['old_lines']
+            old_block = h['old_block']
+            new_lines = h['new_lines']
+            
+            # Try to find the best position to apply this hunk
+            best_pos, confidence = find_best_chunk_position(result_lines, old_block, old_start)
+            
+            if confidence >= MIN_CONFIDENCE:
+                # Apply the hunk at the best position
+                logger.info(f"Applying hunk {hunk_idx}/{total_hunks} at line {best_pos+1} (confidence: {confidence:.2f})")
+                
+                # Calculate the offset from the expected position
+                offset = best_pos - old_start
+                
+                # Add better logging for offset warnings
+                if abs(offset) > 0:
+                    offset_severity = "HIGH" if abs(offset) >= MAX_OFFSET * 0.7 else "MEDIUM" if abs(offset) >= MAX_OFFSET * 0.3 else "LOW"
+                    logger.warning(f"⚠️ Hunk #{hunk_idx} applied with {offset_severity} offset of {offset} lines (max allowed: {MAX_OFFSET})")
+                
+                if abs(offset) > MAX_OFFSET:
+                    logger.error(f"Offset too large ({offset} lines) for hunk {hunk_idx}, skipping")
+                    failed_hunks.append({
+                        "hunk_idx": hunk_idx,
+                        "offset": offset,
+                        "reason": f"Offset too large: {abs(offset)} > {MAX_OFFSET}"
+                    })
+                    continue
+                
+                # Apply the hunk
+                result_lines = result_lines[:best_pos] + new_lines + result_lines[best_pos + old_lines:]
+                
+                # Verify key lines from new content are present after application
+                for key_line in new_lines:
+                    if key_line and key_line not in result_lines:
+                        logger.warning(f"⚠️ Hunk #{hunk_idx} => key line not found after application: {key_line[:40]}...")
+                
+                # Update the line offset for subsequent hunks
+                line_offset += len(new_lines) - old_lines
+                
+                # Track if we used a fallback method (significant offset or low confidence)
+                if abs(offset) > 0 or confidence < 0.9:
+                    fallback_methods_used.append({
+                        "hunk_idx": hunk_idx,
+                        "method": "offset_application" if abs(offset) > 0 else "low_confidence_match",
+                        "details": f"Applied with offset {offset}" if abs(offset) > 0 else f"Applied with confidence {confidence:.2f}"
+                    })
+                
+                # Add warning for borderline confidence cases
+                if confidence > MIN_CONFIDENCE and confidence < MIN_CONFIDENCE * 1.1:
+                    logger.warning(f"⚠️ Hunk #{hunk_idx} => borderline confidence match (ratio={confidence:.2f}), applying with caution")
+                
+                successful_hunks += 1
+            else:
+                logger.warning(f"⚠️ Skipping hunk {hunk_idx}/{total_hunks} due to LOW CONFIDENCE ({confidence:.2f} < {MIN_CONFIDENCE})")
+                failed_hunks.append({
+                    "hunk_idx": hunk_idx,
+                    "confidence": confidence,
+                    "reason": f"Low confidence: {confidence:.2f} < {MIN_CONFIDENCE}"
+                })
+        
+        # Convert the result back to a string
+        result = '\n'.join(result_lines)
+        
+        # If no hunks were applied successfully, raise an error
+        if successful_hunks == 0 and total_hunks > 0:
+            error_msg = f"Failed to apply any hunks. Reasons: {', '.join(h['reason'] for h in failed_hunks)}"
+            logger.error(f"❌ {error_msg}")
+            raise PatchApplicationError(error_msg, {
+                "status": "error",
+                "type": "application_failed",
+                "details": {"failed_hunks": failed_hunks}
+            })
+        
+        # Verify the result with the language handler
+        handler = LanguageHandlerRegistry.get_handler(file_path)
+        
+        # Verify expected changes are present in the final content
+        def verify_expected_changes(original_content, result, hunks):
+            """Verify that expected changes are present in the final content."""
+            # Convert to strings for easier comparison
+            original_lines = original_content.splitlines()
+            result_lines = result.splitlines()
+            
+            # Check that key lines from hunks are present in the final content
+            missing_lines = []
+            for h in hunks:
+                for line in h['new_lines']:
+                    if line and line not in result_lines:
+                        missing_lines.append(line)
+            
+            # Check that removed lines are actually gone
+            unexpected_lines = []
+            for h in hunks:
+                for line in h['old_block']:
+                    if line.startswith('-') and line[1:].strip() in [l.strip() for l in result_lines] and line[1:].strip() not in [l.strip() for l in original_lines]:
+                        unexpected_lines.append(line[1:])
+            
+            return missing_lines, unexpected_lines
+        
+        # Verify expected changes
+        missing_lines, unexpected_lines = verify_expected_changes(original_content, result, hunks)
+        if missing_lines:
+            logger.warning(f"⚠️ Some expected lines are missing from the final content: {len(missing_lines)} lines")
+            for line in missing_lines[:3]:  # Show first few
+                logger.warning(f"  Missing: {line[:40]}...")
+        if unexpected_lines:
+            logger.warning(f"⚠️ Some lines that should have been removed are still present: {len(unexpected_lines)} lines")
+            for line in unexpected_lines[:3]:  # Show first few
+                logger.warning(f"  Still present: {line[:40]}...")
+        
+        # Check for duplicates using the language-specific handler
+        has_duplicates, duplicates = handler.detect_duplicates(original_content, result)
+        if has_duplicates:
+            error_msg = f"Applying diff would create duplicate code: {', '.join(duplicates)}"
+            logger.error(f"❌ {error_msg}")
+            
+            # Add before/after snapshots to the logs for debugging
+            logger.error("--- Original Content Snippet ---")
+            original_lines = original_content.splitlines()
+            for i in range(max(0, min(len(original_lines)-1, 10))):
+                logger.error(f"{i+1}: {original_lines[i]}")
+            
+            logger.error("--- Modified Content Snippet ---")
+            result_lines = result.splitlines()
+            for i in range(max(0, min(len(result_lines)-1, 10))):
+                logger.error(f"{i+1}: {result_lines[i]}")
+                
+            raise PatchApplicationError(error_msg, {
+                "status": "error",
+                "type": "duplicate_code",
+                "details": {"duplicates": duplicates}
+            })
+        
+        # Verify changes using the language-specific handler
+        is_valid, error_msg = handler.verify_changes(original_content, result, file_path)
+        if not is_valid:
+            logger.error(f"❌ Verification failed: {error_msg}")
+            
+            # Add before/after snapshots to the logs for debugging
+            logger.error("--- Original Content Snippet ---")
+            original_lines = original_content.splitlines()
+            for i in range(max(0, min(len(original_lines)-1, 10))):
+                logger.error(f"{i+1}: {original_lines[i]}")
+            
+            logger.error("--- Modified Content Snippet ---")
+            result_lines = result.splitlines()
+            for i in range(max(0, min(len(result_lines)-1, 10))):
+                logger.error(f"{i+1}: {result_lines[i]}")
+                
+            raise PatchApplicationError(error_msg, {
+                "status": "error",
+                "type": "verification_failed",
+                "details": error_msg
+            })
+        
+        # Write the result back to the file
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(result)
+            # Ensure the file ends with a newline
+            if not result.endswith('\n'):
+                f.write('\n')
+        
+        # Report success with improved reporting
+        if successful_hunks == total_hunks:
+            # Calculate average confidence for all hunks
+            avg_confidence = sum(find_best_chunk_position(result_lines, h['old_block'], h['old_start'] - 1 + line_offset)[1] for h in hunks) / total_hunks if total_hunks > 0 else 0
+            
+            if fallback_methods_used:
+                logger.warning(f"⚠️ Successfully applied all {total_hunks} hunks with average confidence: {avg_confidence:.2f}")
+                logger.warning(f"Used fallback methods for {len(fallback_methods_used)}/{total_hunks} hunks:")
+                for method in fallback_methods_used:
+                    logger.warning(f"  Hunk {method['hunk_idx']}: {method['details']}")
+            else:
+                logger.info(f"✅ Successfully applied all {total_hunks} hunks with high confidence: {avg_confidence:.2f}")
+        else:
+            # Calculate average confidence for successful hunks
+            successful_indices = [i for i, h in enumerate(hunks) if i+1 not in [f['hunk_idx'] for f in failed_hunks]]
+            avg_confidence = 0
+            if successful_indices:
+                avg_confidence = sum(find_best_chunk_position(result_lines, hunks[i]['old_block'], hunks[i]['old_start'] - 1 + line_offset)[1] for i in successful_indices) / len(successful_indices)
+            
+            logger.warning(f"⚠️ Applied {successful_hunks}/{total_hunks} hunks (average confidence: {avg_confidence:.2f})")
+            
+            # Flag suspicious successes
+            if successful_hunks > 0 and successful_hunks < total_hunks:
+                logger.warning("⚠️ SUSPICIOUS SUCCESS: Some hunks failed to apply, result may be incomplete")
+            
+            if fallback_methods_used:
+                logger.warning(f"Used fallback methods for {len(fallback_methods_used)} hunks:")
+                for method in fallback_methods_used:
+                    logger.warning(f"  Hunk {method['hunk_idx']}: {method['details']}")
+            
+            if failed_hunks:
+                # Provide detailed information about failed hunks
+                logger.warning(f"Failed hunks: {', '.join(str(h['hunk_idx']) for h in failed_hunks)}")
+                for h in failed_hunks:
+                    logger.warning(f"  Hunk {h['hunk_idx']}: {h['reason']}")
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error applying diff: {str(e)}")
+        
+        # Rollback on error if backup exists
+        if 'backup_path' in locals() and os.path.exists(backup_path):
+            try:
+                logger.warning(f"Rolling back to backup at {backup_path}")
+                shutil.copy2(backup_path, file_path)
+                logger.info("Rollback successful")
+            except Exception as rollback_error:
+                logger.error(f"Rollback failed: {str(rollback_error)}")
+        
+        raise
             
         # If not whitespace-only, proceed with normal difflib application
         # Read original content preserving line endings
@@ -245,6 +510,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             logger.info("Using optimized hunk order for sequential application")
     
     # Normal case - process hunks sequentially
+    logger.debug("Entering normal sequential hunk processing loop")
     final_lines = stripped_original.copy()
     offset = 0
         
@@ -255,6 +521,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
         def calculate_initial_positions():
             """Calculate initial positions and counts for the hunk."""
             old_start = h['old_start'] - 1
+            logger.debug(f"Hunk #{hunk_idx}: Raw old_start={h['old_start']}")
             old_count = h['old_count']
             initial_remove_pos = clamp(old_start + offset, 0, len(final_lines))
 
@@ -265,6 +532,10 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
 
             # Final position adjustment
             remove_pos = clamp(initial_remove_pos, 0, len(final_lines) - 1 if final_lines else 0)
+
+            logger.debug(f"Hunk #{hunk_idx}: Calculated positions - old_start(0based)={old_start}, old_count={old_count}, offset={offset}")
+            logger.debug(f"Hunk #{hunk_idx}: initial_remove_pos={initial_remove_pos}, available_lines={available_lines}, actual_old_count={actual_old_count}")
+            logger.debug(f"Hunk #{hunk_idx}: final remove_pos={remove_pos}, end_remove={end_remove}")
 
             return {
                 'remove_pos': remove_pos,
@@ -306,8 +577,8 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             best_pos, best_ratio = find_best_chunk_position(current_stripped_lines, h['old_block'], remove_pos)
 
             # Then check if we have enough confidence in our match position
-            # Use a lower threshold for line calculation fixes
-            min_confidence = MIN_CONFIDENCE * 0.85 if any('available_lines' in line or 'end_remove' in line for line in h['old_block']) else MIN_CONFIDENCE
+            # Use a slightly lower threshold for line calculation fixes, but still maintain high standards
+            min_confidence = MIN_CONFIDENCE * 0.92 if any('available_lines' in line or 'end_remove' in line for line in h['old_block']) else MIN_CONFIDENCE
             
             if best_ratio <= min_confidence:
                 msg = f"Hunk #{hunk_idx} => low confidence match (ratio={best_ratio:.2f}) near {remove_pos}, can't safely apply chunk"
@@ -321,7 +592,7 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
                 hunk_failures.append((msg, failure_info))
 
             logger.debug(f"Hunk #{hunk_idx}: fuzzy best pos={best_pos}, ratio={best_ratio:.2f}")
-            return best_pos, remove_pos
+            return best_pos, remove_pos, best_ratio
 
         logger.debug(f"Processing hunk #{hunk_idx} with offset {offset}")
 
@@ -344,18 +615,21 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
             if result is None:
                 # Skip this hunk as it's already applied
                 continue  # Skip this hunk (already applied)
-            new_pos, old_pos = result
+            new_pos, old_pos, confidence = result
             if new_pos is not None:  # Only update position if we got a valid match
                 # Check if the offset is too large
                 offset_diff = abs(new_pos - old_pos)
-                if offset_diff > MAX_OFFSET:
-                    msg = f"Hunk #{hunk_idx} => large offset ({offset_diff} > {MAX_OFFSET}) after fuzzy match, can't safely apply chunk"
+                # Use dynamic offset threshold based on match confidence
+                max_allowed_offset = 15 if confidence > 0.95 else (10 if confidence > 0.85 else 5)
+                if offset_diff > max_allowed_offset:
+                    msg = f"Hunk #{hunk_idx} => large offset ({offset_diff} > {max_allowed_offset}) after fuzzy match with confidence {confidence:.2f}, can't safely apply chunk"
                     logger.error(msg)
                     failure_info = {
                         "status": "error",
                         "type": "large_offset",
                         "hunk": hunk_idx,
-                        "offset": offset_diff
+                        "offset": offset_diff,
+                        "confidence": confidence
                     }
                     hunk_failures.append((msg, failure_info))
                     # Don't apply this hunk, continue to next or raise later
@@ -377,18 +651,33 @@ def apply_diff_with_difflib_hybrid_forced(file_path: str, diff_content: str, ori
 
                     if normalized_fuzzy_file_slice != normalized_old_block:
                         logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {remove_pos}, but content doesn't match old_block. Skipping.")
+                        failure_info = {
+                            "status": "error",
+                            "type": "fuzzy_verification_failed",
+                            "hunk": hunk_idx,
+                            "position": remove_pos,
+                            "confidence": best_ratio
+                        }
+                        hunk_failures.append((f"Fuzzy match verification failed for Hunk #{hunk_idx}", failure_info))
                         continue # Skip applying this hunk as verification failed
-                    logger.debug(f"Hunk #{hunk_idx}: Content verified at fuzzy pos={remove_pos}")
+
             # else: If fuzzy match didn't find a position, keep the original remove_pos
 
         # Use actual line counts from the blocks
         old_count = len(h['old_block'])
+        new_lines_count = len(h['new_lines'])
         logger.debug(f"Replacing {old_count} lines with {len(h['new_lines'])} lines at pos={remove_pos}")
+
+        # --- ADDED: Log slice and insertion ---
+        end_pos = min(remove_pos + old_count, len(final_lines))
+        logger.debug(f"Hunk #{hunk_idx}: Slice to remove: final_lines[{remove_pos}:{end_pos}] = {repr(final_lines[remove_pos:end_pos])}")
+        logger.debug(f"Hunk #{hunk_idx}: Lines to insert ({new_lines_count}): {repr(h['new_lines'])}")
+        # --- END ADDED ---
         
         # Replace exactly the number of lines we counted
         end_pos = min(remove_pos + old_count, len(final_lines))
         final_lines[remove_pos:end_pos] = h['new_lines']
-        logger.debug(f"  final_lines after insertion: {final_lines}")
+        logger.debug(f"Hunk #{hunk_idx}: final_lines length after insertion: {len(final_lines)}")
 
         # Calculate net change based on actual lines removed and added
         actual_removed = end_pos - remove_pos

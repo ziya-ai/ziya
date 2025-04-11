@@ -117,15 +117,19 @@ def normalize_text_for_comparison(text: str) -> str:
         The normalized text
     """
     from ..core.unicode_handling import normalize_unicode
+    from ..core.escape_handling import normalize_escape_sequences
     
-    # First normalize Unicode characters
+    if not text:
+        return ""
+    
+    # First normalize Unicode characters to handle invisible characters
     result = normalize_unicode(text)
     
-    # Note: We intentionally do NOT normalize escape sequences here
-    # because they could be the target of a fix
+    # Then normalize escape sequences
+    result = normalize_escape_sequences(result)
     
-    # Remove all whitespace
-    result = ''.join(result.split())
+    # Only trim leading/trailing whitespace, preserve internal spaces
+    result = result.strip()
     
     return result
 

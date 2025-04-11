@@ -70,6 +70,7 @@ class PipelineResult:
     current_stage: PipelineStage = PipelineStage.INIT
     changes_written: bool = False
     error: Optional[str] = None
+    status: str = "pending"  # Add a status field to track the overall status
     
     @property
     def succeeded_hunks(self) -> List[int]:
@@ -104,9 +105,18 @@ class PipelineResult:
     @property
     def is_success(self) -> bool:
         """Check if the pipeline succeeded (all hunks applied or already applied)."""
-        return (self.is_complete and 
+        # First check if all hunks have a successful status
+        all_hunks_successful = (self.is_complete and 
                 all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
                     for tracker in self.hunks.values()))
+        
+        # For success, we need either:
+        # 1. At least one hunk was successfully applied (changes_written is True), or
+        # 2. All hunks were already applied (no changes needed)
+        return all_hunks_successful and (
+            self.changes_written or 
+            all(tracker.status == HunkStatus.ALREADY_APPLIED for tracker in self.hunks.values())
+        )
     
     @property
     def is_partial_success(self) -> bool:
@@ -118,6 +128,7 @@ class PipelineResult:
     def to_dict(self) -> Dict[str, Any]:
         """Convert the pipeline result to a dictionary."""
         # Create a detailed dictionary with hunk-by-hunk status information
+        already_applied_hunks = self.already_applied_hunks.copy()
         hunk_details = {}
         for hunk_id, tracker in self.hunks.items():
             hunk_details[str(hunk_id)] = {
@@ -127,15 +138,35 @@ class PipelineResult:
                 "position": tracker.position,
                 "error_details": tracker.error_details
             }
+            # If this hunk is marked as already applied in the tracker but not in the list,
+            # add it to the already_applied_hunks list
+            if tracker.status == HunkStatus.ALREADY_APPLIED and hunk_id not in already_applied_hunks:
+                already_applied_hunks.append(hunk_id)
+            
+        # Use the explicitly set status if available, otherwise determine it
+        if self.status != "pending":
+            status = self.status
+        elif self.is_success:
+            if len(already_applied_hunks) > 0 and not self.changes_written:
+                # All hunks were already applied, no changes needed
+                status = "success"  # Still success, but with already_applied hunks
+            elif self.changes_written:
+                status = "success"
+            else:
+                # No changes were made, but we're reporting success
+                # This could be a case where the changes were already applied
+                status = "success"
+        elif self.is_partial_success:
+            status = "partial"
+        else:
+            status = "error"
             
         return {
-            "status": "success" if self.is_success else 
-                     "partial" if self.is_partial_success else 
-                     "error",
+            "status": status,
             "details": {
                 "succeeded": self.succeeded_hunks,
                 "failed": self.failed_hunks,
-                "already_applied": self.already_applied_hunks,
+                "already_applied": already_applied_hunks,
                 "changes_written": self.changes_written,
                 "error": self.error,
                 "hunk_statuses": hunk_details  # Add detailed hunk status information
@@ -202,6 +233,32 @@ class DiffPipeline:
                 position=position,
                 error_details=error_details
             )
+            
+            # Update the appropriate lists based on the status
+            if status == HunkStatus.SUCCEEDED:
+                if hunk_id not in self.result.succeeded_hunks:
+                    self.result.succeeded_hunks.append(hunk_id)
+                # Remove from other lists if present
+                if hunk_id in self.result.failed_hunks:
+                    self.result.failed_hunks.remove(hunk_id)
+                if hunk_id in self.result.already_applied_hunks:
+                    self.result.already_applied_hunks.remove(hunk_id)
+            elif status == HunkStatus.FAILED:
+                if hunk_id not in self.result.failed_hunks:
+                    self.result.failed_hunks.append(hunk_id)
+                # Remove from other lists if present
+                if hunk_id in self.result.succeeded_hunks:
+                    self.result.succeeded_hunks.remove(hunk_id)
+                if hunk_id in self.result.already_applied_hunks:
+                    self.result.already_applied_hunks.remove(hunk_id)
+            elif status == HunkStatus.ALREADY_APPLIED:
+                if hunk_id not in self.result.already_applied_hunks:
+                    self.result.already_applied_hunks.append(hunk_id)
+                # Remove from other lists if present
+                if hunk_id in self.result.succeeded_hunks:
+                    self.result.succeeded_hunks.remove(hunk_id)
+                if hunk_id in self.result.failed_hunks:
+                    self.result.failed_hunks.remove(hunk_id)
     
     def update_stage(self, stage: PipelineStage) -> None:
         """
