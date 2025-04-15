@@ -163,11 +163,21 @@ class PythonHandler(LanguageHandler):
             
             # Check for duplicates
             duplicates = []
+            
+            # Special case: Allow function redefinition in Python
+            # Python allows redefining functions, so we should only flag duplicates
+            # that are likely to be unintentional or cause issues
             for func_name, occurrences in modified_functions.items():
                 if len(occurrences) > 1:
                     # Check if it was already duplicated in the original
                     original_count = len(original_functions.get(func_name, []))
-                    if len(occurrences) > original_count:
+                    
+                    # Skip if this is a function redefinition (common in Python)
+                    # We only flag duplicates if:
+                    # 1. There are more than 2 occurrences (likely unintentional)
+                    # 2. The occurrences are far apart (likely unintentional)
+                    # 3. The function name is very common (likely a mistake)
+                    if len(occurrences) > 2 or cls._are_occurrences_far_apart(occurrences) or cls._is_common_function_name(func_name):
                         # Get line numbers for better reporting
                         line_numbers = ", ".join(str(line) for line in occurrences)
                         duplicates.append(f"{func_name} (lines {line_numbers})")
@@ -186,7 +196,8 @@ class PythonHandler(LanguageHandler):
                         if class_name in original_methods and method_name in original_methods[class_name]:
                             original_count = len(original_methods[class_name][method_name])
                         
-                        if len(occurrences) > original_count:
+                        # Same logic as for functions - allow method redefinition
+                        if len(occurrences) > 2 or cls._are_occurrences_far_apart(occurrences) or cls._is_common_method_name(method_name):
                             line_numbers = ", ".join(str(line) for line in occurrences)
                             duplicates.append(f"{class_name}.{method_name} (lines {line_numbers})")
                             logger.warning(f"Method '{class_name}.{method_name}' appears to be duplicated after diff application at lines {line_numbers}")
@@ -194,7 +205,8 @@ class PythonHandler(LanguageHandler):
             # Check for similar function implementations (potential logical duplicates)
             similar_functions = cls._detect_similar_functions(modified_content)
             for func_pair, similarity in similar_functions:
-                if similarity > 0.9:  # High similarity threshold
+                # Only flag extremely similar functions (likely copy-paste errors)
+                if similarity > 0.95:  # Very high similarity threshold
                     duplicates.append(f"Similar functions: {func_pair[0]} and {func_pair[1]} ({similarity:.2f} similarity)")
                     logger.warning(f"Functions '{func_pair[0]}' and '{func_pair[1]}' appear to be very similar ({similarity:.2f} similarity)")
             
@@ -202,6 +214,65 @@ class PythonHandler(LanguageHandler):
         except Exception as e:
             logger.error(f"Error detecting Python duplicates: {str(e)}")
             return False, []
+            
+    @classmethod
+    def _are_occurrences_far_apart(cls, occurrences: List[int]) -> bool:
+        """
+        Check if function/method occurrences are far apart in the file.
+        
+        Args:
+            occurrences: List of line numbers
+            
+        Returns:
+            True if occurrences are far apart, False otherwise
+        """
+        if len(occurrences) < 2:
+            return False
+            
+        # Sort the occurrences
+        sorted_occurrences = sorted(occurrences)
+        
+        # Check if any pair of occurrences is far apart
+        for i in range(len(sorted_occurrences) - 1):
+            if sorted_occurrences[i+1] - sorted_occurrences[i] > 100:  # More than 100 lines apart
+                return True
+                
+        return False
+        
+    @classmethod
+    def _is_common_function_name(cls, func_name: str) -> bool:
+        """
+        Check if a function name is very common and likely to be a mistake if duplicated.
+        
+        Args:
+            func_name: Function name
+            
+        Returns:
+            True if the name is common, False otherwise
+        """
+        common_names = {
+            'main', 'init', 'setup', 'run', 'start', 'stop', 'process', 'handle',
+            'get', 'set', 'update', 'create', 'delete', 'add', 'remove'
+        }
+        return func_name in common_names
+        
+    @classmethod
+    def _is_common_method_name(cls, method_name: str) -> bool:
+        """
+        Check if a method name is very common and likely to be a mistake if duplicated.
+        
+        Args:
+            method_name: Method name
+            
+        Returns:
+            True if the name is common, False otherwise
+        """
+        common_names = {
+            '__init__', '__str__', '__repr__', '__eq__', '__lt__', '__gt__',
+            'get', 'set', 'update', 'create', 'delete', 'add', 'remove',
+            'to_dict', 'from_dict', 'to_json', 'from_json'
+        }
+        return method_name in common_names
     
     @classmethod
     def _extract_function_definitions(cls, content: str) -> Dict[str, List[int]]:

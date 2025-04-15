@@ -6,6 +6,7 @@ import logging
 from typing import List, Dict, Any, Tuple, Optional
 
 logger = logging.getLogger("ZIYA")
+from ..validation.validators import is_hunk_already_applied
 
 def apply_hunk(file_lines: List[str], hunk: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
@@ -24,7 +25,7 @@ def apply_hunk(file_lines: List[str], hunk: Dict[str, Any]) -> Tuple[bool, List[
     modified_lines = file_lines.copy()
     
     # Check if the hunk is already applied
-    if is_hunk_already_applied(file_lines, hunk):
+    if is_hunk_already_applied(file_lines, hunk, 0):
         logger.info("Hunk is already applied")
         return True, modified_lines
     

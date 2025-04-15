@@ -120,36 +120,41 @@ class DiffRegressionTest(unittest.TestCase):
         # Read the result
         with open(test_file_path, 'r', encoding='utf-8') as f:
             result = f.read()
-            
+
         # Compare with expected
         if result != expected:
-            # Generate a readable diff
-            diff = difflib.unified_diff(
-                expected.splitlines(True),
-                result.splitlines(True),
-                fromfile='Expected',
-                tofile='Got'
+            # Generate a readable diff if comparison fails
+            diff_lines = list(difflib.unified_diff(
+                expected.splitlines(True), # Keep ends for diff
+                result.splitlines(True),   # Keep ends for diff
+                fromfile=f'{case_name}_expected',
+                tofile=f'{case_name}_got'
+            ))
+            diff_output = "".join(diff_lines)
+
+            # Create detailed error message including the diff
+            error_msg = (
+                f"\n" + "="*80 +
+                f"\nTEST FAILED: {case_name}\n" +
+                f"Description: {metadata.get('description', 'N/A')}\n" +
+                "-"*80 +
+                f"\nDifference between Expected and Got:\n" +
+                "-"*80 + f"\n{diff_output}\n" +
+                "-"*80 +
+                f"\nExpected Length: {len(expected.splitlines())} lines\n" +
+                f"Got Length:      {len(result.splitlines())} lines\n" +
+                "="*80
             )
-
-            # Create detailed error message
-            error_msg = [
-                "\nTest case '{}' failed:".format(case_name),
-                "=" * 60,
-                "Differences between expected and actual output:",
-                "".join(diff),
-                "-" * 60,
-                "Expected file length: {} lines".format(len(expected.splitlines())),
-                "Got file length: {} lines".format(len(result.splitlines())),
-                "=" * 60
-            ]
+            # Use assertMultiLineEqual for potentially better IDE integration,
+            # but still raise with the detailed diff message for clarity in logs.
+            try:
+                self.assertMultiLineEqual(result, expected)
+            except AssertionError:
+                 self.fail(error_msg) # Fail with the detailed message
+        else:
+            # If they are equal, the test passes implicitly
+            pass 
             
-            # If the test is expected to fail, just log the failure but don't fail the test
-            if expected_to_fail:
-                logger.warning(f"Test case '{case_name}' failed as expected: {metadata.get('description', '')}")
-                return
-            
-            self.fail("\n".join(error_msg))
-
     def test_all_cases(self):
         """Run all test cases found in the test cases directory"""
         for case_name in os.listdir(self.TEST_CASES_DIR):
@@ -335,6 +340,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_chained_method_calls(self):
         """Test handling of chained method calls in D3.js code"""
         self.run_diff_test('chained_method_calls')
+        
+    def test_multi_hunk_line_adjustment(self):
+        """Test applying a multi-hunk diff where line numbers need adjustment after earlier hunks are applied"""
+        self.run_diff_test('multi_hunk_line_adjustment')
 
     # MRE test cases
     def test_MRE_binary_file_changes(self):
@@ -407,6 +416,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_MRE_malformed_diff_header(self):
         """Test handling of malformed diff headers"""
         self.run_diff_test('MRE_malformed_diff_header')
+        
+    def test_MRE_no_diff_git_header(self):
+        """Test handling of diffs without diff --git headers"""
+        self.run_diff_test('MRE_no_diff_git_header')
         
     def test_MRE_missing_newline_at_eof(self):
         """Test handling of missing newline at end of file"""

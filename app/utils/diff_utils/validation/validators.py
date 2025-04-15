@@ -107,7 +107,7 @@ def extract_diff_changes(hunk: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     
     return removed_lines, added_lines
 
-def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int) -> bool:
+def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int, ignore_whitespace: bool = True) -> bool:
     """
     Check if a hunk is already applied at the given position with improved handling
     for invisible Unicode characters, escape sequences, and whitespace.
@@ -116,6 +116,7 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         file_lines: List of lines from the file
         hunk: Dictionary containing hunk information
         pos: Position to check
+        ignore_whitespace: Whether to ignore whitespace differences
         
     Returns:
         True if the hunk is already applied, False otherwise
@@ -139,6 +140,21 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     
     # Extract the removed and added lines from the hunk
     removed_lines, added_lines = extract_diff_changes(hunk)
+    
+    # CRITICAL FIX: Check if the hunk is malformed
+    if not hunk.get('old_block') or not hunk.get('new_lines'):
+        logger.warning(f"Malformed hunk detected: missing old_block or new_lines")
+        # Don't mark malformed hunks as already applied
+        return False
+        
+    # CRITICAL FIX: Check if the diff header is malformed
+    if 'header' in hunk and '@@ -' in hunk['header']:
+        # Check if the header has proper line numbers
+        header_match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk['header'])
+        if not header_match:
+            logger.warning(f"Malformed hunk header: {hunk['header']}")
+            # Don't mark hunks with malformed headers as already applied
+            return False
     
     # If there are no actual changes (no removed or added lines), it's a no-op
     if not removed_lines and not added_lines:
@@ -242,10 +258,16 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                         all_match = False
                         break
                     
-                    # Compare with exact whitespace
-                    if available_lines[i].rstrip('\r\n') != added_line.rstrip('\r\n'):
-                        # Try normalizing invisible characters
-                        if normalize_unicode(available_lines[i].rstrip('\r\n')) != normalize_unicode(added_line.rstrip('\r\n')):
+                    # Compare with exact whitespace if not ignoring whitespace
+                    if not ignore_whitespace:
+                        if available_lines[i].rstrip('\r\n') != added_line.rstrip('\r\n'):
+                            # Try normalizing invisible characters
+                            if normalize_unicode(available_lines[i].rstrip('\r\n')) != normalize_unicode(added_line.rstrip('\r\n')):
+                                all_match = False
+                                break
+                    else:
+                        # Compare ignoring whitespace
+                        if normalize_line_for_comparison(available_lines[i]).strip() != normalize_line_for_comparison(added_line).strip():
                             all_match = False
                             break
                 

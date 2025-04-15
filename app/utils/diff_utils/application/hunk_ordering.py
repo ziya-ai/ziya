@@ -146,7 +146,37 @@ def is_multi_hunk_same_function_case(hunks: List[Dict[str, Any]]) -> bool:
                 content_similarity += len(common_lines)
     
     # If there's significant content similarity, these hunks are likely related
-    return content_similarity > 0
+    if content_similarity > 0:
+        return True
+        
+    # Check for nested data structures (dictionaries, classes, etc.)
+    # This is a more general approach that will work for various config structures
+    nested_structure_indicators = [
+        '{', '}',  # Dictionary/object literals
+        '[', ']',  # Lists/arrays
+        'CONFIG', 'config',  # Common config names
+        'MODELS', 'models',  # Common model names
+        'DEFAULT', 'default',  # Common default names
+        'settings', 'options',  # Common settings names
+        'class ', 'def ',  # Class and function definitions
+        'import ', 'from '  # Import statements that might be related
+    ]
+    
+    # Check if hunks involve nested data structures
+    has_nested_structures = False
+    for hunk in hunks:
+        hunk_content = ''.join(hunk.get('old_block', []))
+        if any(indicator in hunk_content for indicator in nested_structure_indicators):
+            has_nested_structures = True
+            break
+    
+    # If we have nested structures and multiple hunks, treat as related
+    # This helps with complex changes to configuration files, class definitions, etc.
+    if has_nested_structures and len(hunks) >= 2:
+        logger.info("Detected nested data structure changes across multiple hunks")
+        return True
+    
+    return False
 
 def handle_multi_hunk_same_function(hunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """

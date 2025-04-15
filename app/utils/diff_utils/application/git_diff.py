@@ -288,21 +288,53 @@ def handle_embedded_diff_markers(diff_content: str) -> str:
     
     return '\n'.join(result) + '\n'
 
-def parse_patch_output(patch_output: str) -> Dict[int, bool]:
+def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[str, Any]]:
     """
     Parse patch command output to determine which hunks succeeded/failed.
     
     Args:
         patch_output: The output from the patch command
+        stderr: The stderr output from the patch command (optional)
         
     Returns:
-        A dictionary mapping hunk number to success status
+        A dictionary mapping hunk number to status information
     """
     hunk_status = {}
     logger.debug(f"Parsing patch output:\n{patch_output}")
+    if stderr:
+        logger.debug(f"Stderr output:\n{stderr}")
+
+    # First check for corrupt patch errors in stderr
+    if stderr and "corrupt patch" in stderr:
+        logger.warning(f"Corrupt patch detected in stderr: {stderr}")
+        # Mark all hunks as failed
+        for i in range(1, 10):  # Assume up to 10 hunks for safety
+            hunk_status[i] = {
+                "status": "failed",
+                "error": "corrupt_patch",
+                "details": f"Corrupt patch detected: {stderr.strip()}"
+            }
+        return hunk_status
 
     in_patch_output = False
     current_hunk = None
+    
+    # Check for malformed patch errors in stderr
+    malformed_hunks = set()
+    if stderr:
+        # Extract hunk numbers from malformed patch errors
+        malformed_pattern = re.compile(r'malformed patch at line \d+:.*?Hunk #(\d+)')
+        for match in malformed_pattern.finditer(stderr):
+            hunk_num = int(match.group(1))
+            malformed_hunks.add(hunk_num)
+            logger.debug(f"Found malformed patch for Hunk #{hunk_num}")
+            hunk_status[hunk_num] = {
+                "status": "failed",
+                "error": "malformed_patch",
+                "details": f"Malformed patch detected in hunk #{hunk_num}"
+            }
+    
+    # Process stdout for success/failure information
     for line in patch_output.splitlines():
         if "Patching file" in line:
             in_patch_output = True
@@ -317,20 +349,100 @@ def parse_patch_output(patch_output: str) -> Dict[int, bool]:
 
         # Check for significant adjustments that should invalidate "success"
         if current_hunk is not None:
+            # If this hunk was marked as malformed, it's definitely failed for this stage
+            if current_hunk in malformed_hunks:
+                # Only update if not already set
+                if current_hunk not in hunk_status:
+                    hunk_status[current_hunk] = {
+                        "status": "failed",
+                        "error": "malformed_patch",
+                        "details": f"Malformed patch detected in hunk #{current_hunk}"
+                    }
+                logger.debug(f"Hunk {current_hunk} failed due to malformed patch")
+                continue
+                
             if "succeeded at" in line:
-                hunk_status[current_hunk] = True
-                logger.debug(f"Hunk {current_hunk} succeeded")
+                position_match = re.search(r'succeeded at (\d+)', line)
+                position = int(position_match.group(1)) if position_match else None
+                
+                # Check if there was fuzz applied
+                fuzz_match = re.search(r'with fuzz (\d+)', line)
+                fuzz = int(fuzz_match.group(1)) if fuzz_match else 0
+                
+                hunk_status[current_hunk] = {
+                    "status": "succeeded",
+                    "position": position,
+                    "fuzz": fuzz
+                }
+                logger.debug(f"Hunk {current_hunk} succeeded at position {position}" + 
+                            (f" with fuzz {fuzz}" if fuzz > 0 else ""))
             elif "failed" in line:
-                logger.debug(f"Hunk {current_hunk} failed")
+                position_match = re.search(r'FAILED at (\d+)', line)
+                position = int(position_match.group(1)) if position_match else None
+                
+                hunk_status[current_hunk] = {
+                    "status": "failed",
+                    "position": position,
+                    "error": "application_failed"
+                }
+                logger.debug(f"Hunk {current_hunk} failed at position {position}")
+            elif "already applied" in line:
+                position_match = re.search(r'already applied at position (\d+)', line)
+                position = int(position_match.group(1)) if position_match else None
+                
+                hunk_status[current_hunk] = {
+                    "status": "already_applied",
+                    "position": position
+                }
+                logger.debug(f"Hunk {current_hunk} already applied at position {position}")
 
         # Match lines like "Hunk #1 succeeded at 6."
-        match = re.search(r'Hunk #(\d+) (succeeded at \d+(?:\s+with fuzz \d+)?|failed)', line)
+        match = re.search(r'Hunk #(\d+) (succeeded at \d+(?:\s+with fuzz \d+)?|failed|is already applied)', line)
         if match:
             hunk_num = int(match.group(1))
-            # Consider both clean success and fuzzy matches as successful
-            success = 'succeeded' in match.group(2)
-            hunk_status[hunk_num] = success
-            logger.debug(f"Found hunk {hunk_num}: {'succeeded' if success else 'failed'}")
+            result = match.group(2)
+            
+            # Skip if we've already processed this hunk above
+            if hunk_num in hunk_status:
+                continue
+                
+            # Process based on the result
+            if 'succeeded' in result:
+                position_match = re.search(r'at (\d+)', result)
+                position = int(position_match.group(1)) if position_match else None
+                
+                fuzz_match = re.search(r'with fuzz (\d+)', result)
+                fuzz = int(fuzz_match.group(1)) if fuzz_match else 0
+                
+                hunk_status[hunk_num] = {
+                    "status": "succeeded",
+                    "position": position,
+                    "fuzz": fuzz
+                }
+                logger.debug(f"Hunk {hunk_num} succeeded at position {position}" + 
+                            (f" with fuzz {fuzz}" if fuzz > 0 else ""))
+            elif 'failed' in result:
+                position_match = re.search(r'at (\d+)', result)
+                position = int(position_match.group(1)) if position_match else None
+                
+                hunk_status[hunk_num] = {
+                    "status": "failed",
+                    "position": position,
+                    "error": "application_failed"
+                }
+                logger.debug(f"Hunk {hunk_num} failed at position {position}")
+            elif 'already applied' in result:
+                position_match = re.search(r'at position (\d+)', result)
+                position = int(position_match.group(1)) if position_match else None
+                
+                hunk_status[hunk_num] = {
+                    "status": "already_applied",
+                    "position": position
+                }
+                logger.debug(f"Hunk {hunk_num} already applied at position {position}")
+
+    logger.debug(f"Final hunk status: {json.dumps(hunk_status, indent=2)}")
+    return hunk_status
 
     logger.debug(f"Final hunk status: {hunk_status}")
     return hunk_status
@@ -355,49 +467,103 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
     hunks = []
     current_hunk = []
     headers = []
+    file_headers = []
+    current_file_headers = []
     hunk_count = 0
     in_hunk = False
+    in_file = False
 
     for line in lines:
-        if line.startswith(('diff --git', '--- ', '+++ ')):
-            headers.append(line)
-        elif line.startswith('@@'):
+        # Track file boundaries
+        if line.startswith('diff --git'):
+            # Save previous file headers and hunks
+            if in_file and current_file_headers:
+                if any(h[1] for h in hunks if isinstance(h, tuple) and len(h) > 1):
+                    # Only include file headers if we have hunks for this file
+                    headers.extend(current_file_headers)
+                
+            # Start new file
+            in_file = True
+            current_file_headers = [line]
+            continue
+            
+        # Collect file headers
+        if line.startswith(('--- ', '+++ ', 'index ')):
+            if in_file:
+                current_file_headers.append(line)
+            else:
+                headers.append(line)
+            continue
+            
+        # Process hunk headers
+        if line.startswith('@@'):
             hunk_count += 1
             if current_hunk:
-                if current_hunk:
-                    hunks.append((hunk_count - 1, current_hunk))
+                hunks.append((hunk_count - 1, current_hunk, current_file_headers))
 
             # Only start collecting if this hunk failed
             if hunk_count in hunk_status and not hunk_status[hunk_count]:
                 logger.debug(f"Including failed hunk #{hunk_count}")
-                current_hunk = [line] # Keep original header, don't append Hunk #N
+                current_hunk = [line] # Keep original header
                 in_hunk = True
             else:
                 logger.debug(f"Skipping successful hunk #{hunk_count}")
                 current_hunk = []
                 in_hunk = False
-        elif in_hunk:
+            continue
+            
+        # Collect hunk content
+        if in_hunk:
             current_hunk.append(line)
+            # Check for end of hunk (non-context, non-diff line)
             if not line.startswith((' ', '+', '-', '\\')):
                 # End of hunk reached
                 if current_hunk:
-                    hunks.append(current_hunk)
+                    hunks.append((hunk_count, current_hunk, current_file_headers))
                 current_hunk = []
                 in_hunk = False
 
+    # Add the last hunk if we have one
     if current_hunk:
-        hunks.append((hunk_count, current_hunk))
+        hunks.append((hunk_count, current_hunk, current_file_headers))
 
-    # Build final result with proper spacing
+    # Build final result with proper file structure
     result = []
-    result.extend(headers)
+    current_file = None
+    
+    # Group hunks by file
+    file_to_hunks = {}
     for hunk_data in hunks:
-        # Handle both tuple format (hunk_id, lines) and just lines format
-        if isinstance(hunk_data, tuple) and len(hunk_data) == 2:
-            _, hunk_lines = hunk_data
-        else:
-            hunk_lines = hunk_data
-        result.extend(hunk_lines)
+        if isinstance(hunk_data, tuple) and len(hunk_data) == 3:
+            hunk_id, hunk_lines, file_headers = hunk_data
+            # Skip empty hunks
+            if not hunk_lines:
+                continue
+                
+            # Use the file path as key
+            file_key = None
+            for header in file_headers:
+                if header.startswith('+++ '):
+                    file_key = header
+                    break
+            
+            if not file_key:
+                file_key = "unknown_file"
+                
+            if file_key not in file_to_hunks:
+                file_to_hunks[file_key] = []
+            
+            file_to_hunks[file_key].append((hunk_id, hunk_lines, file_headers))
+    
+    # Now build the result with proper file structure
+    for file_key, file_hunks in file_to_hunks.items():
+        # Add file headers only once per file
+        if file_hunks:
+            result.extend(file_hunks[0][2])  # Add file headers
+            
+            # Add all hunks for this file
+            for _, hunk_lines, _ in file_hunks:
+                result.extend(hunk_lines)
 
     if not result:
         logger.warning("No hunks to extract")

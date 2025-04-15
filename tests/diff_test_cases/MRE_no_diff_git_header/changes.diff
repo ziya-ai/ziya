@@ -1,0 +1,69 @@
+--- a/test_file.py
++++ b/test_file.py
+@@ -8,17 +8,46 @@
+     Returns:
+         The processed data
+     """
+-    # Now extract the remaining hunks (which should include the reset failed hunks)
++    # Extract the remaining hunks (which might still contain multiple files)
+     remaining_data = extract_remaining_data()
+
+-    if not remaining_data.strip():
+-        logger.warning("No valid data remaining to process")
+-        if data.is_processed:
++    # --- START NEW FILTERING LOGIC ---
++    filtered_data = ""
++    if remaining_data.strip():
++        individual_remaining_diffs = split_combined_diff(remaining_data)
++        logger.debug(f"Split remaining diff into {len(individual_remaining_diffs)} parts for difflib stage.")
++        for diff_part in individual_remaining_diffs:
++            target = extract_target_file_from_diff(diff_part)
++            # Compare normalized paths relative to the codebase dir
++            target_full_path = os.path.normpath(os.path.join(user_codebase_dir, target)) if target else None
++            current_file_full_path = os.path.normpath(data.path)
++            logger.debug(f"Checking diff part target: '{target}' (Full: {target_full_path}) against current file: {current_file_full_path}")
++            if target_full_path == current_file_full_path:
++                filtered_data = diff_part
++                logger.info(f"Found relevant diff part for {data.path} for difflib stage.")
++                break
++        else: # No break occurred
++             logger.warning(f"No relevant hunks remaining for {data.path} in difflib stage.")
++             # If no relevant diff part is found, but changes were written earlier, complete.
++             # Otherwise, let the pipeline continue to mark remaining pending hunks as failed.
++             if data.changes_written and not any(t.status == HunkStatus.PENDING for t in data.hunks.values()):
++                 complete()
++                 return data.to_dict()
++             # If no changes written and no relevant hunks, it might be an error or already applied.
++             # Let the rest of the logic handle this based on hunk statuses.
++             pass # Continue to the end of the function
++    else:
++        logger.warning("No valid hunks remaining to process before difflib stage.")
++        # If no changes written and no relevant hunks left, it might be an error or already applied.
++        # Let the rest of the logic handle this based on hunk statuses.
++        if data.changes_written:
+             complete()
+             return data.to_dict()
+         else:
+-            complete(error="No data was processed")
+-            return data.to_dict()
++            # Let the rest of the logic handle this based on hunk statuses.
++            pass # Continue to the end of the function
++
++    # --- END NEW FILTERING LOGIC ---
+
+     # Read the current content after previous stages
+     try:
+@@ -32,5 +61,12 @@
+     if content_changed:
+         data.changes_written = True
+
+-    difflib_result = run_difflib_stage(data, data.path, remaining_data, current_lines)
++    # Pass only the relevant diff part to the difflib stage
++    # Only run difflib if there's actually a diff part for this file
++    if filtered_data.strip():
++        difflib_result = run_difflib_stage(data, data.path, filtered_data, current_lines)
++    else:
++        # If no relevant diff, skip difflib stage for this file
++        logger.info(f"Skipping difflib stage for {data.path} as no relevant hunks remain.")
++        difflib_result = False # Indicate no changes were made in this stage     # Stage 4: LLM Resolver (stub for now)
+     # This would be implemented in the future to handle complex cases

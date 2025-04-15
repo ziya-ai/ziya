@@ -123,7 +123,7 @@ def apply_hunk(content: str, hunk: Dict[str, Any]) -> str:
         elif line.startswith('+'):
             new_lines.append(line[1:])
     
-    # Ensure all lines have line endings
+    # Ensure all lines have line endings but don't add extra blank lines
     for i in range(len(new_lines)):
         if not new_lines[i].endswith('\n'):
             new_lines[i] += '\n'
@@ -136,7 +136,46 @@ def apply_hunk(content: str, hunk: Dict[str, Any]) -> str:
     
     # Apply the hunk
     result = lines[:position] + new_lines + lines[position + len(old_lines):]
+    
+    # Clean up any extra blank lines that weren't in the original content or diff
+    result = clean_up_blank_lines(result)
+    
     return ''.join(result)
+
+def clean_up_blank_lines(lines: List[str]) -> List[str]:
+    """
+    Clean up extra blank lines that weren't in the original content or diff.
+    
+    Args:
+        lines: The content lines
+        
+    Returns:
+        The cleaned up lines
+    """
+    # Remove trailing blank lines
+    while lines and lines[-1].strip() == '':
+        lines.pop()
+    
+    # Add back a single trailing newline
+    if lines and not lines[-1].endswith('\n'):
+        lines[-1] += '\n'
+    
+    # Remove consecutive blank lines (more than one)
+    i = 0
+    while i < len(lines) - 1:
+        if lines[i].strip() == '' and lines[i+1].strip() == '':
+            # Keep track of consecutive blank lines
+            j = i + 1
+            while j < len(lines) and lines[j].strip() == '':
+                j += 1
+            
+            # If we have more than one consecutive blank line, remove extras
+            if j - i > 2:
+                # Keep only one blank line
+                del lines[i+2:j]
+        i += 1
+    
+    return lines
 
 def find_hunk_position(lines: List[str], old_lines: List[str], old_start: int) -> Optional[int]:
     """

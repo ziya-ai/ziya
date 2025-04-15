@@ -177,7 +177,26 @@ class TypeScriptHandler(LanguageHandler):
         # Add TypeScript-specific duplicate detection
         ts_duplicates = cls._detect_typescript_duplicates(original_content, modified_content)
         
-        all_duplicates = js_duplicates + ts_duplicates
+        # Filter out false positives for common language keywords
+        filtered_duplicates = []
+        reserved_keywords = {
+            'if', 'for', 'while', 'switch', 'catch', 'with', 'return',
+            'else', 'try', 'finally', 'do', 'in', 'of', 'new', 'typeof',
+            'instanceof', 'void', 'delete', 'throw', 'yield', 'await'
+        }
+        
+        for duplicate in js_duplicates:
+            # Check if this is a false positive for a language keyword
+            is_keyword = False
+            for keyword in reserved_keywords:
+                if keyword in duplicate and f"{keyword} (" in duplicate:
+                    is_keyword = True
+                    break
+            
+            if not is_keyword:
+                filtered_duplicates.append(duplicate)
+        
+        all_duplicates = filtered_duplicates + ts_duplicates
         return bool(all_duplicates), all_duplicates
     
     @classmethod
@@ -242,11 +261,21 @@ class TypeScriptHandler(LanguageHandler):
             r'@\w+(?:\(.*\))?\s*class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)',
         ]
         
+        # Keywords that should be excluded from definition detection
+        reserved_keywords = {
+            'if', 'for', 'while', 'switch', 'catch', 'with', 'return',
+            'else', 'try', 'finally', 'do', 'in', 'of', 'new', 'typeof',
+            'instanceof', 'void', 'delete', 'throw', 'yield', 'await'
+        }
+        
         for i, line in enumerate(content.splitlines(), 1):
             for pattern in patterns:
                 matches = re.finditer(pattern, line)
                 for match in matches:
                     def_name = match.group(1)
+                    # Skip if the name is a reserved keyword
+                    if def_name in reserved_keywords:
+                        continue
                     if def_name not in definitions:
                         definitions[def_name] = []
                     definitions[def_name].append(i)

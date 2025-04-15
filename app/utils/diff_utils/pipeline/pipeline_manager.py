@@ -6,6 +6,7 @@ coordinating the flow through system patch, git apply, difflib, and LLM resolver
 """
 
 import os
+import json
 import subprocess
 import tempfile
 from typing import Dict, List, Any, Optional, Tuple
@@ -131,10 +132,30 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     pipeline.update_stage(PipelineStage.SYSTEM_PATCH)
     system_patch_result = run_system_patch_stage(pipeline, user_codebase_dir, git_diff)
     
+    # Try applying hunks separately that matched but weren't applied due to all-or-nothing behavior
+    from ..application.separate_hunk_apply import try_separate_hunks
+    
+    # Find hunks that could be applied separately
+    separate_hunks = [
+        hunk_id for hunk_id, tracker in pipeline.result.hunks.items()
+        if tracker.hunk_data.get("could_apply_separately", False) and 
+        tracker.status == HunkStatus.PENDING
+    ]
+    
+    if separate_hunks:
+        logger.info(f"Found {len(separate_hunks)} hunks that could be applied separately")
+        separate_result = try_separate_hunks(pipeline, user_codebase_dir, separate_hunks)
+        if separate_result:
+            logger.info("Successfully applied some hunks separately")
+            system_patch_result = True  # Update the result to indicate some changes were written
+    
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
-        pipeline.result.changes_written = True
+        # CRITICAL FIX: Only mark changes as written if system patch actually succeeded
+        # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
+        if system_patch_result:
+            pipeline.result.changes_written = True
         pipeline.complete()
         return pipeline.result.to_dict()
     
@@ -156,12 +177,22 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
-        pipeline.result.changes_written = True
+        # CRITICAL FIX: Only mark changes as written if git apply actually succeeded
+        if git_apply_result:
+            pipeline.result.changes_written = True
         pipeline.complete()
         return pipeline.result.to_dict()
     
     # Stage 3: Difflib (for hunks that failed in git apply)
     pipeline.update_stage(PipelineStage.DIFFLIB)
+    
+    # CRITICAL FIX: Reset all failed hunks to pending so they can be processed by difflib
+    # This ensures that hunks that failed in git_apply are still attempted with difflib
+    reset_count = pipeline.reset_failed_hunks_to_pending()
+    if reset_count > 0:
+        logger.info(f"Reset {reset_count} failed hunks to pending for difflib stage")
+    
+    # Now extract the remaining hunks (which should include the reset failed hunks)
     remaining_diff = pipeline.extract_remaining_hunks()
     
     if not remaining_diff.strip():
@@ -192,8 +223,21 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     # Stage 4: LLM Resolver (stub for now)
     # This would be implemented in the future to handle complex cases
     
-    # Complete the pipeline
-    pipeline.complete()
+    # Update all hunks to FAILED if they're still PENDING at the end
+    for hunk_id, tracker in pipeline.result.hunks.items():
+        if tracker.status == HunkStatus.PENDING:
+            pipeline.update_hunk_status(
+                hunk_id=hunk_id,
+                stage=pipeline.current_stage,
+                status=HunkStatus.FAILED,
+                error_details={"error": "Failed to apply hunk in all stages"}
+            )
+    
+    # If no hunks succeeded and no changes were written, set the error
+    if not pipeline.result.succeeded_hunks and not pipeline.result.already_applied_hunks and not pipeline.result.changes_written:
+        pipeline.complete(error="Failed to apply changes: all hunks failed")
+    else:
+        pipeline.complete()
     
     # Add detailed debug logging about hunk statuses
     logger.info("=== PIPELINE COMPLETION SUMMARY ===")
@@ -229,12 +273,47 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
             if not result_dict["details"]["already_applied"]:
                 result_dict["details"]["already_applied"] = pipeline.result.already_applied_hunks
     
+    # Check if all hunks failed and no changes were written
+    if (len(pipeline.result.failed_hunks) == len(pipeline.result.hunks) and 
+            not pipeline.result.changes_written and 
+            not pipeline.result.already_applied_hunks):
+        logger.error("All hunks failed and no changes were written - setting status to error")
+        result_dict["status"] = "error"
+        
+        # Check if any hunks failed due to malformed or corrupt patch
+        malformed_hunks = [hunk_id for hunk_id, tracker in pipeline.result.hunks.items() 
+                          if tracker.error_details and ("malformed patch" in str(tracker.error_details) or 
+                                                       "corrupt patch" in str(tracker.error_details))]
+        
+        if malformed_hunks:
+            result_dict["details"]["error"] = f"Failed to apply changes: {len(malformed_hunks)} hunk(s) contained malformed patches"
+        else:
+            result_dict["details"]["error"] = "Failed to apply changes: all hunks failed"
+    
     # Final consistency check
     if result_dict["status"] in ("success", "partial") and not result_dict["details"]["changes_written"] and not result_dict["details"]["already_applied"]:
         logger.error("INCONSISTENCY DETECTED: Reporting success but no changes were written and no hunks were already applied")
         # Override the status to error
-        result_dict["status"] = "failure"
-        result_dict["details"]["error"] = "No changes were applied: duplicate code detected"
+        result_dict["status"] = "error"
+        result_dict["details"]["error"] = "No changes were applied: possible duplicate code or invalid patch"
+    
+    # CRITICAL FIX: Add a specific error message for partial system patch success
+    if result_dict["status"] == "partial" and not result_dict["details"]["changes_written"]:
+        # Check if we have hunks that succeeded in system patch but weren't written due to all-or-nothing behavior
+        system_patch_succeeded_hunks = [
+            hunk_id for hunk_id, tracker in pipeline.result.hunks.items()
+            if tracker.status == HunkStatus.SUCCEEDED and 
+            tracker.current_stage == PipelineStage.SYSTEM_PATCH and
+            tracker.hunk_data.get("could_apply_separately", False)
+        ]
+        
+        if system_patch_succeeded_hunks:
+            result_dict["details"]["error"] = "Some hunks succeeded in system patch but weren't written due to all-or-nothing behavior"
+            result_dict["details"]["partial_success_hunks"] = system_patch_succeeded_hunks
+    
+    # Log the final result being returned
+    logger.info(f"Final result status: {result_dict['status']}")
+    logger.info(f"Final result details: {json.dumps(result_dict['details'], indent=2)}")
         
     return result_dict
     
@@ -299,13 +378,18 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         logger.debug(f"Patch dry run return code: {patch_result.returncode}")
         
         # Parse the dry run output
-        dry_run_status = parse_patch_output(patch_result.stdout)
+        dry_run_status = parse_patch_output(patch_result.stdout, patch_result.stderr)
         
         # Check if all changes are already applied
+        # We need to check both stdout and stderr for errors
+        has_malformed_error = "malformed patch" in patch_result.stderr
+        has_failure = "failed" in patch_result.stdout.lower() or patch_result.returncode != 0
+        
         already_applied = (
             "No file to patch" not in patch_result.stdout and 
             "Reversed (or previously applied)" in patch_result.stdout and
-            "failed" not in patch_result.stdout.lower()
+            not has_failure and
+            not has_malformed_error
         )
         
         if already_applied:
@@ -330,7 +414,8 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
-                    status=HunkStatus.FAILED
+                    status=HunkStatus.FAILED,
+                    error_details={"error": "Failed in dry run"}
                 )
         
         # If no hunks succeeded in dry run, skip the actual patch
@@ -369,31 +454,67 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
             return False
         
         # Parse the actual patch output
-        patch_status = parse_patch_output(patch_result.stdout)
+        patch_status = parse_patch_output(patch_result.stdout, patch_result.stderr)
         
         # Update hunk statuses based on actual patch
-        changes_written = False
-        for hunk_id, success in patch_status.items():
-            if success:
-                if "Reversed (or previously applied)" in patch_result.stdout and f"Hunk #{hunk_id}" in patch_result.stdout:
+        all_hunks_succeeded = True
+        any_hunk_succeeded = False
+        
+        for hunk_id, status_info in patch_status.items():
+            status_value = status_info.get("status")
+            
+            if status_value == "succeeded":
+                # CRITICAL FIX: Don't mark hunks as SUCCEEDED if the overall patch failed
+                # Instead, mark them as PENDING with a flag so they can be tried in later stages
+                if patch_result.returncode != 0:
+                    # This hunk matched but wasn't actually applied due to all-or-nothing behavior
                     pipeline.update_hunk_status(
                         hunk_id=hunk_id,
                         stage=PipelineStage.SYSTEM_PATCH,
-                        status=HunkStatus.ALREADY_APPLIED
+                        status=HunkStatus.PENDING,  # Keep as PENDING so it's tried in later stages
+                        position=status_info.get("position"),
+                        confidence=1.0 - (status_info.get("fuzz", 0) * 0.1)
                     )
+                    # Add a flag to indicate this hunk could have been applied separately
+                    pipeline.result.hunks[hunk_id].hunk_data["could_apply_separately"] = True
+                    logger.info(f"Hunk #{hunk_id} matched in system patch but kept as PENDING for later stages due to all-or-nothing behavior")
                 else:
+                    # Normal case - patch succeeded overall
                     pipeline.update_hunk_status(
                         hunk_id=hunk_id,
                         stage=PipelineStage.SYSTEM_PATCH,
-                        status=HunkStatus.SUCCEEDED
+                        status=HunkStatus.SUCCEEDED,
+                        position=status_info.get("position"),
+                        confidence=1.0 - (status_info.get("fuzz", 0) * 0.1)
                     )
-                    changes_written = True
-            else:
+                any_hunk_succeeded = True
+            elif status_value == "already_applied":
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
-                    status=HunkStatus.FAILED
+                    status=HunkStatus.ALREADY_APPLIED,
+                    position=status_info.get("position")
                 )
+            else:  # failed
+                error_details = {
+                    "error": status_info.get("error", "application_failed"),
+                    "details": status_info.get("details", "Failed to apply hunk")
+                }
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.SYSTEM_PATCH,
+                    status=HunkStatus.FAILED,
+                    error_details=error_details
+                )
+                all_hunks_succeeded = False
+        
+        # CRITICAL FIX: Only mark changes as written if ALL hunks succeeded
+        # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
+        changes_written = all_hunks_succeeded and any_hunk_succeeded and patch_result.returncode == 0
+        
+        if any_hunk_succeeded and not all_hunks_succeeded:
+            logger.warning("Some hunks succeeded but others failed in system patch. Due to all-or-nothing behavior, NO changes were written.")
+            logger.info("These hunks will be tried again in later stages.")
         
         pipeline.result.changes_written = changes_written
         return changes_written
@@ -560,6 +681,17 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
     Returns:
         True if any changes were written, False otherwise
     """
+    from ..core.config import get_context_size, get_search_radius, get_confidence_threshold
+    
+    # Set environment variables for difflib application if needed
+    if os.environ.get('ZIYA_DIFF_CONTEXT_SIZE') is None:
+        # Use a larger context size for difflib mode to improve matching
+        os.environ['ZIYA_DIFF_CONTEXT_SIZE'] = str(get_context_size('large'))
+    
+    if os.environ.get('ZIYA_DIFF_SEARCH_RADIUS') is None:
+        # Use a larger search radius for difflib mode to improve matching
+        os.environ['ZIYA_DIFF_SEARCH_RADIUS'] = str(get_search_radius() * 2)
+    
     logger.info("Starting difflib stage...")
     
     if not git_diff.strip():
@@ -574,6 +706,37 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
         logger.info(f"Parsed {len(hunks)} hunks for difflib stage")
         
+        # CRITICAL FIX: Check for malformed hunks first
+        malformed_hunks = []
+        for i, hunk in enumerate(hunks, 1):
+            hunk_id = hunk.get('number', i)
+            
+            # Check if the hunk is malformed
+            if 'header' in hunk and '@@ -' in hunk['header']:
+                header_match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk['header'])
+                if not header_match:
+                    logger.warning(f"Malformed hunk header detected: {hunk['header']}")
+                    malformed_hunks.append(hunk_id)
+                    continue
+            
+            # Check if essential hunk data is missing
+            if not hunk.get('old_block') or not hunk.get('new_lines'):
+                logger.warning(f"Malformed hunk detected: missing old_block or new_lines")
+                malformed_hunks.append(hunk_id)
+                continue
+        
+        # If any hunks are malformed, mark them as failed and return
+        if malformed_hunks:
+            logger.warning(f"Found {len(malformed_hunks)} malformed hunks, marking as failed")
+            for hunk_id in malformed_hunks:
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.DIFFLIB,
+                    status=HunkStatus.FAILED,
+                    error_details={"error": "Malformed hunk detected"}
+                )
+            return False
+        
         # Check if all hunks are already applied        
         all_hunks_found_applied = True # Assume true initially
         already_applied_hunks = []
@@ -583,7 +746,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             found_applied_at_any_pos = False
             # Check if this hunk is already applied anywhere in the file
             for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
-                if is_hunk_already_applied(original_lines, hunk, pos):
+                if is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=False):
                     found_applied_at_any_pos = True
                     already_applied_hunks.append(hunk_id)
                     logger.info(f"Hunk #{hunk_id} is already applied at position {pos}")
@@ -605,11 +768,20 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             # Mark all pending hunks as already applied
             for hunk_id, tracker in pipeline.result.hunks.items():
                 if tracker.status == HunkStatus.PENDING:
-                    pipeline.update_hunk_status(
-                        hunk_id=hunk_id,
-                        stage=PipelineStage.DIFFLIB,
-                        status=HunkStatus.ALREADY_APPLIED
-                    )
+                    # CRITICAL FIX: Don't mark hunks with errors as already applied
+                    if tracker.error_details:
+                        logger.warning(f"Hunk #{hunk_id} has errors, marking as FAILED instead of ALREADY_APPLIED")
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.DIFFLIB,
+                            status=HunkStatus.FAILED
+                        )
+                    else:
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.DIFFLIB,
+                            status=HunkStatus.ALREADY_APPLIED
+                        )
             
             # Explicitly add all hunks to already_applied_hunks
             for i, hunk in enumerate(hunks, 1):

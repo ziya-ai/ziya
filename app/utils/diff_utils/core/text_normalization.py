@@ -198,3 +198,33 @@ def strip_comments(text: str, language: str = 'python') -> str:
     else:
         # Default: don't strip comments
         return text
+def normalize_line(text: str) -> str:
+    """
+    Normalize a line of text for comparison.
+    
+    Args:
+        text: The text to normalize
+        
+    Returns:
+        The normalized text
+    """
+    return normalize_text_for_comparison(text)
+def similarity_ratio(text1: str, text2: str) -> float:
+    """
+    Calculate the similarity ratio between two texts.
+    
+    Args:
+        text1: First text
+        text2: Second text
+        
+    Returns:
+        Similarity ratio between 0.0 and 1.0
+    """
+    import difflib
+    
+    # Normalize both texts for comparison
+    norm_text1 = normalize_text_for_comparison(text1)
+    norm_text2 = normalize_text_for_comparison(text2)
+    
+    # Calculate similarity using SequenceMatcher
+    return difflib.SequenceMatcher(None, norm_text1, norm_text2).ratio()

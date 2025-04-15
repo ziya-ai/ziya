@@ -188,13 +188,20 @@ class JavaScriptHandler(LanguageHandler):
             r'function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(',
             # Class declarations
             r'class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)',
-            # Method definitions
-            r'(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)\s*{',
+            # Method definitions - more specific to avoid matching if statements
+            r'(?:^|\s+)(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)\s*{(?!\s*\()',
             # Arrow functions with explicit names
             r'(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s+)?\(',
             # Object methods
             r'([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*function',
         ]
+        
+        # Keywords that should be excluded from function detection
+        reserved_keywords = {
+            'if', 'for', 'while', 'switch', 'catch', 'with', 'return',
+            'else', 'try', 'finally', 'do', 'in', 'of', 'new', 'typeof',
+            'instanceof', 'void', 'delete', 'throw', 'yield', 'await'
+        }
         
         functions = {}
         for i, line in enumerate(content.splitlines(), 1):
@@ -202,6 +209,12 @@ class JavaScriptHandler(LanguageHandler):
                 matches = re.finditer(pattern, line)
                 for match in matches:
                     func_name = match.group(1)
+                    # Skip if the name is a reserved keyword
+                    if func_name in reserved_keywords:
+                        continue
+                    # Skip if this is part of an if/for/while condition
+                    if re.search(rf'(?:if|for|while|switch)\s*\([^)]*{re.escape(func_name)}', line):
+                        continue
                     if func_name not in functions:
                         functions[func_name] = []
                     functions[func_name].append(i)

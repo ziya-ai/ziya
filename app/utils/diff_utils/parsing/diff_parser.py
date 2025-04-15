@@ -55,20 +55,50 @@ def split_combined_diff(diff_content: str) -> List[str]:
     """
     if not diff_content:
         return []
-        
-    # Split on diff --git lines
-    parts = re.split(r'(?m)^diff --git ', diff_content)
     
-    # First part might be empty or contain header info
-    if parts and not parts[0].strip():
-        parts.pop(0)
+    # Check if the diff already has diff --git lines
+    has_diff_git_lines = bool(re.search(r'(?m)^diff --git ', diff_content))
+    
+    if has_diff_git_lines:
+        # Split on diff --git lines
+        parts = re.split(r'(?m)^diff --git ', diff_content)
         
-    # Reconstruct the individual diffs
-    diffs = []
-    for part in parts:
-        if part.strip():
-            diffs.append('diff --git ' + part)
+        # First part might be empty or contain header info
+        if parts and not parts[0].strip():
+            parts.pop(0)
             
+        # Reconstruct the individual diffs
+        diffs = []
+        for part in parts:
+            if part.strip():
+                # Fix malformed headers by ensuring proper format
+                fixed_part = 'diff --git ' + part
+                
+                # Check if the diff header is properly formatted
+                lines = fixed_part.splitlines()
+                if len(lines) >= 3:
+                    # Ensure the header has proper file paths
+                    if not (lines[0].startswith('diff --git') and 
+                           (lines[1].startswith('--- ') or lines[1].startswith('--- a/')) and
+                           (lines[2].startswith('+++ ') or lines[2].startswith('+++ b/'))):
+                        
+                        # Try to extract file paths from the diff --git line
+                        match = re.match(r'diff --git a/(.*) b/(.*)', lines[0])
+                        if match:
+                            file_path = match.group(1)
+                            # Fix the header lines
+                            if not lines[1].startswith('--- '):
+                                lines[1] = f'--- a/{file_path}'
+                            if len(lines) > 2 and not lines[2].startswith('+++ '):
+                                lines[2] = f'+++ b/{file_path}'
+                            fixed_part = '\n'.join(lines)
+                
+                diffs.append(fixed_part)
+    else:
+        # This is a simple diff without diff --git lines
+        # Just return the original content as a single diff
+        diffs = [diff_content]
+        
     return diffs
 
 def parse_unified_diff(diff_content: str) -> List[Dict[str, Any]]:
@@ -237,15 +267,15 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
             if current_hunk:
                 current_hunk['lines'].append(line)
                 if line.startswith('-'):
-                    text = line[1:]
+                    text = line[1:].rstrip('\r\n')
                     current_hunk['old_block'].append(text) # Add removed line to old_block
                     current_hunk['removed_lines'].append(text)
                 elif line.startswith('+'):
-                    text = line[1:]
+                    text = line[1:].rstrip('\r\n')
                     current_hunk['new_lines'].append(text)
                     current_hunk['added_lines'].append(text)  # Store without prefix
                 elif line.startswith(' '):
-                    text = line[1:]
+                    text = line[1:].rstrip('\r\n')
                     current_hunk['new_lines'].append(text)
                     current_hunk['old_block'].append(text)
                 # Skip lines starting with '\'

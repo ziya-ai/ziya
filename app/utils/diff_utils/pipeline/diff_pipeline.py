@@ -286,8 +286,28 @@ class DiffPipeline:
             for hunk_id, tracker in self.result.hunks.items()
         }
         
+        # For multiple file changes, we need to ensure we preserve the original structure
+        # If all hunks are pending/failed, just return the original diff
+        if not any(hunk_status.values()):
+            return self.original_diff
+            
         # Extract the remaining hunks
         return extract_remaining_hunks(self.original_diff, hunk_status)
+    
+    def reset_failed_hunks_to_pending(self) -> int:
+        """
+        Reset all failed hunks to pending status so they can be processed by the next stage.
+        
+        Returns:
+            Number of hunks that were reset
+        """
+        reset_count = 0
+        for hunk_id, tracker in self.result.hunks.items():
+            if tracker.status == HunkStatus.FAILED:
+                tracker.status = HunkStatus.PENDING
+                reset_count += 1
+        
+        return reset_count
     
     def complete(self, error: Optional[str] = None) -> PipelineResult:
         """

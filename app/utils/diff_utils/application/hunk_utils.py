@@ -87,10 +87,21 @@ def find_best_chunk_position(file_lines: List[str], chunk_lines: List[str], expe
     best_pos = expected_pos
     best_ratio = 0.0
     
+    # Get search radius from environment or use default
+    from ..core.config import get_search_radius
+    search_radius = get_search_radius()
+    
     # Look in a window around the expected position
     window_size = len(chunk_lines)
-    search_start = max(0, expected_pos - 15)
-    search_end = min(len(file_lines), expected_pos + 15)
+    search_start = max(0, expected_pos - search_radius)
+    search_end = min(len(file_lines), expected_pos + search_radius)
+    
+    # Ensure we have enough lines to compare
+    if search_end - search_start < window_size:
+        search_end = min(len(file_lines), search_start + window_size + 5)
+    
+    # Log the search range for debugging
+    logger.debug(f"Searching for best position between lines {search_start+1} and {search_end} (expected: {expected_pos+1})")
     
     for i in range(search_start, search_end - window_size + 1):
         window = file_lines[i:i + window_size]
@@ -99,6 +110,7 @@ def find_best_chunk_position(file_lines: List[str], chunk_lines: List[str], expe
         if ratio > best_ratio:
             best_ratio = ratio
             best_pos = i
+            logger.debug(f"Found better match at line {i+1} with ratio {ratio:.2f}")
     
     return best_pos, best_ratio
 
