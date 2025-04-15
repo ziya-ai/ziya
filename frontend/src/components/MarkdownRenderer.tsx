@@ -8,12 +8,12 @@ import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
-import * as Viz from '@viz-js/viz';
 import { D3Renderer } from './D3Renderer';
 import { CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined,
          CheckCircleOutlined, CloseCircleOutlined, CheckOutlined } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
 import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
+import * as Viz from '@viz-js/viz';
 import { useTheme } from '../context/ThemeContext';
 import type * as PrismType from 'prismjs';
 
@@ -155,137 +155,6 @@ class ErrorBoundary extends React.Component<
         return this.props.children;
     }
 }
-
-const GraphvizRenderer: React.FC<{ dot: string }> = memo(({ dot }) => {
-    const { isDarkMode } = useTheme();
-    const [svg, setSvg] = useState<string>('');
-    const [error, setError] = useState<string | null>(null);
-    const [isLoading, setIsLoading] = useState<boolean>(true);
-
-    const themeColors = {
-        light: {
-            text: '#1f1f1f',
-            background: 'transparent',
-            stroke: '#666666'
-        },
-        dark: {
-            text: '#e6e6e6',
-            background: 'transparent',
-            stroke: '#888888'
-        }
-    };
-
-    useEffect(() => {
-        let mounted = true;
-        setIsLoading(true);
-        setError(null);
-
-        const renderGraph = async () => {
-            if (!dot?.trim()) {
-                if (mounted) setIsLoading(false);
-                return;
-            }
-
-            try {
-                const vizInstance = await Viz.instance();
-                const element = await vizInstance.renderSVGElement(addThemeAttributes(dot, isDarkMode));
-
-                if (mounted) {
-                    applyThemeToSvg(element, isDarkMode);
-                    const serializer = new XMLSerializer();
-                    setSvg(serializer.serializeToString(element));
-                    setError(null);
-                }
-            } catch (e: any) {
-                console.error("Graphviz rendering error:", e);
-                if (mounted) {
-                    setError(e.message || 'Failed to render graph');
-                }
-            } finally {
-                if (mounted) setIsLoading(false);
-            }
-        };
-
-        renderGraph();
-        return () => { mounted = false; };
-    }, [dot, isDarkMode]);
-
-    const addThemeAttributes = (dotString: string, isDark: boolean): string => {
-        const colors = isDark ? themeColors.dark : themeColors.light;
-
-        // Only add default attributes if they're not already specified
-        const graphAttributes = `
-            bgcolor="${colors.background}";
-            node [fontname="Arial"];
-            edge [fontname="Arial"];
-        `;
-
-        return dotString.replace(/^(\s*(?:di)?graph\s+[^{]*{)/, `$1\n${graphAttributes}`);
-    };
-
-    const applyThemeToSvg = (svgElement: SVGElement, isDark: boolean) => {
-        const colors = isDark ? themeColors.dark : themeColors.light;
-
-        const elements = svgElement.getElementsByTagName('*');
-        for (let i = 0; i < elements.length; i++) {
-            const el = elements[i];
-
-            const hasExplicitFill = el.hasAttribute('fill') && el.getAttribute('fill') !== 'none';
-            const hasExplicitStroke = el.hasAttribute('stroke');
-            const hasExplicitColor = el.hasAttribute('color');
-
-            if (el.tagName === 'text') {
-                if (!hasExplicitFill) {
-                    el.setAttribute('fill', colors.text);
-                }
-            } else if (el.tagName === 'path') {
-                if (!hasExplicitStroke) {
-                    el.setAttribute('stroke', colors.stroke);
-                }
-            } else if (el.tagName === 'polygon' || el.tagName === 'ellipse') {
-                if (!hasExplicitStroke) {
-                    el.setAttribute('stroke', colors.stroke);
-                }
-            }
-        }
-
-        svgElement.style.backgroundColor = colors.background;
-    };
-
-    if (isLoading) {
-        return (
-            <div className="graphviz-container loading">
-                <Spin tip="Rendering graph..." size="large" />
-            </div>
-        );
-    }
-
-    if (error) {
-        return (
-            <div className="graphviz-error">
-                <p><strong>Graphviz Error:</strong> {error}</p>
-                <details>
-                    <summary>Show DOT source</summary>
-                    <pre><code>{dot}</code></pre>
-                </details>
-            </div>
-        );
-    }
-
-    return (
-        <div
-            className="graphviz-container borderless"
-            dangerouslySetInnerHTML={{ __html: svg }}
-            style={{
-                maxWidth: '100%',
-                overflow: 'auto',
-                padding: '1em 0',
-                backgroundColor: 'transparent',
-                borderRadius: '6px',
-            }}
-        />
-    );
-});
 
 interface ApplyChangesButtonProps {
     diff: string;
@@ -865,10 +734,25 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 `... (${linesBetween} lines)`;
 
         // Get hunk status if available
-        const hunkStatus = hunkStatuses.get(hunk) && {
-            applied: false,
-            reason: 'Not attempted'
-        }
+        const status = hunkStatuses.get(hunk);
+        const isApplied = status?.applied;
+        const statusReason = status?.reason || '';
+        
+        // Add visual indicator for hunk status
+        const hunkStatusIndicator = status && (
+            <span style={{
+                color: isApplied ? '#52c41a' : '#ff4d4f',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                marginLeft: '8px'
+            }}>
+                {isApplied ?
+                    <><CheckCircleOutlined /> Applied</> :
+                    <><CloseCircleOutlined /> Failed: {statusReason}</>
+                }
+            </span>
+        );
 
         return (
             <React.Fragment key={hunk.content}>
@@ -886,23 +770,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 					    }}
 					>
                         <span>{ellipsisText}</span>
-                        {hunkStatus && (
-                            <span style={{
-                                color: hunkStatus.applied ? '#52c41a' : '#ff4d4f',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '4px'
-                            }}>
-                                {hunkStatus.applied ?
-                                    <><CheckCircleOutlined /> Applied</> :
-                                    <><CloseCircleOutlined /> Failed: {hunkStatus.reason}</>
-                                }
-                            </span>
-					    )}
+                        {hunkStatusIndicator}
 					</td>
                 </tr>
             )}
-            {renderContent(hunk, filePath)}
+            {renderContent(hunk, filePath, status)}
             </React.Fragment>
         );
     })}
@@ -926,8 +798,24 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     }
 
 
-    const renderContent = (hunk: any, filePath: string) => {
+    const renderContent = (hunk: any, filePath: string, status?: any) => {
+        // Add a status row at the top of the hunk if status is available
+        const changes = [...(hunk.changes || [])];
+        
+        // Add visual styling based on hunk status
+        const rowStyle = status ? {
+            backgroundColor: status.applied ? 'rgba(82, 196, 26, 0.05)' : 'rgba(255, 77, 79, 0.05)'
+        } : {};
         return hunk.changes && hunk.changes.map((change: any, i: number) => {
+            // Apply the status-based styling to each row
+            const style = {...rowStyle};
+            
+            // Add additional styling for specific change types
+            if (change.type === 'insert') {
+                style.backgroundColor = status?.applied ? 'rgba(82, 196, 26, 0.1)' : style.backgroundColor;
+            } else if (change.type === 'delete') {
+                style.backgroundColor = status?.applied ? 'rgba(255, 77, 79, 0.1)' : style.backgroundColor;
+            }
 
             let oldLine = undefined;
             let newLine = undefined;
@@ -946,6 +834,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 		    oldLineNumber={oldLine}
                     newLineNumber={newLine}
                     showLineNumbers={showLineNumbers}
+                    style={style}
                 />
             );
         });
@@ -1119,6 +1008,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
         try {
             console.log('About to send fetch request with body length:', cleanDiff.length);
+            console.log('Request body:', {
+                diff: cleanDiff.substring(0, 100) + '...',
+                filePath: filePath.trim()
+            });
+            
             const response = await fetch('/api/apply-changes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1131,10 +1025,34 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             // Log the actual sent data
             const sentData = await response.clone().json();
             console.log('Actually sent to server:', sentData);
+            console.log('Apply changes response:', {
+                status: response.status,
+                statusText: response.statusText,
+                headers: Object.fromEntries([...response.headers.entries()]),
+                ok: response.ok
+            });
+            
             if (response.ok || response.status === 207) {
-                setIsApplied(true);
                 const data = await response.json();
+                console.log('Apply changes response data:', data);
+                console.log('Response data structure:', {
+                    status: data.status,
+                    message: data.message,
+                    hasDetails: !!data.details,
+                    detailsKeys: data.details ? Object.keys(data.details) : [],
+                    succeeded: data.details?.succeeded,
+                    failed: data.details?.failed,
+                    hunkStatuses: data.details?.hunk_statuses
+                });
+                
+                // Check if ANY hunks succeeded before marking as applied
+                const hasSuccessfulHunks = data.details?.succeeded?.length > 0;
+                console.log('Has successful hunks:', hasSuccessfulHunks);
+                console.log('Succeeded hunks:', data.details?.succeeded);
+                
                 if (data.status === 'success') {
+                    console.log('Processing success status');
+                    setIsApplied(true);  // Complete success
                     // Update hunk statuses for successful application
                     const files = parseDiff(cleanDiff);
                     files.forEach(file => {
@@ -1149,6 +1067,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
                     message.success(`Changes applied successfully to ${filePath}`);
                 } else if (data.status === 'partial') {
+                    console.log('Processing partial status');
+                    // Only mark as applied if at least one hunk succeeded
+                    setIsApplied(hasSuccessfulHunks);
+                    console.log('Setting isApplied to:', hasSuccessfulHunks);
+                    
                     // Handle the new format with hunk_statuses
                     parseDiff(cleanDiff).forEach((file, fileIndex) => {
                         file.hunks.forEach((hunk, hunkIndex) => {
@@ -1203,29 +1126,132 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                         ),
                         duration: 10  // Show for 10 seconds since there's more to read
                     });
-                    setIsApplied(true);  // Mark as applied for partial success
+                } else if (data.status === 'error') {
+                    console.log('Processing error status');
+                    // Handle error status (all hunks failed)
+                    setIsApplied(false);
+                    console.log('Setting isApplied to false due to error status');
+                    
+                    // Mark all hunks as failed
+                    parseDiff(cleanDiff).forEach((file, fileIndex) => {
+                        file.hunks.forEach((hunk, hunkIndex) => {
+                            const hunkId = hunkIndex + 1;
+                            const hunkStatus = data.details?.hunk_statuses?.[hunkId];
+                            
+                            hunkStatuses.set(hunk, {
+                                applied: false,
+                                reason: hunkStatus?.stage 
+                                    ? `Failed in ${hunkStatus.stage} stage` 
+                                    : 'Failed to apply'
+                            });
+                        });
+                    });
+                    triggerDiffUpdate();
+                    
+                    // Show error message
+                    message.error({
+                        content: (
+                            <div>
+                                <p>
+                                    <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
+                                    {data.message || 'All hunks failed to apply'}
+                                </p>
+                                {data.details?.failed && data.details.failed.length > 0 && (
+                                    <div>
+                                        <p>Failed hunks:</p>
+                                        <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
+                                            {data.details.failed.map((hunkId, index) => {
+                                                const hunkStatus = data.details?.hunk_statuses?.[hunkId];
+                                                return (
+                                                    <li key={index}>
+                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
+                                                        {`Hunk #${hunkId} failed`}
+                                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
+                                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    </div>
+                                )}
+                            </div>
+                        ),
+                        duration: 10
+                    });
+                } else {
+                    console.log('Unknown status:', data.status);
+                    message.warning(`Unknown status: ${data.status}`);
                 }
             } else {
                 try {
                     const errorData = await response.json();
+                    console.log('Apply changes error response:', {
+                        status: response.status,
+                        errorData,
+                        errorDataKeys: Object.keys(errorData),
+                        detail: errorData.detail,
+                        detailType: typeof errorData.detail,
+                        message: errorData.message || errorData.detail?.message,
+                        hasDetails: !!errorData.details,
+                        detailsKeys: errorData.details ? Object.keys(errorData.details) : [],
+                    });
+                    
+                    // Check if the error response contains a status field
+                    if (errorData.detail && errorData.detail.status === 'error') {
+                        console.log('Processing error status from error response');
+                        setIsApplied(false);
+                        
+                        // Mark all hunks as failed
+                        parseDiff(cleanDiff).forEach((file, fileIndex) => {
+                            file.hunks.forEach((hunk, hunkIndex) => {
+                                hunkStatuses.set(hunk, {
+                                    applied: false,
+                                    reason: 'Failed to apply'
+                                });
+                            });
+                        });
+                        triggerDiffUpdate();
+                    }
+                    
                     message.error({
                         content: (
                             <div>
-			        <p>
+                                <p>
                                     <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                    {errorData.detail?.message || errorData.detail || 'Failed to apply changes'}
+                                    {errorData.detail?.message || errorData.message || errorData.detail || 'Failed to apply changes'}
                                 </p>
                                 {errorData.detail?.summary && <p>{errorData.detail.summary}</p>}
+                                {errorData.details?.failed && errorData.details.failed.length > 0 && (
+                                    <div>
+                                        <p>Failed hunks:</p>
+                                        <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
+                                            {errorData.details.failed.map((hunkId, index) => {
+                                                const hunkStatus = errorData.details?.hunk_statuses?.[hunkId];
+                                                return (
+                                                    <li key={index}>
+                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
+                                                        {`Hunk #${hunkId} failed`}
+                                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
+                                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    </div>
+                                )}
                             </div>
                         ),
                         duration: 5
                     });
                 } catch (parseError) {
+                    console.error('Error parsing error response:', parseError);
                     message.error('Failed to apply changes');
                 }
             }
         } catch (error: unknown) {
             console.error('Error applying changes:', error);
+            console.error('Error type:', typeof error);
+            console.error('Error properties:', Object.keys(error as object));
             message.error({
                 content: 'Error applying changes: ' + (error instanceof Error ? error.message : String(error)),
                 duration: 5
@@ -1668,10 +1694,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     console.log(`>>> Rendering as Graphviz (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
                     return (
-                        // Wrap GraphvizRenderer in ErrorBoundary
-                        <ErrorBoundary key={index} type="graphviz" fallback={<pre><code>Error rendering Graphviz diagram.</code></pre>}>
-                            <GraphvizRenderer dot={tokenWithText.text} />
-                        </ErrorBoundary>
+                        <D3Renderer
+                            spec={{
+                                type: 'graphviz',
+                                definition: token.text
+                            }}
+                            type="d3"
+                        />
                     );                
                 case 'mermaid':
                     console.log(`>>> Rendering as Mermaid (lang: ${(token as any).lang})`);
