@@ -159,17 +159,44 @@ def apply_diff_with_difflib_hybrid_forced(
                     normalized_fuzzy_file_slice_verify = [normalize_line_for_comparison(line) for line in fuzzy_file_slice_verify]
                     normalized_old_block_verify = [normalize_line_for_comparison(line) for line in h['old_block']]
 
+                    # Relaxed verification for incorrect hunk offsets
+                    # If the content doesn't match exactly, try to find a better match nearby
                     if normalized_fuzzy_file_slice_verify != normalized_old_block_verify:
-                        logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {fuzzy_best_pos}, but content doesn't match old_block. Skipping.")
-                        failure_info = {
-                            "status": "error",
-                            "type": "fuzzy_verification_failed",
-                            "hunk": hunk_idx,
-                            "position": fuzzy_best_pos,
-                            "confidence": fuzzy_best_ratio # Use the ratio from fuzzy match
-                        }
-                        hunk_failures.append((f"Fuzzy match verification failed for Hunk #{hunk_idx}", failure_info))
-                        continue # Skip applying this hunk as verification failed
+                        logger.warning(f"Hunk #{hunk_idx}: Initial verification failed at {fuzzy_best_pos}, trying relaxed verification")
+                        
+                        # Try to find a better match within a wider range
+                        found_match = False
+                        search_range = 30  # Search 30 lines before and after
+                        
+                        for offset in range(-search_range, search_range + 1):
+                            test_pos = fuzzy_best_pos + offset
+                            if test_pos < 0 or test_pos + len(h['old_block']) > len(final_lines_with_endings):
+                                continue
+                                
+                            test_slice = final_lines_with_endings[test_pos:test_pos + len(h['old_block'])]
+                            normalized_test_slice = [normalize_line_for_comparison(line) for line in test_slice]
+                            
+                            # Check if this is a better match
+                            match_count = sum(1 for a, b in zip(normalized_test_slice, normalized_old_block_verify) if a == b)
+                            match_ratio = match_count / len(normalized_old_block_verify) if normalized_old_block_verify else 0
+                            
+                            if match_ratio > 0.8:  # If 80% of lines match
+                                logger.info(f"Hunk #{hunk_idx}: Found better match at position {test_pos} with ratio {match_ratio:.2f}")
+                                remove_pos = test_pos
+                                found_match = True
+                                break
+                        
+                        if not found_match:
+                            logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {fuzzy_best_pos}, but content doesn't match old_block. Skipping.")
+                            failure_info = {
+                                "status": "error",
+                                "type": "fuzzy_verification_failed",
+                                "hunk": hunk_idx,
+                                "position": fuzzy_best_pos,
+                                "confidence": fuzzy_best_ratio # Use the ratio from fuzzy match
+                            }
+                            hunk_failures.append((f"Fuzzy match verification failed for Hunk #{hunk_idx}", failure_info))
+                            continue # Skip applying this hunk as verification failed
                     else:
                         remove_pos = fuzzy_best_pos # Assign remove_pos HERE if fuzzy OK and verified
                         logger.debug(f"Hunk #{hunk_idx}: Using fuzzy match position {remove_pos}")

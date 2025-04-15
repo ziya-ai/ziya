@@ -36,7 +36,6 @@ ENV_CONTEXT_SIZE = f"{ENV_PREFIX}CONTEXT_SIZE"
 ENV_CONFIDENCE_THRESHOLD = f"{ENV_PREFIX}CONFIDENCE_THRESHOLD"
 ENV_ADAPTIVE_CONTEXT = f"{ENV_PREFIX}ADAPTIVE_CONTEXT"
 ENV_MAX_OFFSET = f"{ENV_PREFIX}MAX_OFFSET"  # New environment variable for MAX_OFFSET
-ENV_MAX_OFFSET = f"{ENV_PREFIX}MAX_OFFSET"  # New environment variable for MAX_OFFSET
 
 import os
 
@@ -131,7 +130,7 @@ def get_confidence_threshold(level='medium'):
 
 def get_max_offset():
     """Get the configured maximum offset for hunk application."""
-    max_offset = get_config_value(ENV_MAX_OFFSET, 8)  # Default is 8 (increased from 3)
+    max_offset = get_config_value(ENV_MAX_OFFSET, 100)  # Increased from 8 to 100 to handle more cases
     return int(max_offset) if isinstance(max_offset, str) else max_offset
 
 def is_adaptive_context_enabled():
