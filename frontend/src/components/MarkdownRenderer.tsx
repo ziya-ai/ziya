@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
 import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
+import * as Viz from '@viz-js/viz';
 import { useTheme } from '../context/ThemeContext';
 import type * as PrismType from 'prismjs';
 import { renderFileHeader } from './renderFileHeader';
