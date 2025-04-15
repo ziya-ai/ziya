@@ -435,6 +435,18 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 container.style.position = 'relative';
                 container.style.overflow = 'hidden';
 
+                // Check if this is a Graphviz or Mermaid plugin
+                const plugin = findPlugin(parsed);
+                const isGraphvizOrMermaid = plugin?.name === 'graphviz-renderer' || plugin?.name === 'mermaid-renderer';
+                
+                // For Graphviz or Mermaid, override the container style to be more flexible
+                if (isGraphvizOrMermaid) {
+                    container.style.width = '100%';
+                    container.style.height = 'auto';
+                    container.style.minHeight = 'unset';
+                    container.style.overflow = 'visible';
+                }
+
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');
                 tempContainer.style.width = '100%';
@@ -659,47 +671,76 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         return plugin?.name === 'mermaid-renderer';
     }, [spec]);
     
-    // Add a specific effect for theme changes to force re-rendering of Mermaid diagrams
+    // Determine if it's specifically a Graphviz render
+    const isGraphvizRender = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return plugin?.name === 'graphviz-renderer';
+    }, [spec]);
+    
+    // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams
     useEffect(() => {
-        // Only run this effect when theme changes and we have a Mermaid diagram
-        if (isMermaidRender && d3ContainerRef.current) {
-            console.debug('Theme changed for Mermaid diagram, applying post-render fixes');
+        // Only run this effect when theme changes and we have a Mermaid or Graphviz diagram
+        if ((isMermaidRender || isGraphvizRender) && d3ContainerRef.current) {
+            console.debug(`Theme changed for ${isMermaidRender ? 'Mermaid' : 'Graphviz'} diagram, re-rendering`);
             
-            // Apply fixes for arrow markers and other elements that might not update properly
-            const svgElement = d3ContainerRef.current.querySelector('svg');
-            if (svgElement) {
-                if (isDarkMode) {
-                    // Fix for arrow markers in dark mode
-                    svgElement.querySelectorAll('defs marker path').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('fill', '#88c0d0');
-                    });
+            // For Mermaid, apply post-render fixes
+            if (isMermaidRender) {
+                const svgElement = d3ContainerRef.current.querySelector('svg');
+                if (svgElement) {
+                    if (isDarkMode) {
+                        // Fix for arrow markers in dark mode
+                        svgElement.querySelectorAll('defs marker path').forEach(el => {
+                            el.setAttribute('stroke', '#88c0d0');
+                            el.setAttribute('fill', '#88c0d0');
+                        });
+                        
+                        // Fix for all SVG paths and lines
+                        svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
+                            el.setAttribute('stroke', '#88c0d0');
+                            el.setAttribute('stroke-width', '1.5');
+                        });
+                        
+                        // Text on darker backgrounds should be black for contrast
+                        svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
+                            el.setAttribute('fill', '#000000');
+                        });
+                        
+                        // Node and cluster styling
+                        svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
+                            el.setAttribute('stroke', '#81a1c1');
+                            el.setAttribute('fill', '#5e81ac');
+                        });
+                        
+                        svgElement.querySelectorAll('.cluster rect').forEach(el => {
+                            el.setAttribute('stroke', '#81a1c1');
+                            el.setAttribute('fill', '#4c566a');
+                        });
+                    }
+                }
+            }
+            
+            // For Graphviz, trigger a complete re-render
+            if (isGraphvizRender && typeof spec === 'object') {
+                // Find the theme button and click it to trigger a re-render
+                const themeButton = d3ContainerRef.current.querySelector('.graphviz-theme-button');
+                if (themeButton) {
+                    (themeButton as HTMLButtonElement).click();
+                } else {
+                    // If no theme button, force a re-render by triggering a new render cycle
+                    // This is a simpler approach that avoids referencing initializeVisualization
+                    renderIdRef.current++; // Increment render ID to force a new render
                     
-                    // Fix for all SVG paths and lines
-                    svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5');
-                    });
-                    
-                    // Text on darker backgrounds should be black for contrast
-                    svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
-                        el.setAttribute('fill', '#000000');
-                    });
-                    
-                    // Node and cluster styling
-                    svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
-                        el.setAttribute('stroke', '#81a1c1');
-                        el.setAttribute('fill', '#5e81ac');
-                    });
-                    
-                    svgElement.querySelectorAll('.cluster rect').forEach(el => {
-                        el.setAttribute('stroke', '#81a1c1');
-                        el.setAttribute('fill', '#4c566a');
-                    });
+                    // Force re-render by updating a state
+                    setIsLoading(true);
+                    setTimeout(() => {
+                        if (mounted.current) {
+                            setIsLoading(false);
+                        }
+                    }, 10);
                 }
             }
         }
-    }, [isDarkMode, isMermaidRender]);
+    }, [isDarkMode, isMermaidRender, isGraphvizRender, spec]);
 
     // Determine if it's specifically a Graphviz render
     const isGraphvizRender = useMemo(() => {
