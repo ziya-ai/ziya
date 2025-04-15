@@ -2,12 +2,14 @@ import { D3RenderPlugin } from '../../types/d3';
 import { networkDiagramPlugin } from './networkDiagram';
 import { basicChartPlugin } from './basicChart';
 import { mermaidPlugin } from './mermaidPlugin';
+import { graphvizPlugin } from './graphvizPlugin';
 
 // Registry for D3 visualization plugins
 const pluginRegistry: D3RenderPlugin[] = [
     networkDiagramPlugin,
     basicChartPlugin,
-    mermaidPlugin
+    mermaidPlugin,
+    graphvizPlugin
     // Add more plugins here as needed
 ];
 pluginRegistry.forEach(plugin => {

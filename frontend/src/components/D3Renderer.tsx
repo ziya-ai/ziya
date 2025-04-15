@@ -170,6 +170,18 @@ useEffect(() => {
                 container.style.position = 'relative';
                 container.style.overflow = 'hidden';
 
+                // Check if this is a Graphviz or Mermaid plugin
+                const plugin = findPlugin(parsed);
+                const isGraphvizOrMermaid = plugin?.name === 'graphviz-renderer' || plugin?.name === 'mermaid-renderer';
+                
+                // For Graphviz or Mermaid, override the container style to be more flexible
+                if (isGraphvizOrMermaid) {
+                    container.style.width = '100%';
+                    container.style.height = 'auto';
+                    container.style.minHeight = 'unset';
+                    container.style.overflow = 'visible';
+                }
+
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');
                 tempContainer.style.width = '100%';
@@ -308,47 +320,76 @@ useEffect(() => {
         return plugin?.name === 'mermaid-renderer';
     }, [spec]);
     
-    // Add a specific effect for theme changes to force re-rendering of Mermaid diagrams
+    // Determine if it's specifically a Graphviz render
+    const isGraphvizRender = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return plugin?.name === 'graphviz-renderer';
+    }, [spec]);
+    
+    // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams
     useEffect(() => {
-        // Only run this effect when theme changes and we have a Mermaid diagram
-        if (isMermaidRender && d3ContainerRef.current) {
-            console.debug('Theme changed for Mermaid diagram, applying post-render fixes');
+        // Only run this effect when theme changes and we have a Mermaid or Graphviz diagram
+        if ((isMermaidRender || isGraphvizRender) && d3ContainerRef.current) {
+            console.debug(`Theme changed for ${isMermaidRender ? 'Mermaid' : 'Graphviz'} diagram, re-rendering`);
             
-            // Apply fixes for arrow markers and other elements that might not update properly
-            const svgElement = d3ContainerRef.current.querySelector('svg');
-            if (svgElement) {
-                if (isDarkMode) {
-                    // Fix for arrow markers in dark mode
-                    svgElement.querySelectorAll('defs marker path').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('fill', '#88c0d0');
-                    });
+            // For Mermaid, apply post-render fixes
+            if (isMermaidRender) {
+                const svgElement = d3ContainerRef.current.querySelector('svg');
+                if (svgElement) {
+                    if (isDarkMode) {
+                        // Fix for arrow markers in dark mode
+                        svgElement.querySelectorAll('defs marker path').forEach(el => {
+                            el.setAttribute('stroke', '#88c0d0');
+                            el.setAttribute('fill', '#88c0d0');
+                        });
+                        
+                        // Fix for all SVG paths and lines
+                        svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
+                            el.setAttribute('stroke', '#88c0d0');
+                            el.setAttribute('stroke-width', '1.5');
+                        });
+                        
+                        // Text on darker backgrounds should be black for contrast
+                        svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
+                            el.setAttribute('fill', '#000000');
+                        });
+                        
+                        // Node and cluster styling
+                        svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
+                            el.setAttribute('stroke', '#81a1c1');
+                            el.setAttribute('fill', '#5e81ac');
+                        });
+                        
+                        svgElement.querySelectorAll('.cluster rect').forEach(el => {
+                            el.setAttribute('stroke', '#81a1c1');
+                            el.setAttribute('fill', '#4c566a');
+                        });
+                    }
+                }
+            }
+            
+            // For Graphviz, trigger a complete re-render
+            if (isGraphvizRender && typeof spec === 'object') {
+                // Find the theme button and click it to trigger a re-render
+                const themeButton = d3ContainerRef.current.querySelector('.graphviz-theme-button');
+                if (themeButton) {
+                    (themeButton as HTMLButtonElement).click();
+                } else {
+                    // If no theme button, force a re-render by triggering a new render cycle
+                    // This is a simpler approach that avoids referencing initializeVisualization
+                    renderIdRef.current++; // Increment render ID to force a new render
                     
-                    // Fix for all SVG paths and lines
-                    svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5');
-                    });
-                    
-                    // Text on darker backgrounds should be black for contrast
-                    svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
-                        el.setAttribute('fill', '#000000');
-                    });
-                    
-                    // Node and cluster styling
-                    svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
-                        el.setAttribute('stroke', '#81a1c1');
-                        el.setAttribute('fill', '#5e81ac');
-                    });
-                    
-                    svgElement.querySelectorAll('.cluster rect').forEach(el => {
-                        el.setAttribute('stroke', '#81a1c1');
-                        el.setAttribute('fill', '#4c566a');
-                    });
+                    // Force re-render by updating a state
+                    setIsLoading(true);
+                    setTimeout(() => {
+                        if (mounted.current) {
+                            setIsLoading(false);
+                        }
+                    }, 10);
                 }
             }
         }
-    }, [isDarkMode, isMermaidRender]);
+    }, [isDarkMode, isMermaidRender, isGraphvizRender, spec]);
 
     const containerStyles = useMemo(() =>
         isMermaidRender ? {
@@ -371,12 +412,197 @@ useEffect(() => {
         boxSizing: 'border-box',
     };
 
-    const formatSource = (source: any): string => {
+    // Function to open visualization in a popout window
+    const openInPopout = (svg: SVGElement, title: string = 'Visualization') => {
+        if (!svg) return;
+        
+        // Get the SVG dimensions - need to cast to SVGGraphicsElement to access getBBox
+        const svgGraphics = svg as unknown as SVGGraphicsElement;
+        let width = 600;
+        let height = 400;
+        
         try {
-            return JSON.stringify(JSON.parse(typeof source === 'string' ? source : JSON.stringify(source)), null, 2);
+            // Try to get the bounding box
+            const bbox = svgGraphics.getBBox();
+            width = Math.max(bbox.width + 50, 400); // Add padding, minimum 400px
+            height = Math.max(bbox.height + 100, 300); // Add padding, minimum 300px
         } catch (e) {
-            return typeof source === 'string' ? source : JSON.stringify(source, null, 2);
+            console.warn('Could not get SVG dimensions, using defaults', e);
+            // Use default dimensions if getBBox fails
         }
+        
+        // Get SVG data
+        const svgData = new XMLSerializer().serializeToString(svg);
+        
+        // Create an HTML document that will display the SVG responsively
+        const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>${title}</title>
+            <style>
+                body {
+                    margin: 0;
+                    padding: 0;
+                    display: flex;
+                    flex-direction: column;
+                    height: 100vh;
+                    background-color: #f8f9fa;
+                    font-family: system-ui, -apple-system, sans-serif;
+                }
+                .toolbar {
+                    background-color: #f1f3f5;
+                    border-bottom: 1px solid #dee2e6;
+                    padding: 8px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }
+                .toolbar button {
+                    background-color: #4361ee;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                    cursor: pointer;
+                    margin-right: 8px;
+                    font-size: 14px;
+                }
+                .toolbar button:hover {
+                    background-color: #3a0ca3;
+                }
+                .container {
+                    flex: 1;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    overflow: auto;
+                    padding: 20px;
+                }
+                svg {
+                    max-width: 100%;
+                    max-height: 100%;
+                    height: auto;
+                    width: auto;
+                }
+                @media (prefers-color-scheme: dark) {
+                    body {
+                        background-color: #212529;
+                        color: #f8f9fa;
+                    }
+                    .toolbar {
+                        background-color: #343a40;
+                        border-bottom: 1px solid #495057;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="toolbar">
+                <div>
+                    <button onclick="zoomIn()">Zoom In</button>
+                    <button onclick="zoomOut()">Zoom Out</button>
+                    <button onclick="resetZoom()">Reset</button>
+                </div>
+                <div>
+                    <button onclick="downloadSvg()">Download SVG</button>
+                </div>
+            </div>
+            <div class="container" id="svg-container">
+                ${svgData}
+            </div>
+            <script>
+                const svg = document.querySelector('svg');
+                let currentScale = 1;
+                
+                // Make sure SVG is responsive
+                svg.setAttribute('width', '100%');
+                svg.setAttribute('height', '100%');
+                svg.style.maxWidth = '100%';
+                svg.style.maxHeight = '100%';
+                svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                
+                function zoomIn() {
+                    currentScale *= 1.2;
+                    svg.style.transform = \`scale(\${currentScale})\`;
+                }
+                
+                function zoomOut() {
+                    currentScale /= 1.2;
+                    svg.style.transform = \`scale(\${currentScale})\`;
+                }
+                
+                function resetZoom() {
+                    currentScale = 1;
+                    svg.style.transform = 'scale(1)';
+                }
+                
+                function downloadSvg() {
+                    const svgData = new XMLSerializer().serializeToString(svg);
+                    const svgBlob = new Blob([svgData], {type: 'image/svg+xml'});
+                    const url = URL.createObjectURL(svgBlob);
+                    
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = '${title.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now()}.svg';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                }
+            </script>
+        </body>
+        </html>
+        `;
+        
+        // Create a blob with the HTML content
+        const blob = new Blob([htmlContent], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        
+        // Open in a new window with specific dimensions
+        const popupWindow = window.open(
+            url, 
+            'D3Visualization', 
+            `width=${width},height=${height},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no`
+        );
+        
+        // Focus the new window
+        if (popupWindow) {
+            popupWindow.focus();
+        }
+        
+        // Clean up the URL object after a delay
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    };
+
+    // Function to save SVG
+    const saveSvg = (svg: SVGElement, filename: string = `visualization-${Date.now()}.svg`) => {
+        if (!svg) return;
+        
+        // Create a new SVG with proper XML declaration and doctype
+        const svgData = new XMLSerializer().serializeToString(svg);
+        
+        // Create a properly formatted SVG document with XML declaration
+        const svgDoc = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+${svgData}`;
+        
+        // Create a blob with the SVG content
+        const blob = new Blob([svgDoc], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+        
+        // Create a download link
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        // Clean up the URL object after a delay
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
 
     // Add source modal component
@@ -411,9 +637,11 @@ useEffect(() => {
                     if (container) {
                         const svg = container.querySelector('svg');
                         if (svg) {
-                            const svgData = new XMLSerializer().serializeToString(svg);
-                            const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgData)))}`;
-                            window.open(dataUri, '_blank');
+                            // Use the new openInPopout function
+                            const title = isGraphvizRender ? 'Graphviz Diagram' : 
+                                         isMermaidRender ? 'Mermaid Diagram' : 
+                                         'D3 Visualization';
+                            openInPopout(svg, title);
                         }
                     }
                 }}
@@ -427,14 +655,11 @@ useEffect(() => {
                     if (container) {
                         const svg = container.querySelector('svg');
                         if (svg) {
-                            const svgData = new XMLSerializer().serializeToString(svg);
-                            const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgData)))}`;
-                            const link = document.createElement('a');
-                            link.href = dataUri;
-                            link.download = `visualization-${Date.now()}.svg`;
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
+                            // Use the new saveSvg function
+                            const filename = isGraphvizRender ? `graphviz-diagram-${Date.now()}.svg` : 
+                                           isMermaidRender ? `mermaid-diagram-${Date.now()}.svg` : 
+                                           `visualization-${Date.now()}.svg`;
+                            saveSvg(svg, filename);
                         }
                     }
                 }}

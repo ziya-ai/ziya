@@ -231,8 +231,168 @@ export const mermaidPlugin: D3RenderPlugin = {
             openButton.innerHTML = '↗️ Open';
             openButton.className = 'diagram-action-button mermaid-open-button';
             openButton.onclick = () => {
-                const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
-                window.open(dataUri, '_blank');
+                // Get the SVG element
+                const svgElement = wrapper.querySelector('svg');
+                if (!svgElement) return;
+                
+                // Get the SVG dimensions
+                const svgGraphics = svgElement as unknown as SVGGraphicsElement;
+                let width = 600;
+                let height = 400;
+                
+                try {
+                    // Try to get the bounding box
+                    const bbox = svgGraphics.getBBox();
+                    width = Math.max(bbox.width + 50, 400); // Add padding, minimum 400px
+                    height = Math.max(bbox.height + 100, 300); // Add padding, minimum 300px
+                } catch (e) {
+                    console.warn('Could not get SVG dimensions, using defaults', e);
+                }
+                
+                // Create a new SVG with proper XML declaration and doctype
+                const svgData = new XMLSerializer().serializeToString(svgElement);
+                
+                // Create an HTML document that will display the SVG responsively
+                const htmlContent = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <title>Mermaid Diagram</title>
+                    <style>
+                        body {
+                            margin: 0;
+                            padding: 0;
+                            display: flex;
+                            flex-direction: column;
+                            height: 100vh;
+                            background-color: #f8f9fa;
+                            font-family: system-ui, -apple-system, sans-serif;
+                        }
+                        .toolbar {
+                            background-color: #f1f3f5;
+                            border-bottom: 1px solid #dee2e6;
+                            padding: 8px;
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                        }
+                        .toolbar button {
+                            background-color: #4361ee;
+                            color: white;
+                            border: none;
+                            border-radius: 4px;
+                            padding: 6px 12px;
+                            cursor: pointer;
+                            margin-right: 8px;
+                            font-size: 14px;
+                        }
+                        .toolbar button:hover {
+                            background-color: #3a0ca3;
+                        }
+                        .container {
+                            flex: 1;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            overflow: auto;
+                            padding: 20px;
+                        }
+                        svg {
+                            max-width: 100%;
+                            max-height: 100%;
+                            height: auto;
+                            width: auto;
+                        }
+                        @media (prefers-color-scheme: dark) {
+                            body {
+                                background-color: #212529;
+                                color: #f8f9fa;
+                            }
+                            .toolbar {
+                                background-color: #343a40;
+                                border-bottom: 1px solid #495057;
+                            }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class="toolbar">
+                        <div>
+                            <button onclick="zoomIn()">Zoom In</button>
+                            <button onclick="zoomOut()">Zoom Out</button>
+                            <button onclick="resetZoom()">Reset</button>
+                        </div>
+                        <div>
+                            <button onclick="downloadSvg()">Download SVG</button>
+                        </div>
+                    </div>
+                    <div class="container" id="svg-container">
+                        ${svgData}
+                    </div>
+                    <script>
+                        const svg = document.querySelector('svg');
+                        let currentScale = 1;
+                        
+                        // Make sure SVG is responsive
+                        svg.setAttribute('width', '100%');
+                        svg.setAttribute('height', '100%');
+                        svg.style.maxWidth = '100%';
+                        svg.style.maxHeight = '100%';
+                        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                        
+                        function zoomIn() {
+                            currentScale *= 1.2;
+                            svg.style.transform = \`scale(\${currentScale})\`;
+                        }
+                        
+                        function zoomOut() {
+                            currentScale /= 1.2;
+                            svg.style.transform = \`scale(\${currentScale})\`;
+                        }
+                        
+                        function resetZoom() {
+                            currentScale = 1;
+                            svg.style.transform = 'scale(1)';
+                        }
+                        
+                        function downloadSvg() {
+                            const svgData = new XMLSerializer().serializeToString(svg);
+                            const svgBlob = new Blob([svgData], {type: 'image/svg+xml'});
+                            const url = URL.createObjectURL(svgBlob);
+                            
+                            const link = document.createElement('a');
+                            link.href = url;
+                            link.download = 'mermaid-diagram.svg';
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                            
+                            setTimeout(() => URL.revokeObjectURL(url), 1000);
+                        }
+                    </script>
+                </body>
+                </html>
+                `;
+                
+                // Create a blob with the HTML content
+                const blob = new Blob([htmlContent], { type: 'text/html' });
+                const url = URL.createObjectURL(blob);
+                
+                // Open in a new window with specific dimensions
+                const popupWindow = window.open(
+                    url, 
+                    'MermaidDiagram', 
+                    `width=${width},height=${height},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no`
+                );
+                
+                // Focus the new window
+                if (popupWindow) {
+                    popupWindow.focus();
+                }
+                
+                // Clean up the URL object after a delay
+                setTimeout(() => URL.revokeObjectURL(url), 10000);
             };
             actionsContainer.appendChild(openButton);
 
@@ -241,13 +401,32 @@ export const mermaidPlugin: D3RenderPlugin = {
             saveButton.innerHTML = '💾 Save';
             saveButton.className = 'diagram-action-button mermaid-save-button';
             saveButton.onclick = () => {
-                const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+                // Get the SVG element
+                const svgElement = wrapper.querySelector('svg');
+                if (!svgElement) return;
+                
+                // Create a new SVG with proper XML declaration and doctype
+                const svgData = new XMLSerializer().serializeToString(svgElement);
+                
+                // Create a properly formatted SVG document with XML declaration
+                const svgDoc = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+${svgData}`;
+                
+                // Create a blob with the SVG content
+                const blob = new Blob([svgDoc], { type: 'image/svg+xml' });
+                const url = URL.createObjectURL(blob);
+                
+                // Create a download link
                 const link = document.createElement('a');
-                link.href = dataUri;
+                link.href = url;
                 link.download = `mermaid-diagram-${Date.now()}.svg`;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
+                
+                // Clean up the URL object after a delay
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
             };
             actionsContainer.appendChild(saveButton);
 
