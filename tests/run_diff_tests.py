@@ -1396,6 +1396,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test handling of malformed diff headers"""
         self.run_diff_test('MRE_malformed_diff_header')
         
+    def test_MRE_no_diff_git_header(self):
+        """Test handling of diffs without diff --git headers"""
+        self.run_diff_test('MRE_no_diff_git_header')
+        
     def test_MRE_missing_newline_at_eof(self):
         """Test handling of missing newline at end of file"""
         self.run_diff_test('MRE_missing_newline_at_eof')
