@@ -24,6 +24,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.utils.logging_utils import logger
 from app.agents.custom_message import ZiyaString, ZiyaMessageChunk
+from app.utils.custom_bedrock import CustomBedrockClient
 
 
 class NovaWrapper(BaseChatModel):
@@ -47,6 +48,16 @@ class NovaWrapper(BaseChatModel):
         
         # Initialize the client
         self.client = boto3.client("bedrock-runtime")
+        
+        # Get max_tokens from kwargs or model_kwargs
+        max_tokens = kwargs.get("max_tokens")
+        if max_tokens is None and "max_tokens" in self.model_kwargs:
+            max_tokens = self.model_kwargs.get("max_tokens")
+        
+        # Wrap the client with our custom client to ensure max_tokens is correctly passed
+        if max_tokens is not None:
+            self.client = CustomBedrockClient(self.client, max_tokens=max_tokens)
+            logger.info(f"Wrapped boto3 client with CustomBedrockClient in NovaWrapper, max_tokens={max_tokens}")
         
         # Set default model parameters
         self.model_kwargs = {

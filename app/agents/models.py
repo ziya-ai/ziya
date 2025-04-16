@@ -532,32 +532,72 @@ class ModelManager:
         # Check if this is a Nova model
         family = model_config.get("family")
         
+        # Get thinking mode setting
+        thinking_mode = settings.get("thinking_mode", False)
+        if isinstance(thinking_mode, str):
+            thinking_mode = thinking_mode.lower() == "true"
+        
         # Create the appropriate model based on family
         if family == "nova":
             from app.agents.nova_wrapper import NovaBedrock
             logger.info(f"Initializing Nova model: {model_id}")
+            
+            # Create a model_kwargs dictionary with all parameters
+            nova_model_kwargs = {
+                "top_k": top_k,
+                "max_tokens": max_tokens  # Explicitly include max_tokens in model_kwargs
+            }
+            
+            logger.info(f"Creating NovaBedrock with model_kwargs: {nova_model_kwargs}")
+            
             model = NovaBedrock(
                 model_id=model_id,
                 client=None,  # Will be created internally
                 region_name=region,
-                model_kwargs={
-                    "top_k": top_k
-                },
+                model_kwargs=nova_model_kwargs,
                 temperature=temperature,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                thinking_mode=thinking_mode
             )
+            
+            # Add a debug log to check the model's parameters
+            logger.info(f"NovaBedrock created with: model_id={model_id}, temperature={temperature}, max_tokens={max_tokens}")
+            if hasattr(model, 'model_kwargs'):
+                logger.info(f"NovaBedrock model_kwargs: {model.model_kwargs}")
         else:
-            # Default to standard Bedrock model
+            # Use standard ChatBedrock
+            logger.info(f"Initializing ChatBedrock for model: {model_id}")
+            
+            # Create a model_kwargs dictionary with all parameters
+            model_kwargs = {
+                "top_k": top_k,
+                "max_tokens": max_tokens  # Explicitly include max_tokens in model_kwargs
+            }
+            
+            logger.info(f"Creating ChatBedrock with model_kwargs: {model_kwargs}")
+            
+            # Create the ChatBedrock model
             model = ChatBedrock(
                 model_id=model_id,
                 client=None,  # Will be created internally
                 region_name=region,
-                model_kwargs={
-                    "top_k": top_k
-                },
+                model_kwargs=model_kwargs,
                 temperature=temperature,
                 max_tokens=max_tokens
             )
+            
+            # Add a debug log to check the model's parameters
+            logger.info(f"ChatBedrock created with: model_id={model_id}, temperature={temperature}, max_tokens={max_tokens}")
+            if hasattr(model, 'model_kwargs'):
+                logger.info(f"ChatBedrock model_kwargs: {model.model_kwargs}")
+            
+            # Wrap the client with our custom client to ensure max_tokens is correctly passed
+            from app.utils.custom_bedrock import CustomBedrockClient
+            if hasattr(model, 'client'):
+                model.client = CustomBedrockClient(model.client, max_tokens=max_tokens)
+                logger.info(f"Wrapped boto3 client with CustomBedrockClient, max_tokens={max_tokens}")
+        
+        return model
         
         return model
 
