@@ -369,21 +369,36 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     return;
                 }
 
-                // Cleanup existing simulation
-                if (simulationRef.current) {
-                    try {
-                        simulationRef.current.stop();
-                        simulationRef.current = null;
-                    } catch (error) {
-                        console.warn('Error cleaning up simulation:', error);
-                    }
+                // Handle Vega-Lite rendering
+                const container = vegaContainerRef.current;
+                if (!container) return;
+
+                const vegaSpec = {
+                    $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+                    width: width || 'container',
+                    height: height || 300,
+                    mark: parsed.type || 'point',
+                    data: {
+                        values: Array.isArray(parsed.data) ? parsed.data : [parsed.data]
+                    },
+                    encoding: parsed.encoding || {
+                        x: { field: 'x', type: 'quantitative' },
+                        y: { field: 'y', type: 'quantitative' }
+                    },
+                    ...parsed
+                };
+
+                if (vegaViewRef.current) {
+                    vegaViewRef.current.finalize();
+                    vegaViewRef.current = null;
                 }
 
-                // Set container dimensions
-                container.style.width = `${width}px`;
-                container.style.height = `${height}px`;
-                container.style.position = 'relative';
-                container.style.overflow = 'hidden';
+                console.debug('Rendering Vega spec:', vegaSpec);
+                const result = await vegaEmbed(container, vegaSpec, {
+                    actions: false,
+                    theme: isDarkMode ? 'dark' : 'excel',
+                    renderer: 'canvas'
+                });
 
                 // Check if this is a Graphviz or Mermaid plugin
                 const plugin = findPlugin(parsed);
@@ -492,6 +507,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 hasSuccessfulRenderRef.current = true;
                 return;
             }
+        };
 
             // Handle Vega-Lite rendering
             const container = vegaContainerRef.current;
@@ -580,19 +596,19 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
         return plugin?.name === 'mermaid-renderer';
     }, [spec]);
-    
+
     // Determine if it's specifically a Graphviz render
     const isGraphvizRender = useMemo(() => {
         const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
         return plugin?.name === 'graphviz-renderer';
     }, [spec]);
-    
+
     // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams
     useEffect(() => {
         // Only run this effect when theme changes and we have a Mermaid or Graphviz diagram
         if ((isMermaidRender || isGraphvizRender) && d3ContainerRef.current) {
             console.debug(`Theme changed for ${isMermaidRender ? 'Mermaid' : 'Graphviz'} diagram, re-rendering`);
-            
+
             // For Mermaid, apply post-render fixes
             if (isMermaidRender) {
                 const svgElement = d3ContainerRef.current.querySelector('svg');
@@ -603,24 +619,24 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                             el.setAttribute('stroke', '#88c0d0');
                             el.setAttribute('fill', '#88c0d0');
                         });
-                        
+
                         // Fix for all SVG paths and lines
                         svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
                             el.setAttribute('stroke', '#88c0d0');
                             el.setAttribute('stroke-width', '1.5');
                         });
-                        
+
                         // Text on darker backgrounds should be black for contrast
                         svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
                             el.setAttribute('fill', '#000000');
                         });
-                        
+
                         // Node and cluster styling
                         svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
                             el.setAttribute('stroke', '#81a1c1');
                             el.setAttribute('fill', '#5e81ac');
                         });
-                        
+
                         svgElement.querySelectorAll('.cluster rect').forEach(el => {
                             el.setAttribute('stroke', '#81a1c1');
                             el.setAttribute('fill', '#4c566a');
@@ -628,7 +644,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     }
                 }
             }
-            
+
             // For Graphviz, trigger a complete re-render
             if (isGraphvizRender && typeof spec === 'object') {
                 // Find the theme button and click it to trigger a re-render
@@ -639,7 +655,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     // If no theme button, force a re-render by triggering a new render cycle
                     // This is a simpler approach that avoids referencing initializeVisualization
                     renderIdRef.current++; // Increment render ID to force a new render
-                    
+
                     // Force re-render by updating a state
                     setIsLoading(true);
                     setTimeout(() => {
@@ -1061,7 +1077,7 @@ ${svgData}`;
                         boxSizing: 'border-box'
                     }}
                 />
-             ) : (
+            ) : (
                 <div
                     ref={vegaContainerRef}
                     id="vega-container"
