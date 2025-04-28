@@ -1,9 +1,0 @@
-diff a/frontend/src/types/d3.ts b/frontend/src/types/d3.ts	(rejected hunks)
-@@ -1,6 +1,6 @@
- export interface D3RenderPlugin {
-     name: string;
--    priority: number;
-+    priority?: number;
-     canHandle: (spec: any) => boolean;
-     render: (container: HTMLElement, d3: any, spec: any) => void;
- }
