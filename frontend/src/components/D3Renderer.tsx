@@ -12,11 +12,11 @@ interface D3RendererProps {
     spec: any;
     width?: number;
     height?: number;
-    containerId?: string;  
+    containerId?: string;
     type?: RenderType;
-    onLoad?: () => void;  
-    onError?: (error: Error) => void; 
-    config?: any; 
+    onLoad?: () => void;
+    onError?: (error: Error) => void;
+    config?: any;
 }
 
 function findPlugin(spec: any): D3RenderPlugin | undefined {
@@ -60,253 +60,362 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const mounted = useRef(true);
 
     // First useEffect for cleanup
-useEffect(() => {
-    return () => {
-        mounted.current = false;
-        console.debug('D3Renderer cleanup triggered');
-        if (vegaViewRef.current) {
-            try {
-                vegaViewRef.current.finalize();
-                vegaViewRef.current = null;
-            } catch (e) { /* ignore cleanup errors */ }
-            console.debug('Vega view finalized');
-        }
-        // Clear D3 container
-        if (d3ContainerRef.current) {
-            // Stop any running force simulation
-            if (simulationRef.current) {
-                simulationRef.current.stop();
-                simulationRef.current = null;
+    useEffect(() => {
+        return () => {
+            mounted.current = false;
+            console.debug('D3Renderer cleanup triggered');
+            if (vegaViewRef.current) {
+                try {
+                    vegaViewRef.current.finalize();
+                    vegaViewRef.current = null;
+                } catch (e) { /* ignore cleanup errors */ }
+                console.debug('Vega view finalized');
             }
-            // Remove all D3 event listeners
-            d3.select(d3ContainerRef.current)
-                .selectAll('*')
-                .on('.', null);
-                
-            d3ContainerRef.current.innerHTML = '';
-            if (cleanupRef.current) {
-                cleanupRef.current();
-                cleanupRef.current = null;
+            // Clear D3 container
+            if (d3ContainerRef.current) {
+                // Stop any running force simulation
+                if (simulationRef.current) {
+                    simulationRef.current.stop();
+                    simulationRef.current = null;
+                }
+                // Remove all D3 event listeners
+                d3.select(d3ContainerRef.current)
+                    .selectAll('*')
+                    .on('.', null);
+
+                d3ContainerRef.current.innerHTML = '';
+                if (cleanupRef.current) {
+                    cleanupRef.current();
+                    cleanupRef.current = null;
+                }
             }
-        }
-    };
-}, []);
+        };
+    }, []);
 
     // Main rendering useEffect
-useEffect(() => {
-    const currentRender = ++renderIdRef.current;
-    console.debug(`Starting render #${currentRender}`);
+    useEffect(() => {
+        const currentRender = ++renderIdRef.current;
+        console.debug(`Starting render #${currentRender}`);
 
-    const initializeVisualization = async () => {
-        setIsLoading(true);
-        try {
-            if (!spec) {
-                throw new Error('No specification provided');
-                    return;
-            }
-
-            let parsed: any;
-            let specLines: string[];
-
+        const initializeVisualization = async () => {
+            setIsLoading(true);
             try {
-                if (typeof spec === 'string') {
-                        console.debug('Parsing string spec:', spec.substring(0, 100) + '...');
-                    // Clean up the spec string
-                    specLines = spec
-                        .replace(/\r\n/g, '\n')
-                        .split('\n')
-                        .map(line => line.trim())
-                        .filter(line => !line.trim().startsWith('//') && line.trim() !== '');
-
-                    // Check if we have a complete code block
-                        if (!specLines.length) {
-                        setIsLoading(true);
-                        return; // Exit early if code block is incomplete
-                    }
-
-                    const cleanSpec = specLines.join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
-                    parsed = JSON.parse(cleanSpec);
-                } else {
-                        console.debug('Using object spec directly');
-                    parsed = spec;
+                if (!spec) {
+                    throw new Error('No specification provided');
+                    return;
                 }
-            } catch (parseError) {
-                setIsLoading(true); // Keep loading while we wait for complete spec
-                console.debug('Waiting for complete spec:', parseError);
-                return;
-            }
-                
+
+                let parsed: any;
+                let specLines: string[];
+
+                try {
+                    if (typeof spec === 'string') {
+                        console.debug('Parsing string spec:', spec.substring(0, 100) + '...');
+                        // Clean up the spec string
+                        specLines = spec
+                            .replace(/\r\n/g, '\n')
+                            .split('\n')
+                            .map(line => line.trim())
+                            .filter(line => !line.trim().startsWith('//') && line.trim() !== '');
+
+                        // Check if we have a complete code block
+                        if (!specLines.length) {
+                            setIsLoading(true);
+                            return; // Exit early if code block is incomplete
+                        }
+
+                        const cleanSpec = specLines.join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
+                        parsed = JSON.parse(cleanSpec);
+                    } else {
+                        console.debug('Using object spec directly');
+                        parsed = spec;
+                    }
+                } catch (parseError) {
+                    setIsLoading(true); // Keep loading while we wait for complete spec
+                    console.debug('Waiting for complete spec:', parseError);
+                    return;
+                }
+
+                // Special handling for Mermaid diagrams
+                if (parsed.type === 'mermaid') {
+                    // Pre-process the definition to fix common syntax issues
+                    if (typeof parsed.definition === 'string') {
+
+                        // Detect diagram type
+                        const firstLine = parsed.definition.trim().split('\n')[0].toLowerCase();
+                        const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
+
+                        // Apply diagram-specific fixes
+                        if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
+                            // Fix subgraph class syntax
+                            parsed.definition = parsed.definition.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 style_$2');
+                            parsed.definition = parsed.definition.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
+
+                            // Fix "Send DONE Marker" nodes
+                            parsed.definition = parsed.definition.replace(/\[Send\s+"DONE"\s+Marker\]/g, '[Send DONE Marker]');
+                            parsed.definition = parsed.definition.replace(/\[Send\s+\[DONE\]\s+Marker\]/g, '[Send DONE Marker]');
+
+                            // Fix SendDone nodes
+                            parsed.definition = parsed.definition.replace(/SendDone\[([^\]]+)\]/g, 'sendDoneNode["$1"]');
+
+                            // Fix end nodes that cause parsing errors - replace all 'end' node references
+                            parsed.definition = parsed.definition.replace(/\bend\b\s*\[/g, 'endNode[');
+                            parsed.definition = parsed.definition.replace(/-->\s*\bend\b/g, '--> endNode');
+                            parsed.definition = parsed.definition.replace(/\bend\b\s*-->/g, 'endNode -->');
+
+                            // Convert flowchart to graph LR if needed for better compatibility
+                            if (parsed.definition.startsWith('flowchart ')) {
+                                parsed.definition = parsed.definition.replace(/^flowchart\s+/m, 'graph ');
+                            }
+                        }
+
+                        else if (diagramType === 'requirement') {
+                            // Fix requirement diagram syntax
+                            const lines = parsed.definition.split('\n');
+                    const result: string[] = [];
+
+                            for (let i = 0; i < lines.length; i++) {
+                                let line = lines[i].trim();
+
+                                // Fix ID format
+                                if (line.match(/^\s*id:/i)) {
+                                    line = line.replace(/id:\s*([^,]+)/, 'id: "$1"');
+                                }
+
+                                // Fix text format
+                                if (line.match(/^\s*text:/i)) {
+                                    line = line.replace(/text:\s*([^,]+)/, 'text: "$1"');
+                                }
+
+                                result.push(line);
+                            }
+
+                            parsed.definition = result.join('\n');
+                        }
+                        else if (diagramType === 'xychart') {
+                            // Fix xychart array syntax
+                            parsed.definition = parsed.definition.replace(/\[(.*?)\]/g, '"[$1]"');
+                        }
+
+                        // Fix quoted text in node labels
+                        parsed.definition = parsed.definition.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
+                            // Replace with simple text without quotes to avoid parsing issues
+                            return `[${before}${quoted}${after}]`;
+                        });
+
+                        // Fix end nodes that cause parsing errors - replace all 'end' node references
+                        parsed.definition = parsed.definition.replace(/\bend\b\s*\[/g, 'endNode[');
+                        parsed.definition = parsed.definition.replace(/-->\s*\bend\b/g, '--> endNode');
+                        parsed.definition = parsed.definition.replace(/\bend\b\s*-->/g, 'endNode -->');
+
+                        // Fix nodes with square brackets in their text
+                        parsed.definition = parsed.definition.replace(/\[([^\]]*\[[^\]]*\][^\]]*)\]/g, (match, content) => {
+                            // Replace inner square brackets with parentheses
+                            return `["${content.replace(/\[/g, '(').replace(/\]/g, ')')}"]`;
+                        });
+
+                        // Convert flowchart to graph LR if needed for better compatibility
+                        if (parsed.definition.startsWith('flowchart ')) {
+                            parsed.definition = parsed.definition.replace(/^flowchart\s+/m, 'graph ');
+                        }
+
+                        console.debug('Pre-processed Mermaid definition for better compatibility');
+                    }
+                }
+
                 // Log the parsed spec for debugging
                 console.debug('D3Renderer: Successfully parsed spec:', {
                     type: parsed.type,
                     renderer: parsed.renderer
                 });
 
-            // Only proceed with rendering if we have a valid parsed spec
-            if (!parsed) return;
+                // Only proceed with rendering if we have a valid parsed spec
+                if (!parsed) return;
 
-            if (type === 'd3' || parsed.renderer === 'd3' || typeof parsed.render === 'function') {
-                const container = d3ContainerRef.current;
-                if (!container) return;
-                
-                if (currentRender !== renderIdRef.current) {
-                    console.debug(`Skipping stale render #${currentRender}`);
+                if (type === 'd3' || parsed.renderer === 'd3' || typeof parsed.render === 'function') {
+                    const container = d3ContainerRef.current;
+                    if (!container) return;
+
+                    if (currentRender !== renderIdRef.current) {
+                        console.debug(`Skipping stale render #${currentRender}`);
+                        return;
+                    }
+
+                    // Cleanup existing simulation
+                    if (simulationRef.current) {
+                        try {
+                            simulationRef.current.stop();
+                            simulationRef.current = null;
+                        } catch (error) {
+                            console.warn('Error cleaning up simulation:', error);
+                        }
+                    }
+
+                    // Set container dimensions
+                    container.style.width = `${width}px`;
+                    container.style.height = `${height}px`;
+                    container.style.position = 'relative';
+                    container.style.overflow = 'hidden';
+
+                    // Check if this is a Graphviz or Mermaid plugin
+                    const plugin = findPlugin(parsed);
+                    const isGraphvizOrMermaid = plugin?.name === 'graphviz-renderer' || plugin?.name === 'mermaid-renderer';
+
+                    // For Graphviz or Mermaid, override the container style to be more flexible
+                    if (isGraphvizOrMermaid) {
+                        container.style.width = '100%';
+                        container.style.height = 'auto';
+                        container.style.minHeight = 'unset';
+                        container.style.overflow = 'visible';
+                    }
+
+                    // Create temporary container for safe rendering
+                    const tempContainer = document.createElement('div');
+                    tempContainer.style.width = '100%';
+                    tempContainer.style.height = '100%';
+
+                    let renderSuccessful = false;
+
+                    try {
+                        // Clear any existing content
+                        if (container.firstChild) {
+                            container.removeChild(container.firstChild);
+                        }
+
+                        // Initialize D3 selection for the container
+                        const d3Container = d3.select(tempContainer);
+
+                        if (typeof parsed.render === 'function') {
+                            const result = parsed.render.call(parsed, tempContainer, d3);
+                            renderSuccessful = true;
+
+                            // If result is a function, use it as cleanup
+                            if (typeof result === 'function') {
+                                cleanupRef.current = result;
+                            }
+                        } else if (parsed.type === 'network') {
+                            const plugin = findPlugin(parsed);
+                            if (plugin) {
+                                plugin.render(tempContainer, d3, {
+                                    ...parsed,
+                                    width: width || 600,
+                                    height: height || 400
+                                }, isDarkMode);
+                                renderSuccessful = true;
+                            }
+                        } else {
+                            const plugin = findPlugin(parsed);
+                            if (!plugin) {
+                                throw new Error('No render function or compatible plugin found');
+                            }
+
+                            console.debug('Using plugin:', plugin.name);
+                            plugin.render(tempContainer, d3, parsed, isDarkMode);
+                            renderSuccessful = true;
+                            if (mounted.current) setRenderError(null);
+                        }
+
+                        // Only replace main container content if render was successful
+                        if (renderSuccessful) {
+                            container.innerHTML = '';
+                            container.appendChild(tempContainer);
+                        }
+                    } catch (renderError) {
+                        console.error('D3 render error:', renderError);
+                        if (mounted.current) {
+                            setRenderError(renderError instanceof Error ? renderError.message : 'Render failed');
+                            setErrorDetails([renderError instanceof Error ? renderError.message : 'Unknown error']);
+                        }
+                    }
+
+                    if (!renderSuccessful) {
+                        throw new Error('Render did not complete successfully');
+                    }
+
+                    // Add retry button for Mermaid diagrams if there was an error
+                    if (renderError && (plugin?.name === 'mermaid-renderer')) {
+                        const retryButton = document.createElement('button');
+                        retryButton.innerHTML = '🔄 Retry Rendering';
+                        retryButton.className = 'diagram-action-button mermaid-retry-button';
+                        retryButton.style.cssText = `
+                        background-color: #4361ee;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        padding: 8px 16px;
+                        margin: 10px auto;
+                        cursor: pointer;
+                        display: block;
+                    `;
+                        retryButton.onclick = () => initializeVisualization();
+                        container.appendChild(retryButton);
+                    }
+
+                    if (mounted.current) setIsLoading(false);
+                    setRenderError(null);
+                    onLoad?.();
                     return;
                 }
 
-                // Cleanup existing simulation
-                if (simulationRef.current) {
-                    try {
-                        simulationRef.current.stop();
-                        simulationRef.current = null;
-                    } catch (error) {
-                        console.warn('Error cleaning up simulation:', error);
-                    }
+                // Handle Vega-Lite rendering
+                const container = vegaContainerRef.current;
+                if (!container) return;
+
+                const vegaSpec = {
+                    $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+                    width: width || 'container',
+                    height: height || 300,
+                    mark: parsed.type || 'point',
+                    data: {
+                        values: Array.isArray(parsed.data) ? parsed.data : [parsed.data]
+                    },
+                    encoding: parsed.encoding || {
+                        x: { field: 'x', type: 'quantitative' },
+                        y: { field: 'y', type: 'quantitative' }
+                    },
+                    ...parsed
+                };
+
+                if (vegaViewRef.current) {
+                    vegaViewRef.current.finalize();
+                    vegaViewRef.current = null;
                 }
 
-                // Set container dimensions
-                container.style.width = `${width}px`;
-                container.style.height = `${height}px`;
-                container.style.position = 'relative';
-                container.style.overflow = 'hidden';
+                console.debug('Rendering Vega spec:', vegaSpec);
+                const result = await vegaEmbed(container, vegaSpec, {
+                    actions: false,
+                    theme: isDarkMode ? 'dark' : 'excel',
+                    renderer: 'canvas'
+                });
 
-                // Check if this is a Graphviz or Mermaid plugin
-                const plugin = findPlugin(parsed);
-                const isGraphvizOrMermaid = plugin?.name === 'graphviz-renderer' || plugin?.name === 'mermaid-renderer';
-                
-                // For Graphviz or Mermaid, override the container style to be more flexible
-                if (isGraphvizOrMermaid) {
-                    container.style.width = '100%';
-                    container.style.height = 'auto';
-                    container.style.minHeight = 'unset';
-                    container.style.overflow = 'visible';
+                if (!mounted.current) {
+                    result.view.finalize();
+                    return;
                 }
 
-                // Create temporary container for safe rendering
-                const tempContainer = document.createElement('div');
-                tempContainer.style.width = '100%';
-                tempContainer.style.height = '100%';
-
-                let renderSuccessful = false;
-
-                try {
-                    // Clear any existing content
-                    while (container.firstChild) {
-                        container.removeChild(container.firstChild);
-                    }
-
-                    // Initialize D3 selection for the container
-                    const d3Container = d3.select(tempContainer);
-
-                    if (typeof parsed.render === 'function') {
-                        const result = parsed.render.call(parsed, tempContainer, d3);
-                        renderSuccessful = true;
-
-                        // If result is a function, use it as cleanup
-                        if (typeof result === 'function') {
-                            cleanupRef.current = result;
-                        }
-                    } else if (parsed.type === 'network') {
-                        const plugin = findPlugin(parsed);
-                        if (plugin) {
-                            plugin.render(tempContainer, d3, {
-                                ...parsed,
-                                width: width || 600,
-                                height: height || 400
-                            }, isDarkMode);
-                            renderSuccessful = true;
-                        }
-                    } else {
-                        const plugin = findPlugin(parsed);
-                        if (!plugin) {
-                            throw new Error('No render function or compatible plugin found');
-                        }
-                        
-                        console.debug('Using plugin:', plugin.name);
-                        plugin.render(tempContainer, d3, parsed, isDarkMode);
-                        renderSuccessful = true;
-                    }
-
-                    // Only replace main container content if render was successful
-                    if (renderSuccessful) {
-                        container.innerHTML = '';
-                        container.appendChild(tempContainer);
-                    }
-                } catch (renderError) {
-                    console.error('D3 render error:', renderError);
-                    setRenderError(renderError instanceof Error ? renderError.message : 'Render failed');
-                    throw renderError;
-                }
-
-                if (!renderSuccessful) {
-                    throw new Error('Render did not complete successfully');
-                }
-
+                vegaViewRef.current = result.view;
                 setIsLoading(false);
-                setRenderError(null);
                 onLoad?.();
-                return;
+
+            } catch (error: any) {
+                console.error('Visualization error:', error);
+                // Only show error if we're not just waiting for complete spec
+                if (error.message !== 'Unexpected end of JSON input') {
+                    setRenderError(error.message);
+                    setErrorDetails([error.message]);
+                }
+                setIsLoading(false);
             }
+        };
 
-            // Handle Vega-Lite rendering
-            const container = vegaContainerRef.current;
-            if (!container) return;
-
-            const vegaSpec = {
-                $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-                width: width || 'container',
-                height: height || 300,
-                mark: parsed.type || 'point',
-                data: {
-                    values: Array.isArray(parsed.data) ? parsed.data : [parsed.data]
-                },
-                encoding: parsed.encoding || {
-                    x: { field: 'x', type: 'quantitative' },
-                    y: { field: 'y', type: 'quantitative' }
-                },
-                ...parsed
-            };
-
-            if (vegaViewRef.current) {
-                vegaViewRef.current.finalize();
-                vegaViewRef.current = null;
-            }
-
-            console.debug('Rendering Vega spec:', vegaSpec);
-            const result = await vegaEmbed(container, vegaSpec, {
-                actions: false,
-                theme: isDarkMode ? 'dark' : 'excel',
-                renderer: 'canvas'
-            });
-
-            if (!mounted.current) {
-                result.view.finalize();
-                return;
-            }
-
-            vegaViewRef.current = result.view;
-            setIsLoading(false);
-            onLoad?.();
-
-        } catch (error: any) {
-            console.error('Visualization error:', error);
-            // Only show error if we're not just waiting for complete spec
-            if (error.message !== 'Unexpected end of JSON input') {
-                setRenderError(error.message);
-                setErrorDetails([error.message]);
-            }
-            setIsLoading(false);
+        if (mounted.current) {
+            initializeVisualization();
         }
-    };
-    
-    if (mounted.current) {
-        initializeVisualization();
-    }
 
-    return () => {
-        mounted.current = false;
-    };
-}, [spec, type, width, height, isDarkMode]);
+        return () => {
+            mounted.current = false;
+        };
+    }, [spec, type, width, height, isDarkMode]);
 
 
     const isD3Render = useMemo(() => {
@@ -319,19 +428,19 @@ useEffect(() => {
         const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
         return plugin?.name === 'mermaid-renderer';
     }, [spec]);
-    
+
     // Determine if it's specifically a Graphviz render
     const isGraphvizRender = useMemo(() => {
         const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
         return plugin?.name === 'graphviz-renderer';
     }, [spec]);
-    
+
     // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams
     useEffect(() => {
         // Only run this effect when theme changes and we have a Mermaid or Graphviz diagram
         if ((isMermaidRender || isGraphvizRender) && d3ContainerRef.current) {
             console.debug(`Theme changed for ${isMermaidRender ? 'Mermaid' : 'Graphviz'} diagram, re-rendering`);
-            
+
             // For Mermaid, apply post-render fixes
             if (isMermaidRender) {
                 const svgElement = d3ContainerRef.current.querySelector('svg');
@@ -342,24 +451,24 @@ useEffect(() => {
                             el.setAttribute('stroke', '#88c0d0');
                             el.setAttribute('fill', '#88c0d0');
                         });
-                        
+
                         // Fix for all SVG paths and lines
                         svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
                             el.setAttribute('stroke', '#88c0d0');
                             el.setAttribute('stroke-width', '1.5');
                         });
-                        
+
                         // Text on darker backgrounds should be black for contrast
                         svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
                             el.setAttribute('fill', '#000000');
                         });
-                        
+
                         // Node and cluster styling
                         svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
                             el.setAttribute('stroke', '#81a1c1');
                             el.setAttribute('fill', '#5e81ac');
                         });
-                        
+
                         svgElement.querySelectorAll('.cluster rect').forEach(el => {
                             el.setAttribute('stroke', '#81a1c1');
                             el.setAttribute('fill', '#4c566a');
@@ -367,7 +476,7 @@ useEffect(() => {
                     }
                 }
             }
-            
+
             // For Graphviz, trigger a complete re-render
             if (isGraphvizRender && typeof spec === 'object') {
                 // Find the theme button and click it to trigger a re-render
@@ -378,7 +487,7 @@ useEffect(() => {
                     // If no theme button, force a re-render by triggering a new render cycle
                     // This is a simpler approach that avoids referencing initializeVisualization
                     renderIdRef.current++; // Increment render ID to force a new render
-                    
+
                     // Force re-render by updating a state
                     setIsLoading(true);
                     setTimeout(() => {
@@ -415,12 +524,12 @@ useEffect(() => {
     // Function to open visualization in a popout window
     const openInPopout = (svg: SVGElement, title: string = 'Visualization') => {
         if (!svg) return;
-        
+
         // Get the SVG dimensions - need to cast to SVGGraphicsElement to access getBBox
         const svgGraphics = svg as unknown as SVGGraphicsElement;
         let width = 600;
         let height = 400;
-        
+
         try {
             // Try to get the bounding box
             const bbox = svgGraphics.getBBox();
@@ -430,10 +539,10 @@ useEffect(() => {
             console.warn('Could not get SVG dimensions, using defaults', e);
             // Use default dimensions if getBBox fails
         }
-        
+
         // Get SVG data
         const svgData = new XMLSerializer().serializeToString(svg);
-        
+
         // Create an HTML document that will display the SVG responsively
         const htmlContent = `
         <!DOCTYPE html>
@@ -556,23 +665,23 @@ useEffect(() => {
         </body>
         </html>
         `;
-        
+
         // Create a blob with the HTML content
         const blob = new Blob([htmlContent], { type: 'text/html' });
         const url = URL.createObjectURL(blob);
-        
+
         // Open in a new window with specific dimensions
         const popupWindow = window.open(
-            url, 
-            'D3Visualization', 
+            url,
+            'D3Visualization',
             `width=${width},height=${height},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no`
         );
-        
+
         // Focus the new window
         if (popupWindow) {
             popupWindow.focus();
         }
-        
+
         // Clean up the URL object after a delay
         setTimeout(() => URL.revokeObjectURL(url), 10000);
     };
@@ -580,19 +689,19 @@ useEffect(() => {
     // Function to save SVG
     const saveSvg = (svg: SVGElement, filename: string = `visualization-${Date.now()}.svg`) => {
         if (!svg) return;
-        
+
         // Create a new SVG with proper XML declaration and doctype
         const svgData = new XMLSerializer().serializeToString(svg);
-        
+
         // Create a properly formatted SVG document with XML declaration
         const svgDoc = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 ${svgData}`;
-        
+
         // Create a blob with the SVG content
         const blob = new Blob([svgDoc], { type: 'image/svg+xml' });
         const url = URL.createObjectURL(blob);
-        
+
         // Create a download link
         const link = document.createElement('a');
         link.href = url;
@@ -600,7 +709,7 @@ ${svgData}`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        
+
         // Clean up the URL object after a delay
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
@@ -638,9 +747,9 @@ ${svgData}`;
                         const svg = container.querySelector('svg');
                         if (svg) {
                             // Use the new openInPopout function
-                            const title = isGraphvizRender ? 'Graphviz Diagram' : 
-                                         isMermaidRender ? 'Mermaid Diagram' : 
-                                         'D3 Visualization';
+                            const title = isGraphvizRender ? 'Graphviz Diagram' :
+                                isMermaidRender ? 'Mermaid Diagram' :
+                                    'D3 Visualization';
                             openInPopout(svg, title);
                         }
                     }
@@ -656,9 +765,9 @@ ${svgData}`;
                         const svg = container.querySelector('svg');
                         if (svg) {
                             // Use the new saveSvg function
-                            const filename = isGraphvizRender ? `graphviz-diagram-${Date.now()}.svg` : 
-                                           isMermaidRender ? `mermaid-diagram-${Date.now()}.svg` : 
-                                           `visualization-${Date.now()}.svg`;
+                            const filename = isGraphvizRender ? `graphviz-diagram-${Date.now()}.svg` :
+                                isMermaidRender ? `mermaid-diagram-${Date.now()}.svg` :
+                                    `visualization-${Date.now()}.svg`;
                             saveSvg(svg, filename);
                         }
                     }
@@ -680,8 +789,8 @@ ${svgData}`;
             id={containerId || 'd3-container'}
             style={outerContainerStyle}
         >
-            {isD3Render? (
-                <div 
+            {isD3Render ? (
+                <div
                     ref={d3ContainerRef}
                     className={`d3-container ${isMermaidRender ? 'mermaid-container' : ''}`}
                     style={{
@@ -694,7 +803,7 @@ ${svgData}`;
                         boxSizing: 'border-box'
                     }}
                 />
-             ) : (
+            ) : (
                 <div
                     ref={vegaContainerRef}
                     id="vega-container"

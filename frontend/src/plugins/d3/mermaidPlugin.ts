@@ -2,6 +2,14 @@ import mermaid from 'mermaid';
 import { D3RenderPlugin } from '../../types/d3';
 import { PictureOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Spin } from 'antd'; // For loading indicator
+import initMermaidSupport from './mermaidEnhancer';
+
+// Add mermaid to window for TypeScript
+declare global {
+    interface Window {
+        mermaid: typeof mermaid;
+    }
+}
 
 // Define the specification for Mermaid diagrams
 export interface MermaidSpec {
@@ -27,6 +35,9 @@ const SCALE_CONFIG = {
     MAX_SCALE: 1.0         // Maximum scale (natural size)
 };
 
+// Initialize Mermaid support with preprocessing and error handling
+initMermaidSupport(mermaid);
+
 export const mermaidPlugin: D3RenderPlugin = {
     name: 'mermaid-renderer',
     priority: 5,
@@ -39,7 +50,102 @@ export const mermaidPlugin: D3RenderPlugin = {
         try {
             container.innerHTML = '';
 
+            // Add loading spinner while mermaid renders
+            const loadingSpinner = document.createElement('div');
+            loadingSpinner.className = 'mermaid-loading-spinner';
+            loadingSpinner.style.cssText = `
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                padding: 2em;
+                min-height: 150px;
+                width: 100%;
+            `;
+
+            // Add spinner animation
+            loadingSpinner.innerHTML = `
+                <div style="
+                    border: 4px solid rgba(0, 0, 0, 0.1);
+                    border-top: 4px solid ${isDarkMode ? '#4cc9f0' : '#3498db'};
+                    border-radius: 50%;
+                    width: 40px;
+                    height: 40px;
+                    animation: mermaid-spin 1s linear infinite;
+                    margin-bottom: 15px;
+                "></div>
+                <div style="font-family: system-ui, -apple-system, sans-serif; color: ${isDarkMode ? '#eceff4' : '#333333'};">
+                    Rendering diagram...
+                </div>
+            `;
+
+            container.appendChild(loadingSpinner);
+
             // Initialize mermaid with graph-specific settings
+
+            // Pre-process the definition to fix common syntax issues
+            let processedDefinition = spec.definition;
+
+            // Detect diagram type
+            const firstLine = processedDefinition.trim().split('\n')[0].toLowerCase();
+            const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
+
+            // Apply diagram-specific fixes
+            if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
+                // Fix subgraph class syntax
+                processedDefinition = processedDefinition.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 style_$2');
+                processedDefinition = processedDefinition.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
+
+                // Fix "Send DONE Marker" nodes
+                processedDefinition = processedDefinition.replace(/\[Send\s+"DONE"\s+Marker\]/g, '[Send DONE Marker]');
+                processedDefinition = processedDefinition.replace(/\[Send\s+\[DONE\]\s+Marker\]/g, '[Send DONE Marker]');
+
+                // Fix SendDone nodes
+                processedDefinition = processedDefinition.replace(/SendDone\[([^\]]+)\]/g, 'sendDoneNode["$1"]');
+
+                // Fix end nodes that cause parsing errors - replace all 'end' node references
+                processedDefinition = processedDefinition.replace(/\bend\b\s*\[/g, 'endNode[');
+                processedDefinition = processedDefinition.replace(/-->\s*\bend\b/g, '--> endNode');
+                processedDefinition = processedDefinition.replace(/\bend\b\s*-->/g, 'endNode -->');
+
+                // Fix quoted text in node labels
+                processedDefinition = processedDefinition.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
+                    return `[${before}${quoted}${after}]`;
+                });
+            }
+            else if (diagramType === 'requirement') {
+                // Fix requirement diagram syntax
+                const lines = processedDefinition.split('\n');
+                const result: string[] = [];
+
+                for (let i = 0; i < lines.length; i++) {
+                    let line = lines[i].trim();
+
+                    // Fix ID format
+                    if (line.match(/^\s*id:/i)) {
+                        line = line.replace(/id:\s*([^,]+)/, 'id: "$1"');
+                    }
+
+                    // Fix text format
+                    if (line.match(/^\s*text:/i)) {
+                        line = line.replace(/text:\s*([^,]+)/, 'text: "$1"');
+                    }
+
+                    result.push(line);
+                }
+
+                processedDefinition = result.join('\n');
+            }
+            else if (diagramType === 'xychart') {
+                // Fix xychart array syntax
+                processedDefinition = processedDefinition.replace(/\[(.*?)\]/g, '"[$1]"');
+            }
+
+            // Fix quoted text in node labels for all diagram types
+            processedDefinition = processedDefinition.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
+                return `[${before}${quoted}${after}]`;
+            });
+
             mermaid.initialize({
                 startOnLoad: false,
                 theme: isDarkMode ? 'dark' : 'default',
@@ -48,44 +154,44 @@ export const mermaidPlugin: D3RenderPlugin = {
                 fontSize: 14,
                 themeVariables: isDarkMode ? {
                     // High contrast dark theme
-                    primaryColor: '#81a1c1',
+                    primaryColor: '#88c0d0',
                     primaryTextColor: '#ffffff',
                     primaryBorderColor: '#88c0d0',
                     lineColor: '#88c0d0',
                     secondaryColor: '#5e81ac',
                     tertiaryColor: '#2e3440',
-                    
+
                     // Text colors
                     textColor: '#eceff4',
                     loopTextColor: '#eceff4',
-                    
+
                     // Node colors
                     mainBkg: '#3b4252',
                     secondBkg: '#434c5e',
                     nodeBorder: '#88c0d0',
-                    
+
                     // Edge colors
                     edgeLabelBackground: '#4c566a',
-                    
+
                     // Contrast colors
                     altBackground: '#2e3440',
-                    
+
                     // Flowchart specific
                     nodeBkg: '#3b4252',
                     clusterBkg: '#2e3440',
                     titleColor: '#88c0d0',
-                    
+
                     // Class diagram specific
                     classText: '#ffffff',
-                    
+
                     // State diagram specific
                     labelColor: '#ffffff',
-                    
+
                     // Sequence diagram specific
                     actorBkg: '#4c566a',
                     actorBorder: '#88c0d0',
                     activationBkg: '#5e81ac',
-                    
+
                     // Gantt chart specific
                     sectionBkgColor: '#3b4252',
                     altSectionBkgColor: '#434c5e',
@@ -131,7 +237,28 @@ export const mermaidPlugin: D3RenderPlugin = {
 
             // Render the diagram
             const mermaidId = `mermaid-${Date.now()}-${Math.random().toString(16).substring(2)}`;
-            const { svg } = await mermaid.render(mermaidId, spec.definition);
+            const { svg } = await mermaid.render(mermaidId, processedDefinition);
+
+            // Add the animation keyframes if they don't exist yet
+            // Check if we got a valid SVG
+            if (!svg || svg.trim() === '') {
+                throw new Error('Failed to get SVG element');
+            }
+
+            // Check if the SVG contains an error message
+            if (svg.includes('syntax error') || svg.includes('Parse error')) {
+                throw new Error('Mermaid syntax error in diagram');
+            }
+            else if (!document.querySelector('#mermaid-spinner-keyframes')) {
+                const keyframes = document.createElement('style');
+                keyframes.id = 'mermaid-spinner-keyframes';
+                keyframes.textContent = `
+                    @keyframes mermaid-spin {
+                        0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); }
+                    }
+                `;
+                document.head.appendChild(keyframes);
+            }
 
             // Create wrapper div
             const wrapper = document.createElement('div');
@@ -145,6 +272,9 @@ export const mermaidPlugin: D3RenderPlugin = {
                 justify-content: center;
             `;
             wrapper.innerHTML = svg;
+
+            // Remove the loading spinner
+            container.removeChild(loadingSpinner);
 
             // Add wrapper to container
             container.appendChild(wrapper);
@@ -163,24 +293,24 @@ export const mermaidPlugin: D3RenderPlugin = {
                         el.setAttribute('stroke', '#88c0d0');
                         el.setAttribute('stroke-width', '1.5');
                     });
-                    
+
                     // Fix for arrow markers in dark mode
                     svgElement.querySelectorAll('defs marker path').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
                         el.setAttribute('fill', '#88c0d0');
                     });
-                    
+
                     // Fix for all SVG paths and lines
                     svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
                         el.setAttribute('stroke-width', '1.5');
                     });
-                    
+
                     // Text on darker backgrounds should be black for contrast
                     svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
                         el.setAttribute('fill', '#000000');
                     });
-                    
+
                     // Text on lighter backgrounds should be white for contrast
                     svgElement.querySelectorAll('.edgeLabel text, text:not(.node .label text):not(.cluster .label text)').forEach(el => {
                         el.setAttribute('fill', '#eceff4');
@@ -190,12 +320,12 @@ export const mermaidPlugin: D3RenderPlugin = {
                         el.setAttribute('stroke', '#88c0d0');
                         el.setAttribute('stroke-width', '1.5');
                     });
-                    
+
                     svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
                         el.setAttribute('stroke', '#81a1c1');
                         el.setAttribute('fill', '#5e81ac');
                     });
-                    
+
                     svgElement.querySelectorAll('.cluster rect').forEach(el => {
                         el.setAttribute('stroke', '#81a1c1');
                         el.setAttribute('fill', '#4c566a');
@@ -234,12 +364,12 @@ export const mermaidPlugin: D3RenderPlugin = {
                 // Get the SVG element
                 const svgElement = wrapper.querySelector('svg');
                 if (!svgElement) return;
-                
+
                 // Get the SVG dimensions
                 const svgGraphics = svgElement as unknown as SVGGraphicsElement;
                 let width = 600;
                 let height = 400;
-                
+
                 try {
                     // Try to get the bounding box
                     const bbox = svgGraphics.getBBox();
@@ -248,10 +378,10 @@ export const mermaidPlugin: D3RenderPlugin = {
                 } catch (e) {
                     console.warn('Could not get SVG dimensions, using defaults', e);
                 }
-                
+
                 // Create a new SVG with proper XML declaration and doctype
                 const svgData = new XMLSerializer().serializeToString(svgElement);
-                
+
                 // Create an HTML document that will display the SVG responsively
                 const htmlContent = `
                 <!DOCTYPE html>
@@ -374,23 +504,23 @@ export const mermaidPlugin: D3RenderPlugin = {
                 </body>
                 </html>
                 `;
-                
+
                 // Create a blob with the HTML content
                 const blob = new Blob([htmlContent], { type: 'text/html' });
                 const url = URL.createObjectURL(blob);
-                
+
                 // Open in a new window with specific dimensions
                 const popupWindow = window.open(
-                    url, 
-                    'MermaidDiagram', 
+                    url,
+                    'MermaidDiagram',
                     `width=${width},height=${height},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no`
                 );
-                
+
                 // Focus the new window
                 if (popupWindow) {
                     popupWindow.focus();
                 }
-                
+
                 // Clean up the URL object after a delay
                 setTimeout(() => URL.revokeObjectURL(url), 10000);
             };
@@ -404,19 +534,19 @@ export const mermaidPlugin: D3RenderPlugin = {
                 // Get the SVG element
                 const svgElement = wrapper.querySelector('svg');
                 if (!svgElement) return;
-                
+
                 // Create a new SVG with proper XML declaration and doctype
                 const svgData = new XMLSerializer().serializeToString(svgElement);
-                
+
                 // Create a properly formatted SVG document with XML declaration
                 const svgDoc = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 ${svgData}`;
-                
+
                 // Create a blob with the SVG content
                 const blob = new Blob([svgDoc], { type: 'image/svg+xml' });
                 const url = URL.createObjectURL(blob);
-                
+
                 // Create a download link
                 const link = document.createElement('a');
                 link.href = url;
@@ -424,7 +554,7 @@ ${svgData}`;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
-                
+
                 // Clean up the URL object after a delay
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
             };
@@ -459,9 +589,22 @@ ${svgData}`;
 
         } catch (error: any) {
             console.error('Mermaid rendering error:', error);
+
+            // Remove any loading spinner if it exists
+            const spinner = container.querySelector('.mermaid-loading-spinner');
+            if (spinner) {
+                container.removeChild(spinner);
+            }
+
+            // Clear container before showing error
+            if (container.innerHTML.includes('Rendering diagram')) {
+                container.innerHTML = '';
+            }
+
             container.innerHTML = `
                 <div class="mermaid-error">
                     <strong>Mermaid Error:</strong>
+                    <p>There was an error rendering the diagram. This is often due to syntax issues in the Mermaid definition.</p>
                     <pre>${error.message || 'Unknown error'}</pre>
                     <details>
                         <summary>Show Definition</summary>
@@ -469,6 +612,77 @@ ${svgData}`;
                     </details>
                 </div>
             `;
+
+            // Add view source button
+            const viewSourceButton = document.createElement('button');
+            viewSourceButton.innerHTML = '📝 View Source';
+            viewSourceButton.className = 'diagram-action-button mermaid-source-button';
+            viewSourceButton.style.cssText = `
+                background-color: #4361ee;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                margin: 10px 5px;
+                cursor: pointer;
+                display: inline-block;
+            `;
+
+            // Add retry button
+            const retryButton = document.createElement('button');
+            retryButton.innerHTML = '🔄 Retry Rendering';
+            retryButton.className = 'diagram-action-button mermaid-retry-button';
+            retryButton.style.cssText = `
+                background-color: #4361ee;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                margin: 10px auto;
+                cursor: pointer;
+                display: block;
+            `;
+
+            // Create button container
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.textAlign = 'center';
+            buttonContainer.appendChild(viewSourceButton);
+            buttonContainer.appendChild(retryButton);
+            container.appendChild(buttonContainer);
+
+            // Add event listeners
+            retryButton.onclick = () => mermaidPlugin.render(container, d3, spec, isDarkMode);
+            viewSourceButton.onclick = () => {
+                // Toggle between error view and source view
+                const errorView = container.querySelector('.mermaid-error');
+                if (errorView) {
+                    // Create source view
+                    container.innerHTML = `<pre style="
+                        background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+                        padding: 16px;
+                        border-radius: 4px;
+                        overflow: auto;
+                        color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
+                    "><code>${spec.definition}</code></pre>`;
+
+                    // Add back button
+                    const backButton = document.createElement('button');
+                    backButton.innerHTML = '⬅️ Back to Error';
+                    backButton.className = 'diagram-action-button';
+                    backButton.style.cssText = `
+                        background-color: #4361ee;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        padding: 8px 16px;
+                        margin: 10px auto;
+                        cursor: pointer;
+                        display: block;
+                    `;
+                    backButton.onclick = () => mermaidPlugin.render(container, d3, spec, isDarkMode);
+                    container.appendChild(backButton);
+                }
+            };
         }
     }
 };
