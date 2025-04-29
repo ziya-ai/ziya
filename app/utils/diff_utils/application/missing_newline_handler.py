@@ -39,8 +39,8 @@ def process_missing_newline_issues(original_content: str, diff_content: str) -> 
     original_has_newline = original_content.endswith('\n')
     
     # Check if the diff adds or removes a newline
-    adds_newline = "\\ No newline at end of file" in diff_content and "+\n" in diff_content
-    removes_newline = "\\ No newline at end of file" in diff_content and "-\n" in diff_content
+    adds_newline = "\\ No newline at end of file" in diff_content and ("+\n" in diff_content or not original_has_newline)
+    removes_newline = "\\ No newline at end of file" in diff_content and ("-\n" in diff_content or original_has_newline)
     
     # Apply the appropriate change
     if adds_newline and not original_has_newline:

@@ -9,6 +9,98 @@ from typing import List, Tuple, Optional, Dict
 from app.utils.logging_utils import logger
 from .base import LanguageHandler
 
+# Special handling for JSON content in JavaScript/TypeScript files
+class JsonContentHandler:
+    """Helper class for handling JSON content in JavaScript/TypeScript files."""
+    
+    @staticmethod
+    def contains_json_content(content: str) -> bool:
+        """
+        Check if the content contains JSON-like structures that need special handling.
+        
+        Args:
+            content: The content to check
+            
+        Returns:
+            True if the content contains JSON-like structures, False otherwise
+        """
+        if not content:
+            return False
+            
+        # Look for common JSON patterns
+        json_patterns = [
+            r'JSON\.parse',
+            r'JSON\.stringify',
+            r'`\s*{.*}.*`',  # Template literal with object
+            r'".*":\s*".*"',  # JSON key-value pair
+            r'\'.*\':\s*\'.*\'',  # JSON key-value pair with single quotes
+        ]
+        
+        for pattern in json_patterns:
+            if re.search(pattern, content):
+                return True
+        
+        return False
+    
+    @staticmethod
+    def preserve_json_structure(original_content: str, modified_content: str) -> str:
+        """
+        Preserve JSON structure in JavaScript/TypeScript files.
+        
+        Args:
+            original_content: Original file content
+            modified_content: Modified file content
+            
+        Returns:
+            Processed modified content with preserved JSON structure
+        """
+        # If no JSON content, return the modified content as is
+        if not JsonContentHandler.contains_json_content(modified_content):
+            return modified_content
+            
+        logger.debug("Preserving JSON structure in JavaScript/TypeScript content")
+        
+        # Preserve template literals with JSON content
+        template_literal_pattern = r'(`\s*{[^`]*?}\s*`)'
+        
+        def preserve_template_literal(match):
+            template_literal = match.group(1)
+            # Ensure proper line breaks in the template literal
+            if '\n' in template_literal:
+                # Split the template literal into lines
+                lines = template_literal.split('\n')
+                # Preserve the indentation of each line
+                for i in range(1, len(lines)):
+                    lines[i] = lines[i].rstrip()
+                # Join the lines back together
+                return '\n'.join(lines)
+            return template_literal
+        
+        # Apply the preservation to the modified content
+        result = re.sub(template_literal_pattern, preserve_template_literal, modified_content)
+        
+        # Handle JSON.parse and JSON.stringify calls
+        json_method_pattern = r'(JSON\.(parse|stringify)\s*\([^)]*\))'
+        
+        def preserve_json_method(match):
+            json_call = match.group(1)
+            # Ensure the JSON call is properly formatted
+            return json_call
+        
+        result = re.sub(json_method_pattern, preserve_json_method, result)
+        
+        # Handle escape sequences in JSON strings
+        json_string_pattern = r'("(?:\\.|[^"\\])*")'
+        
+        def preserve_escape_sequences(match):
+            json_string = match.group(1)
+            # Ensure escape sequences are preserved
+            return json_string
+        
+        result = re.sub(json_string_pattern, preserve_escape_sequences, result)
+        
+        return result
+
 
 class JavaScriptHandler(LanguageHandler):
     """Handler for JavaScript files."""
@@ -39,6 +131,11 @@ class JavaScriptHandler(LanguageHandler):
         Returns:
             Tuple of (is_valid, error_message)
         """
+        # Special handling for JSON content
+        if JsonContentHandler.contains_json_content(original_content) or JsonContentHandler.contains_json_content(modified_content):
+            logger.debug(f"JavaScript file contains JSON content, applying special handling")
+            modified_content = JsonContentHandler.preserve_json_structure(original_content, modified_content)
+        
         # Try to use Node.js to validate JavaScript syntax if available
         try:
             # Create a temporary file with the modified content

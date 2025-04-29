@@ -3,7 +3,7 @@ Module for handling missing newline at end of file issues in diffs.
 """
 
 import re
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from app.utils.logging_utils import logger
 
 def has_missing_newline_marker(git_diff: str) -> bool:
@@ -17,6 +17,53 @@ def has_missing_newline_marker(git_diff: str) -> bool:
         True if the diff contains the marker, False otherwise
     """
     return "\\ No newline at end of file" in git_diff
+
+def detect_line_endings(content: str) -> Tuple[str, bool]:
+    """
+    Detect the dominant line ending in content and whether it has a final newline.
+    
+    Args:
+        content: The content to analyze
+        
+    Returns:
+        Tuple of (dominant_line_ending, has_final_newline)
+    """
+    crlf_count = content.count('\r\n')
+    lf_count = content.count('\n') - crlf_count  # Subtract CRLF count to avoid double counting
+    cr_count = content.count('\r') - crlf_count  # Subtract CRLF count to avoid double counting
+    
+    # Determine dominant line ending
+    if crlf_count > 0 and crlf_count >= max(cr_count, lf_count):
+        dominant_ending = '\r\n'
+    elif cr_count > lf_count:
+        dominant_ending = '\r'
+    else:
+        dominant_ending = '\n'
+    
+    # Check if content ends with a newline
+    has_final_newline = bool(content) and content.endswith(('\n', '\r\n', '\r'))
+    
+    return dominant_ending, has_final_newline
+
+def normalize_line_endings(content: str, target_ending: str = '\n') -> str:
+    """
+    Normalize all line endings in content to the target ending.
+    
+    Args:
+        content: The content to normalize
+        target_ending: The target line ending ('\n', '\r\n', or '\r')
+        
+    Returns:
+        Content with normalized line endings
+    """
+    # First convert all line endings to '\n'
+    normalized = content.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Then convert to target ending
+    if target_ending != '\n':
+        normalized = normalized.replace('\n', target_ending)
+    
+    return normalized
 
 def fix_missing_newline_issue(original_content: str, git_diff: str) -> Optional[str]:
     """
@@ -64,72 +111,99 @@ def fix_missing_newline_issue(original_content: str, git_diff: str) -> Optional[
     logger.info("No newline changes needed")
     return None
 
-def process_newline_changes(original_content: str, git_diff: str, modified_content: Optional[str] = None) -> str:
+def ensure_consistent_line_endings(content: str, dominant_ending: Optional[str] = None) -> str:
     """
-    Process newline changes in a diff, ensuring the file ends with a newline if needed.
+    Ensure all line endings in content are consistent.
     
     Args:
-        original_content: The original file content
-        git_diff: The git diff to apply
-        modified_content: Optional modified content to use as a base
+        content: The content to normalize
+        dominant_ending: The dominant line ending to use, or None to detect
         
     Returns:
-        The content with proper newline handling
+        Content with consistent line endings
     """
-    # Start with either the modified content or the original
-    content = modified_content if modified_content is not None else original_content
+    if dominant_ending is None:
+        dominant_ending, _ = detect_line_endings(content)
     
-    # Check if the diff adds content to the end of the file
-    adds_content_at_end = False
-    lines = git_diff.splitlines()
+    return normalize_line_endings(content, dominant_ending)
+
+def fix_empty_file_newline(content: str) -> str:
+    """
+    Fix issues with empty files or files with only a newline.
     
-    # Extract hunks from the diff
-    hunks = []
-    current_hunk = []
-    in_hunk = False
-    
-    for line in lines:
-        if line.startswith('@@'):
-            if current_hunk:
-                hunks.append(current_hunk)
-            current_hunk = [line]
-            in_hunk = True
-        elif in_hunk:
-            current_hunk.append(line)
-    
-    if current_hunk:
-        hunks.append(current_hunk)
-    
-    # Check the last hunk to see if it adds content at the end
-    if hunks:
-        last_hunk = hunks[-1]
-        hunk_header = last_hunk[0]
+    Args:
+        content: The content to fix
         
-        # Parse the hunk header to get line numbers
-        # Format: @@ -old_start,old_count +new_start,new_count @@
-        match = re.match(r'@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk_header)
-        if match:
-            old_start = int(match.group(1))
-            old_count = int(match.group(2))
-            
-            # Calculate if this hunk affects the end of the file
-            original_lines = original_content.splitlines()
-            if old_start + old_count - 1 >= len(original_lines):
-                # This hunk affects the end of the file
-                # Check if it adds content
-                for line in last_hunk[1:]:
-                    if line.startswith('+') and not line.startswith('+++'):
-                        adds_content_at_end = True
-                        break
+    Returns:
+        Fixed content
+    """
+    # If the file is empty or just a newline, return an empty string
+    if not content or content == '\n' or content == '\r\n' or content == '\r':
+        return ''
     
-    # If the diff adds content at the end, ensure it ends with a newline
-    if adds_content_at_end and not content.endswith('\n'):
-        logger.info("Adding newline at end of file for added content")
-        content += '\n'
-    
-    # Check for explicit newline markers and handle them
-    newline_fixed_content = fix_missing_newline_issue(content, git_diff)
-    if newline_fixed_content is not None:
-        content = newline_fixed_content
+    # If the file starts with a newline but has other content, remove the leading newline
+    if content.startswith(('\n', '\r\n', '\r')):
+        if content.startswith('\r\n'):
+            return content[2:]
+        else:
+            return content[1:]
     
     return content
+
+def normalize_content_for_diff(content: str) -> List[str]:
+    """
+    Normalize content for difflib operations, preserving line endings.
+    
+    Args:
+        content: The content to normalize
+        
+    Returns:
+        List of lines with original line endings preserved
+    """
+    # Split content into lines, preserving line endings
+    if not content:
+        return []
+    
+    lines = []
+    remaining = content
+    
+    while remaining:
+        # Check for CRLF first (Windows)
+        if remaining.startswith('\r\n'):
+            lines.append('\r\n')
+            remaining = remaining[2:]
+        # Check for CR (old Mac)
+        elif remaining.startswith('\r'):
+            lines.append('\r')
+            remaining = remaining[1:]
+        # Check for LF (Unix)
+        elif remaining.startswith('\n'):
+            lines.append('\n')
+            remaining = remaining[1:]
+        # Find the next line ending
+        else:
+            crlf_pos = remaining.find('\r\n')
+            cr_pos = remaining.find('\r')
+            lf_pos = remaining.find('\n')
+            
+            # Find the earliest line ending
+            positions = []
+            if crlf_pos >= 0:
+                positions.append((crlf_pos, '\r\n'))
+            if cr_pos >= 0 and (cr_pos < crlf_pos or crlf_pos < 0) and (cr_pos + 1 != crlf_pos):
+                positions.append((cr_pos, '\r'))
+            if lf_pos >= 0:
+                positions.append((lf_pos, '\n'))
+            
+            if positions:
+                # Sort by position
+                positions.sort()
+                pos, ending = positions[0]
+                lines.append(remaining[:pos] + ending)
+                remaining = remaining[pos + len(ending):]
+            else:
+                # No more line endings
+                lines.append(remaining)
+                break
+    
+    return lines

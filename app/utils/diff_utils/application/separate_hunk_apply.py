@@ -45,7 +45,7 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
             if not hunk_diff:
                 logger.warning(f"Failed to extract hunk #{hunk_id} from diff")
                 continue
-                
+
             logger.info(f"Extracted hunk #{hunk_id} for separate application")
             logger.debug(f"Hunk diff content:\n{hunk_diff}")
             
@@ -57,7 +57,7 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
-                    status=HunkStatus.SUCCEEDED,
+                    status=HunkStatus.SUCCEEDED,  # Mark as SUCCEEDED, not PENDING
                     position=pipeline.result.hunks[hunk_id].position,
                     confidence=pipeline.result.hunks[hunk_id].confidence
                 )
@@ -69,7 +69,7 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
         except Exception as e:
             logger.error(f"Error applying hunk #{hunk_id} separately: {str(e)}")
             # Keep the hunk as is - it will be tried in later stages
-    
+
     if any_changes_written:
         pipeline.result.changes_written = True
         
@@ -172,7 +172,7 @@ def extract_hunk_from_diff(diff_content: str, hunk_id: int) -> Optional[str]:
             # Use the index+1 as the hunk ID if the hunk doesn't have a number
             hunk_num = hunk.get('number', i+1)
             if hunk_num == hunk_id:
-                target_hunk = hunk
+                target_hunk = hunk.copy()  # Create a copy to avoid modifying the original
                 break
         
         if not target_hunk:
@@ -181,7 +181,7 @@ def extract_hunk_from_diff(diff_content: str, hunk_id: int) -> Optional[str]:
         
         # Construct a new diff with just this hunk
         # Recreate the hunk header from the hunk data
-        hunk_header = f"@@ -{target_hunk['old_start']},{target_hunk['old_count']} +{target_hunk['new_start']},{target_hunk['new_count']} @@"
+        hunk_header = f"@@ -{target_hunk['old_start']},{len(target_hunk['old_block'])} +{target_hunk['new_start']},{len(target_hunk['new_lines'])} @@"
         
         header_lines = [
             f"--- {source_path}",

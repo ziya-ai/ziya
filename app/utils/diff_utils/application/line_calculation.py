@@ -29,11 +29,11 @@ def calculate_line_positions(file_lines: List[str], hunk: Dict[str, Any], line_o
     Returns:
         Tuple of (start_position, end_position)
     """
-    old_start = hunk['old_start'] - 1  # Convert to 0-based indexing
+    old_start = max(0, hunk['old_start'] - 1)  # Convert to 0-based indexing, ensure non-negative
     old_count = hunk['old_count']
     
     # Adjust for previous hunks
-    adjusted_start = old_start + line_offset
+    adjusted_start = max(0, old_start + line_offset)
     
     # Ensure we don't go out of bounds
     adjusted_start = max(0, min(adjusted_start, len(file_lines)))
@@ -52,7 +52,7 @@ def calculate_line_positions(file_lines: List[str], hunk: Dict[str, Any], line_o
     logger.debug(f"Hunk: Calculated positions - old_start(0based)={old_start}, old_count={old_count}, offset={line_offset}")
     logger.debug(f"Hunk: initial_remove_pos={adjusted_start}, available_lines={available_lines}, actual_old_count={actual_old_count}")
     logger.debug(f"Hunk: final remove_pos={adjusted_start}, end_remove={end_position}")
-    
+
     return adjusted_start, end_position
 
 def find_best_position(file_lines: List[str], hunk: Dict[str, Any], expected_pos: int) -> Optional[Tuple[int, float]]:

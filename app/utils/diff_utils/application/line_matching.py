@@ -1,4 +1,5 @@
 from typing import List
+from app.utils.logging_utils import logger
 from app.utils.diff_utils.core.unicode_handling import normalize_unicode
 
 def match_lines(file_lines: List[str], hunk_lines: List[str]) -> bool:

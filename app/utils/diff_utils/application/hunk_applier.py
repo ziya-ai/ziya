@@ -19,30 +19,30 @@ def apply_hunk(file_lines: List[str], hunk: Dict[str, Any]) -> Tuple[bool, List[
     Returns:
         A tuple of (success, modified_lines)
     """
-    logger.debug(f"Applying hunk at source lines {hunk['src_start']}-{hunk['src_start'] + hunk['src_count'] - 1}")
+    logger.debug(f"Applying hunk at source lines {hunk.get('src_start', hunk.get('old_start', 1))}-{hunk.get('src_start', hunk.get('old_start', 1)) + hunk.get('src_count', hunk.get('old_count', 0)) - 1}")
     
     # Make a copy of the file lines
     modified_lines = file_lines.copy()
     
     # Check if the hunk is already applied
-    if is_hunk_already_applied(file_lines, hunk, 0):
+    if is_hunk_already_applied(file_lines, hunk, 0, ignore_whitespace=True):
         logger.info("Hunk is already applied")
         return True, modified_lines
     
     # Get the source line range
-    src_start = hunk['src_start'] - 1  # Convert to 0-based index
-    src_end = src_start + hunk['src_count']
+    src_start = hunk.get('src_start', hunk.get('old_start', 1)) - 1  # Convert to 0-based index
+    src_end = src_start + hunk.get('src_count', hunk.get('old_count', 0))
     
     # Check if the source range is valid
     if src_start < 0 or src_end > len(file_lines):
         logger.error(f"Invalid source range: {src_start}-{src_end} (file has {len(file_lines)} lines)")
         return False, file_lines
-    
+
     # Extract the lines to remove and add
     removed_lines = []
     added_lines = []
     
-    for line in hunk['lines']:
+    for line in hunk.get('lines', []):
         if line.startswith('-'):
             removed_lines.append(line[1:])
         elif line.startswith('+'):
@@ -52,7 +52,7 @@ def apply_hunk(file_lines: List[str], hunk: Dict[str, Any]) -> Tuple[bool, List[
     file_section = file_lines[src_start:src_end]
     
     # Count the context lines (lines that are not added or removed)
-    context_lines = [line for line in hunk['lines'] if not line.startswith('+') and not line.startswith('-')]
+    context_lines = [line for line in hunk.get('lines', []) if not line.startswith('+') and not line.startswith('-')]
     
     # Check if we have the right number of lines
     if len(file_section) != len(removed_lines) + len(context_lines):

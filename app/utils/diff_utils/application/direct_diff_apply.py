@@ -108,7 +108,7 @@ def apply_hunk(content: str, hunk: Dict[str, Any]) -> str:
     lines = content.splitlines(True)  # Keep line endings
     
     # Calculate the actual line numbers (1-based)
-    old_start = hunk['old_start']
+    old_start = max(1, hunk['old_start'])  # Ensure it's at least 1
     
     # Extract the lines to remove and add
     old_lines = []
@@ -130,7 +130,7 @@ def apply_hunk(content: str, hunk: Dict[str, Any]) -> str:
     
     # Find the exact position to apply the hunk
     position = find_hunk_position(lines, old_lines, old_start)
-    if position is None:
+    if position is None or position < 0:
         logger.warning(f"Could not find position to apply hunk at line {old_start}")
         return content
     
@@ -191,7 +191,7 @@ def find_hunk_position(lines: List[str], old_lines: List[str], old_start: int) -
     """
     # First try the exact position
     position = old_start - 1  # Convert to 0-based
-    if position < len(lines) and position >= 0:
+    if 0 <= position < len(lines):
         # Check if the lines match at the exact position
         if position + len(old_lines) <= len(lines):
             exact_match = True

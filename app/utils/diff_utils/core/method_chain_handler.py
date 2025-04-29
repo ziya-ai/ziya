@@ -259,7 +259,7 @@ def _apply_chained_method_call(original_content: str, diff_content: str, inserti
             # For other cases, apply the hunks sequentially
             from ..application.sequential_hunk_applier import apply_hunks_sequentially
             return ''.join(apply_hunks_sequentially(original_content.splitlines(True), hunks))
-        
+
     except Exception as e:
-        logger.error(f"Error applying chained method call: {str(e)}")
+        logger.error(f"Error applying chained method call: {e}")
         return None

@@ -3,14 +3,16 @@ Generic text handler for language-agnostic operations.
 """
 
 import re
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 
 from app.utils.logging_utils import logger
-from .base import LanguageHandler
+from .base import LanguageHandler, LanguageHandlerRegistry
+from ..core.config import get_max_offset
 
 
+@LanguageHandlerRegistry.register
 class GenericTextHandler(LanguageHandler):
-    """Fallback handler for any text file."""
+    """Handler for generic text files."""
     
     @classmethod
     def can_handle(cls, file_path: str) -> bool:
@@ -21,8 +23,9 @@ class GenericTextHandler(LanguageHandler):
             file_path: Path to the file
             
         Returns:
-            True as this is the fallback handler
+            True for any file (fallback handler)
         """
+        # This is the fallback handler, so it can handle any file
         return True
     
     @classmethod
@@ -38,17 +41,17 @@ class GenericTextHandler(LanguageHandler):
         Returns:
             Tuple of (is_valid, error_message)
         """
-        # Basic verification that works for any text file
-        # Check if the file is not empty after changes
-        if not modified_content and original_content:
-            return False, "Modified content is empty but original content was not"
+        # For generic text, we don't have specific validation rules
+        # Just check that the content is not empty
+        if not modified_content:
+            return False, "Modified content is empty"
         
         return True, None
         
     @classmethod
     def detect_duplicates(cls, original_content: str, modified_content: str) -> Tuple[bool, List[str]]:
         """
-        Detect duplicated patterns in generic text.
+        Detect duplicated structures in generic text.
         
         Args:
             original_content: Original file content
@@ -57,77 +60,80 @@ class GenericTextHandler(LanguageHandler):
         Returns:
             Tuple of (has_duplicates, duplicate_identifiers)
         """
-        # Basic pattern detection for generic text
-        # Look for repeated blocks of text that weren't repeated in the original
+        # For generic text, we can't reliably detect duplicates
+        # without knowing the language structure
+        return False, []
         
-        # This is a simple implementation that looks for repeated lines
-        # A more sophisticated implementation would look for repeated blocks
+    @classmethod
+    def enhance_match_confidence(cls, original_content: str, hunk_content: str, 
+                               candidate_positions: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
+        """
+        Enhance match confidence scores based on generic text patterns.
+        
+        Args:
+            original_content: Original file content
+            hunk_content: Content of the hunk to be applied
+            candidate_positions: List of (position, confidence) tuples from fuzzy matching
+            
+        Returns:
+            Updated list of (position, confidence) tuples with text-aware adjustments
+        """
+        if not candidate_positions:
+            return []
+            
+        enhanced_candidates = []
         original_lines = original_content.splitlines()
-        modified_lines = modified_content.splitlines()
+        hunk_lines = hunk_content.splitlines()
         
-        # Count occurrences of each line
-        original_counts = cls._count_line_occurrences(original_lines)
-        modified_counts = cls._count_line_occurrences(modified_lines)
+        for position, confidence in candidate_positions:
+            # Skip invalid positions
+            if position < 0 or position >= len(original_lines):
+                continue
+                
+            # Get the indentation level of the hunk and the target position
+            hunk_indent = cls._get_indentation_level(hunk_lines[0]) if hunk_lines else 0
+            target_indent = cls._get_indentation_level(original_lines[position]) if position < len(original_lines) else 0
+            
+            # Check if the indentation levels match
+            indent_match = abs(hunk_indent - target_indent) <= 4  # Allow small differences
+            
+            # Adjust confidence based on context
+            adjusted_confidence = confidence
+            
+            # Boost confidence if indentation matches
+            if indent_match:
+                adjusted_confidence += 0.05
+                
+            # Boost if inserting at a blank line
+            if not original_lines[position].strip() if position < len(original_lines) else False:
+                adjusted_confidence += 0.05
+                
+            # Add the adjusted candidate
+            enhanced_candidates.append((position, min(1.0, adjusted_confidence)))
+            
+        # Sort by confidence (descending)
+        enhanced_candidates.sort(key=lambda x: x[1], reverse=True)
         
-        # Find lines that appear more times in the modified content
-        duplicates = []
-        for line, count in modified_counts.items():
-            if count > 1 and count > original_counts.get(line, 0):
-                # Only include non-trivial lines (not just whitespace or common patterns)
-                if len(line.strip()) > 10 and not cls._is_common_pattern(line):
-                    duplicates.append(line[:40] + "..." if len(line) > 40 else line)
+        return enhanced_candidates
         
-        return bool(duplicates), duplicates
-    
-    @staticmethod
-    def _count_line_occurrences(lines: List[str]) -> Dict[str, int]:
+    @classmethod
+    def _get_indentation_level(cls, line: str) -> int:
+        """Get the indentation level of a line."""
+        return len(line) - len(line.lstrip())
+        
+    @classmethod
+    def check_for_collisions(cls, original_content: str, hunk_content: str, position: int) -> Tuple[bool, Optional[str]]:
         """
-        Count occurrences of each line.
+        Check if applying the hunk at the given position would create collisions.
         
         Args:
-            lines: List of lines
+            original_content: Original file content
+            hunk_content: Content of the hunk to be applied
+            position: Position where the hunk would be applied
             
         Returns:
-            Dictionary mapping lines to their occurrence count
+            Tuple of (is_safe, error_message)
         """
-        counts = {}
-        for line in lines:
-            line = line.strip()
-            if line:  # Skip empty lines
-                counts[line] = counts.get(line, 0) + 1
-        return counts
-    
-    @staticmethod
-    def _is_common_pattern(line: str) -> bool:
-        """
-        Check if a line is a common pattern that shouldn't be flagged as a duplicate.
-        
-        Args:
-            line: Line to check
-            
-        Returns:
-            True if the line is a common pattern, False otherwise
-        """
-        # Skip common patterns like import statements, blank lines, comments, etc.
-        common_patterns = [
-            r"^\s*import\s+",
-            r"^\s*from\s+.+\s+import\s+",
-            r"^\s*#",
-            r"^\s*//",
-            r"^\s*\*",
-            r"^\s*\{",
-            r"^\s*\}",
-            r"^\s*\)",
-            r"^\s*\(",
-            r"^\s*return\s+",
-            r"^\s*if\s+",
-            r"^\s*else",
-            r"^\s*for\s+",
-            r"^\s*while\s+",
-        ]
-        
-        for pattern in common_patterns:
-            if re.match(pattern, line):
-                return True
-        
-        return False
+        # For generic text, we can't reliably detect collisions
+        # without knowing the language structure
+        return True, None

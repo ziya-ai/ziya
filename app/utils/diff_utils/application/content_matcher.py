@@ -37,7 +37,7 @@ def find_best_content_match(file_lines: List[str], chunk_lines: List[str], expec
     # Search in a window around the expected position
     search_start = max(0, expected_pos - 20)
     search_end = min(len(file_lines), expected_pos + 20)
-    
+
     best_match = expected_pos
     best_ratio = 0.0
     
@@ -45,7 +45,7 @@ def find_best_content_match(file_lines: List[str], chunk_lines: List[str], expec
         if i + len(context_lines) <= len(file_lines):
             window = '\n'.join(file_lines[i:i + len(context_lines)])
             ratio = calculate_block_similarity(window, context_block)
-            
+
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_match = i
@@ -68,7 +68,7 @@ def is_content_already_present(file_lines: List[str], new_lines: List[str]) -> b
     
     # Check for exact match
     new_content = '\n'.join(new_lines)
-    file_content = '\n'.join(file_lines)
+    file_content = '\n'.join(file_lines) if file_lines else ""
     
     if new_content in file_content:
         return True

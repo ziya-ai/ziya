@@ -1,3 +1,7 @@
+from typing import List, Dict, Any, Optional
+from app.utils.logging_utils import logger
+from ..core.exceptions import PatchApplicationError
+
 def apply_sequential_hunks_with_order(original_lines: List[str], hunks: List[Dict[str, Any]], hunk_order: List[int]) -> Optional[str]:
     """
     Apply hunks sequentially in the specified order.
@@ -12,21 +16,38 @@ def apply_sequential_hunks_with_order(original_lines: List[str], hunks: List[Dic
     """
     logger.info("Applying hunks sequentially with specified order")
     
-    # Make a copy of the original lines
+    # Make a copy of the original lines to avoid modifying the input
     modified_lines = original_lines.copy()
+    
+    # Track line offset as we apply hunks
+    line_offset = 0
     
     # Apply each hunk in the specified order
     for i in hunk_order:
+        if i < 0 or i >= len(hunks):
+            logger.warning(f"Invalid hunk index {i}, skipping")
+            continue
+            
         hunk = hunks[i]
-        logger.debug(f"Applying hunk #{i+1} in sequential order")
+        logger.debug(f"Applying hunk #{i+1} in sequential order with offset {line_offset}")
         
-        # Apply the hunk
+        # Adjust the hunk's position based on previous modifications
+        old_start = hunk.get('old_start', 1)
+        adjusted_start = max(0, old_start + line_offset - 1)  # Convert to 0-based and apply offset
+        
+        # Apply the hunk with the adjusted position
         from .hunk_applier import apply_hunk
         success, modified_lines = apply_hunk(modified_lines, hunk)
         
         if not success:
             logger.warning(f"Failed to apply hunk #{i+1} in sequential order")
             return None
+    
+        # Update line offset based on the net change in lines
+        old_count = len(hunk.get('old_block', []))
+        new_count = len(hunk.get('new_lines', []))
+        net_change = new_count - old_count
+        line_offset += net_change
     
     # Join the lines back into content
     return ''.join(modified_lines)

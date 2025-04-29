@@ -4,6 +4,7 @@ Core pipeline classes for managing diff application.
 This module defines the data structures and classes used to track hunks
 through the various stages of the diff application pipeline.
 """
+from app.utils.logging_utils import logger # Import logger
 
 import enum
 from typing import Dict, List, Any, Optional, Set, Tuple
@@ -52,9 +53,13 @@ class HunkTracker:
         if position is not None:
             self.position = position
             
-        if error_details:
+        # Clear error details if the hunk succeeded or was already applied
+        if status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED):
+            self.error_details = None
+        else:
+            # Otherwise, update with the provided details (which might be None)
             self.error_details = error_details
-    
+
     def is_complete(self) -> bool:
         """Check if this hunk has completed the pipeline."""
         return (self.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) or 
@@ -71,6 +76,55 @@ class PipelineResult:
     changes_written: bool = False
     error: Optional[str] = None
     status: str = "pending"  # Add a status field to track the overall status
+
+    # Removed redundant methods and properties to avoid confusion
+    # We'll use the existing succeeded_hunks, failed_hunks, etc. properties consistently
+
+    def determine_final_status(self) -> str:
+        """Determines the overall status based on hunk outcomes."""
+        # Check for an explicit pipeline-level error first
+        if self.error:
+            logger.debug(f"Determining final status: Explicit error found: {self.error}")
+            return "error"
+
+        succeeded_count = len(self.succeeded_hunks)
+        failed_count = len(self.failed_hunks)
+        already_applied_count = len(self.already_applied_hunks)
+
+        logger.debug(f"Determining final status: S={succeeded_count}, F={failed_count}, A={already_applied_count}, ChangesWritten={self.changes_written}")
+
+        if failed_count > 0:
+            # If any hunk failed, it's either partial or error
+            # Use changes_written to differentiate: if changes were written despite failures, it's partial.
+            return "partial" if (succeeded_count > 0 or already_applied_count > 0 or self.changes_written) else "error"
+        elif succeeded_count > 0 or already_applied_count > 0:
+            # If none failed, and some succeeded or were already applied
+            return "success"
+        else:
+            # If no hunks were processed (e.g., empty diff) or only pending (shouldn't happen if complete)
+            # Also consider the case where changes_written is true but no hunks succeeded/failed/applied (e.g., new file creation)
+            # If changes were written (like new file creation), it's success. Otherwise, it's success (no-op).
+            return "success" # Treat no-op/empty diff/new file as success if no errors occurred
+    def get_summary_message(self) -> str:
+        """Generates a user-friendly summary message based on the final status."""
+        final_status = self.determine_final_status()
+        if final_status == "success":
+             if self.changes_written:
+                 return "Changes applied successfully."
+             elif len(self.already_applied_hunks) > 0:
+                 return "No changes needed; hunks were already applied."
+             else:
+                 return "No changes needed or diff was empty."
+        elif final_status == "partial":
+            return f"Some changes applied, but {len(self.failed_hunks)} hunk(s) failed."
+        elif final_status == "error":
+             if self.error:
+                 return f"Error applying changes: {self.error}"
+             elif len(self.failed_hunks) > 0:
+                 return f"Failed to apply changes: {len(self.failed_hunks)} hunk(s) failed."
+             else:
+                 return "Failed to apply changes: Unknown error."
+        return "Diff application status unknown."
     
     @property
     def succeeded_hunks(self) -> List[int]:
@@ -105,28 +159,22 @@ class PipelineResult:
     @property
     def is_success(self) -> bool:
         """Check if the pipeline succeeded (all hunks applied or already applied)."""
-        # First check if all hunks have a successful status
-        all_hunks_successful = (self.is_complete and 
-                all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
-                    for tracker in self.hunks.values()))
-        
-        # For success, we need either:
-        # 1. At least one hunk was successfully applied (changes_written is True), or
-        # 2. All hunks were already applied (no changes needed)
-        return all_hunks_successful and (
-            self.changes_written or 
-            all(tracker.status == HunkStatus.ALREADY_APPLIED for tracker in self.hunks.values())
-        )
-    
+
+        # Use the centralized logic
+        return self.determine_final_status() == "success"
+
     @property
     def is_partial_success(self) -> bool:
         """Check if the pipeline partially succeeded (some hunks applied)."""
-        return (self.changes_written and 
-                any(tracker.status == HunkStatus.SUCCEEDED for tracker in self.hunks.values()) and
-                any(tracker.status == HunkStatus.FAILED for tracker in self.hunks.values()))
-    
+        # Use the centralized logic
+        return self.determine_final_status() == "partial"
     def to_dict(self) -> Dict[str, Any]:
-        """Convert the pipeline result to a dictionary."""
+        """Convert the pipeline result to a dictionary for API response details."""
+        # Clean up error details for already applied hunks
+        for hunk_id in self.already_applied_hunks:
+            if hunk_id in self.hunks and self.hunks[hunk_id].error_details:
+                self.hunks[hunk_id].error_details = None
+        
         # Create a detailed dictionary with hunk-by-hunk status information
         already_applied_hunks = self.already_applied_hunks.copy()
         hunk_details = {}
@@ -138,38 +186,44 @@ class PipelineResult:
                 "position": tracker.position,
                 "error_details": tracker.error_details
             }
-            # If this hunk is marked as already applied in the tracker but not in the list,
+                
             # add it to the already_applied_hunks list
             if tracker.status == HunkStatus.ALREADY_APPLIED and hunk_id not in already_applied_hunks:
                 already_applied_hunks.append(hunk_id)
-            
-        # Use the explicitly set status if available, otherwise determine it
-        if self.status != "pending":
-            status = self.status
-        elif self.is_success:
-            if len(already_applied_hunks) > 0 and not self.changes_written:
-                # All hunks were already applied, no changes needed
-                status = "success"  # Still success, but with already_applied hunks
-            elif self.changes_written:
-                status = "success"
-            else:
-                # No changes were made, but we're reporting success
-                # This could be a case where the changes were already applied
-                status = "success"
-        elif self.is_partial_success:
-            status = "partial"
-        else:
-            status = "error"
-            
+        
+        # Debug logging to understand what's happening
+        from app.utils.logging_utils import logger
+        logger.info("=== DEBUG: PipelineResult.to_dict() ===")
+        logger.info(f"Current status: {self.status}")
+        logger.info(f"Succeeded hunks: {self.succeeded_hunks}")
+        logger.info(f"Failed hunks: {self.failed_hunks}")
+        logger.info(f"Already applied hunks: {already_applied_hunks}")
+        logger.info(f"Changes written: {self.changes_written}")
+        logger.info(f"is_success property: {self.is_success}")
+        logger.info(f"is_partial_success property: {self.is_partial_success}")
+        logger.info(f"Error: {self.error}")
+        
+        # Determine the final status based on hunk outcomes
+        final_status = self.determine_final_status()
+        
+        # Generate a user-friendly message
+        final_message = self.get_summary_message()
+        
+        # Use the actual lists, not property methods
         return {
-            "status": status,
+            "status": final_status,
+            "message": final_message,
+            "succeeded": self.succeeded_hunks,
+            "failed": self.failed_hunks,
+            "already_applied": already_applied_hunks, # Use the locally corrected list
+            "changes_written": self.changes_written,
+            "error": self.error,
+            "hunk_statuses": hunk_details,
             "details": {
                 "succeeded": self.succeeded_hunks,
                 "failed": self.failed_hunks,
                 "already_applied": already_applied_hunks,
-                "changes_written": self.changes_written,
-                "error": self.error,
-                "hunk_statuses": hunk_details  # Add detailed hunk status information
+                "hunk_statuses": hunk_details
             }
         }
 

@@ -3,6 +3,7 @@ Fuzzy matching utilities for diff application.
 """
 
 import difflib
+import logging
 from typing import List, Optional, Tuple
 import os
 
@@ -25,7 +26,7 @@ def find_best_chunk_position(
     """
     if not chunk_lines:
         return expected_pos, 1.0  # Empty chunks match perfectly at the expected position
-    
+
     # Get search radius from environment or use default
     search_radius = int(os.environ.get('ZIYA_DIFF_SEARCH_RADIUS', '50'))
     
@@ -33,10 +34,10 @@ def find_best_chunk_position(
     confidence_threshold = float(os.environ.get('ZIYA_DIFF_CONFIDENCE_THRESHOLD', '0.7'))
     
     # Calculate search range
-    start_pos = max(0, expected_pos - search_radius)
-    end_pos = min(len(file_lines), expected_pos + search_radius)
+    start_pos = max(0, expected_pos - search_radius) if expected_pos is not None else 0
+    end_pos = min(len(file_lines), expected_pos + search_radius) if expected_pos is not None else len(file_lines)
     
-    best_pos = None
+    best_pos = expected_pos
     best_ratio = 0.0
     
     # Join chunk lines for comparison
@@ -61,7 +62,7 @@ def find_best_chunk_position(
             best_pos = pos
     
     # Return None if confidence is too low
-    if best_ratio < confidence_threshold:
+    if best_ratio < confidence_threshold and (best_pos != expected_pos or expected_pos is None):
         return None, best_ratio
     
     return best_pos, best_ratio

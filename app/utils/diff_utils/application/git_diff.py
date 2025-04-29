@@ -8,14 +8,108 @@ import tempfile
 import glob
 import json
 import re
+import io
 from typing import Dict, List, Any, Optional
 
 from app.utils.logging_utils import logger
+from ..validation.validators import is_hunk_already_applied
 from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import extract_target_file_from_diff, split_combined_diff
 from ..validation.validators import is_new_file_creation
+from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts, remove_reject_file_if_exists
-from .patch_apply import apply_diff_with_difflib
+# Remove circular import
+# from .patch_apply import apply_diff_with_difflib
+
+def parse_patch_output(stdout: str, stderr: str) -> Dict[int, Any]:
+    """
+    Parse the output of the patch command to determine which hunks succeeded.
+    
+    Args:
+        stdout: Standard output from the patch command
+        stderr: Standard error from the patch command
+        
+    Returns:
+        A dictionary mapping hunk numbers to success status
+    """
+    # Initialize result dictionary
+    result = {}
+    
+    # Check for common error patterns in stderr
+    if "malformed patch" in stderr:
+        logger.warning(f"Malformed patch detected: {stderr}")
+        return result  # Return empty result for malformed patch
+    
+    # Parse stdout for hunk application status
+    hunk_pattern = r'Hunk #(\d+) succeeded at (\d+)'
+    for line in stdout.splitlines():
+        match = re.search(hunk_pattern, line)
+        if match:
+            hunk_num = int(match.group(1))
+            position = int(match.group(2))
+            result[hunk_num] = {
+                "status": "succeeded",
+                "position": position
+            }
+            continue
+            
+        # Check for fuzz factor
+        fuzz_match = re.search(r'Hunk #(\d+) succeeded at (\d+) with fuzz (\d+)', line)
+        if fuzz_match:
+            hunk_num = int(fuzz_match.group(1))
+            position = int(fuzz_match.group(2))
+            fuzz = int(fuzz_match.group(3))
+            result[hunk_num] = {
+                "status": "succeeded",
+                "position": position,
+                "fuzz": fuzz
+            }
+            continue
+            
+        # Check for offset
+        offset_match = re.search(r'Hunk #(\d+) succeeded at (\d+) with an offset of (-?\d+)', line)
+        if offset_match:
+            hunk_num = int(offset_match.group(1))
+            position = int(offset_match.group(2))
+            offset = int(offset_match.group(3))
+            result[hunk_num] = {
+                "status": "succeeded",
+                "position": position,
+                "offset": offset
+            }
+            continue
+            
+        # Check for already applied
+        already_match = re.search(r'Hunk #(\d+) already applied at (\d+)', line)
+        if already_match:
+            hunk_num = int(already_match.group(1))
+            position = int(already_match.group(2))
+            result[hunk_num] = {
+                "status": "already_applied",
+                "position": position
+            }
+            continue
+            
+        # Check for failed hunks
+        failed_match = re.search(r'Hunk #(\d+) FAILED', line)
+        if failed_match:
+            hunk_num = int(failed_match.group(1))
+            result[hunk_num] = {
+                "status": "failed",
+                "error": "hunk_failed"
+            }
+            continue
+    
+    # If no hunks were found in the output, check for overall success/failure
+    if not result:
+        if "Reversed (or previously applied)" in stdout:
+            # All hunks were already applied
+            # We don't know which hunks specifically, so we can't populate the result
+            logger.info("All hunks appear to be already applied")
+        elif "failed" in stdout.lower() or "error" in stdout.lower():
+            logger.warning(f"Patch failed: {stdout}")
+    
+    return result
 
 def clean_input_diff(diff_content: str) -> str:
     """
@@ -286,12 +380,90 @@ def handle_embedded_diff_markers(diff_content: str) -> str:
                 i -= 1  # Back up to reprocess this line as a header
                 continue
     
-    return '\n'.join(result) + '\n'
+    return '\n'.join(result)
+
+def create_diff_from_hunk(hunk: Dict[str, Any], file_path: str) -> str:
+    """
+    Create a unified diff from a single hunk.
+    
+    Args:
+        hunk: The hunk to convert to a diff
+        file_path: Path to the file
+        
+    Returns:
+        A unified diff containing just this hunk
+    """
+    # Create a minimal diff header
+    diff_lines = []
+    diff_lines.append(f"diff --git a/{file_path} b/{file_path}")
+    diff_lines.append(f"--- a/{file_path}")
+    diff_lines.append(f"+++ b/{file_path}")
+    
+    # Create the hunk header
+    header = f"@@ -{hunk['old_start']},{hunk['old_lines']} +{hunk['new_start']},{hunk['new_lines']} @@"
+    diff_lines.append(header)
+    
+    # Add the hunk content
+    for line in hunk['old_block']:
+        diff_lines.append(f"-{line}")
+    for line in hunk['new_lines']:
+        diff_lines.append(f"+{line}")
+    
+    return '\n'.join(diff_lines)
+
+def reduce_hunk_context(hunk: Dict[str, Any], context_lines: int = 1) -> Dict[str, Any]:
+    """
+    Reduce the context lines in a hunk to make it more likely to apply.
+    
+    Args:
+        hunk: The hunk to modify
+        context_lines: Number of context lines to keep (0 for no context)
+        
+    Returns:
+        A new hunk with reduced context
+    """
+    # Create a copy of the hunk to modify
+    reduced_hunk = {
+        'old_start': hunk['old_start'],
+        'old_lines': hunk['old_lines'],
+        'new_start': hunk['new_start'],
+        'new_lines': hunk['new_lines'],
+        'number': hunk['number'],
+        'original_hunk': hunk.get('original_hunk', hunk['number'])
+    }
+    
+    # Extract the changes from the old block
+    old_block = hunk['old_block']
+    new_lines = hunk['new_lines']
+    
+    # Identify which lines are context (present in both old and new)
+    context_indices = []
+    for i, line in enumerate(old_block):
+        if line in new_lines:
+            context_indices.append(i)
+    
+    # Keep only the specified number of context lines
+    if context_lines == 0:
+        # No context, just keep the changed lines
+        reduced_old_block = [line for i, line in enumerate(old_block) if i not in context_indices]
+        reduced_new_lines = [line for line in new_lines if line not in old_block]
+    else:
+        # Keep limited context
+        reduced_old_block = []
+        reduced_new_lines = []
+        # TODO: Implement context reduction logic
+        # This is more complex and would require tracking which lines are
+        # context vs. changes and keeping only N context lines
+    
+    reduced_hunk['old_block'] = reduced_old_block
+    reduced_hunk['new_lines'] = reduced_new_lines
+    
+    return reduced_hunk
 
 def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[str, Any]]:
+
     """
-    Parse patch command output to determine which hunks succeeded/failed.
-    
+     Parse patch command output to determine which hunks succeeded/failed.
     Args:
         patch_output: The output from the patch command
         stderr: The stderr output from the patch command (optional)
@@ -303,16 +475,19 @@ def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[st
     logger.debug(f"Parsing patch output:\n{patch_output}")
     if stderr:
         logger.debug(f"Stderr output:\n{stderr}")
-
+        
+    # Check if the patch was detected as already applied or reversed
+    reversed_or_applied = "Reversed (or previously applied)" in patch_output
+        
     # First check for corrupt patch errors in stderr
     if stderr and "corrupt patch" in stderr:
         logger.warning(f"Corrupt patch detected in stderr: {stderr}")
         # Mark all hunks as failed
         for i in range(1, 10):  # Assume up to 10 hunks for safety
             hunk_status[i] = {
-                "status": "failed",
-                "error": "corrupt_patch",
-                "details": f"Corrupt patch detected: {stderr.strip()}"
+               "status": "failed",
+               "error": "corrupt_patch",
+               "details": f"Corrupt patch detected: {stderr.strip()}"
             }
         return hunk_status
 
@@ -368,13 +543,15 @@ def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[st
                 # Check if there was fuzz applied
                 fuzz_match = re.search(r'with fuzz (\d+)', line)
                 fuzz = int(fuzz_match.group(1)) if fuzz_match else 0
-                
+
+                # If the patch was detected as reversed or already applied, mark as already_applied
+                status = "already_applied" if reversed_or_applied else "succeeded"
                 hunk_status[current_hunk] = {
-                    "status": "succeeded",
+                    "status": status,
                     "position": position,
                     "fuzz": fuzz
                 }
-                logger.debug(f"Hunk {current_hunk} succeeded at position {position}" + 
+                logger.debug(f"Hunk {current_hunk} {status} at position {position}" +
                             (f" with fuzz {fuzz}" if fuzz > 0 else ""))
             elif "failed" in line:
                 position_match = re.search(r'FAILED at (\d+)', line)
@@ -413,13 +590,16 @@ def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[st
                 
                 fuzz_match = re.search(r'with fuzz (\d+)', result)
                 fuzz = int(fuzz_match.group(1)) if fuzz_match else 0
+
+                # If the patch was detected as reversed or already applied, mark as already_applied
+                status = "already_applied" if reversed_or_applied else "succeeded"
                 
                 hunk_status[hunk_num] = {
-                    "status": "succeeded",
+                    "status": status,
                     "position": position,
                     "fuzz": fuzz
                 }
-                logger.debug(f"Hunk {hunk_num} succeeded at position {position}" + 
+                logger.debug(f"Hunk {hunk_num} {status} at position {position}" + 
                             (f" with fuzz {fuzz}" if fuzz > 0 else ""))
             elif 'failed' in result:
                 position_match = re.search(r'at (\d+)', result)
@@ -444,8 +624,122 @@ def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[st
     logger.debug(f"Final hunk status: {json.dumps(hunk_status, indent=2)}")
     return hunk_status
 
-    logger.debug(f"Final hunk status: {hunk_status}")
-    return hunk_status
+def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
+    """
+    Apply a git diff atomically to avoid race conditions with file watchers.
+    
+    This function applies all hunks in memory and writes the result in a single operation,
+    preventing partial updates that can trigger file watchers prematurely.
+    
+    Args:
+        file_path: Path to the file to modify
+        git_diff: The git diff to apply
+        
+    Returns:
+        Dict with status information about the operation
+    """
+    logger.info(f"Applying diff atomically to {file_path}")
+    
+    # Read the original file content
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            original_content = f.read()
+            original_lines = original_content.splitlines(True)  # Keep line endings
+    except FileNotFoundError:
+        if is_new_file_creation(git_diff.splitlines()):
+            # Handle new file creation
+            user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+            create_new_file(git_diff, user_codebase_dir)
+            return {"status": "success", "details": {"new_file": True}}
+        else:
+            return {"status": "error", "details": {"error": f"File not found: {file_path}"}}
+    
+    # Parse the hunks
+    try:
+        hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
+        if not hunks:
+            return {"status": "error", "details": {"error": "No valid hunks found in diff"}}
+    except Exception as e:
+        logger.error(f"Error parsing diff: {str(e)}")
+        return {"status": "error", "details": {"error": f"Error parsing diff: {str(e)}"}}
+    
+    # CRITICAL FIX: Check for malformed hunks first
+    malformed_hunks = []
+    for i, hunk in enumerate(hunks, 1):
+        hunk_id = hunk.get('number', i)
+        
+        # Check if the hunk is malformed
+        if 'header' in hunk and '@@ -' in hunk['header']:
+            header_match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk['header'])
+            if not header_match:
+                logger.warning(f"Malformed hunk header detected: {hunk['header']}")
+                malformed_hunks.append(hunk_id)
+                continue
+        
+        # Check if essential hunk data is missing
+        if not hunk.get('old_block') or not hunk.get('new_lines'):
+            logger.warning(f"Malformed hunk detected: missing old_block or new_lines")
+            malformed_hunks.append(hunk_id)
+            continue
+    
+    # If any hunks are malformed, return an error
+    if malformed_hunks:
+        logger.warning(f"Found {len(malformed_hunks)} malformed hunks, aborting")
+        return {"status": "error", "details": {"error": "Malformed hunks detected", "malformed_hunks": malformed_hunks}}
+    
+    # Check if all hunks are already applied
+    all_already_applied = True
+    already_applied_hunks = []
+    
+    for i, hunk in enumerate(hunks, 1):
+        hunk_applied = False
+        for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
+            if is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=True):
+                already_applied_hunks.append(i)
+                hunk_applied = True
+                break
+        if not hunk_applied:
+            all_already_applied = False
+            break
+    
+    if all_already_applied:
+        logger.info("All hunks are already applied")
+        return {"status": "success", "details": {"already_applied": already_applied_hunks}}
+    
+    # Apply the diff in memory using difflib
+    try:
+        from io import StringIO
+        from .patch_apply import apply_diff_with_difflib_hybrid_forced
+        from .language_integration import verify_changes_with_language_handler
+        
+        # Apply the diff to the content
+        modified_lines = apply_diff_with_difflib_hybrid_forced(file_path, git_diff, original_lines)
+        modified_content = ''.join(modified_lines)
+        
+        # Check if content actually changed
+        if modified_content == original_content:
+            logger.warning("No changes were made to the content")
+            return {"status": "success", "details": {"already_applied": already_applied_hunks}}
+        
+        # Verify changes with language handler
+        is_valid, error_details = verify_changes_with_language_handler(file_path, original_content, modified_content)
+        if not is_valid:
+            logger.error(f"Language validation failed: {error_details}")
+            return {"status": "error", "details": error_details}
+        
+        # Write the modified content back to the file in a single operation
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(modified_content)
+        
+        logger.info(f"Successfully wrote changes to {file_path}")
+        return {"status": "success", "details": {"succeeded": list(range(1, len(hunks) + 1))}}
+        
+    except Exception as e:
+        logger.error(f"Error applying diff: {str(e)}")
+        return {"status": "error", "details": {"error": str(e)}}
+    finally:
+        # Clean up any temporary files
+        cleanup_patch_artifacts(os.path.dirname(file_path), file_path)
 
 def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
     """
@@ -469,6 +763,7 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
     headers = []
     file_headers = []
     current_file_headers = []
+    seen_headers = set()
     hunk_count = 0
     in_hunk = False
     in_file = False
@@ -486,7 +781,10 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
             in_file = True
             current_file_headers = [line]
             continue
-            
+        
+        # Deduplicate file headers
+        if line in seen_headers:
+            continue
         # Collect file headers
         if line.startswith(('--- ', '+++ ', 'index ')):
             if in_file:
@@ -610,7 +908,14 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
     if file_path:
         git_diff = correct_git_diff(git_diff, file_path)
     else:
-        raise ValueError("Could not determine target file path")
+        file_path = extract_target_file_from_diff(git_diff)
+        if not file_path:
+            raise ValueError("Could not determine target file path")
+    
+    # Use atomic application to avoid race conditions with file watchers
+    atomic_result = apply_diff_atomically(file_path, git_diff)
+    if atomic_result:
+        return atomic_result
 
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
     if not user_codebase_dir:

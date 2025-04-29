@@ -3,6 +3,7 @@ Specialized handlers for specific diff application cases.
 """
 
 import logging
+import re
 from typing import Dict, List, Any, Optional, Tuple
 
 logger = logging.getLogger("ZIYA")
@@ -20,87 +21,113 @@ def handle_multi_hunk_same_function(file_lines: List[str], hunks: List[Dict[str,
     """
     logger.info("Applying specialized handler for multi-hunk same function")
     
-    # For multi-hunk same function, we need to be careful about the order
-    # First, sort hunks by their original line numbers
-    sorted_hunks = sorted(hunks, key=lambda h: h['old_start'])
-    
-    # Create a copy of the file lines to modify
-    modified_lines = file_lines.copy()
-    
-    # Special handling for the multi_hunk_same_function test case
-    # This is a general approach that should work for all multi-hunk cases
-    # where hunks are modifying the same function
-    
-    # First, extract all the changes we need to make
-    all_changes = []
-    for hunk in sorted_hunks:
-        old_start = hunk['old_start']
-        old_count = hunk['old_count']
+    # Use the context-preserving approach for multi-hunk same function
+    try:
+        from .context_preserving_apply import apply_multi_hunk_preserving_context
+        return apply_multi_hunk_preserving_context(file_lines, hunks)
+    except ImportError:
+        logger.warning("Context-preserving apply not available, falling back to legacy handler")
         
-        # Extract the old and new lines from the hunk
-        old_lines = []
-        new_lines = []
-        context_lines = []
+        # Legacy implementation follows
+        # For multi-hunk same function, we need to be careful about the order
+        # First, sort hunks by their original line numbers
+        sorted_hunks = sorted(hunks, key=lambda h: h['old_start'])
         
-        for line in hunk['old_block']:
-            if line.startswith(' '):
-                context_lines.append(line[1:])
-                old_lines.append(line[1:])
-            elif line.startswith('-'):
-                old_lines.append(line[1:])
-            elif line.startswith('+'):
-                new_lines.append(line[1:])
+        # Create a copy of the file lines to modify
+        modified_lines = file_lines.copy()
         
-        all_changes.append({
-            'old_start': old_start,
-            'old_count': old_count,
-            'old_lines': old_lines,
-            'new_lines': new_lines,
-            'context_lines': context_lines
-        })
-    
-    # Now apply all changes at once, starting from the bottom of the file
-    # This prevents line offset issues
-    all_changes.sort(key=lambda c: c['old_start'], reverse=True)
-    
-    for change in all_changes:
-        old_start = change['old_start']
-        old_count = change['old_count']
-        old_lines = change['old_lines']
-        new_lines = change['new_lines']
-        
-        # Apply the change
-        if 0 <= old_start - 1 < len(modified_lines):
-            # Get the actual lines from the file
-            actual_lines = modified_lines[old_start-1:old_start-1+old_count]
-            
-            # Check if the actual lines match what we expect to replace
-            if ''.join(actual_lines) == ''.join(old_lines):
-                # Replace the lines
-                modified_lines[old_start-1:old_start-1+old_count] = new_lines
-                logger.info(f"Applied change at line {old_start}")
-            else:
-                # If lines don't match exactly, try to find a close match
-                found = False
-                search_range = 10  # Look within 10 lines in either direction
-                
-                for i in range(max(0, old_start-1-search_range), 
-                               min(len(modified_lines), old_start-1+search_range)):
-                    if i + old_count <= len(modified_lines):
-                        check_lines = modified_lines[i:i+old_count]
-                        if ''.join(check_lines) == ''.join(old_lines):
-                            # Found a match, apply the change here
-                            modified_lines[i:i+old_count] = new_lines
-                            logger.info(f"Applied change at line {i+1} (offset from {old_start})")
-                            found = True
+        # CRITICAL FIX: Check for context lines in headers to ensure correct positioning
+        for hunk in sorted_hunks:
+            if 'header' in hunk:
+                header = hunk['header']
+                context_match = re.search(r'@@ -\d+,\d+ \+\d+,\d+ @@ (.*)', header)
+                if context_match and context_match.group(1).strip():
+                    context_line = context_match.group(1).strip()
+                    logger.info(f"Found context line in header: '{context_line}'")
+                    
+                    # Search for this context line in the file
+                    for i, line in enumerate(modified_lines):
+                        if context_line in line:
+                            logger.info(f"Found context line at position {i}: '{line.strip()}'")
+                            # The hunk should start AFTER this line
+                            hunk['adjusted_start'] = i + 1
+                            logger.info(f"Adjusted start position to {hunk['adjusted_start']}")
                             break
+        
+        # Special handling for the multi_hunk_same_function test case
+        # This is a general approach that should work for all multi-hunk cases
+        # where hunks are modifying the same function
+        
+        # First, extract all the changes we need to make
+        all_changes = []
+        for hunk in sorted_hunks:
+            old_start = hunk.get('adjusted_start', hunk['old_start'])
+            old_count = hunk['old_count']
+            
+            # Extract the old and new lines from the hunk
+            old_lines = []
+            new_lines = []
+            context_lines = []
+            
+            for line in hunk['old_block']:
+                if line.startswith(' '):
+                    context_lines.append(line[1:])
+                    old_lines.append(line[1:])
+                elif line.startswith('-'):
+                    old_lines.append(line[1:])
+                elif line.startswith('+'):
+                    new_lines.append(line[1:])
+            
+            all_changes.append({
+                'old_start': old_start,
+                'old_count': old_count,
+                'old_lines': old_lines,
+                'new_lines': new_lines,
+                'context_lines': context_lines
+            })
+        
+        # Now apply all changes at once, starting from the bottom of the file
+        # This prevents line offset issues
+        all_changes.sort(key=lambda c: c['old_start'], reverse=True)
+        
+        for change in all_changes:
+            old_start = change['old_start']
+            old_count = change['old_count']
+            old_lines = change['old_lines']
+            new_lines = change['new_lines']
+            
+            # Apply the change
+            if 0 <= old_start - 1 < len(modified_lines):
+                # Get the actual lines from the file
+                actual_lines = modified_lines[old_start-1:old_start-1+old_count]
                 
-                if not found:
-                    logger.warning(f"Could not find match for change at line {old_start}")
-        else:
-            logger.warning(f"Change at line {old_start} is out of bounds")
-    
-    return modified_lines
+                # Check if the actual lines match what we expect to replace
+                if ''.join(actual_lines) == ''.join(old_lines):
+                    # Replace the lines
+                    modified_lines[old_start-1:old_start-1+old_count] = new_lines
+                    logger.info(f"Applied change at line {old_start}")
+                else:
+                    # If lines don't match exactly, try to find a close match
+                    found = False
+                    search_range = 10  # Look within 10 lines in either direction
+                    
+                    for i in range(max(0, old_start-1-search_range), 
+                                min(len(modified_lines), old_start-1+search_range)):
+                        if i + old_count <= len(modified_lines):
+                            check_lines = modified_lines[i:i+old_count]
+                            if ''.join(check_lines) == ''.join(old_lines):
+                                # Found a match, apply the change here
+                                modified_lines[i:i+old_count] = new_lines
+                                logger.info(f"Applied change at line {i+1} (offset from {old_start})")
+                                found = True
+                                break
+                    
+                    if not found:
+                        logger.warning(f"Could not find match for change at line {old_start}")
+            else:
+                logger.warning(f"Change at line {old_start} is out of bounds")
+        
+        return modified_lines
     
     return modified_lines
 

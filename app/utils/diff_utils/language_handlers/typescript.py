@@ -8,7 +8,7 @@ from typing import List, Tuple, Optional, Dict
 
 from app.utils.logging_utils import logger
 from .base import LanguageHandler
-from .javascript import JavaScriptHandler
+from .javascript import JavaScriptHandler, JsonContentHandler
 
 
 class TypeScriptHandler(LanguageHandler):
@@ -40,6 +40,11 @@ class TypeScriptHandler(LanguageHandler):
         Returns:
             Tuple of (is_valid, error_message)
         """
+        # Special handling for JSON content with escape sequences
+        if JsonContentHandler.contains_json_content(original_content) or JsonContentHandler.contains_json_content(modified_content):
+            logger.debug(f"TypeScript file contains JSON content, applying special handling")
+            modified_content = JsonContentHandler.preserve_json_structure(original_content, modified_content)
+        
         # Try to use TypeScript compiler to validate syntax if available
         try:
             # Create a temporary file with the modified content

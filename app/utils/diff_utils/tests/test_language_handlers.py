@@ -7,12 +7,12 @@ import unittest
 import tempfile
 import shutil
 
-from app.utils.diff_utils.language_handlers import (
+from ..language_handlers import (
     LanguageHandler,
     LanguageHandlerRegistry,
     GenericTextHandler
 )
-from app.utils.diff_utils.language_handlers.python import PythonHandler
+from ..language_handlers.python import PythonHandler
 
 
 class TestLanguageHandlers(unittest.TestCase):

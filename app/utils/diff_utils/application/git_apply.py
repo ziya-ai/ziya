@@ -107,7 +107,7 @@ def parse_git_apply_output(output: str) -> Dict[int, bool]:
             result[current_hunk] = True
         
         # Look for failure indicators
-        if current_hunk is not None and 'failed' in line.lower():
-            result[current_hunk] = False
+            if current_hunk is not None and 'failed' in line.lower():
+                result[current_hunk] = False
     
-    return result
+        return result

@@ -28,12 +28,12 @@ def optimize_hunk_order(hunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     sorted_hunks = sorted(hunks, key=lambda h: h['old_start'])
     
     # Special handling for misordered hunks
-    if is_misordered_hunks_case(hunks):
+    if is_misordered_hunks_case(sorted_hunks):
         logger.info("Detected misordered hunks case, will use special handling")
         return handle_misordered_hunks(hunks)
     
     # Special handling for multi-hunk same function case
-    if is_multi_hunk_same_function_case(hunks):
+    if is_multi_hunk_same_function_case(sorted_hunks):
         logger.info("Detected multi-hunk same function case, will use special handling")
         return handle_multi_hunk_same_function(hunks)
     

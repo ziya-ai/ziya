@@ -26,9 +26,14 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
         
     lines = diff_content.splitlines()
     for line in lines:
-        # For new files or modified files
+        # For new files (with standard format)
         if line.startswith('+++ b/'):
             return line[6:]
+            
+        # For new files (with /dev/null format)
+        if line.startswith('+++ ') and not line.startswith('+++ b/') and not line.startswith('+++ /dev/null'):
+            # Extract the path without any prefix
+            return line[4:].strip()
             
         # For deleted files
         if line.startswith('--- a/'):
@@ -197,8 +202,9 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
         if line.startswith('diff --git'):
             i += 1
             continue
-
-        if line.startswith(('--- ', '+++ ')):
+            
+        # Skip diff header lines, but deduplicate +++ lines
+        if line.startswith(('--- ', '+++ ')) and (i == 0 or lines[i-1] != line):
             # Skip diff header lines, but only outside of hunks
             # This is important for handling embedded diff markers in content
             if not in_hunk:
@@ -242,7 +248,8 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                     'new_lines': [],
                     'old_lines': old_count,     # Store old line count for patch application
                     'removed_lines': [],        # Track removed lines
-                    'added_lines': []           # Track added lines
+                    'added_lines': [],          # Track added lines
+                    'header': line              # Store the original header
                 }
 
                 # Start collecting content for this hunk
@@ -251,6 +258,16 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                 current_hunk = hunk
 
             i += 1
+            # Validate the hunk header against the actual content
+            # This helps catch malformed hunks early
+            if current_hunk:
+                # Count the number of lines in the hunk
+                hunk_lines = []
+                j = i
+                while j < len(lines) and lines[j].startswith((' ', '+', '-', '\\')):
+                    hunk_lines.append(lines[j])
+                    j += 1
+                current_hunk['expected_line_count'] = len(hunk_lines)
             continue
 
         if in_hunk:
@@ -268,7 +285,7 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                 current_hunk['lines'].append(line)
                 if line.startswith('-'):
                     text = line[1:].rstrip('\r\n')
-                    current_hunk['old_block'].append(text) # Add removed line to old_block
+                    current_hunk['old_block'].append(text)  
                     current_hunk['removed_lines'].append(text)
                 elif line.startswith('+'):
                     text = line[1:].rstrip('\r\n')

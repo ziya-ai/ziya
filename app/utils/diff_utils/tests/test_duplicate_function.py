@@ -8,12 +8,12 @@ import tempfile
 import shutil
 from typing import List, Tuple
 
-from app.utils.diff_utils.application.patch_apply import (
+from ..application.patch_apply import (
     apply_diff_with_difflib,
     MIN_CONFIDENCE,
     MAX_OFFSET
 )
-from app.utils.diff_utils.core.exceptions import PatchApplicationError
+from ..core.exceptions import PatchApplicationError
 from app.utils.logging_utils import logger
 
 
