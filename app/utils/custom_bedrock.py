@@ -5,6 +5,7 @@ Custom Bedrock client wrapper that ensures max_tokens is correctly passed to the
 import json
 import os
 import re
+import gc
 from app.utils.logging_utils import logger
 
 class CustomBedrockClient:
@@ -28,7 +29,14 @@ class CustomBedrockClient:
     
     def __init__(self, client, max_tokens=None):
         """Initialize the custom client."""
+        # Force garbage collection to clean up any lingering references
+        gc.collect()
+        
+        # Use the provided client directly instead of creating a new one
+        # This preserves the ability to create fresh clients when needed while
+        # avoiding unnecessary client creation during normal operation
         self.client = client
+        
         self.user_max_tokens = max_tokens
         self.default_max_tokens = 4000  # Default fallback if not specified
         self.last_error = None
@@ -36,17 +44,21 @@ class CustomBedrockClient:
         # Get the region from the client
         self.region = self.client.meta.region_name if hasattr(self.client, 'meta') else None
         logger.info(f"Initialized CustomBedrockClient with user_max_tokens={max_tokens}, region={self.region}")
+
+        # Store region in environment variable to ensure consistency
+        if self.region:
+            os.environ["AWS_REGION"] = self.region
         
         # Store the original methods
-        self.original_invoke = client.invoke_model_with_response_stream
-        if hasattr(client, 'invoke_model'):
-            self.original_invoke_model = client.invoke_model
+        self.original_invoke = self.client.invoke_model_with_response_stream
+        if hasattr(self.client, 'invoke_model'):
+            self.original_invoke_model = self.client.invoke_model
         
         # Replace the streaming method with our custom implementation
         self.invoke_model_with_response_stream = self._create_custom_invoke_streaming()
         
         # Replace the non-streaming method if it exists
-        if hasattr(client, 'invoke_model'):
+        if hasattr(self.client, 'invoke_model'):
             self.invoke_model = self._create_custom_invoke_non_streaming()
     
     def _create_custom_invoke_streaming(self):
@@ -92,9 +104,22 @@ class CustomBedrockClient:
                                 # Retry with adjusted parameters
                                 return self.original_invoke(**kwargs)
                         
-                        # Re-raise the original exception if we can't handle it
-                        raise
+                        # Fall back to original method if our customization fails
+                        return self.original_invoke(**kwargs)
                 except Exception as e:
+                    # Log more details about the error
+                    logger.error(f"Error in custom invoke: {e}")
+                    if 'modelId' in kwargs:
+                        logger.error(f"Model ID being used: {kwargs['modelId']}")
+                    
+                    # Try to create a regular bedrock client to list models
+                    try:
+                        import boto3
+                        bedrock_client = boto3.client('bedrock', region_name=self.region)
+                        logger.info(f"Available models in region {self.region}: {[m['modelId'] for m in bedrock_client.list_foundation_models()['modelSummaries']]}")
+                    except Exception as list_error:
+                        logger.error(f"Error listing models: {list_error}")
+                        
                     logger.error(f"Error in custom invoke: {e}")
                     # Fall back to original method if our customization fails
                     return self.original_invoke(**kwargs)

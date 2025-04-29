@@ -7,128 +7,124 @@ This module provides functions to integrate AST capabilities with Ziya's core fu
 import os
 import json
 import logging
+import importlib.util
 from typing import Dict, List, Optional, Any
 
-from .ziya_ast_enhancer import ZiyaASTEnhancer
 from app.utils.logging_utils import logger
 
 # Global enhancer instance
 _enhancer = None
+_ast_context = ""
+_ast_token_count = 0
+_ast_initialized = False
+
+
+def check_dependencies() -> bool:
+    """
+    Check if all required dependencies are installed.
+    
+    Returns:
+        True if all dependencies are installed, False otherwise
+    """
+    required_packages = ["cssutils", "html5lib"]
+    
+    for package in required_packages:
+        if importlib.util.find_spec(package) is None:
+            logger.warning(f"Required package '{package}' is not installed")
+            return False
+    
+    return True
 
 
 def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[List[str]] = None, 
-                              max_depth: int = 15) -> None:
+                              max_depth: int = 15) -> Dict[str, Any]:
     """
-    Initialize AST capabilities for a codebase.
+    Initialize AST capabilities for the given codebase.
     
     Args:
-        codebase_path: Path to the codebase root
+        codebase_path: Path to the codebase
         exclude_patterns: Patterns to exclude
         max_depth: Maximum directory depth to traverse
-    """
-    global _enhancer
-    
-    logger.info(f"Initializing AST capabilities for codebase: {codebase_path}")
-    
-    # Create enhancer if not exists
-    if _enhancer is None:
-        _enhancer = ZiyaASTEnhancer()
-    
-    # Process codebase
-    _enhancer.process_codebase(codebase_path, exclude_patterns, max_depth)
-    
-    logger.info(f"AST capabilities initialized, processed {len(_enhancer.ast_cache)} files")
-
-
-def enhance_context(query: str, file_context: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Enhance context for a query with semantic information.
-    
-    Args:
-        query: User query
-        file_context: Optional file context
         
     Returns:
-        Enhanced context information
+        Dict containing initialization results
     """
-    global _enhancer
+    global _enhancer, _ast_context, _ast_token_count, _ast_initialized
     
-    if _enhancer is None:
-        logger.warning("AST capabilities not initialized")
-        return {}
+    logger.info(f"initialize_ast_capabilities called with codebase_path={codebase_path}, max_depth={max_depth}")
     
-    return _enhancer.enhance_query_context(query, file_context)
-
-
-def get_code_summaries() -> Dict[str, Any]:
-    """
-    Get code summaries for the codebase.
+    # Check dependencies
+    if not check_dependencies():
+        logger.warning("AST dependencies not installed. AST capabilities will not be available.")
+        return {
+            "error": "Missing dependencies",
+            "files_processed": 0,
+            "ast_context": "",
+            "token_count": 0
+        }
     
-    Returns:
-        Dictionary with code summaries
-    """
-    global _enhancer
-    
-    if _enhancer is None:
-        logger.warning("AST capabilities not initialized")
-        return {}
-    
-    return _enhancer.generate_code_summaries()
-
-
-def find_references(symbol_name: str) -> List[Dict[str, Any]]:
-    """
-    Find all references to a symbol across the codebase.
-    
-    Args:
-        symbol_name: Name of the symbol to find
+    try:
+        # Import ZiyaASTEnhancer here to avoid circular imports
+        logger.info("Importing ZiyaASTEnhancer...")
+        from .ziya_ast_enhancer import ZiyaASTEnhancer
         
-    Returns:
-        List of references
-    """
-    global _enhancer
-    
-    if _enhancer is None:
-        logger.warning("AST capabilities not initialized")
-        return []
-    
-    return _enhancer.find_references(symbol_name)
-
-
-def analyze_dependencies() -> Dict[str, List[str]]:
-    """
-    Analyze dependencies between files.
-    
-    Returns:
-        Dictionary mapping files to their dependencies
-    """
-    global _enhancer
-    
-    if _enhancer is None:
-        logger.warning("AST capabilities not initialized")
-        return {}
-    
-    return _enhancer.analyze_dependencies()
-
-
-def get_ast_for_file(file_path: str) -> Optional[Dict[str, Any]]:
-    """
-    Get the AST for a specific file.
-    
-    Args:
-        file_path: Path to the file
+        # Create enhancer if not already created
+        if _enhancer is None:
+            logger.info("Creating new ZiyaASTEnhancer instance")
+            _enhancer = ZiyaASTEnhancer()
+        else:
+            logger.info("Using existing ZiyaASTEnhancer instance")
         
-    Returns:
-        AST as a dictionary or None if not available
-    """
-    global _enhancer
-    
-    if _enhancer is None or file_path not in _enhancer.ast_cache:
-        return None
-    
-    # Convert to dictionary for serialization
-    ast = _enhancer.ast_cache[file_path]
-    return json.loads(ast.to_json())
+        # Process codebase
+        logger.info(f"Processing codebase at {codebase_path}")
+        result = _enhancer.process_codebase(codebase_path, exclude_patterns, max_depth)
+        logger.info(f"Codebase processing result: {result}")
+        
+        # Store context and token count
+        if "ast_context" in result:
+            _ast_context = result["ast_context"]
+            logger.info(f"AST context set, length: {len(_ast_context)}")
+        if "token_count" in result:
+            _ast_token_count = result["token_count"]
+            logger.info(f"AST token count set: {_ast_token_count}")
+        
+        # Mark as initialized
+        _ast_initialized = True
+        logger.info("AST capabilities marked as initialized")
+        
+        # Return a properly formatted result dictionary
+        return {
+            "initialized": True,
+            "files_processed": result.get("files_processed", 0),
+            "token_count": result.get("token_count", 0),
+            "ast_context": result.get("ast_context", "")
+        }
+        
+    except Exception as e:
+        logger.error(f"Error initializing AST capabilities: {str(e)}")
+        import traceback
+        logger.error(f"AST initialization traceback: {traceback.format_exc()}")
+        return {
+            "initialized": False,
+            "error": str(e),
+            "files_processed": 0,
+            "token_count": 0
+        }
+        
+        # Mark as initialized
+        _ast_initialized = True
+        
+        return result
+    except Exception as e:
+        logger.error(f"Failed to initialize AST capabilities: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "error": str(e),
+            "files_processed": 0,
+            "ast_context": "",
+            "token_count": 0
+        }
 
 
 def is_ast_available() -> bool:
@@ -136,7 +132,43 @@ def is_ast_available() -> bool:
     Check if AST capabilities are available.
     
     Returns:
-        True if AST capabilities are initialized, False otherwise
+        True if AST capabilities are available, False otherwise
     """
-    global _enhancer
-    return _enhancer is not None
+    return _ast_initialized and _enhancer is not None
+
+
+def get_ast_context() -> str:
+    """
+    Get the AST context.
+    
+    Returns:
+        AST context as a string
+    """
+    return _ast_context
+
+
+def get_ast_token_count() -> int:
+    """
+    Get the AST context token count.
+    
+    Returns:
+        AST context token count
+    """
+    return _ast_token_count
+
+
+def enhance_query_context(query: str, file_context: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Enhance query context with AST information.
+    
+    Args:
+        query: User query
+        file_context: Optional file context
+        
+    Returns:
+        Enhanced context
+    """
+    if _enhancer is None:
+        return {}
+    
+    return _enhancer.enhance_query_context(query, file_context)

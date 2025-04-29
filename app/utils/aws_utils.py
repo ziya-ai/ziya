@@ -3,15 +3,85 @@ AWS utility functions for Ziya.
 """
 import os
 import sys
+import importlib
 import boto3
+from botocore.client import BaseClient
 from botocore.exceptions import ClientError, NoCredentialsError
 from app.utils.logging_utils import logger
 
-class ThrottleSafeBedrock:
+def create_fresh_boto3_session(profile_name=None):
+    """Create a fresh boto3 session by reloading the modules.
+    
+    Args:
+        profile_name (str): Optional AWS profile name to use
+        
+    Returns:
+        boto3.Session: A fresh boto3 session
+    """
+    # First, try to clean up existing modules
+    modules_to_remove = []
+    for module_name in list(sys.modules.keys()):
+        if module_name.startswith('boto3.') or module_name.startswith('botocore.'):
+            modules_to_remove.append(module_name)
+    
+    for module_name in modules_to_remove:
+        try:
+            del sys.modules[module_name]
+        except KeyError:
+            pass
+    
+    # Reload core modules
+    try:
+        import botocore
+        import boto3
+        importlib.reload(botocore)
+        importlib.reload(boto3)
+    except Exception as e:
+        logger.warning(f"Error reloading boto3/botocore modules: {e}")
+    
+    # Create a fresh session
+    try:
+        # Get the current region from environment variables
+        region = os.environ.get("AWS_REGION")
+        
+        if profile_name:
+            return boto3.Session(profile_name=profile_name)
+        else:
+            return boto3.Session()
+    except Exception as e:
+        logger.error(f"Error creating fresh boto3 session: {e}")
+        # Fall back to default session
+        boto3.setup_default_session()
+        return boto3._get_default_session()
+
+def get_current_region():
+    """Get the current AWS region from environment variables or boto3 session."""
+    # First check environment variables
+    region = os.environ.get("AWS_REGION")
+    if region:
+        return region
+        
+    # Then check boto3 session
+    try:
+        session = boto3.Session()
+        region = session.region_name
+        if region:
+            return region
+    except Exception as e:
+        logger.warning(f"Error getting region from boto3 session: {e}")
+        
+    # Fall back to default region
+    from app.config import DEFAULT_REGION
+    logger.warning(f"Using default region: {DEFAULT_REGION}")
+    return DEFAULT_REGION
+
+class ThrottleSafeBedrock(BaseClient):
     """A wrapper for Bedrock client that handles throttling."""
     
     def __init__(self, client):
         self.client = client
+        # Copy attributes from the original client to make this class behave like BaseClient
+        self.__dict__.update(client.__dict__)
         
     def invoke_model(self, *args, **kwargs):
         """Invoke a Bedrock model with throttling handling."""
@@ -22,6 +92,10 @@ class ThrottleSafeBedrock:
                 logger.warning("Throttling detected, please try again later")
                 raise ValueError("AWS Bedrock is currently throttling requests. Please try again later.")
             raise
+            
+    def converse(self, *args, **kwargs):
+        """Forward converse calls to the client."""
+        return self.client.converse(*args, **kwargs)
 
 def check_aws_credentials(is_server_startup=True, profile_name=None):
     """Check if AWS credentials are valid.
@@ -32,12 +106,13 @@ def check_aws_credentials(is_server_startup=True, profile_name=None):
         profile_name (str): Optional AWS profile name to use
     """
     try:
-        # Create a session with the specified profile if provided
+        # Create a fresh session with the specified profile if provided
         if profile_name:
-            session = boto3.Session(profile_name=profile_name)
+            session = create_fresh_boto3_session(profile_name=profile_name)
             sts = session.client('sts')
         else:
-            sts = boto3.client('sts')
+            session = create_fresh_boto3_session()
+            sts = session.client('sts')
             
         # Try to get caller identity
         identity = sts.get_caller_identity()

@@ -3,6 +3,7 @@ import os
 from typing import List, Set, Tuple, Dict
 
 from app.utils.gitignore_parser import parse_gitignore_patterns
+from app.utils.file_utils import is_binary_file
 
 
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
@@ -51,13 +52,8 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], 
 
             for file in files:
                 file_path = os.path.join(root, file)
-                if not should_ignore_fn(file_path) and not is_image_file(file_path) and not file.startswith('.'):
+                if not should_ignore_fn(file_path) and not is_binary_file(file_path) and not file.startswith('.'):
                     file_dict[file_path] = {}
-
-            for dir in dirs:
-                dir_path = os.path.join(root, dir)
-                if not should_ignore_fn(dir_path):
-                    file_dict[dir_path] = {}
 
     return file_dict
 

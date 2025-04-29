@@ -1,7 +1,7 @@
 import logging
 import os
 
-# state test 
+# This module provides a consistent logging interface for the application
 
 def get_logger():
    # Create and configure the logger

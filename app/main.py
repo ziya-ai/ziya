@@ -31,6 +31,8 @@ def parse_arguments():
                         help="List of files or directories to exclude (e.g., --exclude 'tst,build,*.py')")
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
+    parser.add_argument("--region", type=str, default=None,
+                        help="AWS region to use (e.g., --region us-east-1)")
     
     # Get default model alias from config
     default_model = config.DEFAULT_MODELS[config.DEFAULT_ENDPOINT]
@@ -108,6 +110,23 @@ def setup_environment(args):
 
     if args.profile:
         os.environ["ZIYA_AWS_PROFILE"] = args.profile
+        logger.info(f"Using AWS profile: {args.profile}")
+
+    # Handle region selection
+    # First check if region is explicitly specified via command line
+    if args.region:
+        os.environ["AWS_REGION"] = args.region
+        logger.info(f"Using AWS region from command line: {args.region}")
+    else:
+        # If model is specified, check if it has a default region
+        if args.model and args.model in config.MODEL_DEFAULT_REGIONS:
+            region = config.MODEL_DEFAULT_REGIONS[args.model]
+            os.environ["AWS_REGION"] = region
+            logger.info(f"Using model-specific default region for {args.model}: {region}")
+        else:
+            # Otherwise use the global default region
+            os.environ["AWS_REGION"] = config.DEFAULT_REGION
+            logger.info(f"Using default region: {config.DEFAULT_REGION}")
 
     # Validate endpoint and model before setting environment variables
     endpoint = args.endpoint
@@ -142,6 +161,13 @@ def setup_environment(args):
     if args.model_id is not None:
         os.environ["ZIYA_MODEL_ID_OVERRIDE"] = args.model_id
         logger.info(f"Overriding model ID with: {args.model_id}")
+    
+    # Enable AST if requested
+    if args.ast:
+        os.environ["ZIYA_ENABLE_AST"] = "true"
+        logger.info("AST-based code understanding enabled")
+        os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
+        logger.info(f"Using max depth for AST: {args.max_depth}")
 
 
 def check_version_and_upgrade():
@@ -249,20 +275,22 @@ def start_server(args):
         # Pre-initialize the model to catch any credential issues before starting the server
         logger.info("Performing initial authentication check...")
         try:
-            # Check AWS credentials first - specify this is server startup
-            from app.utils.aws_utils import check_aws_credentials
-            from app.utils.custom_exceptions import KnownCredentialException
-            
-            # Pass the profile from command line args if provided
-            valid, message = check_aws_credentials(is_server_startup=True, profile_name=args.profile)
-            
-            if not valid:
-                # Store the error message for consistent reporting
-                from app.agents.models import ModelManager
-                ModelManager._state['last_auth_error'] = message
-                # Raise KnownCredentialException which will handle printing the message only once
-                raise KnownCredentialException(message)
+            # Only check AWS credentials if using Bedrock endpoint
+            if args.endpoint == "bedrock":
+                # Check AWS credentials first - specify this is server startup
+                from app.utils.aws_utils import check_aws_credentials
+                from app.utils.custom_exceptions import KnownCredentialException
                 
+                # Pass the profile from command line args if provided
+                valid, message = check_aws_credentials(is_server_startup=True, profile_name=args.profile)
+                
+                if not valid:
+                    # Store the error message for consistent reporting
+                    from app.agents.models import ModelManager
+                    ModelManager._state['last_auth_error'] = message
+                    # Raise KnownCredentialException which will handle printing the message only once
+                    raise KnownCredentialException(message)
+            
             # Set an environment variable to indicate we've already checked auth
             # This will be used by ModelManager to avoid duplicate initialization
             os.environ["ZIYA_AUTH_CHECKED"] = "true"

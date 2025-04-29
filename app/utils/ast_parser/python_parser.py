@@ -16,7 +16,9 @@ from .unified_ast import UnifiedAST, SourceLocation
 class PythonASTParser(ASTParserPlugin):
     """Parser for Python files."""
     
-    file_extensions = ['.py', '.pyi']
+    def __init__(self):
+        """Initialize the Python parser."""
+        super().__init__(file_extensions=['.py', '.pyi'])
     
     def parse(self, file_path: str, file_content: str) -> ast.AST:
         """

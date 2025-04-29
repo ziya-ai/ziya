@@ -18,11 +18,9 @@ from .unified_ast import UnifiedAST, SourceLocation
 class TypeScriptASTParser(ASTParserPlugin):
     """Parser for TypeScript files."""
     
-    file_extensions = ['.ts', '.tsx', '.js', '.jsx']
-    
     def __init__(self):
         """Initialize the TypeScript parser."""
-        super().__init__(self.file_extensions)
+        super().__init__(file_extensions=['.ts', '.tsx', '.js', '.jsx'])
         self._ensure_parser_script()
     
     def _ensure_parser_script(self):

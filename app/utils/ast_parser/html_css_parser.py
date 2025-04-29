@@ -22,11 +22,9 @@ cssutils.log.setLevel(logging.CRITICAL)
 class HTMLCSSParser(ASTParserPlugin):
     """Parser for HTML and CSS files."""
     
-    file_extensions = ['.html', '.htm', '.css']
-    
     def __init__(self):
         """Initialize the HTML/CSS parser."""
-        super().__init__(self.file_extensions)
+        super().__init__(file_extensions=['.html', '.htm', '.css'])
     
     def parse(self, file_path: str, file_content: str) -> Dict[str, Any]:
         """

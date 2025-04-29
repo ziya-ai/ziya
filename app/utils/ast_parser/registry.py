@@ -14,110 +14,85 @@ logger = logging.getLogger(__name__)
 class ASTParserPlugin:
     """Base class for AST parser plugins."""
     
-    def __init__(self, file_extensions: List[str]):
+    @classmethod
+    def get_file_extensions(cls) -> List[str]:
         """
-        Initialize a parser plugin.
+        Get the file extensions supported by this parser.
         
-        Args:
-            file_extensions: List of file extensions this parser can handle (e.g., ['.py', '.pyi'])
+        Returns:
+            List of supported file extensions
         """
-        self.file_extensions = file_extensions
+        raise NotImplementedError("Subclasses must implement get_file_extensions")
     
     def parse(self, file_path: str, file_content: str) -> Any:
         """
-        Parse file content and return a native AST.
-        
-        Args:
-            file_path: Path to the file being parsed
-            file_content: Content of the file to parse
-            
-        Returns:
-            Native AST representation for the specific language
-        """
-        raise NotImplementedError("Parser plugins must implement parse method")
-    
-    def to_unified_ast(self, native_ast: Any, file_path: str) -> 'UnifiedAST':
-        """
-        Convert native AST to unified AST format.
-        
-        Args:
-            native_ast: Native AST from the parser
-            file_path: Path to the file that was parsed
-            
-        Returns:
-            UnifiedAST representation
-        """
-        raise NotImplementedError("Parser plugins must implement to_unified_ast method")
-    
-    @classmethod
-    def can_parse(cls, file_path: str) -> bool:
-        """
-        Check if this parser can handle the given file.
-        
-        Args:
-            file_path: Path to the file to check
-            
-        Returns:
-            True if this parser can handle the file, False otherwise
-        """
-        _, ext = os.path.splitext(file_path)
-        return ext.lower() in cls.file_extensions
-
-
-class ParserRegistry:
-    """Registry for AST parsers."""
-    
-    def __init__(self):
-        """Initialize an empty parser registry."""
-        self.parsers: Dict[str, Type[ASTParserPlugin]] = {}
-    
-    def register_parser(self, parser_class: Type[ASTParserPlugin]) -> None:
-        """
-        Register a parser plugin.
-        
-        Args:
-            parser_class: Parser class to register
-        """
-        for ext in parser_class.file_extensions:
-            if ext in self.parsers:
-                logger.warning(f"Overriding existing parser for extension {ext}")
-            self.parsers[ext] = parser_class
-        logger.info(f"Registered parser {parser_class.__name__} for extensions {parser_class.file_extensions}")
-    
-    def get_parser(self, file_path: str) -> Optional[Type[ASTParserPlugin]]:
-        """
-        Get appropriate parser for a file.
-        
-        Args:
-            file_path: Path to the file
-            
-        Returns:
-            Parser plugin class or None if no suitable parser is found
-        """
-        _, ext = os.path.splitext(file_path)
-        return self.parsers.get(ext.lower())
-    
-    def parse_file(self, file_path: str, file_content: str) -> Optional['UnifiedAST']:
-        """
-        Parse a file and return unified AST.
+        Parse a file into a native AST.
         
         Args:
             file_path: Path to the file
             file_content: Content of the file
             
         Returns:
-            UnifiedAST or None if no suitable parser is found
+            Native AST representation
         """
-        parser_class = self.get_parser(file_path)
-        if not parser_class:
-            logger.warning(f"No parser found for file: {file_path}")
-            return None
+        raise NotImplementedError("Subclasses must implement parse")
+    
+    def to_unified_ast(self, native_ast: Any, file_path: str) -> 'UnifiedAST':
+        """
+        Convert a native AST to a unified AST.
         
+        Args:
+            native_ast: Native AST representation
+            file_path: Path to the file
+            
+        Returns:
+            Unified AST representation
+        """
+        raise NotImplementedError("Subclasses must implement to_unified_ast")
+
+
+class ParserRegistry:
+    """Registry for AST parsers."""
+    
+    def __init__(self):
+        """Initialize the registry."""
+        self.parsers = {}
+        self.extension_map = {}
+    
+    def register_parser(self, parser_class: Type[ASTParserPlugin]) -> None:
+        """
+        Register a parser class.
+        
+        Args:
+            parser_class: Parser class to register
+        """
         try:
-            parser = parser_class()
-            native_ast = parser.parse(file_path, file_content)
-            unified_ast = parser.to_unified_ast(native_ast, file_path)
-            return unified_ast
+            # Get file extensions from the parser class
+            extensions = parser_class.get_file_extensions()
+            
+            # Register the parser class
+            self.parsers[parser_class.__name__] = parser_class
+            
+            # Map extensions to the parser class
+            for ext in extensions:
+                self.extension_map[ext] = parser_class
+                
+            logger.info(f"Registered parser {parser_class.__name__} for extensions: {extensions}")
         except Exception as e:
-            logger.error(f"Error parsing file {file_path}: {str(e)}")
-            return None
+            logger.error(f"Failed to register parser {parser_class.__name__}: {e}")
+    
+    def get_parser(self, file_path: str) -> Optional[Type[ASTParserPlugin]]:
+        """
+        Get a parser for a file.
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Parser class for the file, or None if no parser is available
+        """
+        # Get file extension
+        _, ext = os.path.splitext(file_path)
+        
+        # Return parser class for the extension
+        return self.extension_map.get(ext)
