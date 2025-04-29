@@ -874,6 +874,7 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
     current_hunk = []
     file_headers = []
     current_file_headers = []
+    seen_headers = set()
     hunk_count = 0
     in_hunk = False
     in_file = False
