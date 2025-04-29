@@ -1,0 +1,5 @@
+{
+    "name": "MRE_invisible_unicode_improved",
+    "description": "Test case for handling invisible Unicode characters when applying diffs",
+    "target_file": "src/unicode_example.py"
+}

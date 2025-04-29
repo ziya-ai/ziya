@@ -1,0 +1,18 @@
+diff --git a/src/whitespace_example.py b/src/whitespace_example.py
+--- a/src/whitespace_example.py
++++ b/src/whitespace_example.py
+@@ -1,11 +1,11 @@
+ def whitespace_function():
+     # This function has specific whitespace patterns
+-    value = 10
++    value = 20
+     
+     # Notice the tab indentation below
+ 	result = value * 2
+     
+     # Mixed spaces and tabs
+     if value > 5:
+-    	return result
++        return result
+     else:
+         return value

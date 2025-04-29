@@ -1,0 +1,15 @@
+diff --git a/src/unicode_example.py b/src/unicode_example.py
+--- a/src/unicode_example.py
++++ b/src/unicode_example.py
+@@ -1,9 +1,9 @@
+ def unicode_function():
+     # This function has invisible unicode characters
+-    print("Hello​ World")  # Contains a zero-width space between Hello and World
++    print("Hello World")  # Zero-width space removed
+     
+     # This line has a zero-width non-joiner
+-    value = 100‌ + 50
++    value = 200 + 50  # Changed value and removed zero-width non-joiner
+     
+     # This line has a zero-width joiner
+     result = "test‍ing"

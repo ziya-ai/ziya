@@ -1,0 +1,7 @@
+{
+    "target_file": "app/utils/diff_utils/pipeline/pipeline_manager.py",
+    "description": "Test case for content duplication corruption where added lines appear twice - once without linefeeds immediately after an import and once later in the file",
+    "date_added": "2025-04-22",
+    "issue_reference": "content_duplication_corruption",
+    "expected_to_fail": true
+}

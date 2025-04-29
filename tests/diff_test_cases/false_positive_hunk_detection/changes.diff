@@ -1,0 +1,12 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -10,7 +10,7 @@ def process_failures(pipeline, failures):
+     # Map failures to hunks
+     for failure in failures:
+         hunk_idx = failure.get("details", {}).get("hunk")
+-        if hunk_idx:
++        if hunk_idx is not None:
+             pipeline.update_hunk_status(
+                 hunk_id=hunk_idx,
+                 stage="DIFFLIB",
