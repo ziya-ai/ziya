@@ -2,6 +2,7 @@
 Middleware for handling streaming responses and errors.
 """
 
+import os
 import json
 from typing import AsyncIterator, Any
 from fastapi import Request
@@ -9,6 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import StreamingResponse, Response
 from starlette.types import ASGIApp
 from langchain_core.outputs import ChatGeneration
+from langchain_core.messages import AIMessage
 from langchain_core.messages import AIMessageChunk
 from langchain_core.tracers.log_stream import RunLogPatch
 
@@ -17,11 +19,15 @@ from app.utils.logging_utils import logger
 class StreamingMiddleware(BaseHTTPMiddleware):
     """Middleware for handling streaming responses."""
     
+    # Class-level variables for repetition detection
+    _recent_lines = []
+    _max_repetitions = 10
+    
     def __init__(self, app: ASGIApp):
         super().__init__(app)
     
     async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
+              self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         """Handle streaming responses."""
         # Check if this is a streaming request
@@ -48,6 +54,10 @@ class StreamingMiddleware(BaseHTTPMiddleware):
             # For non-streaming requests, just pass through
             return await call_next(request)
     
+    def _is_repetitive(self, content: str) -> bool:
+        """Check if content contains repetitive lines that exceed threshold."""
+        return any(content.count(line) > self._max_repetitions for line in set(content.split('\n')) if line.strip())
+    
     async def safe_stream(self, original_iterator: AsyncIterator[Any]) -> AsyncIterator[str]:
         """
         Safely process a stream of chunks.
@@ -58,24 +68,45 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         Yields:
             Processed chunks as SSE data
         """
+        # Reset repetition detection state for this stream
+        self._recent_lines = []
+        accumulated_content = ""
         try:
             async for chunk in original_iterator:
                 # Log chunk info for debugging
                 logger.info("=== AGENT astream received chunk ===")
                 logger.info(f"Chunk type: {type(chunk)}")
+                # Log thinking mode status
+                thinking_mode_enabled = os.environ.get("ZIYA_THINKING_MODE") == "1"
+                logger.debug(f"Thinking mode enabled: {thinking_mode_enabled}")
                 
+                chunk_content = ""
                 # Process the chunk
                 try:
                     # Handle AIMessageChunk objects
                     if isinstance(chunk, AIMessageChunk):
                         logger.info("Processing AIMessageChunk")
-                        content = chunk.content
+                    
+                    # Get the raw content, preserving structure
+                    raw_content = chunk.content
+                    
+                    # Check if this might be thinking mode content (typically more structured)
+                    chunk_content = raw_content
+                    is_structured = isinstance(raw_content, dict) and ('thinking' in raw_content or 'reasoning' in raw_content)
+                    logger.debug(f"Content appears to be structured thinking: {is_structured}")
+                    
                         # Let stream_chunks handle structured error detection within content
-                        if content: # Avoid sending empty data chunks
+                    if raw_content: # Avoid sending empty data chunks
+                            # Properly handle different content types
+                        if isinstance(raw_content, dict):
+                            # For structured content like thinking mode, preserve the structure
+                            logger.debug(f"Preserving structured content: {list(raw_content.keys())}")
+                            yield f"data: {json.dumps(raw_content)}\n\n"
+                            chunk_content = json.dumps(raw_content)
+                        else:
+                            # For simple string content
+                            content = str(raw_content)
                             yield f"data: {content}\n\n"
-                            continue
-                        
-                        yield f"data: {content}\n\n"
                         continue
                     
                     # Handle None chunks
@@ -88,9 +119,17 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         logger.info("Processing ChatGeneration")
                         if hasattr(chunk, 'message'):
                             content = chunk.message.content
-                        if content:
-                            yield f"data: {content}\n\n"
-                            continue
+                            if content:
+                                chunk_content = content
+                                if isinstance(content, dict):
+                                    # Preserve structured content
+                                    logger.debug(f"Preserving structured ChatGeneration content: {list(content.keys()) if isinstance(content, dict) else 'non-dict'}")
+                                    yield f"data: {json.dumps(content)}\n\n"
+                                elif isinstance(content, list) and all(isinstance(item, dict) for item in content):
+                                    yield f"data: {json.dumps(content)}\n\n"
+                                else:
+                                    yield f"data: {content}\n\n"
+                                continue
                     
                     # Handle RunLogPatch objects - convert to SSE data
                     if isinstance(chunk, RunLogPatch) or (hasattr(chunk, '__class__') and chunk.__class__.__name__ == 'RunLogPatch'):
@@ -100,11 +139,14 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             for op in chunk.ops:
                                 if op.get('op') == 'add' and 'value' in op and 'content' in op['value']:
                                     content = op['value']['content']
-                                    yield f"data: {content}\n\n"
+                                    if isinstance(content, dict):
+                                        chunk_content = json.dumps(content)
+                                        yield f"data: {json.dumps(content)}\n\n"
+                                    else:
+                                        yield f"data: {content}\n\n"
                         # If we couldn't extract content, skip this chunk
                         continue
                     
-                    # This string chunk handling might be redundant if stream_chunks formats everything
                     # Handle string chunks
                     if isinstance(chunk, str):
                         logger.info("Processing string chunk")
@@ -112,9 +154,17 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         if chunk.startswith('data:'):
                             yield chunk
                         else:
-                            yield f"data: {chunk}\n\n"
+                            # Check if it might be JSON
+                            try:
+                                # Try to parse as JSON to validate
+                                json_obj = json.loads(chunk)
+                                # If it's valid JSON, pass it through as properly serialized JSON
+                                chunk_content = json.dumps(json_obj)
+                                yield f"data: {json.dumps(json_obj)}\n\n"
+                            except json.JSONDecodeError:
+                                # If it's not valid JSON, just pass it as a string
+                                yield f"data: {chunk}\n\n"
                         
-
                         # Log chunk content preview
                         if len(chunk) > 200:
                             logger.info(f"String chunk preview:\n{chunk[:200]}...")
@@ -130,19 +180,52 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         if callable(content):
                             content = content()
                         if content:
-                            yield f"data: {content}\n\n"
+                            if isinstance(content, dict):
+                                yield f"data: {json.dumps(content)}\n\n"
+                                chunk_content = json.dumps(content)
+                            else:
+                                yield f"data: {content}\n\n"
                             continue
                     
                     # Last resort: convert to string
                     logger.info("Converting chunk to string")
                     str_chunk = str(chunk)
+                    chunk_content = str_chunk
                     if str_chunk: # Avoid empty data chunks
-                        yield f"data: {str_chunk}\n\n"
+                        # Check for repetitive content
+                        accumulated_content += str_chunk
+                        
+                        # Track lines for repetition detection
+                        lines = str_chunk.split('\n')
+                        for line in lines:
+                            if line.strip():  # Only track non-empty lines
+                                self._recent_lines.append(line)
+                                # Keep only recent lines
+                                if len(self._recent_lines) > 100:
+                                    self._recent_lines.pop(0)
+                        
+                        # Check if any line repeats too many times
+                        if any(self._recent_lines.count(line) > self._max_repetitions for line in set(self._recent_lines)):
+                            logger.warning("Detected repetitive content in stream, interrupting")
+                            # Send warning message
+                            warning_msg = {
+                                "warning": "repetitive_content",
+                                "detail": "Response was interrupted because repetitive content was detected."
+                            }
+                            yield f"data: {json.dumps(warning_msg)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        else:
+                            yield f"data: {str_chunk}\n\n"
                     
                 except Exception as chunk_error:
                     logger.error(f"Error processing chunk: {str(chunk_error)}")
-                    str_chunk = str(chunk)
-                    raise chunk_error
+                    # Send error as SSE data instead of raising
+                    error_msg = {
+                        "error": "chunk_processing_error",
+                        "detail": str(chunk_error)
+                    }
+                    yield f"data: {json.dumps(error_msg)}\n\n"
                     continue
                     
             # Send the [DONE] marker
@@ -150,3 +233,10 @@ class StreamingMiddleware(BaseHTTPMiddleware):
             
         except Exception as e:
             logger.error(f"Error in safe_stream: {str(e)}")
+            # Send error as SSE data
+            error_msg = {
+                "error": "stream_processing_error",
+                "detail": str(e)
+            }
+            yield f"data: {json.dumps(error_msg)}\n\n"
+            yield "data: [DONE]\n\n"

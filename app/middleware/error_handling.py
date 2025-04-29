@@ -43,6 +43,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                 if hasattr(request.state, "response_started") and request.state.response_started:
                     logger.warning("Response already started, can only send body parts (streaming: True)")
                     # Create an error message
+                    logger.error(f"Error caught after response started: {str(e)}")
                     error_msg = {
                         "error": "server_error",
                         "detail": str(e),
@@ -50,7 +51,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     }
                     logger.info(f"Sent error as SSE data: {error_msg}")
                     # We can't do anything here, the response has already started
-                    return Response(status_code=500)
+                    return Response(status_code=500, content=json.dumps(error_msg))
                 
                 # Create a streaming response with the error
                 async def error_stream():
