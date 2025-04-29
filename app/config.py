@@ -11,7 +11,7 @@ DEFAULT_PORT = 8000
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
-    "bedrock": "sonnet3.5-v2",
+    "bedrock": "sonnet3.7",
     "google": "gemini-1.5-pro"
 }
 
