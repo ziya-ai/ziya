@@ -475,21 +475,34 @@ export const sendPayload = async (
                                 return 'Response generation stopped by user.';
                             }
                         }
-                        
-                        // Check for errors using our new function
+
+                        // Check if this chunk contains diff syntax and set the flag
+                        if (!containsDiff && (
+                            chunk.includes('```diff') || chunk.includes('diff --git') || 
+                            chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
+                            containsDiff = true;
+                            console.log("Detected diff content in chunk, disabling error detection");
+                        }
+
+                        // Check for errors using our new function - but be careful with code blocks
                         try {
-                            // Check for nested errors in LangChain ops structure
-                            const nestedError = extractErrorFromNestedOps(chunk);
-                            if (nestedError) {
-                                console.log("Nested error detected in ops structure:", nestedError);
-                                message.error({
-                                    content: nestedError.detail || 'An error occurred',
-                                    duration: 10,
-                                    key: 'stream-error'
-                                });
-                                errorOccurred = true;
-                                removeStreamingConversation(conversationId);
-                                break;
+                            // Skip error checking if the chunk contains code blocks or diffs
+                            const containsCodeBlock = chunk.includes('```');
+                            
+                            if (!containsCodeBlock && !containsDiff) {
+                                // Check for nested errors in LangChain ops structure
+                                const nestedError = extractErrorFromNestedOps(chunk);
+                                if (nestedError) {
+                                    console.log("Nested error detected in ops structure:", nestedError);
+                                    message.error({
+                                        content: nestedError.detail || 'An error occurred',
+                                        duration: 10,
+                                        key: 'stream-error'
+                                    });
+                                    errorOccurred = true;
+                                    removeStreamingConversation(conversationId);
+                                    break;
+                                }
                             }
                         } catch (error) {
                             console.warn("Error checking for nested errors:", error);
