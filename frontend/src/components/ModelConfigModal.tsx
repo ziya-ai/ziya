@@ -713,8 +713,8 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             <Switch />
           </Form.Item>
         )}
-        
-        <Form.Item 
+
+        <Form.Item
           label={
             <Space align="center">
               <span>Max Input Tokens</span>
@@ -722,32 +722,32 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                 <InfoCircleOutlined />
               </Tooltip>
             </Space>
-          } 
+          }
           name="max_input_tokens"
           extra={
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
               marginTop: '8px',
               color: 'rgba(0, 0, 0, 0.45)'
             }}>
               <Text type="secondary" className="slider-value">
                 Current: {sliderValues.max_input_tokens?.toLocaleString() || '0'} tokens
               </Text>
-              <Text type="secondary">
-                Maximum: {selectedModelCapabilities?.token_limit?.toLocaleString() || '4096'} tokens
+              <Text type="secondary" style={{ marginLeft: 'auto' }}>
+                Maximum: {inputRange.max.toLocaleString()} tokens {/* <-- Use max from range */}
               </Text>
             </div>
           }>
           <Slider
             min={1}
-            max={selectedModelCapabilities?.token_limit || 4096}
-            step={selectedModelCapabilities?.token_limit && selectedModelCapabilities.token_limit > 100000 ? 10000 : 1000}
+            max={inputRange.max} // <-- Use max from range
+            step={inputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
             onChange={(value) => form.setFieldsValue({ max_input_tokens: value })}
             tooltip={{
               formatter: (value?: number) => value ? `${value.toLocaleString()} tokens` : '0 tokens',
             }}
-            />
+          />
         </Form.Item>
 
         <Form.Item

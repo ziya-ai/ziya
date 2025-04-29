@@ -759,6 +759,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
     }, [handleModelChange]);
 
+    // Listen for model change events
+    useEffect(() => {
+        window.addEventListener('modelChanged', handleModelChange as EventListener);
+
+        return () => {
+            window.removeEventListener('modelChanged', handleModelChange as EventListener);
+        };
+    }, [handleModelChange]);
+
     useEffect(() => {
         currentConversationRef.current = currentConversationId;
         folderRef.current = currentFolderId;
