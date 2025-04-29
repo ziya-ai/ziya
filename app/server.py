@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 # Import configuration
 import app.config as config
 from app.agents.models import ModelManager
+from app.agents.wrappers.nova_wrapper import NovaBedrock  # Import NovaBedrock for isinstance check
 from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
 from botocore.exceptions import EventStreamError
 import botocore.errorfactory
@@ -43,8 +44,9 @@ from app.utils.error_handlers import (
     is_streaming_request, ValidationError, handle_request_exception,
     handle_streaming_error
 )
+from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
-from app.middleware import RequestSizeMiddleware, ErrorHandlingMiddleware
+from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware
 
 # Use configuration from config module
 # For model configurations, see app/config.py
@@ -88,6 +90,9 @@ app.add_middleware(
     RequestSizeMiddleware,
     default_max_size_mb=20  # 20MB
 )
+
+# Add model settings middleware
+app.add_middleware(ModelSettingsMiddleware)
 
 # Add error handling middleware
 app.add_middleware(ErrorHandlingMiddleware)
@@ -221,15 +226,8 @@ async def stream_chunks(body):
     yield f"data: {json.dumps({'heartbeat': True})}\n\n"
     
     try:
-        # Log the entire body structure for debugging
-        logger.info(f"[INSTRUMENTATION] stream_chunks body structure: {type(body)}")
-        if isinstance(body, dict):
-            # Only log key names, not values (which could be large)
-            logger.info(f"[INSTRUMENTATION] stream_chunks body keys: {', '.join(body.keys())}")
-        
         # Get the question from the request body
         question = body.get("question", "")
-        logger.info(f"[INSTRUMENTATION] stream_chunks question: '{question[:50]}...' (truncated)")
         conversation_id = body.get("conversation_id", "default")
         chat_history = body.get("chat_history", [])
         
@@ -242,24 +240,16 @@ async def stream_chunks(body):
             files = config.get("files", [])
         elif isinstance(config, list):
             # If config is a list, assume it's the files list
-            logger.warning("[INSTRUMENTATION] stream_chunks config is a list, assuming it's the files list")
             files = config
         
         # Ensure files is a list
         if not isinstance(files, list):
-            logger.warning(f"[INSTRUMENTATION] stream_chunks files is not a list: {type(files)}")
             files = []
         
-        # Log the request details
-        logger.info(f"[INSTRUMENTATION] stream_chunks processing request: conversation_id={conversation_id}, question={question[:50]}...")
-        logger.info(f"[INSTRUMENTATION] stream_chunks chat history length: {len(chat_history)}")
-        logger.info(f"[INSTRUMENTATION] stream_chunks files count: {len(files)}")
         
         # Get the model instance using the proper method
         from app.agents.agent import model
-        logger.info("[INSTRUMENTATION] stream_chunks getting model instance")
         model_instance = model.get_model()
-        logger.info(f"[INSTRUMENTATION] stream_chunks got model instance: {type(model_instance)}")
         
         # Prepare the messages for the model
         messages = []
@@ -278,22 +268,19 @@ async def stream_chunks(body):
                 # Check if file is a dictionary with path and content
                 if isinstance(file, dict):
                     file_path = file.get("path", "")
-                    logger.info(f"Processing file: {file_path}")
                     file_content = file.get("content", "")
                     if file_path and file_content:
-                        logger.info(f"Adding content for {file_path}, size: {len(content)}")
-                        logger.info(f"Content preview:\n{content[:200]}...")
                         file_context += f"File: {file_path}\n```\n{file_content}\n```\n\n"
                 # Handle case where file might be a string or other format
                 elif isinstance(file, str):
-                    logger.info(f"String only file: {file}")
                     try:
                         full_path = os.path.join(os.environ.get("ZIYA_USER_CODEBASE_DIR", ""), file)
                         if os.path.exists(full_path):
+                             if os.path.isdir(full_path):
+                                 # Skip directories silently
+                                 continue
                              with open(full_path, 'r', encoding='utf-8') as f:
                                file_content = f.read()
-                             logger.info(f"Adding content for {file}, size: {len(file_content)}")
-                             logger.info(f"Content preview:\n{file_content[:200]}...")
                              file_context += f"File: {file}\n```\n{file_content}\n```\n\n"
                              string_file_count += 1
                         else:
@@ -301,33 +288,12 @@ async def stream_chunks(body):
                     except Exception as e:
                          logger.error(f"Error reading file {file}: {str(e)}")
             
-            # Log summary of string files instead of individual warnings
-            if string_file_count > 0:
-                logger.warning(f"[INSTRUMENTATION] stream_chunks found {string_file_count} file entries as strings instead of dicts")
-            
             # Add system message with file context
             messages.append(SystemMessage(content=file_context))
-            logger.info(f"[INSTRUMENTATION] stream_chunks added system message with {len(files)} files")
         
         # Add chat history if available
         if chat_history:
             from langchain_core.messages import HumanMessage, AIMessage
-            
-            # Log the chat history for debugging
-            logger.info(f"[INSTRUMENTATION] stream_chunks processing chat history with {len(chat_history)} messages")
-            # Only log details for first few messages
-            for i, msg in enumerate(chat_history):
-                if i >= 5:  # Only log first 5 messages in detail
-                    break
-                    
-                if isinstance(msg, dict):
-                    logger.info(f"[INSTRUMENTATION] stream_chunks chat history item {i}: type={msg.get('type', 'unknown')}")
-                elif isinstance(msg, list):
-                    logger.info(f"[INSTRUMENTATION] stream_chunks chat history item {i}: type=list, length={len(msg)}")
-                    if len(msg) > 0:
-                        logger.info(f"[INSTRUMENTATION] stream_chunks first element: {msg[0][:50]}...")  # Limit length of logged content
-                else:
-                    logger.info(f"[INSTRUMENTATION] stream_chunks chat history item {i}: type={type(msg)}")
             
             for msg in chat_history:
                 # Check if msg is a dictionary with 'type' and 'content' keys
@@ -335,7 +301,6 @@ async def stream_chunks(body):
                     msg_type = msg["type"]
                     msg_content = msg["content"]
                     # Only log first few characters of content
-                    logger.info(f"[INSTRUMENTATION] stream_chunks adding message of type {msg_type} with content: {msg_content[:30]}...")
                     
                     if msg_type == "human":
                         messages.append(HumanMessage(content=msg_content))
@@ -347,7 +312,6 @@ async def stream_chunks(body):
                     if len(msg) >= 2:
                         question = msg[0]
                         answer = msg[1]
-                        logger.info(f"[INSTRUMENTATION] stream_chunks adding list-format message pair - Q: {question[:30]}... A: {answer[:30]}...")
                         
                         # Add as separate human and AI messages
                         messages.append(HumanMessage(content=question))
@@ -356,14 +320,12 @@ async def stream_chunks(body):
                 elif isinstance(msg, tuple) and len(msg) == 2:
                     # Format is typically (human_message, ai_message)
                     human_msg, ai_msg = msg
-                    logger.info(f"[INSTRUMENTATION] stream_chunks adding tuple-format message pair - Human: {human_msg[:30]}... AI: {ai_msg[:30]}...")
                     
                     # Add as separate human and AI messages
                     messages.append(HumanMessage(content=human_msg))
                     messages.append(AIMessage(content=ai_msg))
                 # Handle other formats
                 else:
-                    logger.warning(f"[INSTRUMENTATION] stream_chunks unexpected message format in chat history: {type(msg)}")
                     # Try other formats as a fallback
                     try:
                         if hasattr(msg, 'role') and hasattr(msg, 'content'):
@@ -378,38 +340,38 @@ async def stream_chunks(body):
                         # Continue with other messages
         # Add the current question
         from langchain_core.messages import HumanMessage
-        logger.info(f"[INSTRUMENTATION] stream_chunks adding current question: {question[:50]}...")
         
         # Double-check that we're using the most recent question
         if not question:
-            logger.error("[INSTRUMENTATION] stream_chunks CRITICAL ERROR: Question is empty!")
-            logger.info(f"[INSTRUMENTATION] stream_chunks body keys: {body.keys() if isinstance(body, dict) else type(body)}")
             if isinstance(body, dict) and 'input' in body and isinstance(body['input'], dict):
                 input_question = body['input'].get('question', '')
                 if input_question:
-                    logger.info(f"[INSTRUMENTATION] stream_chunks found question in body['input']: {input_question[:50]}...")
                     question = input_question
         
-        messages.append(HumanMessage(content=question))
+        # Apply post-instructions to the question
+        from app.utils.post_instructions import PostInstructionManager
+        from app.agents.prompts_manager import get_model_info_from_config
         
-        # Log the final message list for debugging
-        logger.info(f"[INSTRUMENTATION] stream_chunks final message list contains {len(messages)} messages:")
-        # Log details for the first few and lest few messages
-        log_limit = 5
-        for i, msg in enumerate(messages):
-            if i < log_limit or i >= len(messages) - log_limit:
-                try:
-                    # Increase preview length and replace newlines for better logging
-                    content_preview = str(msg.content)[:150].replace('\n', '\\n') + ('...' if len(str(msg.content)) > 150 else '')
-                    logger.info(f"[INSTRUMENTATION] stream_chunks message {i}: type={msg.__class__.__name__}, content_preview='{content_preview}'")
-                except Exception as e:
-                    logger.error(f"[INSTRUMENTATION] stream_chunks error logging message {i}: {e}")
-                    logger.info(f"[INSTRUMENTATION] stream_chunks message {i}: type={type(msg)}")
-            elif i == log_limit:
-                 logger.info(f"[INSTRUMENTATION] stream_chunks ... ({len(messages) - 2 * log_limit} messages omitted) ...")
-                
+        # Get model information
+        model_info = get_model_info_from_config()
+        model_name = model_info.get("model_name")
+        model_family = model_info.get("model_family")
+        endpoint = model_info.get("endpoint")
+        
+        # Apply post-instructions
+        modified_question = PostInstructionManager.apply_post_instructions(
+            query=question,
+            model_name=model_name,
+            model_family=model_family,
+            endpoint=endpoint
+        )
+        
+        logger.debug(f"Original question: {question[:100]}...")
+        logger.debug(f"Modified question with post-instructions: {modified_question[:100]}...")
+        
+        messages.append(HumanMessage(content=modified_question))
+        
         # Stream directly from the model
-        logger.info("[INSTRUMENTATION] stream_chunks calling model.astream()")
         chunk_count = 0
         full_response = ""
 
@@ -419,8 +381,6 @@ async def stream_chunks(body):
         # Set up the model with the stop sequence
         # This ensures the model will properly stop at the sentinel
         model_with_stop = model_instance.bind(stop=["</tool_input>"])
-        
-
         
         try:
             async for chunk in model_with_stop.astream(messages):
@@ -436,6 +396,22 @@ async def stream_chunks(body):
                             if "error" in error_data and "detail" in error_data:
                                 is_error_chunk = True
                         except json.JSONDecodeError:
+                            # Check for repetition marker
+                            if "[STREAM_END_REPETITION_DETECTED]" in content_str:
+                                logger.warning("Detected repetition marker in stream, ending stream")
+                                # Send warning message
+                                warning_msg = {
+                                    "warning": "repetitive_content",
+                                    "detail": "Response was interrupted because repetitive content was detected."
+                                }
+                                warning_sse_data = f"data: {json.dumps(warning_msg)}\n\n"
+                                logger.info(f"Yielding SSE Warning: {warning_sse_data.strip()}")
+                                yield warning_sse_data
+                                
+                                # Send DONE marker immediately after warning
+                                yield "data: [DONE]\n\n"
+                                done_marker_sent = True
+                                break
                             pass # Not a valid JSON error structure
 
                 if is_error_chunk and error_data:
@@ -453,28 +429,48 @@ async def stream_chunks(body):
                     if isinstance(chunk, str) and chunk.startswith('data: {"error"'):
                         yield chunk
                         continue
-                    logger.info("[INSTRUMENTATION] stream_chunks skipping chunk after done marker sent")
                     continue
                     
                 chunk_count += 1 # Only increment for non-error chunks
                 
                 # Extract content from the chunk
+                # Handle Nova's array format directly
+                if isinstance(chunk, list):
+                    logger.info("Detected chunk as list, likely Nova format")
+                    combined_text = ""
+                    for item in chunk:
+                        if isinstance(item, dict) and 'text' in item:
+                            combined_text += item['text']
+                    
+                    if combined_text:
+                        logger.info(f"Extracted combined text from Nova format: {combined_text[:50]}...")
+                        # Use the format that the frontend expects for streamed output
+                        ops = [
+                            {
+                                "op": "add",
+                                "path": "/streamed_output_str/-",
+                                "value": combined_text
+                            }
+                        ]
+                        
+                        yield f"data: {json.dumps({'ops': ops})}\n\n"
+                        # Update full_response for stop sentinel check
+                        full_response += combined_text
+                        continue
+                
+                # Continue with regular chunk processing
                 if hasattr(chunk, 'content'):
-                    logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} has content attribute")
                     content = chunk.content
                     
                     # Handle callable content
                     if callable(content):
-                        logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is callable")
                         content = content()
                     
                     # Check for stop sentinel in the content
                     content_str = str(content) if content else ""
                     if "</tool_input>" in content_str:
-                        logger.info(f"[INSTRUMENTATION] stream_chunks detected stop sentinel in content")
                         # Send the done marker and stop processing more chunks
                         if not done_marker_sent:
-                            logger.info("[INSTRUMENTATION] stream_chunks sending done marker after stop sentinel detected")
                             yield f"data: {json.dumps({'done': True})}\n\n"
                             done_marker_sent = True
                             break  # Exit the loop but not the function
@@ -495,13 +491,11 @@ async def stream_chunks(body):
                 
                     # Handle Nova model format (list of content blocks)
                     if isinstance(content, list) and len(content) > 0:
-                        logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is list of length {len(content)}")
                         for content_block in content:
                             if isinstance(content_block, dict) and 'text' in content_block:
                                 text = content_block.get('text', '')
                                 # Clean up the text - remove any [] markers
                                 if text == "[]":
-                                    logger.info(f"[INSTRUMENTATION] stream_chunks skipping empty brackets")
                                     continue  # Skip empty brackets
                             
                                 # Remove [] from the beginning and end of the text if present
@@ -509,7 +503,34 @@ async def stream_chunks(body):
                                 # commented out as this seems to be too aggressively clipping square brackets
                                 
                                 if text:  # Only send non-empty text
-                                    # Accumulate the full response for later use
+                                    # Get the raw text content, preferring .content
+                                    raw_text_content = ""
+                                    if hasattr(chunk, 'content'):
+                                        # Special handling for structured thinking mode content
+                                        if isinstance(chunk.content, dict) and ('thinking' in chunk.content or 'reasoning' in chunk.content):
+                                            logger.info("Detected structured thinking mode content")
+                                            # Preserve the structure by yielding as JSON
+                                            ops = [
+                                                {"op": "add", "path": "/thinking", "value": chunk.content}
+                                            ]
+                                            yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                            continue
+
+                                        raw_text_content = chunk.content
+                                        if callable(raw_text_content):
+                                            raw_text_content = raw_text_content()
+                                    elif hasattr(chunk, 'text'): # Fallback for Generation-like objects
+                                        raw_text_content = chunk.text
+                                    else:
+                                        raw_text_content = str(chunk) # Last resort
+ 
+                                    # Ensure it's a string
+                                    text_to_yield = str(raw_text_content)
+ 
+                                    # Log exactly what is being yielded
+                                    logger.debug(f"[STREAM DEBUG] Yielding text (repr): {repr(text_to_yield)}")
+ 
+                                    # Accumulate for stop sentinel check (using the same reliable text)
                                     full_response += text
                                     
                                     # Use the format that the frontend expects for streamed output
@@ -517,52 +538,46 @@ async def stream_chunks(body):
                                         {
                                             "op": "add",
                                             "path": "/streamed_output_str/-",
-                                            "value": text
+                                            "value": text_to_yield
                                         }
                                     ]
                                     
-                                    # Only log every 10th chunk or first/last chunks
-                                    if chunk_count <= 1 or chunk_count % 10 == 0:
-                                        logger.info(f"[INSTRUMENTATION] stream_chunks sending Nova chunk #{chunk_count}: text={text[:20]}...")
                                     yield f"data: {json.dumps({'ops': ops})}\n\n"
                     else:
                         # Handle standard text content
-                        logger.info(f"[INSTRUMENTATION] stream_chunks chunk {chunk_count} content is standard text")
-                        text = str(content)
-                        # Clean up the text - remove any [] markers
-                        if text == "[]":
-                            logger.info(f"[INSTRUMENTATION] stream_chunks skipping empty brackets")
-                            continue  # Skip empty brackets
-                        
-                        # Remove [] from the beginning and end of the text if present
-                        #text = text.strip("[]")
-                        # commented out as this seems to be too aggressively clipping square brackets
-                        
-                        if text:
-                            # Accumulate the full response for later use
-                            full_response += text
+                        # Get the raw text content, preferring .content
+                        raw_text_content = ""
+                        if hasattr(chunk, 'content'):
+                            raw_text_content = chunk.content
+                            if callable(raw_text_content):
+                                raw_text_content = raw_text_content()
+                        elif hasattr(chunk, 'text'): # Fallback for Generation-like objects
+                            raw_text_content = chunk.text
+                        else:
+                            raw_text_content = str(chunk) # Last resort
+
+                        # Ensure text_to_yield is a string                         
+                        # Use the already extracted raw_text_content for the actual value
+                        text_to_yield = str(raw_text_content)
+
+                        if text_to_yield:
+                            # Log exactly what is being yielded
+                            full_response += text_to_yield
                             
                             # Use the format that the frontend expects for streamed output
                             ops = [
                                 {
                                     "op": "add",
                                     "path": "/streamed_output_str/-",
-                                    "value": text
+                                    "value": text_to_yield
                                 }
                             ]
                             
-                            # Only log every 10th chunk or first/last chunks
-                            if chunk_count <= 1 or chunk_count % 10 == 0:
-                                logger.info(f"[INSTRUMENTATION] stream_chunks sending chunk #{chunk_count}: text={text[:20]}...")
                             yield f"data: {json.dumps({'ops': ops})}\n\n"
-            else:
-                logger.info(f"[INSTRUMENTATION] stream_chunks skipping chunk #{chunk_count} without content: {type(chunk)}")
                 
             # Check for stop sentinel in the full response so far
             if "</tool_input>" in full_response and not done_marker_sent:
-                logger.info(f"[INSTRUMENTATION] stream_chunks detected stop sentinel in full response")
                 # Send the done marker and stop processing more chunks
-                logger.info("[INSTRUMENTATION] stream_chunks sending done marker after stop sentinel detected")
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 done_marker_sent = True
                 # We need to break out of the async for loop
@@ -579,8 +594,6 @@ async def stream_chunks(body):
             
             # If the loop finished normally (no error break) and we sent content, send DONE
             if not done_marker_sent and chunk_count > 0 and not is_error_chunk:
-                logger.info(f"[INSTRUMENTATION] stream_chunks total chunks sent: {chunk_count}")
-                logger.info("[INSTRUMENTATION] stream_chunks sending done marker after all chunks")
                 yield f"data: {json.dumps({'done': True})}\n\n"
 
         except ChatGoogleGenerativeAIError as e:
@@ -594,12 +607,29 @@ async def stream_chunks(body):
             if not done_marker_sent:
                 yield "data: [DONE]\n\n"
             return
+            
+        except (CredentialRetrievalError, BotoCoreError) as e:
+            # Handle AWS credential errors specifically
+            from app.utils.error_handlers import _handle_aws_credential_error, create_sse_error_response
+            
+            # Get appropriate error message
+            error_message = str(e)
+            error_type, detail, status_code, _ = _handle_aws_credential_error(error_message)
+            
+            # Create and send the error response
+            error_response = create_sse_error_response(error_type, detail)
+            logger.info(f"Sending credential error as SSE: {error_response}")
+            yield f"data: {json.dumps(error_response)}\n\n"
+            
+            # Always send the done marker for credential errors
+            if not done_marker_sent:
+                logger.info("Sending done marker after credential error")
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                done_marker_sent = True
+            return
                 
         except Exception as e:
             # Handle any exceptions during streaming
-            logger.error(f"[INSTRUMENTATION] stream_chunks exception during streaming loop: {str(e)}")
-            logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
-            logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
             if not done_marker_sent:
                 # Let the middleware handle formatting this unexpected error and sending DONE
                 # logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
@@ -612,33 +642,20 @@ async def stream_chunks(body):
         try:
             # Note: update_conversation_state only takes 2 args (conversation_id and file_paths)
             # We're not updating any files, so pass an empty list
-            logger.info(f"[INSTRUMENTATION] stream_chunks updating conversation state for {conversation_id}")
             update_conversation_state(conversation_id, [])
         except Exception as e:
             logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
             
     except Exception as e:
-        logger.error(f"[INSTRUMENTATION] stream_chunks exception during streaming: {str(e)}")
-        logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
-        logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
         raise # re-raise for middleware to catch        
         # Update conversation state after streaming is complete
         try:
             # Note: update_conversation_state only takes 2 args (conversation_id and file_paths)
             # We're not updating any files, so pass an empty list
-            logger.info(f"[INSTRUMENTATION] stream_chunks updating conversation state for {conversation_id}")
             update_conversation_state(conversation_id, [])
         except Exception as e:
             logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
             
-    except Exception as e:
-        logger.error(f"[INSTRUMENTATION] stream_chunks exception during streaming: {str(e)}")
-        logger.error(f"[INSTRUMENTATION] stream_chunks exception type: {type(e).__name__}")
-        logger.error(f"[INSTRUMENTATION] stream_chunks exception traceback: {traceback.format_exc()}")
-        # Let the middleware handle formatting this unexpected error and sending DONE
-        # yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        # yield f"data: {json.dumps({'done': True})}\n\n"
-
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")
 async def stream_endpoint(request: Request, body: dict):
@@ -954,25 +971,54 @@ async def apply_patch(request: PatchRequest):
                     hunk_num for hunk_num, status in result['hunk_statuses'].items()
                     if status.get('status') == 'failed'
                 ]
+                
+                # Get the list of successful hunks
+                successful_hunks = [
+                    hunk_num for hunk_num, status in result['hunk_statuses'].items()
+                    if status.get('status') == 'succeeded'
+                ]
+                
                 if failed_hunks:
-                    return JSONResponse(
-                        status_code=207,
-                        content={
-                            "status": "partial",
-                            "message": "Some hunks failed to apply",
-                            "details": {
-                                "failed": failed_hunks,
-                                "hunk_statuses": result['hunk_statuses']
+                    if successful_hunks:
+                        # Some hunks succeeded, some failed - partial success
+                        return JSONResponse(
+                            status_code=207,
+                            content={
+                                "status": "partial",
+                                "message": "Some hunks failed to apply",
+                                "details": {
+                                    "failed": failed_hunks,
+                                    "succeeded": successful_hunks,
+                                    "hunk_statuses": result['hunk_statuses']
+                                }
                             }
-                        }
-                    )
+                        )
+                    else:
+                        # All hunks failed - complete failure
+                        logger.info("All hunks failed, returning error status with 422 code")
+                        return JSONResponse(
+                            status_code=422,
+                            content={
+                                "status": "error",
+                                "message": "All hunks failed to apply",
+                                "details": {
+                                    "failed": failed_hunks,
+                                    "succeeded": [],
+                                    "hunk_statuses": result['hunk_statuses']
+                                }
+                            }
+                        )
 
             # All hunks succeeded
             return JSONResponse(
                 content={
                     "status": "success",
                     "message": "Changes applied successfully",
-                    "details": result
+                    "details": {
+                        "succeeded": list(result['hunk_statuses'].keys()) if isinstance(result, dict) and result.get('hunk_statuses') else [],
+                        "failed": [],
+                        "hunk_statuses": result['hunk_statuses'] if isinstance(result, dict) and result.get('hunk_statuses') else {}
+                    }
                 }
             )
         except Exception as e:
@@ -993,11 +1039,21 @@ def get_available_models():
     try:
         models = []
         for name, config in ModelManager.MODEL_CONFIGS[endpoint].items():
+            model_id = config.get("model_id", name)
+            
+            # For region-specific model IDs, use a simplified representation
+            if isinstance(model_id, dict):
+                # Use the first region's model ID as a representative
+                representative_id = next(iter(model_id.values()))
+                display_name = f"{name} ({representative_id})"
+            else:
+                display_name = f"{name} ({model_id})"
+                
             models.append({
-                "id": config["model_id"],
+                "id": name,  # Use the alias as the ID for consistency
                 "name": name,
                 "alias": name,
-                "display_name": f"{name} ({config['model_id']})"
+                "display_name": display_name
             })
         return models
     except Exception as e:
@@ -1019,10 +1075,12 @@ if __name__ == "__main__":
     # Set the AWS profile if provided
     if args.profile:
         os.environ["AWS_PROFILE"] = args.profile
+        logger.info(f"Using AWS profile: {args.profile}")
         
     # Set the AWS region if provided
     if args.region:
         os.environ["AWS_REGION"] = args.region
+        logger.info(f"Using AWS region: {args.region}")
         
     # Initialize the model if provided
     if args.model:
@@ -1061,17 +1119,15 @@ async def chat_endpoint(request: Request):
                 try:
                     full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
                     if os.path.exists(full_path):
+                        if os.path.isdir(full_path):
+                            # Skip directories silently
+                            continue
                         with open(full_path, 'r') as f:
                             content = f.read()
-                            logger.info(f"File {file_path} exists, size: {len(content)} bytes")
-                            logger.info(f"Preview: {content[:200]}...")
                     else:
                         logger.warning(f"File not found: {full_path}")
                 except Exception as e:
                     logger.error(f"Error reading file {file_path}: {e}")
-        
-        logger.info(f"[INSTRUMENTATION] /api/chat received request with {len(messages)} messages and {len(files)} files")
-        logger.info(f"[INSTRUMENTATION] /api/chat question: '{question[:50]}...' (truncated)")
         
         # Log message structure for debugging
         if messages and len(messages) > 0:
@@ -1122,23 +1178,66 @@ def get_current_model():
     try:
         logger.info("Current model info request received")
         
+        # Get model alias (name) from ModelManager
+        model_alias = ModelManager.get_model_alias()
+        
         # Get model ID and endpoint
         model_id = ModelManager.get_model_id(model)
         endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
         
         # Get model settings through ModelManager
         model_settings = ModelManager.get_model_settings(model)
+
+        # Get model config for token limits
+        model_config = ModelManager.get_model_config(endpoint, model_alias)
         
-        logger.info("Current model configuration:")
+        # Ensure model_settings has the correct token limits
+        if "max_output_tokens" not in model_settings:
+            model_settings["max_output_tokens"] = model_config.get("max_output_tokens", 4096)
+        
+        if "max_input_tokens" not in model_settings:
+            model_settings["max_input_tokens"] = model_config.get("token_limit", 4096)
+            
+        # Ensure temperature and top_k have default values if not present
+        model_settings["temperature"] = model_settings.get("temperature", 0.3)
+        model_settings["top_k"] = model_settings.get("top_k", 15)
+        
+        # Get region information
+        region = os.environ.get("AWS_REGION", ModelManager._state.get('aws_region', 'us-west-2'))
+        
+        # Format the actual model ID for display
+        display_model_id = model_id
+        if isinstance(model_id, dict):
+            # If we're using a region-specific model ID, use the one for the current region
+            if region.startswith('eu-') and 'eu' in model_id:
+                display_model_id = model_id['eu']
+            elif region.startswith('us-') and 'us' in model_id:
+                display_model_id = model_id['us']
+            else:
+                # Use the first available region's model ID
+                display_model_id = next(iter(model_id.values()))
+
+        # Log the response we're sending
+        logger.info(f"Sending current model info: model_id={model_alias}, display_model_id={display_model_id}, settings={json.dumps(model_settings)}")
+        
+        logger.info("Sending current model configuration:")
         logger.info(f"  Model ID: {model_id}")
+        logger.info(f"  Display Model ID: {display_model_id}")
+        logger.info(f"  Model Alias: {model_alias}")
         logger.info(f"  Endpoint: {endpoint}")
+        logger.info(f"  Region: {region}")
         logger.info(f"  Settings: {model_settings}")
-        
+
         # Return complete model information
         return {
-            'model_id': model_id,
+            'model_id': model_alias,  # Use the alias (like "sonnet3.7") for model selection
+            'model_alias': model_alias,  # Explicit alias field
+            'actual_model_id': model_id,  # Full model ID object or string
+            'display_model_id': display_model_id,  # Region-specific model ID for display
             'endpoint': endpoint,
-            'settings': model_settings
+            'region': region,
+            'settings': model_settings,
+            'token_limit': model_config.get("token_limit", 4096)
         }
     except Exception as e:
         logger.error(f"Error getting current model: {str(e)}")
@@ -1146,14 +1245,9 @@ def get_current_model():
 
 @app.get('/api/model-id')
 def get_model_id():
-    if os.environ.get("ZIYA_ENDPOINT") == "google":
-        model_name = os.environ.get("ZIYA_MODEL", "gemini-pro")
-        return {'model_id': model_name}
-    elif os.environ.get("ZIYA_MODEL"):
-        return {'model_id': os.environ.get("ZIYA_MODEL")}
-    else:
-        # Bedrock
-        return {'model_id': ModelManager.get_model_id(model).split(':')[0].split('/')[-1]}
+    """Get the model ID in a simplified format for the frontend."""
+    # Always return the model alias (name) rather than the full model ID
+    return {'model_id': ModelManager.get_model_alias()}
 
 
 def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
@@ -1183,7 +1277,12 @@ async def api_get_folders():
 @app.post('/api/set-model')
 async def set_model(request: SetModelRequest):
     """Set the active model for the current endpoint."""
+    import gc
+    
     try:
+        # Force garbage collection at the start
+        gc.collect()
+        
         model_id = request.model_id
         logger.info(f"Received model change request: {model_id}")
 
@@ -1194,15 +1293,59 @@ async def set_model(request: SetModelRequest):
         # Get current endpoint
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         current_model = os.environ.get("ZIYA_MODEL")
+        current_region = os.environ.get("AWS_REGION") or ModelManager._state.get('aws_region', 'us-west-1')
 
         logger.info(f"Current state - Endpoint: {endpoint}, Model: {current_model}")
 
-        # If we received a full model ID, try to find its alias
+        # Handle both string and dictionary model IDs
         found_alias = None
-        for alias, model_config_item in ModelManager.MODEL_CONFIGS[endpoint].items():
-            if model_config_item['model_id'] == model_id or alias == model_id:
-                found_alias = alias
-                break
+        
+        # First, try direct match by alias
+        if isinstance(model_id, str) and model_id in ModelManager.MODEL_CONFIGS[endpoint]:
+            found_alias = model_id
+        else:
+            # Search through all model configurations
+            for alias, model_config_item in ModelManager.MODEL_CONFIGS[endpoint].items():
+                config_model_id = model_config_item.get('model_id')
+                
+                # Case 1: Both are dictionaries - check if they match
+                if isinstance(model_id, dict) and isinstance(config_model_id, dict):
+                    # Check if dictionaries have the same structure and values
+                    if model_id == config_model_id:
+                        found_alias = alias
+                        break
+                    
+                    # Check if any region-specific IDs match
+                    # This handles partial matches where only some regions are specified
+                    matching_regions = 0
+                    for region in model_id:
+                        if region in config_model_id and model_id[region] == config_model_id[region]:
+                            matching_regions += 1
+                    
+                    # If we have at least one matching region and no mismatches
+                    if matching_regions > 0 and all(
+                        region not in config_model_id or model_id[region] == config_model_id[region]
+                        for region in model_id
+                    ):
+                        found_alias = alias
+                        break
+                
+                # Case 2: Direct string comparison
+                elif model_id == config_model_id:
+                    found_alias = alias
+                    break
+                
+                # Case 3: String model_id matches one of the values in a dictionary config_model_id
+                elif isinstance(model_id, str) and isinstance(config_model_id, dict):
+                    if any(val == model_id for val in config_model_id.values()):
+                        found_alias = alias
+                        break
+                
+                # Case 4: Dictionary model_id contains a value that matches string config_model_id
+                elif isinstance(model_id, dict) and isinstance(config_model_id, str):
+                    if any(val == config_model_id for val in model_id.values()):
+                        found_alias = alias
+                        break
 
         if not found_alias:
             logger.error(f"Invalid model identifier: {model_id}")
@@ -1216,6 +1359,22 @@ async def set_model(request: SetModelRequest):
         if found_alias == current_model:
             logger.info(f"Model {found_alias} is already active, no change needed")
             return {"status": "success", "model": found_alias, "changed": False}
+
+        # Check if we need to adjust the region based on the model
+        model_config = ModelManager.get_model_config(endpoint, found_alias)
+        model_id = model_config.get("model_id")
+        
+        # If the model has region-specific IDs, ensure we're using the right region
+        if isinstance(model_id, dict):
+            # Check if we're in an EU region
+            is_eu_region = current_region.startswith("eu-")
+            
+            # If we're in an EU region but the model has EU-specific ID, make sure we use it
+            if is_eu_region and "eu" in model_id:
+                logger.info(f"Using EU-specific model ID for {found_alias} in region {current_region}")
+                # No need to change region as it's already set correctly
+            elif not is_eu_region and "us" in model_id:
+                logger.info(f"Using US-specific model ID for {found_alias} in region {current_region}")
 
         # Update environment variable
         logger.info(f"Setting model to: {found_alias}")
@@ -1266,11 +1425,14 @@ async def set_model(request: SetModelRequest):
 
             global agent
             global agent_executor
+            global llm_with_stop  # Add global reference to llm_with_stop
 
             # Recreate agent chain and executor with new model
             try:
                 agent = create_agent_chain(new_model)
                 agent_executor = create_agent_executor(agent)
+                # Get the updated llm_with_stop from ModelManager
+                llm_with_stop = ModelManager._state.get('llm_with_stop')
                 logger.info("Created new agent chain and executor")
             except Exception as agent_error:
                 logger.error(f"Failed to create agent: {str(agent_error)}", exc_info=True)
@@ -1284,10 +1446,16 @@ async def set_model(request: SetModelRequest):
                 logger.error(f"Failed to initialize langserve: {str(langserve_error)}", exc_info=True)
                 raise langserve_error
 
+            # Force garbage collection after successful model change
+            import gc
+            gc.collect()
+
             # Return success response
             return {
                 "status": "success",
-                "model": found_alias,
+                "model": found_alias, 
+                "previous_model": old_state['model_id'],
+                "model_display_name": ModelManager.MODEL_CONFIGS[endpoint][found_alias].get("display_name", found_alias),
                 "changed": True,
                 "message": "Model and routes successfully updated"
             }
@@ -1317,35 +1485,131 @@ async def set_model(request: SetModelRequest):
 @app.get('/api/model-capabilities')
 def get_model_capabilities(model: str = None):
     """Get the capabilities of the current model."""
+
+    import json
+
     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
     # If model parameter is provided, get capabilities for that model
     # Otherwise use current model
     model_alias = None
 
     if model:
-        # Convert model ID to alias if needed
-        if model.startswith('us.anthropic.'):
-            for alias, config in ModelManager.MODEL_CONFIGS[endpoint].items():
-                if config['model_id'] == model:
-                    model_alias = alias
-                    break
-            if not model_alias:
-                return {"error": f"Unknown model ID: {model}"}
-        else:
-            model_alias = model
+        try:
+            # Try to parse as JSON if it's a dictionary
+            import json
+            try:
+                model_dict = json.loads(model)
+                if isinstance(model_dict, dict):
+                    # Handle dictionary model ID
+                    for alias, config in ModelManager.MODEL_CONFIGS[endpoint].items():
+                        config_model_id = config.get('model_id')
+                        
+                        # Case 1: Both are dictionaries - check if they match
+                        if isinstance(config_model_id, dict):
+                            # Check if dictionaries have the same structure and values
+                            if model_dict == config_model_id:
+                                model_alias = alias
+                                break
+                            
+                            # Check if any region-specific IDs match
+                            matching_regions = 0
+                            for region in model_dict:
+                                if region in config_model_id and model_dict[region] == config_model_id[region]:
+                                    matching_regions += 1
+                            
+                            # If we have at least one matching region and no mismatches
+                            if matching_regions > 0 and all(
+                                region not in config_model_id or model_dict[region] == config_model_id[region]
+                                for region in model_dict
+                            ):
+                                model_alias = alias
+                                break
+                    
+                    if not model_alias:
+                        return {"error": f"Unknown model ID: {model}"}
+            except json.JSONDecodeError:
+                # Not JSON, treat as string
+                pass
+        except Exception as e:
+            logger.error(f"Error parsing model parameter: {str(e)}")
+            
+        # If we didn't find a match with JSON parsing or it wasn't JSON, try string matching
+        if not model_alias:
+            # Check if it's a direct model alias
+            if model in ModelManager.MODEL_CONFIGS[endpoint]:
+                model_alias = model
+            else:
+                # Check if it's a model ID that matches any config
+                for alias, config in ModelManager.MODEL_CONFIGS[endpoint].items():
+                    config_model_id = config.get('model_id')
+                    
+                    # Direct string comparison
+                    if config_model_id == model:
+                        model_alias = alias
+                        break
+                    
+                    # Check if it's a value in a dictionary model ID
+                    if isinstance(config_model_id, dict) and any(val == model for val in config_model_id.values()):
+                        model_alias = alias
+                        break
+                
+                if not model_alias:
+                    return {"error": f"Unknown model ID: {model}"}
     else:
         model_alias = os.environ.get("ZIYA_MODEL")
 
     try:
-        model_config = ModelManager.get_model_config(endpoint, model_alias)
+        base_model_config = ModelManager.get_model_config(endpoint, model_alias)
+        logger.info(f"[DEBUG CAPABILITIES] base_model_config: {json.dumps(base_model_config)}")
+
+        # Get the *current effective settings* which include env overrides
+        effective_settings = ModelManager.get_model_settings()
+        logger.info(f"[DEBUG CAPABILITIES] effective_settings: {json.dumps(effective_settings)}")
+
         capabilities = {
-            "supports_thinking": model_config.get("supports_thinking", False),
-            "max_output_tokens": model_config.get("max_output_tokens", 4096),
-            "max_input_tokens": model_config.get("token_limit", 4096),
-            "token_limit": model_config.get("token_limit", 4096),
-            "temperature_range": {"min": 0, "max": 1, "default": model_config.get("temperature", 0.3)},
-            "top_k_range": {"min": 0, "max": 500, "default": model_config.get("top_k", 15)} if endpoint == "bedrock" else None
+            "supports_thinking": effective_settings.get("thinking_mode", base_model_config.get("supports_thinking", False)),
         }
+
+        # Get CURRENT effective token limits
+        effective_max_output_tokens = effective_settings.get("max_output_tokens", base_model_config.get("max_output_tokens", 4096))
+        # Use max_input_tokens from effective settings, fallback to token_limit from base config
+        max_input_tokens = effective_settings.get("max_input_tokens", base_model_config.get("token_limit", 4096))
+
+        # Add token limits to capabilities
+        effective_max_input_tokens = effective_settings.get("max_input_tokens", base_model_config.get("token_limit", 4096))
+ 
+        # Get ABSOLUTE maximums from base config for ranges
+        absolute_max_output_tokens = base_model_config.get("max_output_tokens", 4096)
+
+        logger.info(f"[DEBUG CAPABILITIES] absolute_max_output_tokens from base_model_config: {absolute_max_output_tokens}") # DEBUG
+        logger.info(f"[DEBUG CAPABILITIES] effective_max_output_tokens from effective_settings: {effective_max_output_tokens}") # DEBUG
+
+        # Get absolute max input tokens from base config (usually under 'token_limit')
+        absolute_max_input_tokens = base_model_config.get("token_limit", 4096)
+        logger.info(f"[DEBUG CAPABILITIES] absolute_max_input_tokens from base_model_config: {absolute_max_input_tokens}") # DEBUG
+
+ 
+        # Add token limits to capabilities
+        capabilities["max_output_tokens"] = effective_max_output_tokens # Current value
+        capabilities["max_input_tokens"] = effective_max_input_tokens # Current value
+        capabilities["token_limit"] = effective_max_input_tokens # Use max_input_tokens for consistency
+        
+        # Add parameter ranges
+        capabilities["temperature_range"] = {"min": 0, "max": 1, "default": effective_settings.get("temperature", base_model_config.get("temperature", 0.3))}
+        # Use base_model_config for top_k range as it's static capability, but default from effective settings
+        base_top_k_range = base_model_config.get("top_k_range", {"min": 0, "max": 500, "default": 15}) if endpoint == "bedrock" else None
+        if base_top_k_range:
+             base_top_k_range["default"] = effective_settings.get("top_k", base_top_k_range.get("default", 15))
+        capabilities["top_k_range"] = base_top_k_range
+        # Add range for max_output_tokens using the absolute max
+        capabilities["max_output_tokens_range"] = {"min": 1, "max": absolute_max_output_tokens, "default": effective_max_output_tokens}
+        logger.info(f"[DEBUG CAPABILITIES] max_output_tokens_range being set: {capabilities['max_output_tokens_range']}") # DEBUG         # Add range for max_input_tokens using the absolute max
+
+        # Add range for max_input_tokens using the absolute max
+        capabilities["max_input_tokens_range"] = {"min": 1, "max": absolute_max_input_tokens, "default": effective_max_input_tokens}
+        
+        # Log the capabilities we're sending
+        logger.info(f"Sending model capabilities for {model_alias}: {capabilities}")
         return capabilities
     except Exception as e:
         logger.error(f"Error getting model capabilities: {str(e)}")
@@ -1369,7 +1633,6 @@ class ModelSettingsRequest(BaseModel):
     top_k: int = Field(default=15, ge=0, le=500)
     max_output_tokens: int = Field(default=4096, ge=1)
     thinking_mode: bool = Field(default=False)
-    max_input_tokens: Optional[int] = Field(default=None, ge=1)
 
 
 class TokenCountRequest(BaseModel):
@@ -1423,21 +1686,30 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
 @app.post('/api/model-settings')
 async def update_model_settings(settings: ModelSettingsRequest):
     global model
+    import gc
+    original_settings = settings.dict()
     try:
         # Log the requested settings
-        logger.info(f"Requested model settings update: {settings.dict()}")
 
         # Get current model configuration
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         model_name = os.environ.get("ZIYA_MODEL")
         model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        # Store original model config values for reference
+        original_config_values = model_config.copy()
 
         # Store all settings in environment variables with ZIYA_ prefix
         for key, value in settings.dict().items():
             if value is not None:  # Only set if value is provided
                 env_key = f"ZIYA_{key.upper()}"
-                os.environ[env_key] = str(value)
                 logger.info(f"  Set {env_key}={value}")
+
+            # Special handling for boolean values
+                if isinstance(value, bool):
+                    os.environ[env_key] = "1" if value else "0"
+                else:
+                    os.environ[env_key] = str(value)
 
         # Create a kwargs dictionary with all settings
         model_kwargs = {}
@@ -1455,13 +1727,8 @@ async def update_model_settings(settings: ModelSettingsRequest):
             if value is not None:
                 model_kwargs[param_name] = value
                 
-        # Only add max_input_tokens if the model supports it
-        if model_config.get('supports_max_input_tokens', False):
-            max_input_tokens = getattr(settings, 'max_input_tokens', None)
-            if max_input_tokens is not None:
-                model_kwargs['max_input_tokens'] = max_input_tokens
-
         # Filter kwargs to only include supported parameters
+        logger.info(f"Model kwargs before filtering: {model_kwargs}")
         filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
         logger.info(f"Filtered model kwargs: {filtered_kwargs}")
 
@@ -1471,12 +1738,21 @@ async def update_model_settings(settings: ModelSettingsRequest):
             if hasattr(model.model, 'model_kwargs'):
                 # Replace the entire model_kwargs dict
                 model.model.model_kwargs = filtered_kwargs
+                logger.info(f"Updated model.model.model_kwargs: {model.model.model_kwargs}")
+                model.model.max_tokens = int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])
         elif hasattr(model, 'model_kwargs'):
             # For direct model instances
             model.model_kwargs = filtered_kwargs
+            # Don't try to set max_tokens directly on NovaBedrock models
+            if not isinstance(model, NovaBedrock):
+                try:
+                    model.max_tokens = int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])  # Use the environment variable value
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Could not set max_tokens directly on model: {e}")
+                    # The max_tokens is already in model_kwargs, so this is just a warning
 
         # Force model reinitialization to apply new settings
-        model = ModelManager.initialize_model(force_reinit=True)
+        model = ModelManager.initialize_model(force_reinit=True, settings_override=original_settings)
 
         # Get the model's current settings for verification
         current_kwargs = {}
@@ -1489,11 +1765,21 @@ async def update_model_settings(settings: ModelSettingsRequest):
         for key, value in current_kwargs.items():
             logger.info(f"  {key}: {value}")
 
+        # Also check the model's max_tokens attribute directly
+        if hasattr(model, 'max_tokens'):
+            logger.info(f"  Direct max_tokens: {model.max_tokens}")
+        if hasattr(model, 'model') and hasattr(model.model, 'max_tokens'):
+            logger.info(f"  model.model.max_tokens: {model.model.max_tokens}")
+
+        # Return the original requested settings to ensure the frontend knows what was requested
+
         return {
             'status': 'success',
             'message': 'Model settings updated',
-            'settings': current_kwargs
+            'settings': original_settings,
+            'applied_settings': current_kwargs
         }
+
     except Exception as e:
         logger.error(f"Error updating model settings: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -1514,6 +1800,11 @@ async def apply_changes(request: ApplyChangesRequest):
         logger.info("First 100 chars of raw diff:")
         logger.info(request.diff[:100])
         logger.info(f"Full diff content: \n{request.diff}")
+
+        # --- SUGGESTION: Add secure path validation ---
+        user_codebase_dir = os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR"))
+        if not user_codebase_dir:
+            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
         
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
         
@@ -1527,6 +1818,12 @@ async def apply_changes(request: ApplyChangesRequest):
             # Fallback to using the provided filePath if extraction fails
             file_path = os.path.join(user_codebase_dir, request.filePath)
             logger.info(f"Using provided file path: {request.filePath}")
+
+            # Resolve the absolute path and check if it's within the codebase dir
+            resolved_path = os.path.abspath(file_path)
+            if not resolved_path.startswith(user_codebase_dir):
+                logger.error(f"Attempt to access file outside codebase directory: {resolved_path}")
+                raise ValueError("Invalid file path specified")
         else:
             raise ValueError("Could not determine target file path from diff or request")
 
@@ -1558,17 +1855,29 @@ async def apply_changes(request: ApplyChangesRequest):
             target_diff = individual_diffs[0]
 
         request.diff = target_diff
-        use_git_to_apply_code_diff(request.diff, file_path)
-        return {'status': 'success', 'message': 'Changes applied successfully'}
+        result = apply_diff_pipeline(request.diff, file_path)
+        
+        # Check the result status and return appropriate response
+        status_code = 200 # Default to OK
+        if result.get('status') == 'error':
+            # Determine appropriate error code
+            error_message = result.get('message', '').lower()
+            if "file does not exist" in error_message:
+                status_code = 404 # Not Found
+            elif "malformed" in error_message or "failed to apply" in error_message:
+                status_code = 422 # Unprocessable Entity
+            else:
+                status_code = 500 # Internal Server Error
+        elif result.get('status') == 'partial':
+            status_code = 207 # Multi-Status
+ 
+        return JSONResponse(content=result, status_code=status_code)
+
     except Exception as e:
         error_msg = str(e)
         if isinstance(e, PatchApplicationError):
             details = e.details
             logger.error(f"Patch application failed:")
-            logger.error(f"  Patch command error: {details.get('patch_error', 'N/A')}")
-            logger.error(f"  Git apply error: {details.get('git_error', 'N/A')}")
-            logger.error(f"  Analysis: {json.dumps(details.get('analysis', {}), indent=2)}")
-
             status = details.get('status', 'error')
             if status == 'success':
                 return JSONResponse(status_code=200, content={
@@ -1588,6 +1897,8 @@ async def apply_changes(request: ApplyChangesRequest):
                     status_code = 400  # Bad Request
                 elif error_type == 'invalid_count':
                     status_code = 500  # Internal Server Error
+                elif error_type == 'missing_file':
+                    status_code = 404 # Not Found
                 else:
                     status_code = 422  # Unprocessable Entity
 
@@ -1606,11 +1917,18 @@ async def apply_changes(request: ApplyChangesRequest):
                     **error_content
                 })
         logger.error(f"Error applying changes: {error_msg}")
+        if isinstance(e, FileNotFoundError):
+             status_code = 404
+        elif isinstance(e, ValueError): # e.g., invalid path
+             status_code = 400 # Bad Request
+        else:
+            status_code = 500 # Default Internal Server Error
         raise HTTPException(
-            status_code=500,
+            # Determine status code based on exception type if possible
+            status_code = status_code,
             detail={
                 'status': 'error',
-                'message': f"Unexpected error: {str(e)}"
+                'message': f"Unexpected error: {error_msg}"
             }
         )
 

@@ -68,7 +68,7 @@ from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_
 from app.agents.models import ModelManager
 from app.middleware import RequestSizeMiddleware
 from app.utils.sanitizer_util import clean_backtick_sequences
-from app.utils.context_enhancer import initialize_ast, enhance_query_context
+from app.utils.context_enhancer import initialize_ast_context, enhance_query_context
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file
@@ -160,11 +160,15 @@ def _extract_content(x: Any) -> str:
     if isinstance(x, list) and x:
         if isinstance(x[0], dict) and 'text' in x[0]:
             return str(x[0]['text'])
-        # Combine all text fields if multiple chunks
-        texts = []
-        for chunk in x:
-            if isinstance(chunk, dict) and 'text' in chunk:
-                texts.append(str(chunk['text']))
+            
+        # Handle Nova's array of text chunks
+        if all(isinstance(chunk, dict) and 'text' in chunk for chunk in x):
+            # Combine all text fields if multiple chunks
+            texts = []
+            for chunk in x:
+                if isinstance(chunk, dict) and 'text' in chunk:
+                    texts.append(str(chunk['text']))
+                    
         if texts:
             return ''.join(texts)  # Direct concatenation without spaces
             
@@ -253,29 +257,40 @@ class RetryingChatBedrock(Runnable):
 
     def bind(self, **kwargs):
         # Filter kwargs to only include supported parameters for the current model
-        # For Claude models, we need to handle binding differently
+        # Get model configuration
         endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
         model_name = os.environ.get("ZIYA_MODEL")
         model_config = ModelManager.get_model_config(endpoint, model_name)
         model_id = model_config.get("model_id", model_name)
         
-        # For Claude models, we need to be careful with certain parameters
-        if model_id and "claude" in model_id.lower():
-            # Filter out unsupported parameters for Claude models
-            supported_kwargs = {}
-            for key, value in kwargs.items():
-                if key != "stop":  # Claude doesn't support stop parameter in this context
-                    supported_kwargs[key] = value
-            
-            # Only log this once per process
-            if not hasattr(self.__class__, '_binding_logged'):
-                logger.info(f"Binding with filtered kwargs for Claude model: {supported_kwargs}")
-                self.__class__._binding_logged = True
-        else:
-            supported_kwargs = kwargs
-            if not hasattr(self.__class__, '_binding_logged'):
-                logger.info(f"Binding with kwargs: {supported_kwargs}")
-                self.__class__._binding_logged = True
+        # Filter kwargs based on supported parameters
+        supported_kwargs = ModelManager.filter_model_kwargs(kwargs, model_config)
+        
+        # Handle dictionary model_id (region-specific configuration)
+        if isinstance(model_id, dict):
+            # Get the appropriate region
+            region = os.environ.get("AWS_REGION", "us-west-2")
+            region_prefix = "eu" if region.startswith("eu-") else "us"
+            # Use the region-specific model ID if available, otherwise fall back to first available
+            model_id = model_id.get(region_prefix, next(iter(model_id.values())))
+            logger.info(f"Using region-specific model ID: {model_id}")
+        
+
+        # Special handling for stop parameter
+        if "stop" in kwargs:
+            # For Claude models, we need to be careful with certain parameters
+            if model_id and "claude" in model_id.lower():
+                # Claude doesn't support stop parameter in this context
+                if "stop" in supported_kwargs:
+                    del supported_kwargs["stop"]
+            else:
+                # For other models, keep the stop parameter
+                supported_kwargs["stop"] = kwargs["stop"]
+        
+        # Only log this once per process
+        if not hasattr(self.__class__, '_binding_logged'):
+            logger.info(f"Binding with filtered kwargs: {supported_kwargs}")
+            self.__class__._binding_logged = True
             
         return RetryingChatBedrock(self.model.bind(**supported_kwargs))
 
@@ -499,10 +514,42 @@ class RetryingChatBedrock(Runnable):
         """Stream responses with retries and proper message formatting."""
         max_retries = 3
         base_retry_delay = 1
+
+        # Get max_tokens from environment variables
+        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
+        
+        # Filter kwargs based on model's supported parameters
+        from app.agents.models import ModelManager
+        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
+        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        # Create a copy of kwargs to avoid modifying the original
+        filtered_kwargs = {}
+
+        # If max_tokens is specified in kwargs, use that instead
+        if "max_tokens" in kwargs:
+            max_tokens = kwargs["max_tokens"]
+        elif max_tokens:
+            # Add max_tokens to kwargs if it's not already there
+            filtered_kwargs["max_tokens"] = max_tokens
+            logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
+
+        # Add other kwargs
+        for key, value in kwargs.items():
+            if key != "max_tokens":  # We've already handled max_tokens
+                filtered_kwargs[key] = value
+                
+        # Filter kwargs based on supported parameters
+        filtered_kwargs = ModelManager.filter_model_kwargs(filtered_kwargs, model_config)
+        logger.info(f"Filtering model kwargs: {filtered_kwargs}")
+        
+        # Use filtered kwargs for the rest of the method
+        kwargs = filtered_kwargs
         
         # Add AWS credential debugging
         from app.utils.aws_utils import debug_aws_credentials
-        debug_aws_credentials()
+        # debug_aws_credentials()
 
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1} of {max_retries}")
@@ -557,12 +604,17 @@ class RetryingChatBedrock(Runnable):
 
                     elif isinstance(chunk, AIMessageChunk):
                         raw_chunk_content_repr = repr(chunk.content)[:200]
-                        logger.debug(f"RetryingChatBedrock - Received AIMessageChunk, raw content preview: {raw_chunk_content_repr}")
                         content = chunk.content() if callable(chunk.content) else chunk.content
+
+                        # Check if content is in Nova format (list of dicts with text field)
+                        if isinstance(content, list) and content and isinstance(content[0], dict) and 'text' in content[0]:
+                            # Use NovaFormatter to extract text from Nova format
+                            from app.agents.wrappers.nova_formatter import NovaFormatter
+                            content = NovaFormatter.parse_response({"output": {"message": {"content": content}}})
+                            logger.info(f"Used NovaFormatter to extract text from Nova format: {content[:50] if content else 'empty'}")
+                        
                         full_content_str = str(content) # Ensure it's a string
-                        logger.debug(f"RetryingChatBedrock - Extracted FULL content string (len={len(full_content_str)}): '{full_content_str}'")
                         extracted_content_repr = repr(content)[:200]
-                        logger.debug(f"RetryingChatBedrock - Extracted content preview: {extracted_content_repr}")
                         yield AIMessageChunk(content=content)
                     else:
                         yield chunk
@@ -598,8 +650,6 @@ class RetryingChatBedrock(Runnable):
                 logger.warning(f"Bedrock client error: {error_str}")
                 
                 # Run credential debug again on error
-                logger.info("Running credential debug after error")
-                debug_aws_credentials()
                 
                 error_type, detail, status_code, retry_after = detect_error_type(error_str)
                 logger.info(f"Detected error type: {error_type}, status: {status_code}")
@@ -729,6 +779,30 @@ class RetryingChatBedrock(Runnable):
         max_retries = 3
         base_retry_delay = 1.0
         
+        # Apply post-instructions if input is a user query
+        if isinstance(input, str):
+            from app.utils.post_instructions import PostInstructionManager
+            from app.agents.prompts_manager import get_model_info_from_config
+            
+            # Get model information
+            model_info = get_model_info_from_config()
+            model_name = model_info.get("model_name")
+            model_family = model_info.get("model_family")
+            endpoint = model_info.get("endpoint")
+            
+            # Log thinking mode status
+            thinking_mode_enabled = os.environ.get("ZIYA_THINKING_MODE") == "1"
+            logger.info(f"Stream chunks thinking mode enabled: {thinking_mode_enabled}")
+            logger.info(f"Model supports thinking: {model_info.get('supports_thinking', False)}")
+            
+            # Apply post-instructions
+            input = PostInstructionManager.apply_post_instructions(
+                query=input,
+                model_name=model_name,
+                model_family=model_family,
+                endpoint=endpoint
+            )
+        
         for attempt in range(max_retries):
             try:
                 # Get message format from model configuration
@@ -845,17 +919,23 @@ class LazyLoadedModel:
         self._model = None
         self._model_with_stop = None
         self._binding_logged = False
- 
+
     def get_model(self):
         """Get the underlying model instance"""
-        if self._model is None:
-            # Initialize the model on first use
-            logger.info("Initializing model on first use")
-            from app.agents.models import ModelManager
-            model_instance = ModelManager.initialize_model(force_reinit=True)
+        # Always check the ModelManager state first
+        from app.agents.models import ModelManager
+        if ModelManager._state.get('model') is not None:
+            logger.info("Using model instance from ModelManager state")
+            # Ensure it's wrapped if necessary (though it should be already)
+            if not isinstance(ModelManager._state['model'], RetryingChatBedrock):
+                 self._model = RetryingChatBedrock(ModelManager._state['model'])
+            else:
+                 self._model = ModelManager._state['model']
+        elif self._model is None: # Only initialize if both state and self._model are None
+            logger.warning("ModelManager state is empty, initializing model on first use")
+            model_instance = ModelManager.initialize_model(force_reinit=True) # Initialize without override here
             self._model = RetryingChatBedrock(model_instance)
         return self._model
-        
     def __call__(self):
         """Maintain backwards compatibility but log deprecation"""
         logger.warning("Direct call to model() is deprecated, use get_model() instead")
@@ -875,6 +955,10 @@ class LazyLoadedModel:
 model = LazyLoadedModel()
 llm_with_stop = model.bind(stop=["</tool_input>"])
 
+# Store the initial llm_with_stop in ModelManager
+from app.agents.models import ModelManager
+ModelManager._state['llm_with_stop'] = llm_with_stop
+
 file_state_manager = FileStateManager()
 
 def get_combined_docs_from_files(files, conversation_id: str = "default") -> str:
@@ -891,6 +975,8 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     logger.info(f"Processing files with conversation_id: {conversation_id}")
 
     # Initialize AST capabilities if enabled
+    ast_context = ""
+    ast_token_count = 0
     if os.environ.get("ZIYA_ENABLE_AST") == "true":
         try:
             logger.info("AST initialization requested via ZIYA_ENABLE_AST=true")
@@ -903,9 +989,26 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
             max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
             logger.info(f"Using max depth: {max_depth}")
             
-            ast_init_result = initialize_ast(codebase_dir, ignored_patterns, max_depth)
-            logger.info(f"AST initialization result: {ast_init_result}")
+            # Import the initialize_ast_context function
+            from app.utils.context_enhancer import initialize_ast_context
+            
+            # Show progress indicator
+            print("\nInitializing AST-based code understanding...")
+            
+            # Initialize AST
+            ast_init_result = initialize_ast_context(codebase_dir, ignored_patterns, max_depth)
+            
+            # Log the result
+            if ast_init_result.get("initialized", False):
+                logger.info(f"AST initialization successful: {ast_init_result.get('files_processed', 0)} files processed")
+                print(f"✅ AST initialization complete: {ast_init_result.get('files_processed', 0)} files processed")
+                ast_token_count = ast_init_result.get("token_count", 0)
+                print(f"   AST context size: {ast_token_count} tokens\n")
+            else:
+                logger.warning(f"AST initialization failed: {ast_init_result.get('reason', 'Unknown reason')}")
+                print("⚠️ AST initialization failed\n")
         except Exception as e:
+            print(f"⚠️ Failed to initialize AST capabilities: {e}\n")
             logger.error(f"Failed to initialize AST capabilities: {e}")
             import traceback
             logger.error(f"AST initialization traceback: {traceback.format_exc()}")
@@ -965,6 +1068,10 @@ def extract_codebase(x):
                 continue
             if is_binary_file(full_path):
                 logger.debug(f"Skipping binary file: {file_path}")
+                continue
+                
+            if os.path.isdir(full_path):
+                # Skip directories silently
                 continue
 
             with open(full_path, 'r', encoding='utf-8') as f:
@@ -1054,7 +1161,12 @@ def log_codebase_wrapper(x):
 
 def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
-    llm_with_stop = model.bind(stop=["</tool_input"])
+    # Bind the stop sequence to the model
+    llm_with_stop = chat_model.bind(stop=["</tool_input"])
+    
+    # Store the model with stop in the ModelManager state
+    from app.agents.models import ModelManager
+    ModelManager._state['llm_with_stop'] = llm_with_stop
     
     # Check if AST is enabled
     ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
@@ -1098,7 +1210,7 @@ def create_agent_chain(chat_model: BaseChatModel):
     chain = (
         input_mapping
         | prompt_template  # Use the extended prompt template with model-specific extensions
-        | chat_model.bind(stop=["</tool_input>"])
+        | llm_with_stop  # Use the stored llm_with_stop instead of recreating it
         | (lambda x: AgentFinish(
             return_values={"output": _extract_content(x)},
             log=_extract_content(x)
@@ -1122,14 +1234,16 @@ def update_conversation_state(conversation_id: str, file_paths: List[str]) -> No
     file_contents = {}
     for file_path in file_paths:
         full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
-        if not os.path.isdir(full_path):
-            try:
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    file_contents[file_path] = f.read()
-                logger.debug(f"Read current content for {file_path}")
-            except Exception as e:
-                logger.error(f"Error reading file {file_path}: {str(e)}")
-                continue
+        if os.path.isdir(full_path):
+            # Skip directories silently
+            continue
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                file_contents[file_path] = f.read()
+            logger.debug(f"Read current content for {file_path}")
+        except Exception as e:
+            logger.error(f"Error reading file {file_path}: {str(e)}")
+            continue
 
     # Update states and get changes
     changes = file_state_manager.update_files(conversation_id, file_contents)
@@ -1318,6 +1432,10 @@ agent_executor = create_agent_executor(agent)
 
 def initialize_langserve(app, executor):
     """Initialize or reinitialize langserve routes with the given executor."""
+    import gc
+    
+    # Force garbage collection to clean up any lingering references
+    gc.collect()
 
     # Create a new FastAPI app instance to ensure clean state
     new_app = FastAPI(
@@ -1337,7 +1455,7 @@ def initialize_langserve(app, executor):
 
     logger.info(f"Preserved {len(original_routes)} non-/ziya routes")
  
-     # Add required middleware
+    # Add required middleware
     new_app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -1376,6 +1494,9 @@ def initialize_langserve(app, executor):
     # Copy routes from new app to original app
     for route in new_app.routes:
         app.routes.append(route)
+        
+    # Force another garbage collection after route replacement
+    gc.collect()
         
     logger.info(f"Successfully reinitialized app with {len(new_app.routes)} routes")
     return True

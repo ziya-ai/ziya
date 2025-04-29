@@ -2,12 +2,16 @@ from typing import Optional, Dict, Any, Union, List
 import os
 import json
 import botocore
+import boto3
+import gc
 from pathlib import Path
 from langchain_aws import ChatBedrock
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models import BaseChatModel
 from langchain.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
+import app.config as config
+from app.config import get_supported_parameters  # Import the function explicitly
 import google.auth.exceptions
 import google.auth
 from dotenv import load_dotenv
@@ -96,20 +100,74 @@ class ModelManager:
         Reset the internal state of the ModelManager.
         This is used when switching models to ensure a clean initialization.
         """
+        import gc
+        import sys
+        
+        # Force garbage collection before resetting state
+        gc.collect()
+        
         logger.info("Resetting ModelManager state")
         cls._state = {
             'model': None,
             'current_model_id': None,
+            'llm_with_stop': None,  # Add storage for llm_with_stop
             'auth_checked': False,
             'auth_success': False,
             'google_credentials': None,
             'aws_profile': None,
             'aws_region': None,
             'process_id': None,
-            'llm_with_stop': None,
             'agent': None,
             'agent_executor': None
         }
+        
+        # Reset boto3 in a safer way
+        try:
+            import boto3
+            import botocore
+            
+            # Instead of trying to modify the existing session, we'll create a completely new one
+            # First, remove boto3 and botocore modules from sys.modules to force a complete reload
+            modules_to_remove = []
+            for module_name in sys.modules:
+                if module_name.startswith('boto3.') or module_name.startswith('botocore.'):
+                    modules_to_remove.append(module_name)
+            
+            for module_name in modules_to_remove:
+                try:
+                    del sys.modules[module_name]
+                    logger.debug(f"Removed module from sys.modules: {module_name}")
+                except KeyError:
+                    pass
+            
+            # Reload boto3 and botocore
+            import importlib
+            importlib.reload(botocore)
+            importlib.reload(boto3)
+            
+            # Create a new session
+            boto3.DEFAULT_SESSION = None
+            boto3.setup_default_session()
+            logger.info("Reset boto3 default session with complete module reload")
+            
+        except Exception as e:
+            logger.warning(f"Failed to reset boto3 session: {e}")
+            
+        # Clear any LangChain caches that might exist
+        try:
+            from langchain.globals import clear_langchain_cache
+            clear_langchain_cache()
+            logger.info("Cleared LangChain cache")
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"Could not clear LangChain cache: {e}")
+            
+        # Force garbage collection again to clean up any lingering references
+        gc.collect()
+        
+        logger.info("Model state completely reset")
+        # Force garbage collection again after resetting state
+        gc.collect()
+        
         return cls._state
 
     # Use the configuration from config.py
@@ -196,7 +254,7 @@ class ModelManager:
             model_instance: Optional model instance to get ID from
             
         Returns:
-            str: The model ID
+            str or dict: The model ID (can be a string or a region-specific dictionary)
         """
         # If we have a current model ID in state, return it
         if cls._state.get('current_model_id'):
@@ -215,6 +273,19 @@ class ModelManager:
             return model_name
             
     @classmethod
+    def get_model_alias(cls):
+        """
+        Get the model alias (name) for the current model.
+        
+        Returns:
+            str: The model alias (like "sonnet3.7")
+        """
+        # Get the model alias from environment variable
+        return os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS.get(
+            os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
+        ))
+            
+    @classmethod
     def filter_model_kwargs(cls, model_kwargs, model_config):
         """
         Filter model kwargs to only include parameters supported by the model.
@@ -229,13 +300,41 @@ class ModelManager:
         logger.info(f"Filtering model kwargs: {model_kwargs}")
         
         # Get supported parameters from the model config
-        supported_params = model_config.get('supported_params', [])
+        supported_params = []
         
-        # If model config doesn't have supported_params, try to get from endpoint defaults
+        # Get parameters from model config
+        model_params = model_config.get('supported_parameters', [])
+        if model_params:
+            supported_params.extend(model_params)
+        
+        # If model has a family, get parameters from family
+        if 'family' in model_config:
+            family_name = model_config['family']
+            if family_name in config.MODEL_FAMILIES:
+                family_config = config.MODEL_FAMILIES[family_name]
+                
+                # Get parameters from family
+                family_params = family_config.get('supported_parameters', [])
+                if family_params:
+                    supported_params.extend(family_params)
+                    
+                # Check for parent family parameters
+                if 'parent' in family_config and family_config['parent'] in config.MODEL_FAMILIES:
+                    parent_family = config.MODEL_FAMILIES[family_config['parent']]
+                    parent_params = parent_family.get('supported_parameters', [])
+                    if parent_params:
+                        supported_params.extend(parent_params)
+        
+        # If still no parameters, try to get from endpoint defaults
         if not supported_params:
             endpoint = model_config.get('endpoint', cls.DEFAULT_ENDPOINT)
             if endpoint in cls.ENDPOINT_DEFAULTS:
-                supported_params = cls.ENDPOINT_DEFAULTS[endpoint].get('supported_params', [])
+                endpoint_params = cls.ENDPOINT_DEFAULTS[endpoint].get('supported_parameters', [])
+                if endpoint_params:
+                    supported_params.extend(endpoint_params)
+        
+        # Remove duplicates while preserving order
+        supported_params = list(dict.fromkeys(supported_params))
         
         # Check for model-specific support for max_input_tokens
         supports_max_input_tokens = model_config.get('supports_max_input_tokens', False)
@@ -303,6 +402,17 @@ class ModelManager:
                 settings["thinking_mode"] = os.environ["ZIYA_THINKING_MODE"] == "1"
             elif "supports_thinking" in model_config:
                 settings["thinking_mode"] = model_config["supports_thinking"]
+
+            # Handle max_output_tokens - use environment, then default value, then maximum value
+            if "ZIYA_MAX_OUTPUT_TOKENS" in os.environ:
+                settings["max_output_tokens"] = int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])
+            elif "default_max_output_tokens" in model_config:
+                settings["max_output_tokens"] = model_config["default_max_output_tokens"]
+            elif "default_max_output_tokens" in cls.ENDPOINT_DEFAULTS.get(endpoint, {}):
+                settings["max_output_tokens"] = cls.ENDPOINT_DEFAULTS[endpoint]["default_max_output_tokens"]
+            else:
+                # Fall back to maximum value
+                settings["max_output_tokens"] = model_config.get("max_output_tokens", 4096)
             
             return settings
         except ValueError:
@@ -359,28 +469,63 @@ class ModelManager:
                         
                 settings[config_key] = value
                 
+        # Get supported parameters for this model
+        supported_params = []
+        model_params = config_dict.get('supported_parameters', [])
+        if model_params:
+            supported_params.extend(model_params)
+        
+        # If model has a family, get parameters from family
+        if 'family' in config_dict:
+            family_name = config_dict['family']
+            if family_name in config.MODEL_FAMILIES:
+                family_config = config.MODEL_FAMILIES[family_name]
+                
+                # Get parameters from family
+                family_params = family_config.get('supported_parameters', [])
+                if family_params:
+                    supported_params.extend(family_params)
+                    
+                # Check for parent family parameters
+                if 'parent' in family_config and family_config['parent'] in config.MODEL_FAMILIES:
+                    parent_family = config.MODEL_FAMILIES[family_config['parent']]
+                    parent_params = parent_family.get('supported_parameters', [])
+                    if parent_params:
+                        supported_params.extend(parent_params)
+        
+        # Filter settings to only include supported parameters
+        filtered_settings = {}
+        for key, value in settings.items():
+            if key in supported_params or key not in ['top_k', 'top_p']:  # Always include non-model parameters
+                filtered_settings[key] = value
+
         # Apply parameter mappings
         parameter_mappings = config_dict.get("parameter_mappings", {})
         for source_param, target_params in parameter_mappings.items():
-            if source_param in settings:
+            if source_param in filtered_settings:
                 for target_param in target_params:
                     if target_param != source_param:  # Avoid duplicate assignments
-                        settings[target_param] = settings[source_param]
+                        filtered_settings[target_param] = filtered_settings[source_param]
                         
-        return settings
+        return filtered_settings
 
     @classmethod
-    def initialize_model(cls, force_reinit=False) -> BaseChatModel:
+    def initialize_model(cls, force_reinit=False, settings_override: Optional[Dict[str, Any]] = None) -> BaseChatModel:
         """
         Initialize the model based on environment variables.
         
         Args:
             force_reinit: Force reinitialization even if already initialized
+            settings_override: Optional dictionary of settings to apply directly, bypassing env vars for this init.
             
         Returns:
             BaseChatModel: The initialized model
         """
         import os
+        import gc
+        
+        # Force garbage collection before initialization
+        gc.collect()
         
         # Check if we're in a child process and should skip initialization
         if os.environ.get("UVICORN_NO_MODEL_INIT") == "true" and not force_reinit:
@@ -426,6 +571,19 @@ class ModelManager:
         
         # Get model configuration
         model_config = cls.get_model_config(endpoint, model_name)
+            
+        # Get default max_output_tokens from model config or endpoint defaults
+        default_max_tokens = model_config.get("default_max_output_tokens")
+        if default_max_tokens is None:
+            # Fall back to endpoint defaults
+            if endpoint in cls.ENDPOINT_DEFAULTS:
+                default_max_tokens = cls.ENDPOINT_DEFAULTS[endpoint].get("default_max_output_tokens")
+        
+        # Check for environment variable overrides and apply them directly
+        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
+        if env_max_tokens:
+            model_config["max_output_tokens"] = int(env_max_tokens)
+
         model_id = model_config.get("model_id", model_name)
         
         # Reset any previous error flags
@@ -435,7 +593,7 @@ class ModelManager:
         logger.info(f"Starting authentication flow for endpoint: {endpoint}")
         if endpoint == "bedrock":
             logger.info("Using Bedrock authentication flow only")
-            model = cls._initialize_bedrock_model(model_config)
+            model = cls._initialize_bedrock_model(model_config, settings_override=settings_override)
         elif endpoint == "google":
             logger.info("Using Google authentication flow only")
             model = cls._initialize_google_model(model_config)
@@ -458,7 +616,68 @@ class ModelManager:
         return model
 
     @classmethod
-    def _initialize_bedrock_model(cls, model_config: Dict[str, Any]) -> ChatBedrock:
+    def _get_region_specific_model_id(cls, model_id, region):
+        """
+        Get the appropriate model ID based on the region.
+        
+        Args:
+            model_id: The model ID configuration (string or dict)
+            region: The AWS region being used
+            
+        Returns:
+            str: The region-specific model ID
+        """
+        # If model_id is a string, use it directly
+        if isinstance(model_id, str):
+            return model_id
+            
+        # If model_id is a dict with region-specific IDs
+        if isinstance(model_id, dict):
+            # Determine region prefix (eu or us)
+            region_prefix = "eu" if region.startswith("eu-") else "us"
+            
+            # Log the region and prefix for debugging
+            logger.info(f"Selecting model ID for region {region} (prefix: {region_prefix})")
+            
+            # Return the region-specific ID if available, otherwise fall back to default
+            if region_prefix in model_id:
+                logger.info(f"Using {region_prefix} specific model ID for region {region}")
+                return model_id[region_prefix]
+            else:
+                # Fall back to the first available ID
+                fallback_id = next(iter(model_id.values()))
+
+                # If we're in EU but only have US model ID, or vice versa, we need to switch regions
+                if region_prefix == "eu" and "us" in model_id:
+                    # We're in EU but the model is only available in US
+                    new_region = "us-west-2"  # Default US region
+                    logger.warning(f"Model only available in US regions. Switching from {region} to {new_region}")
+                    
+                    # Update the region in environment variables
+                    os.environ["AWS_REGION"] = new_region
+                    
+                    # Return the US model ID
+                    return model_id["us"]
+                elif region_prefix == "us" and "eu" in model_id:
+                    # We're in US but the model is only available in EU
+                    new_region = "eu-west-1"  # Default EU region
+                    logger.warning(f"Model only available in EU regions. Switching from {region} to {new_region}")
+                    
+                    # Update the region in environment variables
+                    os.environ["AWS_REGION"] = new_region
+                    
+                    # Return the EU model ID
+                    return model_id["eu"]
+
+                return fallback_id
+                
+        # Fallback for unexpected cases
+        logger.warning(f"Unexpected model_id format: {model_id}, returning as is")
+        return model_id
+    
+    @classmethod
+    def _initialize_bedrock_model(cls, model_config: Dict[str, Any], settings_override: Optional[Dict[str, Any]] = None) -> BaseChatModel: # Add settings_override parameter
+
         """
         Initialize a Bedrock model with the given configuration.
         
@@ -468,8 +687,11 @@ class ModelManager:
         Returns:
             ChatBedrock: The initialized Bedrock model
         """
-        from app.utils.aws_utils import ThrottleSafeBedrock, check_aws_credentials
+        from app.utils.aws_utils import ThrottleSafeBedrock, check_aws_credentials, create_fresh_boto3_session
         from app.utils.custom_exceptions import KnownCredentialException
+        
+        # Force garbage collection before creating new boto3 clients
+        gc.collect()
         
         logger.info("Initializing Bedrock model")
         
@@ -483,13 +705,14 @@ class ModelManager:
             logger.info("Using default AWS credentials")
             os.environ["AWS_PROFILE"] = "default"
             
-        # Get region from config or environment
-        region = model_config.get("region", "us-west-2")
-        if "AWS_REGION" in os.environ:
-            region = os.environ["AWS_REGION"]
+        # Get region from environment first, then config
+        region = os.environ.get("AWS_REGION") or model_config.get("region", "us-west-2")
+        logger.info(f"Using AWS region: {region}")
+        cls._state['aws_region'] = region
             
-        # Get model ID and parameters
-        model_id = model_config.get("model_id")
+        # Get model ID with region-specific handling
+        raw_model_id = model_config.get("model_id")
+        model_id = cls._get_region_specific_model_id(raw_model_id, region)
         
         # Check for model ID override from environment
         model_id_override = os.environ.get("ZIYA_MODEL_ID_OVERRIDE")
@@ -497,21 +720,6 @@ class ModelManager:
             logger.info(f"Using model ID override: {model_id_override} instead of {model_id}")
             model_id = model_id_override
             
-        temperature = model_config.get("temperature", 0.3)
-        top_k = model_config.get("top_k", 15)
-        max_tokens = model_config.get("max_output_tokens", 4096)
-        
-        # Apply environment variable overrides
-        settings = cls.get_model_settings(model_config)
-        if "temperature" in settings:
-            temperature = settings["temperature"]
-        if "top_k" in settings:
-            top_k = settings["top_k"]
-        if "max_tokens" in settings:
-            max_tokens = settings["max_tokens"]
-            
-        logger.info(f"Initializing Bedrock model: {model_id} with kwargs: {{'temperature': {temperature}, 'top_k': {top_k}, 'max_tokens': {max_tokens}}}")
-        
         # Reset any previous error flags
         KnownCredentialException._error_displayed = False
         
@@ -532,72 +740,184 @@ class ModelManager:
         # Check if this is a Nova model
         family = model_config.get("family")
         
-        # Get thinking mode setting
-        thinking_mode = settings.get("thinking_mode", False)
-        if isinstance(thinking_mode, str):
-            thinking_mode = thinking_mode.lower() == "true"
+        # --- Determine Effective Parameters RIGHT BEFORE Initialization ---
+        # Get base config values again for clarity
+        base_temperature = model_config.get("temperature", 0.3)
+        base_top_k = model_config.get("top_k", 15)
+        base_max_tokens = model_config.get("max_output_tokens", 4096)
+        base_top_p = model_config.get("top_p")
+        base_thinking_mode = model_config.get("thinking_mode", config.GLOBAL_MODEL_DEFAULTS.get("thinking_mode", False))
+
+        # Check for default_max_output_tokens in model config
+        default_max_tokens = model_config.get("default_max_output_tokens")
+        if default_max_tokens is not None:
+            # If no override is set in environment, use the default value
+            if "ZIYA_MAX_OUTPUT_TOKENS" not in os.environ and "ZIYA_MAX_TOKENS" not in os.environ:
+                logger.info(f"Using default_max_output_tokens from config: {default_max_tokens}")
+                # Set the environment variable for consistency
+                os.environ["ZIYA_MAX_OUTPUT_TOKENS"] = str(default_max_tokens)
+                # Update base_max_tokens to use the default
+                base_max_tokens = default_max_tokens
+        
+        if settings_override:
+            logger.info("Using settings_override for initialization parameters.")
+            logger.info(f"  settings_override received: {settings_override}") # DEBUG LOG
+
+        # --- End Determine Effective Parameters ---+
+            logger.info("Using environment variables (or defaults) for initialization parameters.")
+            # Read environment variables *now*
+
+            # Directly use settings_override, falling back to base config only if key is missing in override
+            effective_temperature = float(settings_override.get("temperature", base_temperature))
+            effective_top_k = int(settings_override.get("top_k", base_top_k))
+            effective_max_tokens = int(settings_override.get("max_output_tokens", base_max_tokens))
+            effective_top_p = settings_override.get("top_p", base_top_p)
+            effective_thinking_mode = bool(settings_override.get("thinking_mode", base_thinking_mode))
+            logger.info(f"  >>> DEBUG: effective_max_tokens assigned value: {effective_max_tokens}")
+            effective_top_p_str = os.environ.get("ZIYA_TOP_P")
+            effective_top_p = None
+            if effective_top_p_str is not None:
+                try:
+                    effective_top_p = float(effective_top_p_str)
+                except ValueError:
+                    logger.warning(f"Invalid ZIYA_TOP_P value '{effective_top_p_str}', using default.")
+                    effective_top_p = base_top_p
+            else:
+                effective_top_p = base_top_p
+ 
+            effective_thinking_mode_str = os.environ.get("ZIYA_THINKING_MODE")
+            effective_thinking_mode = base_thinking_mode
+            if effective_thinking_mode_str is not None:
+                effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes", "t", "y")
+
+        else:
+            logger.info("No settings_override provided, using environment variables/defaults.")
+            # Read environment variables *now*+            # Fall back to base config values if environment variable is not set
+            effective_temperature = float(os.environ.get("ZIYA_TEMPERATURE", base_temperature))
+            effective_top_k = int(os.environ.get("ZIYA_TOP_K", base_top_k))
+            effective_max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", base_max_tokens))
+            effective_top_p_str = os.environ.get("ZIYA_TOP_P")
+            effective_top_p = base_top_p # Default to base
+            if effective_top_p_str is not None:
+                try:
+                    effective_top_p = float(effective_top_p_str)
+                except ValueError:
+                    logger.warning(f"Invalid ZIYA_TOP_P value '{effective_top_p_str}', using default.")
+
+            effective_thinking_mode_str = os.environ.get("ZIYA_THINKING_MODE")
+            effective_thinking_mode = base_thinking_mode # Default to base
+            if effective_thinking_mode_str is not None:
+                effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes")
+
+        # Force garbage collection before creating new model
+        gc.collect()
         
         # Create the appropriate model based on family
         if family == "nova":
-            from app.agents.nova_wrapper import NovaBedrock
+            from app.agents.wrappers.nova_wrapper import NovaBedrock
             logger.info(f"Initializing Nova model: {model_id}")
             
             # Create a model_kwargs dictionary with all parameters
             nova_model_kwargs = {
-                "top_k": top_k,
-                "max_tokens": max_tokens  # Explicitly include max_tokens in model_kwargs
+                "top_p": effective_top_p,
+                "max_tokens": effective_max_tokens # Explicitly include effective max_tokens
             }
             
+            # Add temperature only if supported by the model
+            model_alias = os.environ.get("ZIYA_MODEL", "")  # Get the model alias from environment
+            supported_params = get_supported_parameters("bedrock", model_alias)
+            if "temperature" in supported_params and effective_temperature is not None:
+                nova_model_kwargs["temperature"] = effective_temperature
+                logger.info(f"Adding temperature={effective_temperature} to nova_model_kwargs")
+            else:
+                logger.info(f"Temperature not supported for {model_alias}, skipping")
+                
+            # Filter out None values
+            nova_model_kwargs = {k: v for k, v in nova_model_kwargs.items() if v is not None}
             logger.info(f"Creating NovaBedrock with model_kwargs: {nova_model_kwargs}")
+            
+            # Create a fresh boto3 session
+            try:
+                # Create a fresh session
+                session = create_fresh_boto3_session(profile_name=aws_profile)
+                new_region = os.environ.get("AWS_REGION", region)
+                bedrock_client = session.client('bedrock-runtime', region_name=new_region)
+                logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {new_region}")
+                
+                # Store the ThrottleSafeBedrock wrapper separately but use the original client for the model
+                throttle_safe_client = ThrottleSafeBedrock(bedrock_client)
+            except Exception as e:
+                logger.error(f"Error creating bedrock client: {e}")
+                raise
             
             model = NovaBedrock(
                 model_id=model_id,
-                client=None,  # Will be created internally
-                region_name=region,
+                client=bedrock_client,  # Use the original client directly
+                region_name=new_region,
                 model_kwargs=nova_model_kwargs,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                thinking_mode=thinking_mode
+                max_tokens=effective_max_tokens,
+                thinking_mode=effective_thinking_mode
             )
             
             # Add a debug log to check the model's parameters
-            logger.info(f"NovaBedrock created with: model_id={model_id}, temperature={temperature}, max_tokens={max_tokens}")
+            logger.info(f"NovaBedrock created with: model_id={model_id}, max_tokens={effective_max_tokens}")
+            if "temperature" in supported_params:
+                logger.info(f"Temperature: {effective_temperature}")
             if hasattr(model, 'model_kwargs'):
                 logger.info(f"NovaBedrock model_kwargs: {model.model_kwargs}")
         else:
-            # Use standard ChatBedrock
-            logger.info(f"Initializing ChatBedrock for model: {model_id}")
+            # Use ZiyaBedrock instead of standard ChatBedrock
+            logger.info(f"Initializing ZiyaBedrock for model: {model_id}")
             
             # Create a model_kwargs dictionary with all parameters
             model_kwargs = {
-                "top_k": top_k,
-                "max_tokens": max_tokens  # Explicitly include max_tokens in model_kwargs
+                "top_k": effective_top_k,
+                "top_p": effective_top_p,
+                "max_tokens": effective_max_tokens
             }
+
+            # Check if model supports top_k
+            if 'supported_parameters' in model_config:
+                if 'top_k' not in model_config['supported_parameters']:
+                    # Remove top_k if not supported
+                    if 'top_k' in model_kwargs:
+                        logger.info(f"Removing unsupported parameter 'top_k' for model {model_id}")
+                        del model_kwargs['top_k']
+                        # Also remove from environment
+                        if 'ZIYA_TOP_K' in os.environ:
+                            del os.environ['ZIYA_TOP_K']
+                
+            # Import and use ZiyaBedrock
+            from app.agents.wrappers.ziya_bedrock import ZiyaBedrock
             
-            logger.info(f"Creating ChatBedrock with model_kwargs: {model_kwargs}")
+            # Create a fresh boto3 session
+            try:
+                # Create a fresh session
+                session = create_fresh_boto3_session(profile_name=aws_profile)
+                bedrock_client = session.client('bedrock-runtime', region_name=region)
+                logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
+                
+                # Wrap with throttle-safe client
+                bedrock_client = ThrottleSafeBedrock(bedrock_client)
+            except Exception as e:
+                logger.error(f"Error creating bedrock client: {e}")
+                raise
             
-            # Create the ChatBedrock model
-            model = ChatBedrock(
+            # Create the ZiyaBedrock model
+            model = ZiyaBedrock(
                 model_id=model_id,
-                client=None,  # Will be created internally
+                client=bedrock_client,  # Use our fresh client
                 region_name=region,
-                model_kwargs=model_kwargs,
-                temperature=temperature,
-                max_tokens=max_tokens
+                model_kwargs=model_kwargs, # Pass effective kwargs from above
+                temperature=effective_temperature,    # Pass effective temperature
+                max_tokens=effective_max_tokens,      # Pass effective max_tokens
+                thinking_mode=effective_thinking_mode
             )
             
             # Add a debug log to check the model's parameters
-            logger.info(f"ChatBedrock created with: model_id={model_id}, temperature={temperature}, max_tokens={max_tokens}")
-            if hasattr(model, 'model_kwargs'):
-                logger.info(f"ChatBedrock model_kwargs: {model.model_kwargs}")
-            
-            # Wrap the client with our custom client to ensure max_tokens is correctly passed
-            from app.utils.custom_bedrock import CustomBedrockClient
-            if hasattr(model, 'client'):
-                model.client = CustomBedrockClient(model.client, max_tokens=max_tokens)
-                logger.info(f"Wrapped boto3 client with CustomBedrockClient, max_tokens={max_tokens}")
-        
-        return model
+            logger.info(f"ZiyaBedrock created with: model_id={model_id}, temperature={effective_temperature}, max_tokens={effective_max_tokens}")
+            if hasattr(model, 'get_parameters'):
+                logger.info(f"ZiyaBedrock parameters: {model.get_parameters()}")
         
         return model
 
@@ -614,10 +934,13 @@ class ModelManager:
         """
         # Import here to avoid unnecessary imports when not using Google models
         try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
+            from app.agents.wrappers.ziya_google_genai import ZiyaChatGoogleGenerativeAI
         except ImportError:
             raise ValueError("langchain_google_genai package is not installed. Please install it to use Google models.")
             
+        # Force garbage collection before creating new model
+        gc.collect()
+        
         logger.info("Initializing Google model")
         
         # Load environment variables from .env file specifically for Google models
@@ -645,7 +968,7 @@ class ModelManager:
         cls._check_google_credentials()
         
         # Create the model
-        model = ChatGoogleGenerativeAI(
+        model = ZiyaChatGoogleGenerativeAI(
             model=model_id,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
@@ -696,6 +1019,10 @@ class ModelManager:
         Returns:
             BaseChatModel: Model with stop sequences configured
         """
+        # Force garbage collection before getting model
+        import gc
+        gc.collect()
+        
         # Initialize model if needed
         model = cls.initialize_model()
         

@@ -21,10 +21,13 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableConfig
+from app.utils.aws_utils import ThrottleSafeBedrock
 
 from app.utils.logging_utils import logger
 from app.agents.custom_message import ZiyaString, ZiyaMessageChunk
 from app.utils.custom_bedrock import CustomBedrockClient
+from app.agents.wrappers.nova_formatter import NovaFormatter
+from pydantic import Field, validator
 
 
 class NovaWrapper(BaseChatModel):
@@ -33,8 +36,16 @@ class NovaWrapper(BaseChatModel):
     """
     
     model_id: str
-    client: Optional[BaseClient] = None
+    client: Any = None  # Changed from Optional[BaseClient] to Any to accept any client type
     model_kwargs: Dict[str, Any] = {}
+    
+    @validator("client", pre=True)
+    def validate_client(cls, v):
+        """Validate the client - accept any client that has the necessary methods."""
+        # Just check if the client has the necessary methods
+        if v is not None and not hasattr(v, "converse"):
+            raise ValueError("Client must have a 'converse' method")
+        return v
     
     def __init__(self, model_id: str, **kwargs):
         """
@@ -59,13 +70,22 @@ class NovaWrapper(BaseChatModel):
             self.client = CustomBedrockClient(self.client, max_tokens=max_tokens)
             logger.info(f"Wrapped boto3 client with CustomBedrockClient in NovaWrapper, max_tokens={max_tokens}")
         
-        # Set default model parameters
-        self.model_kwargs = {
-            "temperature": kwargs.get("temperature", 0.7),
-            "top_p": kwargs.get("top_p", 0.9),
-            "top_k": kwargs.get("top_k", 50),
-            "max_tokens": kwargs.get("max_tokens", 4096),
-        }
+        # Set default model parameters - only include parameters that are provided
+        self.model_kwargs = {}
+        
+        # Always include max_tokens and top_p which are supported by all Nova models
+        self.model_kwargs["max_tokens"] = kwargs.get("max_tokens", 4096)
+        self.model_kwargs["top_p"] = kwargs.get("top_p", 0.9)
+        
+        # Only include temperature if it's provided (will be filtered by supported_parameters)
+        if "temperature" in kwargs:
+            self.model_kwargs["temperature"] = kwargs.get("temperature")
+            
+        # Only include top_k if it's provided (will be filtered by supported_parameters)
+        if "top_k" in kwargs:
+            self.model_kwargs["top_k"] = kwargs.get("top_k")
+            
+        logger.info(f"Initialized NovaWrapper with model_kwargs: {self.model_kwargs}")
     
     def _format_messages(self, messages: List[BaseMessage]) -> Dict[str, Any]:
         """
@@ -81,44 +101,63 @@ class NovaWrapper(BaseChatModel):
         
         # Convert messages to the format expected by Nova
         formatted_messages = []
+        
+        # Extract system message content to prepend to the first user message
+        system_content = ""
+        for message in messages:
+            if isinstance(message, SystemMessage):
+                system_content += message.content + "\n\n"
+        
+        # Convert messages to dict format first
+        message_dicts = []
         for message in messages:
             if isinstance(message, HumanMessage):
-                formatted_messages.append({
+                content = message.content
+                # If this is the first user message and we have system content, prepend it
+                if system_content and not any(m.get("role") == "user" for m in message_dicts):
+                    content = f"{system_content}\n\n{content}"
+                
+                message_dicts.append({
                     "role": "user",
-                    "content": message.content
+                    "content": content
                 })
             elif isinstance(message, AIMessage):
-                formatted_messages.append({
+                message_dicts.append({
                     "role": "assistant",
                     "content": message.content
                 })
             elif isinstance(message, SystemMessage):
-                formatted_messages.append({
-                    "role": "system",
-                    "content": message.content
-                })
+                # Skip system messages - they're handled separately
+                continue
             elif isinstance(message, ChatMessage):
                 role = message.role
-                if role == "human":
+                if role == "human" or role == "user":
                     role = "user"
-                elif role == "ai":
+                elif role == "ai" or role == "assistant":
                     role = "assistant"
-                formatted_messages.append({
+                else:
+                    # Skip unsupported roles
+                    logger.warning(f"Skipping unsupported role: {role}")
+                    continue
+                
+                message_dicts.append({
                     "role": role,
                     "content": message.content
                 })
             else:
-                formatted_messages.append({
+                message_dicts.append({
                     "role": "user",
                     "content": str(message.content)
                 })
+        
+        # Use NovaFormatter to format the messages
+        formatted_messages = NovaFormatter.format_messages(message_dicts)
         
         # Add model parameters
         result = {
             "messages": formatted_messages,
             "temperature": self.model_kwargs.get("temperature", 0.7),
             "top_p": self.model_kwargs.get("top_p", 0.9),
-            "top_k": self.model_kwargs.get("top_k", 50),
             "max_tokens": self.model_kwargs.get("max_tokens", 4096),
         }
         
@@ -134,46 +173,23 @@ class NovaWrapper(BaseChatModel):
         Returns:
             ZiyaString: The parsed response
         """
-        logger.info("=== NOVA FORMATTER parse_response START ===")
+        logger.info("=== NOVA WRAPPER parse_response START ===")
         
-        # Log the response
-        logger.info(f"Response type: {type(response)}")
-        logger.info(f"Response keys: {list(response.keys())}")
-        logger.info(f"Response preview: {str(response)[:500]}...")
+        # Use NovaFormatter to parse the response
+        text = NovaFormatter.parse_response(response)
         
-        # Extract the message
-        if "output" in response and "message" in response["output"]:
-            message = response["output"]["message"]
-            logger.info(f"Found output.message structure")
-            logger.info(f"Message keys: {list(message.keys())}")
-            
-            # Extract the content
-            if "content" in message and isinstance(message["content"], list):
-                content_blocks = message["content"]
-                logger.info(f"Found content array with {len(content_blocks)} items")
-                
-                # Extract the text from each content block
-                text_parts = []
-                for i, block in enumerate(content_blocks):
-                    logger.info(f"Content block keys: {list(block.keys())}")
-                    if "text" in block:
-                        text_parts.append(block["text"])
-                
-                # Join the text parts
-                text = "".join(text_parts)
-                logger.info(f"Extracted text of length: {len(text)}")
-                
-                # Create a ZiyaString
-                result = ZiyaString(text, id=f"nova-{hash(text) % 10000}", message=text)
-                
-                logger.info("=== NOVA FORMATTER parse_response END ===")
-                return result
+        # Create a ZiyaString from the parsed text
+        if text:
+            result = ZiyaString(text, id=f"nova-{hash(text) % 10000}", message=text)
+            logger.info(f"Parsed response text length: {len(text)}")
+            logger.info("=== NOVA WRAPPER parse_response END ===")
+            return result
         
         # If we couldn't extract the text, return an error message
         error_message = f"Failed to parse Nova response: {str(response)[:100]}..."
         logger.error(error_message)
         
-        logger.info("=== NOVA FORMATTER parse_response END ===")
+        logger.info("=== NOVA WRAPPER parse_response END ===")
         return ZiyaString(error_message, id=f"nova-error-{hash(error_message) % 10000}", message=error_message)
     
     def _generate(
@@ -201,12 +217,21 @@ class NovaWrapper(BaseChatModel):
         request_body = self._format_messages(messages)
         logger.info(f"Formatted {len(messages)} messages")
         
-        # Add stop sequences if provided
-        if stop:
-            request_body["stopSequences"] = stop
+        # Use model_kwargs from the instance which have been filtered for supported parameters
+        inference_params = {
+            "max_tokens": self.model_kwargs.get("max_tokens", 4096),
+            "top_p": self.model_kwargs.get("top_p", 0.9),
+            "stop_sequences": stop
+        }
         
-        # Convert the request body to JSON
-        request_json = json.dumps(request_body)
+        # Only include temperature if it's in model_kwargs
+        if "temperature" in self.model_kwargs:
+            inference_params["temperature"] = self.model_kwargs.get("temperature")
+            
+        logger.info(f"Using inference parameters: {inference_params}")
+        
+        # Format inference parameters using NovaFormatter
+        inference_config, additional_fields = NovaFormatter.format_inference_params(inference_params)
         
         try:
             # Call the model
@@ -214,14 +239,45 @@ class NovaWrapper(BaseChatModel):
             response = self.client.converse(
                 modelId=self.model_id,
                 messages=request_body["messages"],
-                inferenceConfig={
-                    "temperature": request_body.get("temperature", 0.7),
-                    "topP": request_body.get("top_p", 0.9),
-                    "topK": request_body.get("top_k", 50),
-                    "maxTokens": request_body.get("max_tokens", 4096),
-                    "stopSequences": request_body.get("stopSequences", []),
-                }
+                inferenceConfig=inference_config
             )
+            logger.info("Bedrock converse API call completed successfully")
+            
+            # Parse the response
+            logger.info("About to parse response")
+            text = self._parse_response(response)
+            logger.info(f"Parsed response text length: {len(text)}")
+            
+            # Create an AIMessage with the text
+            ai_message = AIMessage(content=text)
+            
+            # Create a Generation object
+            logger.info("Creating Generation object directly")
+            generation = ChatGeneration(
+                message=ai_message,
+                generation_info={"model_id": self.model_id}
+            )
+            logger.info(f"Created Generation with text length: {len(text)}")
+            
+            # Add id attribute to the Generation object
+            if isinstance(text, ZiyaString):
+                object.__setattr__(generation, 'id', text.id)
+            else:
+                object.__setattr__(generation, 'id', f"nova-{hash(text) % 10000}")
+            
+            logger.info(f"Generation type: {type(generation)}")
+            logger.info(f"Generation has message attribute: {hasattr(generation, 'message')}")
+            logger.info(f"Generation has id attribute: {hasattr(generation, 'id')}")
+            
+            # Create the result
+            result = ChatResult(generations=[generation])
+            
+            logger.info("=== NOVA WRAPPER _generate END ===")
+            return result
+        except Exception as e:
+            logger.error(f"Error calling Nova model: {str(e)}")
+            logger.info("=== NOVA WRAPPER _generate END ===")
+            raise
             logger.info("Bedrock converse API call completed successfully")
             
             # Parse the response
@@ -285,23 +341,26 @@ class NovaWrapper(BaseChatModel):
         request_body = self._format_messages(messages)
         logger.info(f"Converted messages to dict format, system prompt length: {len(json.dumps(request_body))}")
         
-        # Log the formatted messages
-        for i, message in enumerate(request_body["messages"]):
-            logger.info(f"Formatted message {i}: role={message['role']}, content blocks=1")
-            logger.info(f"  Block 0 text: {message['content'][:50]}...")
+        # Use model_kwargs from the instance which have been filtered for supported parameters
+        inference_params = {
+            "max_tokens": self.model_kwargs.get("max_tokens", 4096),
+            "top_p": self.model_kwargs.get("top_p", 0.9),
+            "stop_sequences": stop
+        }
         
-        logger.info(f"Formatted {len(request_body['messages'])} messages")
+        # Only include temperature if it's in model_kwargs
+        if "temperature" in self.model_kwargs:
+            inference_params["temperature"] = self.model_kwargs.get("temperature")
+            
+        logger.info(f"Using inference parameters for streaming: {inference_params}")
+        
+        # Format inference parameters using NovaFormatter
+        inference_config, additional_fields = NovaFormatter.format_inference_params(inference_params)
         
         # Add system prompt if provided
         system_prompt = kwargs.get("system_prompt", "")
         if system_prompt:
             logger.info(f"Using system prompt, formatted length: {len(system_prompt)}")
-        
-        # Add stop sequences if provided
-        inference_params = {}
-        if stop:
-            inference_params["stopSequences"] = stop
-            logger.info(f"Using stop sequences: {stop}")
         
         try:
             # Call the model
@@ -309,13 +368,7 @@ class NovaWrapper(BaseChatModel):
             response = self.client.converse(
                 modelId=self.model_id,
                 messages=request_body["messages"],
-                inferenceConfig={
-                    "temperature": request_body.get("temperature", 0.7),
-                    "topP": request_body.get("top_p", 0.9),
-                    "topK": request_body.get("top_k", 50),
-                    "maxTokens": request_body.get("max_tokens", 4096),
-                    "stopSequences": stop or [],
-                }
+                inferenceConfig=inference_config
             )
             logger.info("Bedrock converse API call completed successfully")
             

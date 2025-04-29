@@ -12,6 +12,31 @@ class NovaFormatter:
     Formatter class for Amazon Nova models.
     Handles the specific message format required by Nova models.
     """
+    
+    @staticmethod
+    def _clean_nova_response(text: str) -> str:
+        """
+        Clean up Nova Pro responses by removing empty brackets at the beginning and end.
+        
+        Args:
+            text: The text to clean
+            
+        Returns:
+            str: The cleaned text
+        """
+        # Remove empty brackets at the beginning of the text
+        if text.startswith("[]"):
+            text = text[2:]
+            
+        # Remove empty brackets at the end of the text
+        while text.endswith("[]"):
+            text = text[:-2]
+            
+        # Handle the case where there are multiple empty brackets at the end
+        if text.endswith("][]"):
+            text = text[:-3] + "]"
+            
+        return text
 
     @staticmethod
     def format_system_prompt(system_prompt: str) -> List[Dict[str, str]]:
@@ -80,7 +105,8 @@ class NovaFormatter:
         # Map standard parameters to Nova format
         if "max_tokens" in params:
             inference_config["maxTokens"] = params["max_tokens"]
-        if "temperature" in params:
+        # Only include temperature if it's in the model_kwargs (filtered by supported_parameters)
+        if "temperature" in params and params.get("temperature") is not None:
             inference_config["temperature"] = params["temperature"]
         if "top_p" in params:
             inference_config["topP"] = params["top_p"]
@@ -97,6 +123,7 @@ class NovaFormatter:
     @staticmethod
     def parse_response(response: Dict[str, Any]) -> str:
         """Parse Nova response to extract text content."""
+        extracted_text = "" # Variable to hold the extracted text
         try:
             logger.info(f"=== NOVA FORMATTER parse_response START ===")
             logger.info(f"Response type: {type(response)}")
@@ -119,6 +146,8 @@ class NovaFormatter:
                     
                     if "text" in content_block:
                         text = content_block["text"]
+                        # Clean up empty brackets from Nova Pro responses
+                        text = NovaFormatter._clean_nova_response(text)
                         logger.info(f"Extracted text of length: {len(text)}")
                         logger.info(f"=== NOVA FORMATTER parse_response END ===")
                         return text
@@ -131,6 +160,8 @@ class NovaFormatter:
                 
                 if "delta" in delta and "text" in delta["delta"]:
                     text = delta["delta"]["text"]
+                    # Clean up empty brackets from Nova Pro responses
+                    text = NovaFormatter._clean_nova_response(text)
                     logger.info(f"Extracted text from delta of length: {len(text)}")
                     logger.info(f"=== NOVA FORMATTER parse_response END ===")
                     return text
@@ -153,14 +184,36 @@ class NovaFormatter:
                             
                             if "text" in content_item:
                                 text = content_item["text"]
+                                # Clean up empty brackets from Nova Pro responses
+                                text = NovaFormatter._clean_nova_response(text)
                                 logger.info(f"Extracted text from content item {i} of length: {len(text)}")
                                 logger.info(f"=== NOVA FORMATTER parse_response END ===")
                                 return text
 
+            # Handle the case where the response is an array of text chunks
+            if isinstance(response, list):
+                logger.info("Found list of content blocks")
+                combined_text = ""
+                for item in response:
+                    if isinstance(item, dict) and 'text' in item:
+                        combined_text += item['text']
+                
+                if combined_text:
+                    # Clean up empty brackets from Nova Pro responses
+                    combined_text = NovaFormatter._clean_nova_response(combined_text)
+                    logger.info(f"Extracted combined text of length: {len(combined_text)}")
+                    logger.info(f"=== NOVA FORMATTER parse_response END ===")
+                    return combined_text
+
             # If we can't extract text in a structured way, return the raw response
-            logger.warning(f"Could not parse Nova response structure, returning raw response")
-            logger.info(f"=== NOVA FORMATTER parse_response END with fallback ===")
-            return str(response)
+            if not extracted_text:
+                logger.warning(f"Could not parse Nova response structure, returning raw response string")
+                extracted_text = str(response)
+ 
+            # Clean up empty brackets from Nova Pro responses
+            cleaned_text = NovaFormatter._clean_nova_response(extracted_text)
+            logger.info(f"=== NOVA FORMATTER parse_response END ===")
+            return cleaned_text
         except Exception as e:
             logger.error(f"Error parsing Nova response: {e}")
             logger.error(f"Response that caused error: {str(response)[:500]}...")
