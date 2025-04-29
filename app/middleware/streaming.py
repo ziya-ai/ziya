@@ -148,7 +148,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         # If we couldn't extract content, skip this chunk
                         continue
                     
-                    # This string chunk handling might be redundant if stream_chunks formats everything
                     # Handle string chunks
                     if isinstance(chunk, str):
                         logger.info("Processing string chunk")
