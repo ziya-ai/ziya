@@ -122,7 +122,7 @@ class DiffRegressionTest(unittest.TestCase):
             result = f.read()
 
         # Compare with expected
-        if result != expected and not expected_to_fail:
+        if result != expected:
             # Generate a readable diff if comparison fails
             diff_lines = list(difflib.unified_diff(
                 expected.splitlines(True), # Keep ends for diff
@@ -152,8 +152,8 @@ class DiffRegressionTest(unittest.TestCase):
             except AssertionError:
                  self.fail(error_msg) # Fail with the detailed message
         else:
-            # If they are equal, or if the test is expected to fail, the test passes implicitly
-            pass
+            # If they are equal, the test passes implicitly
+            pass 
             
     def test_all_cases(self):
         """Run all test cases found in the test cases directory"""
@@ -197,14 +197,6 @@ class DiffRegressionTest(unittest.TestCase):
     def test_indentation_change(self):
         """Test changes that modify indentation levels"""
         self.run_diff_test('indentation_change')
-        
-    def test_indentation_regression(self):
-        """Test for indentation regression in diff application"""
-        self.run_diff_test('indentation_regression')
-        
-    def test_MRE_indentation_regression(self):
-        """Test for indentation regression in diff application where a line gets extra indentation"""
-        self.run_diff_test('MRE_indentation_regression')
 
     def test_function_collision(self):
         """Test handling of multiple functions with the same name"""
@@ -484,13 +476,6 @@ class DiffRegressionTest(unittest.TestCase):
     def test_MRE_hunk_context_mismatch(self):
         """Test handling of hunk context mismatches"""
         self.run_diff_test('MRE_hunk_context_mismatch')
-        
-    def test_MRE_content_duplication_corruption(self):
-        """Test case for content duplication corruption where added lines appear twice"""
-        self.run_diff_test('MRE_content_duplication_corruption')
-        
-    def test_MRE_indented_context(self):
-        self.run_diff_test('indented_context')
         
     def test_apply_state_reporting(self):
         """
@@ -1369,7 +1354,6 @@ if __name__ == '__main__':
             
         # Exit with appropriate status code
         sys.exit(len([r for r in result.test_results if r[1] != 'PASS']))
-        
     def test_apply_state_consistency(self):
         """
         Test that the apply state reporting is consistent when applying the same diff twice.
