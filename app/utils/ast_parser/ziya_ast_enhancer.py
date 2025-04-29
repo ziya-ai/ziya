@@ -411,6 +411,128 @@ class ZiyaASTEnhancer:
         
         return deps
     
+    def process_codebase(self, codebase_dir: str, ignored_patterns: Optional[List[str]] = None, max_depth: int = 15) -> Dict[str, Any]:
+        """
+        Process the entire codebase and build AST representations.
+        
+        Args:
+            codebase_dir: Path to the codebase directory
+            ignored_patterns: List of patterns to ignore
+            max_depth: Maximum depth for folder traversal
+            
+        Returns:
+            Dict containing AST processing results
+        """
+        if ignored_patterns is None:
+            ignored_patterns = []
+        
+        logger.info(f"Processing codebase at {codebase_dir} with ignored_patterns={ignored_patterns}, max_depth={max_depth}")
+        
+        start_time = time.time()
+        print("\nIndexing codebase for AST analysis...")
+        
+        try:
+            # Process files
+            self._process_directory(codebase_dir, ignored_patterns, max_depth)
+            
+            # Generate AST context
+            ast_context = self.generate_ast_context()
+            
+            # Calculate token count (rough estimate: 1 token ≈ 4 characters)
+            token_count = len(ast_context) // 4
+            
+            elapsed_time = time.time() - start_time
+            files_processed = len(self.ast_cache)
+            
+            print(f"✅ AST indexing complete: {files_processed} files processed in {elapsed_time:.1f}s")
+            logger.info(f"AST indexing complete: {files_processed} files processed in {elapsed_time:.1f}s")
+            logger.info(f"AST context size: {len(ast_context)} chars, ~{token_count} tokens")
+            
+            # Return a properly formatted result dictionary
+            return {
+                "files_processed": files_processed,
+                "ast_context": ast_context,
+                "token_count": token_count,
+                "file_list": list(self.ast_cache.keys())
+            }
+        except Exception as e:
+            logger.error(f"Error processing codebase: {e}")
+            import traceback
+            logger.error(f"AST processing traceback: {traceback.format_exc()}")
+            
+            # Return a minimal context to avoid breaking the application
+            return {
+                "files_processed": 0,
+                "ast_context": "# AST Analysis\n\nError processing codebase.",
+                "token_count": 10,
+                "file_list": [],
+                "error": str(e)
+            }
+        
+    def generate_ast_context(self) -> str:
+        """
+        Generate a textual context from the AST.
+        
+        Returns:
+            String representation of the AST context
+        """
+        if not self.project_ast:
+            return ""
+            
+        context_parts = []
+        
+        # Add file structure information
+        context_parts.append("# Code Structure Summary")
+        
+        # Add key files and their relationships
+        context_parts.append("\n## Key Files and Dependencies")
+        
+        # For each file in the ast_cache
+        for file_path, ast in self.ast_cache.items():
+            # Get relative path for display
+            rel_path = os.path.relpath(file_path)
+            
+            # Add file summary
+            context_parts.append(f"\n### {rel_path}")
+            
+            # Add key symbols defined in this file
+            symbols = self._extract_key_symbols(ast)
+            if symbols:
+                context_parts.append("\nDefines:")
+                for symbol in symbols[:10]:  # Limit to top 10 symbols
+                    context_parts.append(f"- {symbol}")
+            
+            # Add dependencies
+            deps = self._extract_dependencies(ast)
+            if deps:
+                context_parts.append("\nDependencies:")
+                for dep in deps[:5]:  # Limit to top 5 dependencies
+                    context_parts.append(f"- {dep}")
+        
+        return "\n".join(context_parts)
+    
+    def _extract_key_symbols(self, ast: UnifiedAST) -> List[str]:
+        """Extract key symbols defined in the AST."""
+        symbols = []
+        
+        # Extract classes, functions, and variables
+        for node in ast.nodes:
+            if node.type in ["class", "function", "method", "variable"]:
+                symbols.append(f"{node.type} {node.name}")
+        
+        return symbols
+    
+    def _extract_dependencies(self, ast: UnifiedAST) -> List[str]:
+        """Extract dependencies from the AST."""
+        deps = []
+        
+        # Extract imports and references
+        for node in ast.nodes:
+            if node.type == "import":
+                deps.append(f"import {node.name}")
+        
+        return deps
+    
     def enhance_query_context(self, query: str, file_context: Optional[str] = None) -> Dict[str, Any]:
         """
         Add semantic information to the query context.
