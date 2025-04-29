@@ -309,11 +309,8 @@ async def stream_chunks(body):
                 # Check if file is a dictionary with path and content
                 if isinstance(file, dict):
                     file_path = file.get("path", "")
-                    logger.info(f"Processing file: {file_path}")
                     file_content = file.get("content", "")
                     if file_path and file_content:
-                        logger.info(f"Adding content for {file_path}, size: {len(content)}")
-                        logger.info(f"Content preview:\n{content[:200]}...")
                         file_context += f"File: {file_path}\n```\n{file_content}\n```\n\n"
                 # Handle case where file might be a string or other format
                 elif isinstance(file, str):
@@ -433,8 +430,6 @@ async def stream_chunks(body):
         # Set up the model with the stop sequence
         # This ensures the model will properly stop at the sentinel
         model_with_stop = model_instance.bind(stop=["</tool_input>"])
-        
-
         
         try:
             async for chunk in model_with_stop.astream(messages):
@@ -723,6 +718,26 @@ async def stream_chunks(body):
             # Clean up the stream
             if conversation_id in active_streams:
                 del active_streams[conversation_id]
+            return
+            
+        except (CredentialRetrievalError, BotoCoreError) as e:
+            # Handle AWS credential errors specifically
+            from app.utils.error_handlers import _handle_aws_credential_error, create_sse_error_response
+            
+            # Get appropriate error message
+            error_message = str(e)
+            error_type, detail, status_code, _ = _handle_aws_credential_error(error_message)
+            
+            # Create and send the error response
+            error_response = create_sse_error_response(error_type, detail)
+            logger.info(f"Sending credential error as SSE: {error_response}")
+            yield f"data: {json.dumps(error_response)}\n\n"
+            
+            # Always send the done marker for credential errors
+            if not done_marker_sent:
+                logger.info("Sending done marker after credential error")
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                done_marker_sent = True
             return
                 
         except Exception as e:
@@ -1765,7 +1780,6 @@ class ModelSettingsRequest(BaseModel):
     top_k: int = Field(default=15, ge=0, le=500)
     max_output_tokens: int = Field(default=4096, ge=1)
     thinking_mode: bool = Field(default=False)
-    max_input_tokens: Optional[int] = Field(default=None, ge=1)
 
 
 class TokenCountRequest(BaseModel):
@@ -1983,6 +1997,11 @@ async def apply_changes(request: ApplyChangesRequest):
 
         logger.info(request.diff[:100])
         logger.info(f"Full diff content: \n{request.diff}")
+
+        # --- SUGGESTION: Add secure path validation ---
+        user_codebase_dir = os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR"))
+        if not user_codebase_dir:
+            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
         
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
         
@@ -1996,6 +2015,12 @@ async def apply_changes(request: ApplyChangesRequest):
             # Fallback to using the provided filePath if extraction fails
             file_path = os.path.join(user_codebase_dir, request.filePath)
             logger.info(f"Using provided file path: {request.filePath}")
+
+            # Resolve the absolute path and check if it's within the codebase dir
+            resolved_path = os.path.abspath(file_path)
+            if not resolved_path.startswith(user_codebase_dir):
+                logger.error(f"Attempt to access file outside codebase directory: {resolved_path}")
+                raise ValueError("Invalid file path specified")
         else:
             raise ValueError("Could not determine target file path from diff or request")
 

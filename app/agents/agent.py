@@ -489,10 +489,42 @@ class RetryingChatBedrock(Runnable):
         """Stream responses with retries and proper message formatting."""
         max_retries = 3
         base_retry_delay = 1
+
+        # Get max_tokens from environment variables
+        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
+        
+        # Filter kwargs based on model's supported parameters
+        from app.agents.models import ModelManager
+        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
+        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        # Create a copy of kwargs to avoid modifying the original
+        filtered_kwargs = {}
+
+        # If max_tokens is specified in kwargs, use that instead
+        if "max_tokens" in kwargs:
+            max_tokens = kwargs["max_tokens"]
+        elif max_tokens:
+            # Add max_tokens to kwargs if it's not already there
+            filtered_kwargs["max_tokens"] = max_tokens
+            logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
+
+        # Add other kwargs
+        for key, value in kwargs.items():
+            if key != "max_tokens":  # We've already handled max_tokens
+                filtered_kwargs[key] = value
+                
+        # Filter kwargs based on supported parameters
+        filtered_kwargs = ModelManager.filter_model_kwargs(filtered_kwargs, model_config)
+        logger.info(f"Filtering model kwargs: {filtered_kwargs}")
+        
+        # Use filtered kwargs for the rest of the method
+        kwargs = filtered_kwargs
         
         # Add AWS credential debugging
         from app.utils.aws_utils import debug_aws_credentials
-        debug_aws_credentials()
+        # debug_aws_credentials()
 
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
