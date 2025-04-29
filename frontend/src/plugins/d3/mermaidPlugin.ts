@@ -346,10 +346,21 @@ export const mermaidPlugin: D3RenderPlugin = {
                 const scale = SCALE_CONFIG.TARGET_FONT_SIZE / currentFontSize;
 
                 // Apply transform scale to the SVG
-                svgElement.style.transform = `scale(${scale})`;
-                svgElement.style.transformOrigin = 'center';
+                const finalScale = Math.min(scale, SCALE_CONFIG.MAX_SCALE);
+                svgElement.style.transform = `scale(${finalScale})`;
+                svgElement.style.transformOrigin = 'center center';
                 svgElement.style.width = '100%';
                 svgElement.style.height = 'auto';
+                
+                // Override any existing transform scale in the SVG's style attribute
+                const svgStyleAttr = svgElement.getAttribute('style') || '';
+                if (svgStyleAttr.includes('transform: scale')) {
+                    // Remove any transform scale from the style attribute
+                    const newStyleAttr = svgStyleAttr.replace(/transform:\s*scale\([^)]+\);?/g, '');
+                    svgElement.setAttribute('style', newStyleAttr);
+                    // Re-apply our controlled scale
+                    svgElement.style.transform = `scale(${finalScale})`;
+                }
             });
 
             // Add action buttons
