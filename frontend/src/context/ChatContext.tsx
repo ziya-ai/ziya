@@ -1,6 +1,6 @@
-import React, {createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo} from 'react';
-import {Conversation, Message} from "../utils/types";
-import {v4 as uuidv4} from "uuid";
+import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo } from 'react';
+import { Conversation, Message } from "../utils/types";
+import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import { debounce } from '../utils/debounce';
 
@@ -10,7 +10,7 @@ interface ChatContext {
     streamedContentMap: Map<string, string>;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
-    setIsStreaming: (s: boolean) => void;
+    setIsStreaming: Dispatch<SetStateAction<boolean>>;
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
     conversations: Conversation[];
     isLoadingConversation: boolean;
@@ -36,7 +36,7 @@ interface ChatProviderProps {
     children: ReactNode;
 }
 
-export function ChatProvider({children}: ChatProviderProps) {
+export function ChatProvider({ children }: ChatProviderProps) {
     const [question, setQuestion] = useState('');
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
@@ -66,20 +66,20 @@ export function ChatProvider({children}: ChatProviderProps) {
     const addStreamingConversation = (id: string) => {
         setStreamingConversations(prev => {
             const next = new Set(prev);
-	    console.log('Adding to streaming set:', { id, currentSet: Array.from(prev) });
+            console.log('Adding to streaming set:', { id, currentSet: Array.from(prev) });
             next.add(id);
-	    setStreamedContentMap(prev => new Map(prev).set(id, ''));
+            setStreamedContentMap(prev => new Map(prev).set(id, ''));
             setIsStreaming(true);
             return next;
         });
     };
 
     const removeStreamingConversation = (id: string) => {
-	console.log('Removing from streaming set:', { id, currentSet: Array.from(streamingConversations) });
+        console.log('Removing from streaming set:', { id, currentSet: Array.from(streamingConversations) });
         setStreamingConversations(prev => {
             const next = new Set(prev);
-	    next.delete(id);
-	    setStreamedContentMap(prev => {
+            next.delete(id);
+            setStreamedContentMap(prev => {
                 const next = new Map(prev);
                 next.delete(id);
                 return next;
@@ -188,6 +188,37 @@ export function ChatProvider({children}: ChatProviderProps) {
         });
     };
 
+    // Add a function to handle model change notifications
+    const handleModelChange = useCallback((event: CustomEvent) => {
+        const { previousModel, newModel, modelId, previousModelId } = event.detail;
+
+        // Add a system message to the current conversation about the model change
+        if (currentConversationId) {
+            // Explicitly type the modelChangeMessage as Message
+            const modelChangeMessage: Message = {
+                id: uuidv4(),
+                role: 'system' as const,
+                content: `Model changed from ${previousModel} to ${newModel}`,
+                _timestamp: Date.now(),
+                modelChange: {
+                    from: previousModel, 
+                    to: newModel
+                }
+            };
+
+            // Add the message to the conversation
+            setConversations((prevConversations) => {
+                const updatedConversations = prevConversations.map(conv => {
+                    if (conv.id === currentConversationId) {
+                        return { ...conv, messages: [...conv.messages, modelChangeMessage] };
+                    }
+                    return conv;
+                });
+                return updatedConversations;
+            });
+        }
+    }, [currentConversationId]);
+
     const startNewChat = () => {
         return new Promise<void>((resolve, reject) => {
             try {
@@ -202,14 +233,14 @@ export function ChatProvider({children}: ChatProviderProps) {
                     hasUnreadResponse: false
                 };
 
-		// Clear unread flag from current conversation before creating new one
-        const updatedConversations = conversations.map(conv =>
-            conv.id === currentConversationId
-                ? { ...conv, hasUnreadResponse: false }
-                : conv
-        );
+                // Clear unread flag from current conversation before creating new one
+                const updatedConversations = conversations.map(conv =>
+                    conv.id === currentConversationId
+                        ? { ...conv, hasUnreadResponse: false }
+                        : conv
+                );
 
-		db.saveConversations([...updatedConversations, newConversation])
+                db.saveConversations([...updatedConversations, newConversation])
                     .then(() => {
                         setConversations([...updatedConversations, newConversation]);
                         setCurrentMessages([]);
@@ -222,7 +253,7 @@ export function ChatProvider({children}: ChatProviderProps) {
                     });
             } catch (error) {
                 console.error('Failed to save new conversation:', error);
-		reject(error);
+                reject(error);
             }
         });
     };
@@ -236,15 +267,15 @@ export function ChatProvider({children}: ChatProviderProps) {
                     conv.id === currentConversationId
                         ? { ...conv, hasUnreadResponse: false }
                         : conv);
-                
+
                 // Then persist to database
                 db.saveConversations(updatedConversations).catch(error => {
                     console.error('Failed to save conversation state:', error);
                 });
-                
+
                 return updatedConversations;
             });
-            
+
             // Set the current conversation ID after updating state
             await new Promise(resolve => setTimeout(resolve, 50));
             setCurrentConversationId(conversationId);
@@ -257,7 +288,7 @@ export function ChatProvider({children}: ChatProviderProps) {
         } finally {
             setIsLoadingConversation(false);
         }
-	setStreamedContentMap(new Map());
+        setStreamedContentMap(new Map());
     };
 
     useEffect(() => {
@@ -292,6 +323,15 @@ export function ChatProvider({children}: ChatProviderProps) {
             }
         };
     }, []);
+
+    // Listen for model change events
+    useEffect(() => {
+        window.addEventListener('modelChanged', handleModelChange as EventListener);
+
+        return () => {
+            window.removeEventListener('modelChanged', handleModelChange as EventListener);
+        };
+    }, [handleModelChange]);
 
     useEffect(() => {
         currentConversationRef.current = currentConversationId;

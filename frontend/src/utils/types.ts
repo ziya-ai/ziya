@@ -7,9 +7,17 @@ export interface Folders {
     };
 }
 
+export type MessageRole = 'human' | 'assistant' | 'system';
+
+// Updated Message type to include 'system' role and modelChange property
 export type Message = {
+    id?: string;
     content: string;
-    role: 'human' | 'assistant';
+    role: MessageRole;
+    modelChange?: {
+        from: string;
+        to: string;
+    };
     _timestamp?: number;
     _version?: number;
     isComplete?: boolean;

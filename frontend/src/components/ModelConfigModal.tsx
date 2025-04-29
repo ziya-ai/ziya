@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Modal, Form, Slider, Switch, Button, Typography, Tooltip, Select, message, Space } from 'antd';
 import { SettingOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 
-const { Text } = Typography;
+const { Text } = Typography; // Keep existing import
 
 export interface ModelInfo {
   id: string;
@@ -13,18 +13,13 @@ export interface ModelInfo {
 interface ModelConfigModalProps {
   visible: boolean;
   onClose: () => void;
-  modelId: string;
+  modelId: string | Record<string, string>;
   endpoint: string;
+  region: string;
+  displayModelId?: string; // New prop for the actual model ID to display
   availableModels: ModelInfo[];
   onModelChange: (modelId: string) => Promise<boolean>;
-  capabilities: {
-    supports_thinking: boolean;
-    max_output_tokens: number;
-    max_input_tokens: number;
-    token_limit: number;
-    temperature_range: { min: number; max: number; default: number };
-    top_k_range: { min: number; max: number; default: number } | null;
-  } | null;
+  capabilities: ModelCapabilities | null; // Use the imported type
   onSave: (settings: ModelSettings) => void;
   currentSettings: ModelSettings;
 }
@@ -37,6 +32,17 @@ export interface ModelSettings {
   thinking_mode: boolean;
 }
 
+export interface ModelCapabilities {
+  supports_thinking: boolean;
+  max_output_tokens: number;
+  max_input_tokens?: number;
+  token_limit: number;
+  temperature_range: { min: number; max: number; default: number };
+  top_k_range: { min: number; max: number; default: number } | null;
+  max_output_tokens_range?: { min: number; max: number; default: number };
+  max_input_tokens_range?: { min: number; max: number; default: number };
+}
+
 const DEFAULT_SETTINGS: ModelSettings = {
   temperature: 0.3,
   top_k: 15,
@@ -45,11 +51,13 @@ const DEFAULT_SETTINGS: ModelSettings = {
   thinking_mode: false
 };
 
-export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ 
-  visible, 
+export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
+  visible,
   onClose,
   modelId,
   endpoint,
+  region,
+  displayModelId,
   availableModels,
   onModelChange,
   capabilities,
@@ -60,16 +68,16 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const [form] = Form.useForm();
   const [formValues, setFormValues] = useState({
     temperature: currentSettings.temperature,
-    top_k: currentSettings.top_k,
+    top_k: currentSettings.top_k || 15,
     max_output_tokens: currentSettings.max_output_tokens,
     max_input_tokens: capabilities?.token_limit || 4096,
     thinking_mode: currentSettings.thinking_mode
   });
   const [sliderValues, setSliderValues] = useState({
-    temperature: currentSettings.temperature,
-    top_k: currentSettings.top_k,
-    max_output_tokens: currentSettings.max_output_tokens,
-    max_input_tokens: currentSettings.max_input_tokens
+    temperature: currentSettings.temperature || 0.3,
+    top_k: currentSettings.top_k || 15,
+    max_output_tokens: currentSettings.max_output_tokens || 4096,
+    max_input_tokens: currentSettings.max_input_tokens || 4096
   });
 
   // Force initial update of sliders
@@ -79,34 +87,74 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     }
   }, [visible, capabilities]);
 
+  // Update slider max values when capabilities change
+  useEffect(() => {
+    if (capabilities) {
+      console.log("Updating slider limits with capabilities:", capabilities);
+
+      // Update form with capabilities
+      form.setFieldsValue({
+        temperature: currentSettings.temperature || capabilities.temperature_range?.default || 0.3,
+        top_k: currentSettings.top_k || capabilities.top_k_range?.default || 15,
+        max_output_tokens: currentSettings.max_output_tokens || capabilities.max_output_tokens,
+        max_input_tokens: currentSettings.max_input_tokens || capabilities.max_input_tokens || capabilities.token_limit
+      });
+
+      // Force update of slider values
+      handleValuesChange(form.getFieldsValue());
+
+      console.log("Updated form with capabilities:", form.getFieldsValue());
+    }
+  }, [capabilities, currentSettings]);
+
   const [settings, setSettings] = useState<ModelSettings>(DEFAULT_SETTINGS);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isLoadingCapabilities, setIsLoadingCapabilities] = useState(false);
-  const [selectedModelCapabilities, setSelectedModelCapabilities] = useState<{
-    supports_thinking: boolean;
-    max_output_tokens: number;
-    token_limit: number;
-    temperature_range: { min: number; max: number; default: number };
-    top_k_range: { min: number; max: number; default: number } | null;
-  } | null>(capabilities);
+  const [selectedModelCapabilities, setSelectedModelCapabilities] = useState<ModelCapabilities | null>(capabilities);
 
-  // Debug logging for props and state changes
+  // Debug logging for props and state changes - only when visible and only once
+  const propsLoggedRef = useRef(false);
+
   useEffect(() => {
-    console.log('ModelConfigModal props:', {
-      modelId,
-      capabilities,
-      currentSettings,
-      visible
-    });
-  }, [modelId, capabilities, currentSettings, visible]);
- 
-  // Debug logging for form values
+    if (visible && !propsLoggedRef.current) {
+      // Use a one-time log to avoid spamming
+      console.log('ModelConfigModal props:', {
+        modelId: typeof modelId === 'object' ? JSON.stringify(modelId) : modelId,
+        displayModelId,
+        capabilities,
+        currentSettings,
+        visible
+      });
+      propsLoggedRef.current = true;
+    } else if (!visible) {
+      // Reset the ref when modal closes
+      propsLoggedRef.current = false;
+    }
+  }, [visible, modelId, displayModelId, capabilities, currentSettings]);
+
+  // Format model ID for display
+  const formatModelId = useCallback((id: string | Record<string, string>): string => {
+    if (typeof id === 'string') {
+      return id;
+    }
+
+    // If it's an object, just return it as a string for debugging
+    // The backend should be sending us the actual model ID being used
+    return JSON.stringify(id);
+  }, []);
+
+  // Debug logging for form values - only log once when form changes
+  const formLoggedRef = useRef(false);
+
   useEffect(() => {
-    console.log('Current form values:', form.getFieldsValue());
+    if (!formLoggedRef.current) {
+      console.log('Current form values:', form.getFieldsValue());
+      formLoggedRef.current = true;
+    }
   }, [form]);
-  
-   // State to track current slider values
-   const [currentValues, setCurrentValues] = useState({
+
+  // State to track current slider values
+  const [currentValues, setCurrentValues] = useState({
     temperature: currentSettings.temperature,
     top_k: currentSettings.top_k,
     max_output_tokens: currentSettings.max_output_tokens,
@@ -121,8 +169,11 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         currentSettings
       });
 
+      // Handle case where modelId is an object - convert to string
+      const safeModelId = typeof modelId === 'object' ? JSON.stringify(modelId) : modelId;
+
       const initialValues = {
-        model: modelId,
+        model: safeModelId,
         temperature: currentSettings.temperature,
         top_k: currentSettings.top_k,
         max_output_tokens: currentSettings.max_output_tokens,
@@ -136,11 +187,18 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     }
   }, [capabilities, currentSettings, modelId, form]);
 
+  // Initialize form only once when visible changes to true
+  const formInitializedRef = useRef(false);
+
   useEffect(() => {
-      if (visible && capabilities && currentSettings) {
+    if (visible && capabilities && currentSettings && !formInitializedRef.current) {
       initializeForm();
+      formInitializedRef.current = true;
+    } else if (!visible) {
+      // Reset initialization ref when modal closes
+      formInitializedRef.current = false;
     }
-  }, [visible, capabilities, currentSettings]);
+  }, [visible, capabilities, currentSettings, initializeForm]);
 
   const handleValuesChange = (changedValues: any) => {
     setSliderValues(prev => ({
@@ -171,7 +229,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
       // Also update currentValues to reflect these new defaults
       handleValuesChange(newValues);
       form.setFieldsValue(newValues);
-      
+
       return data;
     } catch (error) {
       console.error('Failed to fetch model capabilities:', error);
@@ -189,13 +247,16 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   };
 
   // Use selected model capabilities for form limits
-  const tempLimits = selectedModelCapabilities?.temperature_range || { min: 0, max: 1, step: 0.1 };
-  const topKLimits = selectedModelCapabilities?.top_k_range || { min: 0, max: 500, step: 5 };
-  const maxOutputLimits = {
-    min: 1,
-    max: selectedModelCapabilities?.max_output_tokens || 4096,
-    step: 1000
-  };
+  const tempLimits = selectedModelCapabilities?.temperature_range || capabilities?.temperature_range || { min: 0, max: 1, default: 0.3 };
+  const topKLimits = selectedModelCapabilities?.top_k_range || capabilities?.top_k_range || { min: 0, max: 500, default: 15 };
+  // Define ranges using the new structure from capabilities, with fallbacks
+  const outputRange = selectedModelCapabilities?.max_output_tokens_range || capabilities?.max_output_tokens_range || { min: 1, max: 4096, default: 4096 };
+  const inputRange = selectedModelCapabilities?.max_input_tokens_range || capabilities?.max_input_tokens_range || { min: 1, max: 4096, default: 4096 };
+
+  // Determine the effective max output/input tokens for display/default
+  const effectiveMaxOutput = selectedModelCapabilities?.max_output_tokens || capabilities?.max_output_tokens || outputRange.default;
+  const effectiveMaxInput = selectedModelCapabilities?.max_input_tokens || capabilities?.max_input_tokens || inputRange.default;
+
 
   const supportsThinking = capabilities?.supports_thinking || false;
 
@@ -203,9 +264,10 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     try {
       const values = await form.validateFields();
       setIsUpdating(true);
-      
+
       // First update the model if it changed
-      if (values.model !== modelId) {
+      const currentModelIdSafe = typeof modelId === 'object' ? JSON.stringify(modelId) : modelId;
+      if (values.model !== currentModelIdSafe) {
         const success = await onModelChange(values.model);
         if (!success) {
           return; // Don't proceed if model change failed
@@ -254,32 +316,36 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
       >
         <Form.Item
           label={
-            <span>
-              Model Selection <Tooltip title="Choose the model to use">
-                <InfoCircleOutlined style={{ marginLeft: 5 }} />
-              </Tooltip>
-            </span>
+            <Space align="center">
+              <span>
+                Model Selection <Tooltip title="Choose the model to use">
+                  <InfoCircleOutlined style={{ marginLeft: 5 }} />
+                </Tooltip>
+              </span>
+            </Space>
           }
           name="model"
-          initialValue={modelId}
+          initialValue={typeof modelId === 'object' ? JSON.stringify(modelId) : modelId}
         >
           <Select
             onChange={handleModelSelect}
             options={availableModels.map(model => ({
               label: model.name,
-              value: model.id
+              value: typeof model.id === 'object' ? JSON.stringify(model.id) : model.id
             }))}
           />
         </Form.Item>
 
-        <Form.Item 
+        <Form.Item
           label={
-            <span>
-              Temperature <Tooltip title="Controls randomness: 0 is deterministic, 1 is very random">
-                <InfoCircleOutlined style={{ marginLeft: 5 }} />
-              </Tooltip>
-            </span>
-          } 
+            <Space align="center">
+              <span>
+                Temperature <Tooltip title="Controls randomness: 0 is deterministic, 1 is very random">
+                  <InfoCircleOutlined style={{ marginLeft: 5 }} />
+                </Tooltip>
+              </span>
+            </Space>
+          }
           name={["temperature"]}
           extra={`Current: ${sliderValues.temperature}`}
         >
@@ -293,16 +359,21 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         </Form.Item>
 
         {endpoint === 'bedrock' && (
-          <Form.Item label={<span>Top K <Tooltip title="Number of tokens to consider at each step">
-            <InfoCircleOutlined style={{ marginLeft: 5 }} />
-          </Tooltip></span>} 
+          <Form.Item label={
+            <Space align="center">
+              <span> Top K
+                <Tooltip title="Number of tokens to consider at each step">
+                  <InfoCircleOutlined style={{ marginLeft: 5 }} />
+                </Tooltip>
+              </span>
+            </Space>}
             name="top_k"
             extra={`Current: ${sliderValues.top_k}`}
           >
-            <Slider min={topKLimits.min} max={topKLimits.max} step={5} />
+            <Slider min={topKLimits.min} max={topKLimits.max} step={5} tooltip={{ formatter: value => `${value}` }} />
           </Form.Item>
         )}
-        <Form.Item 
+        <Form.Item
           label={
             <Space align="center">
               <span>Max Output Tokens</span>
@@ -310,28 +381,28 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                 <InfoCircleOutlined />
               </Tooltip>
             </Space>
-          } 
+          }
           name="max_output_tokens"
           extra={
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
               marginTop: '8px',
               color: 'rgba(0, 0, 0, 0.45)'
             }}>
               <Text type="secondary" className="slider-value">
                 Current: {sliderValues.max_output_tokens?.toLocaleString() || '0'}
               </Text>
-              <Text type="secondary">
-                Maximum: {selectedModelCapabilities?.max_output_tokens?.toLocaleString() || '4096'} tokens
+              <Text type="secondary" style={{ marginLeft: 'auto' }}>
+                Maximum: {outputRange.max.toLocaleString()} tokens {/* <-- Use max from range */}
               </Text>
             </div>
           }
         >
           <Slider
             min={1}
-            max={selectedModelCapabilities?.max_output_tokens || 4096}
-            step={1000}
+            max={outputRange.max} // <-- Use max from range
+            step={outputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
             onChange={(value) => form.setFieldsValue({ max_output_tokens: value })}
             tooltip={{
               formatter: (value?: number) => value ? `${value.toLocaleString()} tokens` : '0 tokens',
@@ -346,8 +417,8 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             <Switch />
           </Form.Item>
         )}
-        
-        <Form.Item 
+
+        <Form.Item
           label={
             <Space align="center">
               <span>Max Input Tokens</span>
@@ -355,38 +426,52 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                 <InfoCircleOutlined />
               </Tooltip>
             </Space>
-          } 
+          }
           name="max_input_tokens"
           extra={
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
               marginTop: '8px',
               color: 'rgba(0, 0, 0, 0.45)'
             }}>
               <Text type="secondary" className="slider-value">
                 Current: {sliderValues.max_input_tokens?.toLocaleString() || '0'} tokens
               </Text>
-              <Text type="secondary">
-                Maximum: {selectedModelCapabilities?.token_limit?.toLocaleString() || '4096'} tokens
+              <Text type="secondary" style={{ marginLeft: 'auto' }}>
+                Maximum: {inputRange.max.toLocaleString()} tokens {/* <-- Use max from range */}
               </Text>
             </div>
           }>
           <Slider
             min={1}
-            max={selectedModelCapabilities?.token_limit || 4096}
-            step={selectedModelCapabilities?.token_limit && selectedModelCapabilities.token_limit > 100000 ? 10000 : 1000}
+            max={inputRange.max} // <-- Use max from range
+            step={inputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
             onChange={(value) => form.setFieldsValue({ max_input_tokens: value })}
             tooltip={{
               formatter: (value?: number) => value ? `${value.toLocaleString()} tokens` : '0 tokens',
             }}
-            />
+          />
         </Form.Item>
 
-        <Text type="secondary" style={{ display: 'block', marginTop: 16 }}>
-          Model: {modelId}<br />
-          Endpoint: {endpoint}
-        </Text>
+        <div style={{ marginTop: 16, padding: 12, backgroundColor: isDarkMode ? '#1f1f1f' : '#f5f5f5', borderRadius: 4 }}>
+          <div style={{ marginBottom: 4 }}>
+            <Text type="secondary" strong>Model Alias:</Text>{' '}
+            <Text type="secondary">{typeof modelId === 'string' ? modelId : JSON.stringify(modelId)}</Text>
+          </div>
+          <div style={{ marginBottom: 4 }}>
+            <Text type="secondary" strong>Model ID:</Text>{' '}
+            <Text type="secondary">{displayModelId || (typeof modelId === 'string' ? modelId : JSON.stringify(modelId))}</Text>
+          </div>
+          <div style={{ marginBottom: 4 }}>
+            <Text type="secondary" strong>Endpoint:</Text>{' '}
+            <Text type="secondary">{endpoint}</Text>
+          </div>
+          <div style={{ marginBottom: 0 }}>
+            <Text type="secondary" strong>Region:</Text>{' '}
+            <Text type="secondary">{region}</Text>
+          </div>
+        </div>
       </Form>
     </Modal>
   );

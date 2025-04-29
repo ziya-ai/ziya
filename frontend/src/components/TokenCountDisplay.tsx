@@ -1,11 +1,11 @@
-import React, {useEffect, useState, useCallback, useMemo, useRef} from 'react';
-import {Folders, Message} from "../utils/types";
-import {useFolderContext} from "../context/FolderContext";
-import {Tooltip, Spin, Progress, Typography, message, ProgressProps} from "antd";
+import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
+import { Folders, Message } from '../utils/types';
+import { useFolderContext } from "../context/FolderContext";
+import { Tooltip, Spin, Progress, Typography, message, ProgressProps } from "antd";
 import { useTheme } from '../context/ThemeContext';
 import { ModelSettings } from './ModelConfigModal';
 import { InfoCircleOutlined } from '@ant-design/icons';
-import {useChatContext} from "../context/ChatContext";
+import { useChatContext } from "../context/ChatContext";
 
 const getTokenCount = async (text: string): Promise<number> => {
     try {
@@ -22,7 +22,7 @@ const getTokenCount = async (text: string): Promise<number> => {
         return data.token_count;
     } catch (error) {
         message.error({
-	    content: error instanceof Error ? error.message : 'An unknown error occurred',
+            content: error instanceof Error ? error.message : 'An unknown error occurred',
             duration: 5
         });
         console.error('Error getting token count:', error);
@@ -31,40 +31,102 @@ const getTokenCount = async (text: string): Promise<number> => {
 };
 
 export const TokenCountDisplay = () => {
+    const [containerWidth, setContainerWidth] = useState(0);
 
-    const {folders, checkedKeys, getFolderTokenCount} = useFolderContext();
-    const {currentMessages, currentConversationId, isStreaming} = useChatContext();
+    const { folders, checkedKeys, getFolderTokenCount } = useFolderContext();
+    const { currentMessages, currentConversationId, isStreaming } = useChatContext();
     const [totalTokenCount, setTotalTokenCount] = useState(0);
     const [chatTokenCount, setChatTokenCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const { isDarkMode } = useTheme();
     const lastMessageCount = useRef<number>(0);
+    const containerRef = useRef<HTMLDivElement>(null);
     const lastMessageContent = useRef<string>('');
-    const [tokenDetails, setTokenDetails] = useState<{[key: string]: number}>({}); 
+    const [tokenDetails, setTokenDetails] = useState<{ [key: string]: number }>({});
     const [modelLimits, setModelLimits] = useState<{
         token_limit: number | null;
         max_input_tokens: number;
         max_output_tokens: number;
     }>({ token_limit: null, max_input_tokens: 200000, max_output_tokens: 1024 });
-    
+    const [astEnabled, setAstEnabled] = useState(false);
+
     const tokenLimit = modelLimits.max_input_tokens || modelLimits.token_limit || 4096;
     const warningThreshold = Math.floor(tokenLimit * 0.7);
     const dangerThreshold = Math.floor(tokenLimit * 0.9);
 
+    // Create ref outside of the effect
+    const fetchAttemptedRef = useRef(false);
+
+    // Check if AST is enabled
     useEffect(() => {
+        const checkAstEnabled = async () => {
+            try {
+                const response = await fetch('/api/ast/status');
+                if (response.ok) {
+                    const data = await response.json();
+                    setAstEnabled(data.enabled === true);
+                }
+            } catch (error) {
+                console.debug('Could not determine AST status:', error);
+                setAstEnabled(false);
+            }
+        };
+
+        checkAstEnabled();
+    }, []);
+
+    // Monitor container width for responsive layout
+    useLayoutEffect(() => {
+        if (!containerRef.current) return;
+
+        const updateWidth = () => {
+            if (containerRef.current) {
+                setContainerWidth(containerRef.current.offsetWidth);
+            }
+        };
+
+        // Initial measurement
+        updateWidth();
+
+        // Set up resize observer
+        const resizeObserver = new ResizeObserver(updateWidth);
+        resizeObserver.observe(containerRef.current);
+
+        return () => {
+            if (containerRef.current) {
+                resizeObserver.unobserve(containerRef.current);
+            }
+            resizeObserver.disconnect();
+        };
+    }, []);
+
+    // One-time fetch of model capabilities
+    useEffect(() => {
+        // Use a ref to track if this component is mounted
+        const isMounted = { current: true };
+
         const fetchModelCapabilities = async () => {
+            if (fetchAttemptedRef.current) return; // Only try once
+            fetchAttemptedRef.current = true;
+
             try {
                 const response = await fetch('/api/current-model');
                 if (!response.ok) {
                     throw new Error('Failed to fetch current model settings');
                 }
+
+                // Only update state if component is still mounted
+                if (!isMounted.current) return;
+
                 const data = await response.json();
-                const capabilities = data.capabilities;
-                const settings = data.settings;
+                const capabilities = data.capabilities || {};
+                const settings = data.settings || {};
+
+                // Add null checks to prevent errors
                 setModelLimits({
-                    token_limit: capabilities.token_limit,
-                    max_input_tokens: settings.max_input_tokens || capabilities.token_limit,
-                    max_output_tokens: settings.max_output_tokens || capabilities.max_output_tokens
+                    token_limit: capabilities?.token_limit || 4096,
+                    max_input_tokens: settings?.max_input_tokens || capabilities?.token_limit || 4096,
+                    max_output_tokens: settings?.max_output_tokens || capabilities?.max_output_tokens || 1024
                 });
 
                 console.debug('Model limits updated:', { capabilities, settings });
@@ -72,7 +134,14 @@ export const TokenCountDisplay = () => {
                 console.error('Failed to load model capabilities:', error);
             }
         };
+
+        // Only fetch once when component mounts
         fetchModelCapabilities();
+
+        // Cleanup function to prevent state updates after unmount
+        return () => {
+            isMounted.current = false;
+        };
     }, []);
 
     interface ModelSettingsEventDetail {
@@ -95,7 +164,7 @@ export const TokenCountDisplay = () => {
                     const response = await fetch('/api/current-model');
                     if (!response.ok) throw new Error('Failed to fetch model settings');
                     const data = await response.json();
-                    
+
                     setModelLimits({
                         token_limit: data.capabilities.token_limit,
                         max_input_tokens: data.settings.max_input_tokens || data.capabilities.token_limit,
@@ -103,7 +172,7 @@ export const TokenCountDisplay = () => {
                     });
                 } else {
                     // Use provided data
-                    
+
                 }
                 if (event.detail.settings && event.detail.capabilities) {
                     const { settings, capabilities } = event.detail;
@@ -125,23 +194,23 @@ export const TokenCountDisplay = () => {
         return () => {
             window.removeEventListener('modelSettingsChanged', handleModelSettingsChange as unknown as EventListener);
         };
-        
+
     }, []);
- 
+
     const combinedTokenCount = totalTokenCount + chatTokenCount;
 
     // only calculate tokens when checked files change
     useEffect(() => {
-	if (folders && checkedKeys.length > 0) {
+        if (folders && checkedKeys.length > 0) {
             console.debug('Recalculating file tokens due to checked files change');
-	    let total = 0;
-            const details: {[key: string]: number} = {};
+            let total = 0;
+            const details: { [key: string]: number } = {};
 
             // Use getFolderTokenCount for each checked path
             checkedKeys.forEach(key => {
                 const path = String(key);
-		if (!folders) {
-		    setTokenDetails({});
+                if (!folders) {
+                    setTokenDetails({});
                     return;
                 }
                 const tokens = getFolderTokenCount(path, folders);
@@ -154,9 +223,9 @@ export const TokenCountDisplay = () => {
             setTokenDetails(details);
             setTotalTokenCount(total);
         } else {
-	    setTokenDetails({});
+            setTokenDetails({});
             setTotalTokenCount(0);
-        } 
+        }
     }, [checkedKeys, folders, getFolderTokenCount]);
 
     const getTokenColor = (count: number): string => {
@@ -170,22 +239,22 @@ export const TokenCountDisplay = () => {
     });
 
     const calculateTotalTokenCount = (checked: string[]) => {
-	if (!folders) return;
+        if (!folders) return;
 
         let totalTokenCount = 0;
         checked.forEach(item => {
             const tokenCount = getFolderTokenCount(item, folders);
-            totalTokenCount += tokenCount;		
+            totalTokenCount += tokenCount;
         });
         setTotalTokenCount(totalTokenCount);
     };
 
     const previousMessagesRef = useRef<string>('');
     const hasMessagesChanged = useCallback((messages: Message[]) => {
-	const messagesContent = messages.length > 0 ? messages.map(msg => msg.content).join('\n') : '';
+        const messagesContent = messages.length > 0 ? messages.map(msg => msg.content).join('\n') : '';
         if (messagesContent !== previousMessagesRef.current) {
             previousMessagesRef.current = messagesContent;
-	    console.debug('Messages changed:', { length: messages.length, content: messagesContent.slice(0, 100) });
+            console.debug('Messages changed:', { length: messages.length, content: messagesContent.slice(0, 100) });
             return true;
         }
         return false;
@@ -194,7 +263,7 @@ export const TokenCountDisplay = () => {
     const updateChatTokens = useCallback(async () => {
         if (currentMessages.length === 0) {
             setChatTokenCount(0);
-	    lastMessageCount.current = 0;
+            lastMessageCount.current = 0;
             lastMessageContent.current = '';
             previousMessagesRef.current = '';
             console.debug('Skipping token count update - no messages');
@@ -209,7 +278,7 @@ export const TokenCountDisplay = () => {
             setChatTokenCount(tokens);
             lastMessageCount.current = currentMessages.length;
             lastMessageContent.current = allText;
-	} catch (error) {
+        } catch (error) {
             console.error('Failed to get token count:', error);
             setChatTokenCount(0);
         } finally {
@@ -219,20 +288,20 @@ export const TokenCountDisplay = () => {
 
     // update chat tokens only when messages or conversation change
     useEffect(() => {
-	console.debug('Conversation or messages changed:', {
+        console.debug('Conversation or messages changed:', {
             conversationId: currentConversationId,
             messageCount: currentMessages.length,
-	    isStreaming
+            isStreaming
         });
         if (!currentConversationId || currentMessages.length === 0) {
             console.debug('Resetting token count - empty conversation');
             setChatTokenCount(0);
             lastMessageCount.current = 0;
             lastMessageContent.current = '';
-	    previousMessagesRef.current = '';
+            previousMessagesRef.current = '';
             return;
         }
-        
+
         // Only update tokens if we have messages
         if (hasMessagesChanged(currentMessages)) {
             console.debug('Updating chat tokens for conversation:', currentConversationId);
@@ -245,18 +314,55 @@ export const TokenCountDisplay = () => {
         if (count >= warningThreshold) return 'normal';
         return 'success';
     };
+
+    // Determine if we should show the detailed total format
+    const showDetailedTotal = containerWidth > 350;
+
+    // Create token display items with even spacing
+    const tokenItems = [
+        <Tooltip key="files" title="Tokens from selected files">
+            <span>Files: <span style={getTokenStyle(totalTokenCount)}>
+                {totalTokenCount.toLocaleString()}</span></span>
+        </Tooltip>
+    ];
+
+    // Add AST item if enabled
+    if (astEnabled) {
+        tokenItems.push(
+            <Tooltip key="ast" title="AST tokens">
+                <span>AST: <span style={getTokenStyle(0)}>0</span></span>
+            </Tooltip>
+        );
+    }
+
+    tokenItems.push(
+        <Tooltip key="chat" title="Tokens from chat history">
+            <span>Chat: <span style={getTokenStyle(chatTokenCount)}>
+                {chatTokenCount.toLocaleString()}</span></span>
+        </Tooltip>
+    );
+
+    tokenItems.push(
+        <Tooltip key="total" title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`}>
+            <span>Total: <span style={getTokenStyle(combinedTokenCount)}>
+                {showDetailedTotal
+                    ? `${combinedTokenCount.toLocaleString()} / ${tokenLimit.toLocaleString()} (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`
+                    : combinedTokenCount.toLocaleString()}</span></span>
+        </Tooltip>
+    );
+
     const tokenDisplay = useMemo(() => (
-	<div className="token-summary" style={{
+        <div ref={containerRef} className="token-summary" style={{
             backgroundColor: 'inherit',
-	    padding: '4px',
-	    borderBottom: '1px solid',
+            padding: '4px',
+            borderBottom: '1px solid',
             borderBottomColor: isDarkMode ? '#303030' : '#e8e8e8',
             transition: 'all 0.3s ease',
-	    minHeight: '70px',
+            minHeight: '70px',
             boxSizing: 'border-box',
-	    position: 'relative'
+            position: 'relative'
         }}>
-	{isLoading && (
+            {isLoading && (
                 <div style={{
                     position: 'absolute',
                     top: 0,
@@ -281,21 +387,16 @@ export const TokenCountDisplay = () => {
                 transition: 'opacity 0.3s ease'
             }}>
                 <Typography.Text strong style={{ fontSize: '12px', marginBottom: '2px' }}>
-                    Token Estimates
+                    Input Token Estimates
                 </Typography.Text>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-                    <Tooltip title="Tokens from selected files" mouseEnterDelay={0.5}>
-                        <span>Files: <span style={getTokenStyle(totalTokenCount)}>
-                            {totalTokenCount.toLocaleString()}</span></span>
-                    </Tooltip>
-		    <Tooltip title="Tokens from chat history" mouseEnterDelay={0.5}>
-                        <span>Chat: <span style={getTokenStyle(chatTokenCount)}>
-                            {chatTokenCount.toLocaleString()}</span></span>
-                    </Tooltip>
-                    <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`} mouseEnterDelay={0.5}>
-                        <span>Total: <span style={getTokenStyle(combinedTokenCount)}>
-                            {combinedTokenCount.toLocaleString()}</span></span>
-                    </Tooltip>
+                <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: '11px',
+                    width: '100%',
+                    flexWrap: 'nowrap'
+                }}>
+                    {tokenItems}
                 </div>
                 <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens used`} mouseEnterDelay={0.5}>
                     <div>
@@ -311,13 +412,13 @@ export const TokenCountDisplay = () => {
                 </Tooltip>
             </div>
         </div>
-    ), [isLoading, totalTokenCount, chatTokenCount, combinedTokenCount]);
- 
+    ), [isLoading, totalTokenCount, chatTokenCount, combinedTokenCount, containerWidth, showDetailedTotal]);
+
     return (
-	<>
-	    <div className="token-display" style={{ padding: '0 8px' }}>
+        <div className="token-display-container">
+            <div className="token-display" style={{ padding: '0 8px' }}>
                 {tokenDisplay}
-	    </div>
-        </>
+            </div>
+        </div>
     );
 };

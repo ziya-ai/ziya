@@ -21,7 +21,7 @@ const isValidMessage = (message: any) => {
  */
 function extractErrorFromSSE(content: string): ErrorResponse | null {
     if (!content) return null;
-    
+
     try {
         // Check for JSON error format
         if (content.includes('"error"') || content.includes('"detail"')) {
@@ -38,26 +38,42 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
                 // Not valid JSON, continue with other checks
             }
         }
-        
-        // Check for specific error patterns
-        if (content.includes('Error:') || content.includes('error:')) {
-            const errorMatch = content.match(/(?:Error|error):\s*(.+?)(?:\n|$)/);
-            if (errorMatch && errorMatch[1]) {
+
+        // Check for specific error patterns - only at the beginning of lines
+        // and not within code blocks
+        const hasErrorPattern = content.match(/^Error:/m) || content.match(/^error:/m);
+        if (hasErrorPattern) {
+            // Check if this pattern is inside a code block
+            const codeBlockRegex = /```[\s\S]*?(?:^Error:|^error:)[\s\S]*?```/m;
+            const isInCodeBlock = codeBlockRegex.test(content);
+            
+            // Only treat as error if not in a code block
+            if (!isInCodeBlock) {
+                const errorMatch = content.match(/(?:^|\n)(?:Error|error):\s*(.+?)(?:\n|$)/);
+                if (errorMatch && errorMatch[1]) {
+                    return {
+                        error: 'Error detected',
+                        detail: errorMatch[1].trim()
+                    };
+                }
+            }
+        }
+
+        // Check for "An error occurred" pattern - but not in code blocks
+        if (content.toLowerCase().includes('an error occurred')) {
+            // Check if this is likely part of code or documentation
+            const isInCodeOrExample = /```[\s\S]*?an error occurred[\s\S]*?```/i.test(content) || 
+                                     /`an error occurred`/i.test(content) ||
+                                     /example.*?an error occurred/i.test(content);
+            
+            if (!isInCodeOrExample) {
                 return {
                     error: 'Error detected',
-                    detail: errorMatch[1].trim()
+                    detail: 'An error occurred during processing'
                 };
             }
         }
-        
-        // Check for "An error occurred" pattern
-        if (content.toLowerCase().includes('an error occurred')) {
-            return {
-                error: 'Error detected',
-                detail: 'An error occurred during processing'
-            };
-        }
-        
+
         return null;
     } catch (error) {
         console.warn('Error in extractErrorFromSSE:', error);
@@ -73,11 +89,11 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
         // Try to find JSON objects in the chunk
         const jsonMatches = chunk.match(/(\{.*?\})/g);
         if (!jsonMatches) return null;
-        
+
         for (const jsonStr of jsonMatches) {
             try {
                 const data = JSON.parse(jsonStr);
-                
+
                 // Check for direct error properties
                 if (data.error || data.detail) {
                     return {
@@ -86,7 +102,7 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                         status_code: data.status_code
                     };
                 }
-                
+
                 // Check for ops array with errors
                 if (data.ops && Array.isArray(data.ops)) {
                     for (const op of data.ops) {
@@ -99,13 +115,17 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                                     status_code: op.value.status_code
                                 };
                             }
-                            
-                            // Check for error in messages array
+
+                            // Check for error in messages array - but be careful not to match code examples
                             if (op.value.messages && Array.isArray(op.value.messages)) {
                                 for (const msg of op.value.messages) {
                                     if (msg.content && typeof msg.content === 'string') {
-                                        const errorResponse = extractErrorFromSSE(msg.content);
-                                        if (errorResponse) return errorResponse;
+                                        // Only check for errors outside of code blocks
+                                        const isInCodeBlock = /```[\s\S]*?(?:Error:|error:)[\s\S]*?```/m.test(msg.content);
+                                        if (!isInCodeBlock) {
+                                            const errorResponse = extractErrorFromSSE(msg.content);
+                                            if (errorResponse) return errorResponse;
+                                        }
                                     }
                                 }
                             }
@@ -116,7 +136,7 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                 // Not valid JSON, try next match
             }
         }
-        
+
         return null;
     } catch (error) {
         console.warn('Error in extractErrorFromNestedOps:', error);
@@ -131,7 +151,7 @@ async function handleStreamError(response: Response): Promise<Error> {
     try {
         const text = await response.text();
         console.log("Error response text:", text);
-        
+
         try {
             const data = JSON.parse(text);
             if (data.detail || data.error) {
@@ -140,7 +160,7 @@ async function handleStreamError(response: Response): Promise<Error> {
         } catch (e) {
             // Not JSON, use text directly
         }
-        
+
         return new Error(text || `HTTP error ${response.status}`);
     } catch (error) {
         return new Error(`HTTP error ${response.status}`);
@@ -161,11 +181,12 @@ export const sendPayload = async (
     let eventSource: any = null;
     let currentContent = '';
     let errorOccurred = false;
-    
+    let containsDiff = false;  // Flag to track if content contains diff blocks
+
     try {
         // Filter out empty messages
         const messagesToSend = messages.filter(isValidMessage);
-        
+
         // Log message count before and after filtering
         if (messages.length !== messagesToSend.length) {
             console.log("Filtered out empty messages:", {
@@ -174,11 +195,11 @@ export const sendPayload = async (
                 dropped: messages.length - messagesToSend.length
             });
         }
-            
+
         setIsStreaming(true);
         let response = await getApiResponse(messagesToSend, question, checkedItems);
         console.log("Initial API response:", response.status, response.statusText);
-        
+
         if (!response.ok) {
             if (response.status === 503) {
                 console.log("Service unavailable, attempting retry");
@@ -215,21 +236,32 @@ export const sendPayload = async (
         // Use ReadableStream API for more reliable streaming
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        
+
         // Process chunks as they arrive
         function processChunk(chunk: string) {
             // Split the chunk by newlines to handle multiple SSE events
             const lines = chunk.split('\n');
-            
+
             for (const line of lines) {
                 if (!line.trim()) continue;
-                
+
                 // Check if it's an SSE data line
                 if (line.startsWith('data:')) {
                     const data = line.slice(5).trim();
+
+                    // Check if this chunk contains diff syntax and set the flag
+                    if (!containsDiff && (
+                        data.includes('```diff') || data.includes('diff --git') || 
+                        data.match(/^@@ /) || data.match(/^\+\+\+ /) || data.match(/^--- /))) {
+                        containsDiff = true;
+                        console.log("Detected diff content, disabling error detection");
+                    }
+
+                    // Check for errors using our new function - but be careful not to match code examples
+                    // Skip error checking if the data looks like it contains code blocks or diffs
+                    const containsCodeBlock = data.includes('```');
+                    const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(data);
                     
-                    // Check for errors using our new function
-                    const errorResponse = extractErrorFromSSE(data);
                     if (errorResponse) {
                         console.log("Error detected in SSE data:", errorResponse);
                         message.error({
@@ -241,22 +273,22 @@ export const sendPayload = async (
                         removeStreamingConversation(conversationId);
                         return;
                     }
-                    
+
                     try {
                         const jsonData = JSON.parse(data);
-                        
+
                         // Handle done marker
                         if (jsonData.done) {
                             console.log("Received done marker in JSON data");
                             return;
                         }
-                        
+
                         // Skip heartbeat messages
                         if (jsonData.heartbeat) {
                             console.log("Received heartbeat, skipping");
                             continue;
                         }
-                        
+
                         // Extract text content from the response
                         if (jsonData.text) {
                             currentContent += jsonData.text;
@@ -273,7 +305,7 @@ export const sendPayload = async (
                                 return next;
                             });
                         }
-                        
+
                         // Process operations if present
                         const ops = jsonData.ops || [];
                         for (const op of ops) {
@@ -287,11 +319,22 @@ export const sendPayload = async (
                                     return next;
                                 });
                             } else if (op.op === 'add' && op.path.includes('/streamed_output/-')) {
-                                // Check for error in messages array
+                                // Check for error in messages array - but be careful not to match code examples
                                 if (op.value && op.value.messages && Array.isArray(op.value.messages)) {
                                     for (const msg of op.value.messages) {
                                         if (msg.content && typeof msg.content === 'string') {
-                                            const errorResponse = extractErrorFromSSE(msg.content);
+                                            // Check if this message contains diff syntax and set the flag
+                                            if (!containsDiff && (
+                                                msg.content.includes('```diff') || msg.content.includes('diff --git') || 
+                                                msg.content.match(/^@@ /m) || msg.content.match(/^\+\+\+ /m) || msg.content.match(/^--- /m))) {
+                                                containsDiff = true;
+                                                console.log("Detected diff content in message, disabling error detection");
+                                            }
+                                            
+                                            // Skip error checking if the message contains code blocks or diffs
+                                            const containsCodeBlock = msg.content.includes('```');
+                                            const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(msg.content);
+                                            
                                             if (errorResponse) {
                                                 console.log("Error detected in message content:", errorResponse);
                                                 message.error({
@@ -310,6 +353,7 @@ export const sendPayload = async (
                         }
                     } catch (error) {
                         const e = error as Error;
+                        console.error('Error parsing JSON chunk:', { error: e, rawData: data });
                         console.error('Error parsing JSON:', e);
                     }
                 }
@@ -334,29 +378,43 @@ export const sendPayload = async (
                             console.log("Empty chunk received, continuing");
                             continue;
                         }
-                        
-                        // Check for errors using our new function
+
+                        // Check if this chunk contains diff syntax and set the flag
+                        if (!containsDiff && (
+                            chunk.includes('```diff') || chunk.includes('diff --git') || 
+                            chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
+                            containsDiff = true;
+                            console.log("Detected diff content in chunk, disabling error detection");
+                        }
+
+                        // Check for errors using our new function - but be careful with code blocks
                         try {
-                            // Check for nested errors in LangChain ops structure
-                            const nestedError = extractErrorFromNestedOps(chunk);
-                            if (nestedError) {
-                                console.log("Nested error detected in ops structure:", nestedError);
-                                message.error({
-                                    content: nestedError.detail || 'An error occurred',
-                                    duration: 10,
-                                    key: 'stream-error'
-                                });
-                                errorOccurred = true;
-                                removeStreamingConversation(conversationId);
-                                break;
+                            // Skip error checking if the chunk contains code blocks or diffs
+                            const containsCodeBlock = chunk.includes('```');
+                            
+                            if (!containsCodeBlock && !containsDiff) {
+                                // Check for nested errors in LangChain ops structure
+                                const nestedError = extractErrorFromNestedOps(chunk);
+                                if (nestedError) {
+                                    console.log("Nested error detected in ops structure:", nestedError);
+                                    message.error({
+                                        content: nestedError.detail || 'An error occurred',
+                                        duration: 10,
+                                        key: 'stream-error'
+                                    });
+                                    errorOccurred = true;
+                                    removeStreamingConversation(conversationId);
+                                    break;
+                                }
                             }
                         } catch (error) {
                             console.warn("Error checking for nested errors:", error);
                         }
-                        
+
                         processChunk(chunk);
                     } catch (error) {
                         console.error('Error reading stream:', error);
+                        message.error('Stream reading error. Check JS console for details.');
                         errorOccurred = true;
                         removeStreamingConversation(conversationId);
                         setIsStreaming(false);
@@ -365,7 +423,7 @@ export const sendPayload = async (
                 }
             } catch (error) {
                 if (error instanceof DOMException && error.name === 'AbortError') return '';
-                console.error('Stream error:', error);
+                console.error('Unhandled Stream error in readStream:', { error });
                 removeStreamingConversation(conversationId);
                 setIsStreaming(false);
                 throw error;
@@ -383,7 +441,10 @@ export const sendPayload = async (
                 console.log("Stream completed successfully");
 
                 // Check if the content is an error message using our new function
-                const errorResponse = extractErrorFromSSE(currentContent);
+                // Skip error checking if the content contains code blocks or diffs
+                const containsCodeBlock = currentContent.includes('```');
+                const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(currentContent);
+                
                 if (errorResponse) {
                     console.log("Error detected in final content:", errorResponse);
                     message.error({
@@ -410,7 +471,7 @@ export const sendPayload = async (
         } catch (error) {
             // Type guard for DOMException
             if (error instanceof DOMException && error.name === 'AbortError') return '';
-            console.error('Stream error:', error);
+            console.error('Stream processing error in readStream catch block:', { error });
             removeStreamingConversation(conversationId);
             setIsStreaming(false);
             throw error;
@@ -427,6 +488,7 @@ export const sendPayload = async (
                 message: error.message,
                 stack: error.stack
             });
+            message.error(`Error: ${error.message}`);
         }
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
         // Clear streaming state
@@ -443,17 +505,17 @@ export const sendPayload = async (
 
 async function getApiResponse(messages: any[], question: string, checkedItems: string[]) {
     const messageTuples: string[][] = [];
-    
+
     for (const message of messages) {
         messageTuples.push([message.role, message.content]);
     }
-    
+
     const payload = {
         messages: messageTuples,
         question,
         files: checkedItems
     };
-    
+
     return fetch('/api/chat', {
         method: 'POST',
         headers: {

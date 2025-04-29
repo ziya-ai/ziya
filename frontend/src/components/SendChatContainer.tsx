@@ -97,17 +97,17 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
         try {
 	    // Get latest messages after state update
-	    const selectedFiles = convertKeysToStrings(checkedKeys);
+            const selectedFiles = convertKeysToStrings(checkedKeys);
             const result = await sendPayload(
-                targetConversationId,
-                question,
-                streamingConversations.has(currentConversationId),
                 messagesWithNew,
+                question,
+                selectedFiles,
+                targetConversationId,
                 setStreamedContentMap,
                 setIsStreaming,
-                selectedFiles,
+                removeStreamingConversation,
                 addMessageToConversation,
-                removeStreamingConversation
+                streamingConversations.has(currentConversationId)
             );
             // Check if result is an error response
             if (typeof result === 'string' && result.includes('"error":"validation_error"')) {

@@ -84,15 +84,15 @@ export const EditSection: React.FC<EditSectionProps> = ({index}) => {
 	addStreamingConversation(currentConversationId);
         try {
             const result = await sendPayload(
-                currentConversationId,
+                currentMessages,
                 editedMessage,
-		streamingConversations.has(currentConversationId),
-		currentMessages,
+                convertKeysToStrings(checkedKeys),
+                currentConversationId,
                 setStreamedContentMap,
                 setIsStreaming,
-                convertKeysToStrings(checkedKeys),
-		addMessageToConversation,
-		removeStreamingConversation
+                removeStreamingConversation,
+                addMessageToConversation,
+                streamingConversations.has(currentConversationId)
             );
 
             // Get the final streamed content

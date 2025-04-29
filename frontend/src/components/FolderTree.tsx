@@ -1,18 +1,18 @@
-import React, {useEffect, useState, useCallback} from 'react';
-import {Input, Tabs, Tree, TreeDataNode, Button, message} from 'antd';
-import {useFolderContext} from '../context/FolderContext';
-import {Folders} from '../utils/types';
-import {useChatContext} from '../context/ChatContext';
-import {TokenCountDisplay} from "./TokenCountDisplay";
+import React, { useEffect, useState, useCallback } from 'react';
+import { Input, Tabs, Tree, TreeDataNode, Button, message } from 'antd';
+import { useFolderContext } from '../context/FolderContext';
+import { Folders } from '../utils/types';
+import { useChatContext } from '../context/ChatContext';
+import { TokenCountDisplay } from "./TokenCountDisplay";
 import union from 'lodash/union';
-import {ChatHistory} from "./ChatHistory";
-import {useTheme} from '../context/ThemeContext';
-import {ModelConfigButton} from './ModelConfigButton';
-import {ReloadOutlined, FolderOutlined, MessageOutlined} from '@ant-design/icons';
+import { ChatHistory } from "./ChatHistory";
+import { useTheme } from '../context/ThemeContext';
+import { ModelConfigButton } from './ModelConfigButton';
+import { ReloadOutlined, FolderOutlined, MessageOutlined } from '@ant-design/icons';
 import { convertToTreeData } from '../utils/folderUtil';
-const {TabPane} = Tabs;
+const { TabPane } = Tabs;
 
-const {Search} = Input;
+const { Search } = Input;
 
 interface FolderTreeProps {
     isPanelCollapsed: boolean;
@@ -25,24 +25,25 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const {
         folders,
         treeData,
-	setTreeData,
+        setTreeData,
         checkedKeys,
         setCheckedKeys,
-	expandedKeys,
-	setExpandedKeys
+        expandedKeys,
+        setExpandedKeys
     } = useFolderContext();
     const [modelId, setModelId] = useState<string>('');
-    const {isDarkMode} = useTheme();
-    const {currentConversationId} = useChatContext();
+    const { isDarkMode } = useTheme();
+    const { currentConversationId } = useChatContext();
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || DEFAULT_TAB);
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
+    const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
     useEffect(() => {
         if (searchValue) {
-            const {filteredData, expandedKeys} = filterTreeData(treeData, searchValue);
+            const { filteredData, expandedKeys } = filterTreeData(treeData, searchValue);
             setFilteredTreeData(filteredData);
             setExpandedKeys(expandedKeys);
         } else {
@@ -56,11 +57,29 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
     }, [activeTab]);
 
-        const fetchModelId = useCallback(async () => {
+    // Update model info when it changes
+    const updateModelInfo = useCallback(async () => {
+        try {
+            const response = await fetch('/api/current-model');
+            const data = await response.json();
+            setModelId(data.model_id);
+            setModelDisplayName(data.display_model_id || data.model_alias || data.model_id);
+            console.info(`Updated model info: ${data.model_id} (${data.display_model_id || 'no display name'})`);
+        } catch (error) {
+            console.error('Error fetching model info:', error);
+            // Fallback to basic model ID if detailed info fails
+            fetchModelId();
+        }
+    }, []);
+
+    const fetchModelId = useCallback(async () => {
         try {
             const response = await fetch('/api/model-id');
             const data = await response.json();
             setModelId(data.model_id);
+            if (!modelDisplayName) {
+                setModelDisplayName(data.model_id);
+            }
         } catch (error) {
             console.error('Error fetching model ID:', error);
         }
@@ -68,7 +87,31 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
 
     useEffect(() => {
         fetchModelId();
-    }, [fetchModelId]);
+        updateModelInfo();
+
+        // Listen for model changes
+        const handleModelChange = () => {
+            console.log("Model change detected, updating model info");
+            // Use setTimeout to ensure the backend has updated
+            updateModelInfo();
+            // And check again after a delay to ensure we have the latest
+            setTimeout(updateModelInfo, 500);
+        };
+
+        window.addEventListener('modelChanged', handleModelChange);
+        return () => {
+            window.removeEventListener('modelChanged', handleModelChange);
+        };
+    }, [fetchModelId, updateModelInfo]);
+
+    // Also listen for model settings changes
+    useEffect(() => {
+        const handleSettingsChanged = () => {
+            updateModelInfo();
+        };
+        window.addEventListener('modelSettingsChanged', handleSettingsChanged);
+        return () => window.removeEventListener('modelSettingsChanged', handleSettingsChanged);
+    }, [updateModelInfo]);
 
     const refreshFolders = async () => {
         setIsRefreshing(true);
@@ -77,11 +120,11 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
             if (!response.ok) {
                 throw new Error('Failed to refresh folders');
             }
-	    const data: Folders = await response.json();
+            const data: Folders = await response.json();
 
             // Sort the tree data recursively
             const sortTreeData = (nodes: TreeDataNode[]): TreeDataNode[] => {
-		return nodes.sort((a, b) =>
+                return nodes.sort((a, b) =>
                     String(a.title).toLowerCase()
                         .localeCompare(String(b.title).toLowerCase())
                 )
@@ -91,8 +134,8 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                     }));
             };
 
-	    const sortedData = sortTreeData(convertToTreeData(data));
-	    console.debug('Refreshed and sorted folder structure:', { nodeCount: sortedData.length });
+            const sortedData = sortTreeData(convertToTreeData(data));
+            console.debug('Refreshed and sorted folder structure:', { nodeCount: sortedData.length });
 
             setTreeData(sortedData);
             message.success('Folder structure refreshed');
@@ -124,7 +167,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
 
                 if (filteredChildren.length > 0) {
                     expandedKeys.push(node.key);
-                    return {...node, children: filteredChildren};
+                    return { ...node, children: filteredChildren };
                 }
             }
             return null;
@@ -132,7 +175,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
 
         const filteredData = data.map(node => filter(node)).filter((node): node is TreeDataNode => node !== null);
 
-        return {filteredData, expandedKeys};
+        return { filteredData, expandedKeys };
     };
 
     const onExpand = (keys: React.Key[]) => {
@@ -230,8 +273,8 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
 
     return (
         <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
-	    <TokenCountDisplay/>
-            <Tabs 
+            <TokenCountDisplay />
+            <Tabs
                 activeKey={activeTab}
                 defaultActiveKey="1"
                 destroyInactiveTabPane={false}
@@ -241,13 +284,13 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                     flexDirection: 'column',
                     color: isDarkMode ? '#ffffff' : undefined,
                     overflow: 'hidden',
-		    margin: '0 -8px'
+                    margin: '0 -8px'
                 }}
                 onChange={setActiveTab}
                 items={[
                     {
                         key: '1',
-			label: (
+                        label: (
                             <span>
                                 <FolderOutlined style={{ marginRight: 8 }} />
                                 File Explorer
@@ -260,7 +303,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                     flexDirection: 'column',
                                     height: '100%',
                                     overflow: 'hidden',
-				    padding: '0 8px'
+                                    padding: '0 8px'
                                 }}>
                                     <div style={{
                                         flex: 1,
@@ -279,9 +322,9 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                         {folders ? (
                                             <>
                                                 <Button
-                                                    icon={<ReloadOutlined spin={isRefreshing}/>}
+                                                    icon={<ReloadOutlined spin={isRefreshing} />}
                                                     onClick={refreshFolders}
-                                                    style={{marginBottom: 8}}
+                                                    style={{ marginBottom: 8 }}
                                                     loading={isRefreshing}
                                                 >
                                                     Refresh Files
@@ -293,7 +336,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                                     autoExpandParent={autoExpandParent}
                                                     onCheck={onCheck}
                                                     checkedKeys={checkedKeys}
-                                                treeData={searchValue ? filteredTreeData : treeData}
+                                                    treeData={searchValue ? filteredTreeData : treeData}
                                                     titleRender={titleRender}
                                                     style={{
                                                         background: 'transparent',
@@ -315,23 +358,23 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                     },
                     {
                         key: '2',
-			label: (
+                        label: (
                             <span>
                                 <MessageOutlined style={{ marginRight: 8 }} />
                                 Chat History
                             </span>
                         ),
-                        children: <ChatHistory/>
+                        children: <ChatHistory />
                     }
                 ]}
             />
-            <div className="model-id-display" style={{ 
-                display: 'flex', 
-                alignItems: 'center', 
+            <div className="model-id-display" style={{
+                display: 'flex',
+                alignItems: 'center',
                 justifyContent: 'space-between',
-                padding: '0 8px' 
+                padding: '0 8px'
             }}>
-                {modelId && <span style={{ flex: 1 }}>Model: {modelId}</span>}
+                {modelId && <span style={{ flex: 1 }}>Model: {modelDisplayName || modelId}</span>}
                 {modelId && <ModelConfigButton modelId={modelId} />}
             </div>
         </div>

@@ -9,6 +9,8 @@ body {
   overflow: hidden;
   height: 100vh;
   overscroll-behavior: none;
+  position: fixed;
+  width: 100%;
 }
 
 .app-header {
@@ -47,7 +49,6 @@ body {
 
 :root {
   --folder-panel-width: 30vw;
-  --folder-panel-max-width: 450px;
   --header-height: 60px;
   --input-max-height: 200px;
   --input-expanded-max-height: 50vh;
@@ -61,7 +62,7 @@ body.dark {
 /* Container Layout */
 .container {
   position: fixed;
-  top: calc(var(--header-height));
+  top: calc(var(--app-header-height));
   left: 0;
   right: 0;
   bottom: 0;
@@ -83,14 +84,13 @@ body.dark {
 /* Chat Container */
 .chat-container {
   contain: relative;
-  height: calc(100vh - var(--header-height) - 30px); 
-  transform: trnaslateZ(0);
+  height: calc(100vh - var(--header-height) - 30px);
   overflow-y: auto;
   overflow-x: hidden !important;
   max-width: 100%;
   position: relative;
-  left: min(var(--folder-panel-width), var(--folder-panel-max-width));
-  width: calc(100% - min(var(--folder-panel-width), var(--folder-panel-max-width)) - 40px);
+  left: var(--folder-panel-width);
+  width: calc(100% - var(--folder-panel-width) - 40px);
   padding: 0;
   border: 1p solid #ccc;
   border-radius: 6px;
@@ -145,7 +145,7 @@ body.dark {
 /* Panel toggle button */
 .panel-toggle {
   position: fixed;
-  left: min(calc(var(--folder-panel-width) - 1px), calc(var(--folder-panel-max-width) - 1px));
+  left: var(--folder-panel-width);
   top: 50%;
   z-index: 3;
   transform: translateY(-50%);
@@ -154,10 +154,13 @@ body.dark {
   border-radius: 4px;
   background: none;
   padding: 0;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: bold;
 }
 
 .panel-toggle::before {
@@ -173,20 +176,20 @@ body.dark {
 
 body:not(.dark) .panel-toggle.ant-btn-primary {
   background-color: #ffffff;
-  border: 1px solid #e8e8e8;
-  color: rgba(0, 0, 0, 0.85);
-  box-shadow: none;
+  border: 1px solid #1890ff;
+  color: #1890ff;
+  box-shadow: 0 2px 6px rgba(24, 144, 255, 0.2);
 }
 
 body:not(.dark) .panel-toggle.ant-btn-primary:focus {
     outline: none;
-    border-color: #e8e8e8;
+    border-color: #1890ff;
 }
 
 body:not(.dark) .panel-toggle.ant-btn-primary:hover {
-    color: #1890ff;
-    border-color: #e8e8e8;
-    background-color: #ffffff;
+    color: #ffffff;
+    border-color: #1890ff;
+    background-color: #1890ff;
 }
 
 .panel-toggle.collapsed {
@@ -329,6 +332,33 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   padding: 0 11px;
 }
 
+/* Model change notification styling */
+.model-change-notification {
+  padding: 8px 12px;
+  margin: 8px 0;
+  background-color: var(--notification-bg);
+  border-radius: 8px;
+  border-left: 4px solid #1890ff;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+}
+ 
+.notification-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+ 
+.notification-icon {
+  font-size: 18px;
+}
+ 
+.system-message {
+  opacity: 0.8;
+  font-style: italic;
+}
+
 /* Input Container */
 .input-container {
   position: sticky;
@@ -412,6 +442,26 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   padding: 0;
 }
 
+/* Prevent layout shifts during initial load */
+.folder-tree-panel, .chat-container, .panel-toggle, .panel-resizer {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* Token display responsive styles */
+.token-summary .ant-typography + div {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+}
+ 
+/* Ensure token items don't wrap and maintain even spacing */
+.token-summary .ant-typography + div > span {
+  white-space: nowrap;
+  flex: 1;
+  text-align: center;
+}
+
 .dark .folder-tree-panel {
   background-color: #141414;
   border-right-color: #303030;
@@ -427,11 +477,34 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   height: 100%;
 }
 
+/* Override any max-width constraints in the folder tree */
+.folder-tree-panel .ant-tree,
+.folder-tree-panel .ant-tabs,
+.folder-tree-panel .ant-tabs-content,
+.folder-tree-panel .ant-tabs-tabpane {
+  max-width: none !important;
+  width: 100% !important;
+}
+
+/* Ensure the tree takes up the full width */
+.folder-tree-panel .ant-tree {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+/* Make sure the token count display expands with the panel */
+.token-display-container,
+.token-display {
+  width: 100% !important;
+  max-width: none !important;
+}
+
 .folder-tree-panel .ant-tabs-content {
   flex: 1;
   height: calc(100% - var(--model-display-height));
   position: relative;
   overflow: auto;
+  width: 100% important;
 }
 
 .folder-tree-panel .ant-tabs-nav {
@@ -525,6 +598,8 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   background-color: inherit;
   transition: background-color 0.3s ease;
   z-index: 1;
+  padding: 0 4px !important;
+  box-sizing: border-box;
 }
 
 .dark .token-display {
@@ -539,16 +614,22 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 .token-summary {
   border-color: #303030;
   transition: all 0.3s ease;
+  padding: 4px 4px 8px 4px !important;
 }
 
 .token-summary .ant-typography {
   color: inherit;
 }
 
+.token-summary .ant-progress {
+  width: 100% !important;
+  margin: 4px 0 !important;
+}
+ 
 .model-id-display {
   position: fixed;
   z-index: 11;
-  bottom: 0;
+  bottom: 0; 
   width: min(var(--folder-panel-width), var(--folder-panel-max-width));
   padding: 8px;
   background-color: #f5f5f5;

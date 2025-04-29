@@ -1,38 +1,42 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Tooltip, message, Form } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
-import { ModelConfigModal, ModelSettings, ModelInfo } from './ModelConfigModal';
+import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo } from './ModelConfigModal';
+
+// Extend the ModelInfo interface to include display_name property
+interface ExtendedModelInfo extends ModelInfo {
+  display_name?: string;
+  name: string;
+}
 
 interface ModelConfigButtonProps {
   modelId: string;
-}
-
-interface ModelCapabilities {
-  supports_thinking: boolean;
-  max_output_tokens: number;
-  token_limit: number;
-  max_input_tokens: number;
-  temperature_range: { min: number; max: number; default: number };
-  top_k_range: { min: number; max: number; default: number } | null;
 }
 
 export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId }) => {
   const [modalVisible, setModalVisible] = useState(false);
   const [settings, setSettings] = useState<ModelSettings>({
     temperature: 0,
-    top_k: 0,
-    max_output_tokens: 0,
-    max_input_tokens: 0,
+    top_k: 15,
+    max_output_tokens: 4096,
+    max_input_tokens: 4096,
     thinking_mode: false
   });
   const [currentModelId, setCurrentModelId] = useState<string>(modelId);
   const [endpoint, setEndpoint] = useState<string>('bedrock');
+  const [region, setRegion] = useState<string>('us-west-2');
+  const [displayModelId, setDisplayModelId] = useState<string>('');
   const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
-  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [availableModels, setAvailableModels] = useState<ExtendedModelInfo[]>([]);
   const [form] = Form.useForm();
+  const [isPolling, setIsPolling] = useState(false); // Track if we're already polling
 
   const verifyCurrentModel = useCallback(async () => {
+    // Prevent multiple simultaneous calls
+    if (isPolling) return;
+
     try {
+      setIsPolling(true);
       const response = await fetch('/api/current-model');
       if (!response.ok) {
         throw new Error('Failed to verify current model');
@@ -40,11 +44,17 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       const data = await response.json();
       const actualModelId = data.model_id;
       const actualEndpoint = data.endpoint;
-      
+      const actualRegion = data.region;
+      const actualDisplayModelId = data.display_model_id;
+
+      console.log("API response for current model:", data);
+      // Handle the case where model_id is an object - convert to string
+      const safeModelId = typeof actualModelId === 'object' ? JSON.stringify(actualModelId) : actualModelId;
+
       // Only update if the actual model is different from what we're displaying
-      if (actualModelId !== currentModelId) {
-        setCurrentModelId(actualModelId);
-        
+      if (safeModelId !== currentModelId) {
+        setCurrentModelId(safeModelId);
+
         // Update endpoint based on verified model
         if (actualEndpoint === 'google') {
           setEndpoint('google');
@@ -52,33 +62,69 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
           setEndpoint('bedrock');
         }
 
-        // Update settings
+        // Update region and display model ID
+        setRegion(actualRegion);
+        setDisplayModelId(actualDisplayModelId);
+
+        // Update settings with values from the API response
         setSettings(prevSettings => {
-          const newSettings = {
-            ...data.settings,
-            max_input_tokens: data.settings.max_input_tokens || capabilities?.max_input_tokens || capabilities?.token_limit
+          console.log("Updating settings with API response:", data.settings);
+          return {
+            ...prevSettings, ...data.settings,
+            // Use the values from the API response, falling back to capabilities
+            max_input_tokens: data.settings.max_input_tokens ||
+              data.token_limit ||
+              capabilities?.token_limit ||
+              capabilities?.max_input_tokens ||
+              prevSettings.max_input_tokens,
+            max_output_tokens: data.settings.max_output_tokens || capabilities?.max_output_tokens || prevSettings.max_output_tokens
           };
-          return newSettings;
         });
       } else {
         setEndpoint(actualEndpoint); // Update endpoint even if model ID hasn't changed
+        setRegion(actualRegion); // Update region even if model ID hasn't changed
+        setDisplayModelId(actualDisplayModelId); // Update display model ID even if model ID hasn't changed
       }
     } catch (error) {
       console.error('Error verifying current model:', error);
       message.error('Failed to verify current model configuration');
+    } finally {
+      setIsPolling(false);
     }
-  }, [modelId, currentModelId]);
+  }, [currentModelId, capabilities, isPolling]);
 
-  // Verify current model when component mounts and when modal is opened
+  // Fetch once on component mount
+  const mountRef = useRef(false);
+
   useEffect(() => {
-    verifyCurrentModel();
-  }, [verifyCurrentModel]);
+    // Only run on first mount
+    if (!mountRef.current && !isPolling) {
+      mountRef.current = true;
+      verifyCurrentModel();
+    }
+  }, [isPolling, verifyCurrentModel]);
+
+  // Separate effect for modal visibility - with a ref to prevent multiple calls
+  const modalOpenRef = useRef(false);
+
+  useEffect(() => {
+    // Only fetch once when modal is opened and reset when closed
+    if (modalVisible && !isPolling && !modalOpenRef.current) {
+      modalOpenRef.current = true;
+      verifyCurrentModel();
+    } else if (!modalVisible) {
+      // Reset the ref when modal closes
+      modalOpenRef.current = false;
+    }
+  }, [modalVisible, isPolling, verifyCurrentModel]);
 
   // Fetch initial capabilities and settings when modal opens
   useEffect(() => {
     if (modalVisible) {
       const fetchInitialState = async () => {
         try {
+          // Reset form values to ensure we don't have stale data
+          form.resetFields();
           // Fetch current model settings
           const response = await fetch('/api/current-model');
           if (response.ok) {
@@ -104,25 +150,48 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
 
   const fetchModelCapabilities = async (modelId?: string, isModelChange: boolean = false) => {
     try {
-      const url = modelId ? `/api/model-capabilities?model=${modelId}` : '/api/model-capabilities';
+      const url = modelId ?
+        `/api/model-capabilities?model=${encodeURIComponent(modelId)}` :
+        '/api/model-capabilities';
+
       const response = await fetch(url, { cache: 'no-cache' });
+
       if (!response.ok) {
-        throw new Error('Failed to fetch model capabilities');
+        throw new Error(`Failed to fetch model capabilities: ${response.status}`);
       }
       const data = await response.json();
+
+      // Check if there's an error in the response
+      if (data.error) {
+        console.error("Error in capabilities response:", data.error);
+        message.error(`Failed to load model capabilities: ${data.error}`);
+        return null;
+      }
+
       console.log('Fetched capabilities:', data);
       setCapabilities(data);
 
       // Update settings with capabilities
       setSettings(prev => ({
         ...prev,
-        max_input_tokens: data.token_limit,
-        max_output_tokens: data.max_output_tokens
+        max_input_tokens: data.max_input_tokens || data.token_limit || prev.max_input_tokens,
+        max_output_tokens: data.max_output_tokens || prev.max_output_tokens
       }));
-      
+
+      // Get current form values to use as fallbacks
+      const currentFormValues = form.getFieldsValue();
+      // Also update form values
+      form.setFieldsValue({
+        max_input_tokens: data.token_limit || data.max_input_tokens,
+        max_output_tokens: data.max_output_tokens,
+        temperature: data.temperature_range?.default || currentFormValues.temperature || 0.3,
+        top_k: data.top_k_range?.default || currentFormValues.top_k || 15
+      });
+
       if (isModelChange) {
         // Update form with new model's default values
         form.setFieldsValue({
+          model: modelId,
           temperature: data.temperature_range.default,
           top_k: data.top_k_range?.default || 15,
           max_output_tokens: data.max_output_tokens,
@@ -130,6 +199,9 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
         });
         console.log('Updated form with new model settings');
       }
+
+      console.log("Updated form with capabilities:", form.getFieldsValue());
+      return data;
     } catch (error) {
       console.error('Failed to load model capabilities:', error);
       message.error('Failed to load model capabilities');
@@ -164,20 +236,33 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model_id: selectedModelId }),
       });
-      
+
       const data = await response.json();
-      
+
       if (response.ok && data.status === 'success') {
         // Verify the model was actually changed
         const verifyResponse = await fetch('/api/current-model');
         const currentModel = await verifyResponse.json();
-        
+
         if (currentModel.model_id === selectedModelId) {
           setCurrentModelId(selectedModelId);
-          message.success('Model updated successfully');
-          // Only reload if model actually changed
+          message.success(`Model updated to ${selectedModelId} successfully`);
+          
+          // Get model display name for the notification
+          const selectedModel = availableModels.find(m => m.id === selectedModelId);
+          const displayName = selectedModel?.display_name || selectedModel?.name || selectedModelId;
+          const previousModelObj = availableModels.find(m => m.id === modelId);
+          const previousDisplayName = previousModelObj?.display_name || previousModelObj?.name || modelId;
+          
+          // Dispatch a custom event for model change notification
           if (selectedModelId !== modelId) {
-            window.location.reload();
+            window.dispatchEvent(new CustomEvent('modelChanged', {
+              detail: {
+                previousModel: previousDisplayName,
+                newModel: displayName,
+                modelId: selectedModelId
+              }
+            }));
           }
 
           // Dispatch event for token display update
@@ -188,13 +273,13 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
           return true;
         }
       }
-      
+
       throw new Error('Failed to verify model change');
     } catch (error) {
       message.error('Failed to change model: ' + (error instanceof Error ? error.message : 'Unknown error'));
       message.error('Failed to change model');
       return false;
-    }    
+    }
   };
 
   const handleSaveSettings = async (newSettings: ModelSettings) => {
@@ -219,10 +304,10 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       }
 
       const currentSettings = await verifyResponse.json();
-      
+
       // Helper function to compare numbers with tolerance
       const isClose = (a: number, b: number, tolerance = 0.001) => Math.abs(a - b) <= tolerance;
-      
+
       // Check if settings match what we tried to set, with tolerance for floating point
       const settingsMatch = {
         temperature: isClose(currentSettings.settings.temperature, newSettings.temperature),
@@ -230,9 +315,9 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
         max_output_tokens: currentSettings.settings.max_output_tokens === newSettings.max_output_tokens,
         thinking_mode: currentSettings.settings.thinking_mode === newSettings.thinking_mode
       };
-      
+
       const allMatch = Object.values(settingsMatch).every(match => match);
-      
+
       if (!allMatch) {
         console.error('Settings mismatch:', {
           expected: newSettings,
@@ -244,7 +329,7 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       if (!settingsMatch) {
         throw new Error('Settings verification failed');
       }
-    
+
       // Only update local state if verification succeeds
       setSettings(newSettings);
       message.success('Model settings updated and verified');
@@ -253,7 +338,7 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       window.dispatchEvent(new CustomEvent('modelSettingsChanged', {
         detail: { settings: newSettings, capabilities }
       }));
-      
+
     } catch (error) {
       console.error('Error saving or verifying model settings:', error);
       throw error; // Re-throw to allow modal to reset state
@@ -262,22 +347,24 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
 
   return (
     <>
-      <Tooltip title="Configure ${currentModelId} settings">
-        <Button 
-          type="text" 
-          icon={<SettingOutlined />} 
-          onClick={() => setModalVisible(true)} 
+      <Tooltip title="Configure model settings">
+        <Button
+          type="text"
+          icon={<SettingOutlined />}
+          onClick={() => setModalVisible(true)}
         />
       </Tooltip>
       <ModelConfigModal
         visible={modalVisible}
         onClose={() => setModalVisible(false)}
-        modelId={currentModelId}
+        modelId={typeof currentModelId === 'object' ? JSON.stringify(currentModelId) : currentModelId}
+        displayModelId={displayModelId}
         capabilities={capabilities}
         availableModels={availableModels}
         onModelChange={handleModelChange}
         onSave={handleSaveSettings}
         endpoint={endpoint}
+        region={region}
         currentSettings={settings}
       />
     </>
