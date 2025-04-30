@@ -50,7 +50,12 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     pipeline.update_stage(PipelineStage.INIT)
     
     # Split combined diffs if present
+    logger.debug(f"Original diff first 10 lines:\n{git_diff.splitlines()[:10]}")
     individual_diffs = split_combined_diff(git_diff)
+    logger.debug(f"Number of individual diffs: {len(individual_diffs)}")
+    if len(individual_diffs) > 0:
+        logger.debug(f"First individual diff first 10 lines:\n{individual_diffs[0].splitlines()[:10]}")
+    
     if len(individual_diffs) > 1:
         # Find the diff that matches our target file
         matching_diff = next((diff for diff in individual_diffs 
@@ -103,6 +108,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     
     # Parse the hunks to track
     try:
+        logger.debug(f"Before parsing hunks, git_diff first 10 lines:\n{git_diff.splitlines()[:10]}")
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
         pipeline.initialize_hunks(hunks)
     except Exception as e:
@@ -148,6 +154,12 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     
     if separate_hunks:
         logger.info(f"Found {len(separate_hunks)} hunks that could be applied separately")
+        # Add all pending hunks to the separate_hunks list to ensure they're all tried
+        for hunk_id, tracker in pipeline.result.hunks.items():
+            if tracker.status == HunkStatus.PENDING and hunk_id not in separate_hunks:
+                separate_hunks.append(hunk_id)
+                logger.info(f"Added hunk #{hunk_id} to separate_hunks list to ensure sequential application")
+        
         separate_result = try_separate_hunks(pipeline, user_codebase_dir, separate_hunks)
         if separate_result:
             logger.info("Successfully applied some hunks separately")
@@ -695,21 +707,60 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         
         # Map hunk numbers to their IDs in the pipeline
         hunk_id_mapping = {}
-        for i, hunk in enumerate(hunks, 1):
-            hunk_id = hunk.get('number', i)
-            hunk_id_mapping[i] = hunk_id
+
+        # Get the original hunk IDs in order
+        original_hunk_ids = sorted(pipeline.result.hunks.keys())
+
+        # Create a list of pending hunks (those that still need processing)
+        pending_hunks = [hunk_id for hunk_id in original_hunk_ids 
+                        if pipeline.result.hunks[hunk_id].status == HunkStatus.PENDING]
+
+        # Log the pending hunks for debugging
+        logger.info(f"Pending hunks that need processing: {pending_hunks}")
+
+        # Create mapping from current sequential index to original hunk ID
+        # This handles discontiguous mappings by using the actual pending hunks
+        if len(pending_hunks) == len(hunks):
+            # If the number of pending hunks matches the number of hunks in the diff,
+            # we can map them directly
+            for i, hunk_id in enumerate(pending_hunks, 1):
+                hunk_id_mapping[i] = hunk_id
+        else:
+            # If there's a mismatch in the number of hunks, log a warning
+            # and fall back to a best-effort mapping
+            logger.warning(f"Mismatch between pending hunks ({len(pending_hunks)}) and hunks in diff ({len(hunks)})")
             
+            # Try to match hunks by content if possible
+            for i, hunk in enumerate(hunks, 1):
+                if i <= len(pending_hunks):
+                    hunk_id_mapping[i] = pending_hunks[i-1]
+                else:
+                    # If we run out of pending hunks, use a fallback
+                    # Find the next available hunk ID
+                    next_id = max(original_hunk_ids) + 1 if original_hunk_ids else i
+                    hunk_id_mapping[i] = next_id
+                    logger.warning(f"No pending hunk available for diff hunk #{i}, using ID {next_id}")
+
         # Log the mapping for debugging
-        logger.info(f"Hunk ID mapping: {hunk_id_mapping}")
+        logger.info(f"Hunk ID mapping for discontiguous hunks: {hunk_id_mapping}")
         
         # Check each hunk
         hunk_id = None
         for i, hunk in enumerate(hunks, 1):
             all_hunks_found_applied = False  # Reset for each hunk to avoid false positives
-            hunk_id = hunk.get('number', i)
-            #  Skip hunks that are already marked as applied in the pipeline
-            if pipeline.result.hunks[hunk_id].status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED):
-                logger.info(f"Skipping hunk #{hunk_id} as it's already been successfully applied")
+            
+            # FIXED: Use the correct hunk ID from the mapping
+            original_hunk_id = hunk_id_mapping.get(i)
+            if original_hunk_id is None:
+                logger.warning(f"No mapping found for hunk #{i}, using hunk number as fallback")
+                original_hunk_id = hunk.get('number', i)
+                
+            # Log which hunk we're processing
+            logger.info(f"Processing hunk #{i} (mapped to original hunk #{original_hunk_id})")
+            
+            # Skip hunks that are already marked as applied in the pipeline
+            if original_hunk_id in pipeline.result.hunks and pipeline.result.hunks[original_hunk_id].status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED):
+                logger.info(f"Skipping hunk #{original_hunk_id} as it's already been successfully applied")
                 continue
                 
             found_applied_at_any_pos = False
@@ -717,8 +768,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
                 if is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=False):
                     found_applied_at_any_pos = True
-                    # Get the correct hunk ID from the mapping
-                    pipeline_hunk_id = hunk_id_mapping.get(i, hunk_id)
+                    # Use the correct hunk ID from the mapping
+                    pipeline_hunk_id = hunk_id_mapping.get(i, original_hunk_id)
                     already_applied_hunks.append(pipeline_hunk_id)
                     
                     # Update the hunk status in the pipeline
@@ -727,10 +778,10 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         stage=PipelineStage.DIFFLIB,
                         status=HunkStatus.ALREADY_APPLIED
                     )
-                    logger.info(f"Hunk #{hunk_id} is already applied at position {pos}")
+                    logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos}")
                     break
             if not found_applied_at_any_pos:
-                logger.info(f"Hunk #{hunk_id} is not already applied")
+                logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) is not already applied")
                 all_hunks_found_applied = False
                 # Don't break here - continue checking other hunks
                 
@@ -757,9 +808,10 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             
             # Explicitly add all hunks to already_applied_hunks
             for i, hunk in enumerate(hunks, 1):
-                hunk_id = hunk.get('number', i)
-                if hunk_id not in pipeline.result.already_applied_hunks:
-                    pipeline.result.already_applied_hunks.append(hunk_id)
+                # FIXED: Use the correct hunk ID from the mapping
+                pipeline_hunk_id = hunk_id_mapping.get(i, hunk.get('number', i))
+                if pipeline_hunk_id not in pipeline.result.already_applied_hunks:
+                    pipeline.result.already_applied_hunks.append(pipeline_hunk_id)
             
             # Set the status to success for already applied hunks
             pipeline.result.status = "success"

@@ -58,6 +58,8 @@ def split_combined_diff(diff_content: str) -> List[str]:
     Returns:
         A list of individual diff strings
     """
+    logger.debug(f"split_combined_diff input first 10 lines:\n{diff_content.splitlines()[:10]}")
+    
     if not diff_content:
         return []
     
@@ -78,14 +80,24 @@ def split_combined_diff(diff_content: str) -> List[str]:
             if part.strip():
                 # Fix malformed headers by ensuring proper format
                 fixed_part = 'diff --git ' + part
+                logger.debug(f"split_combined_diff reconstructed diff first 10 lines:\n{fixed_part.splitlines()[:10]}")
                 
                 # Check if the diff header is properly formatted
                 lines = fixed_part.splitlines()
                 if len(lines) >= 3:
+                    # Check if we already have a +++ line and its position
+                    plus_line_index = None
+                    for i, line in enumerate(lines[:5]):  # Check first 5 lines to be safe
+                        if line.startswith('+++ '):
+                            plus_line_index = i
+                            break
+                    
+                    has_plus_line = plus_line_index is not None
+                    
                     # Ensure the header has proper file paths
                     if not (lines[0].startswith('diff --git') and 
                            (lines[1].startswith('--- ') or lines[1].startswith('--- a/')) and
-                           (lines[2].startswith('+++ ') or lines[2].startswith('+++ b/'))):
+                           has_plus_line):
                         
                         # Try to extract file paths from the diff --git line
                         match = re.match(r'diff --git a/(.*) b/(.*)', lines[0])
@@ -94,9 +106,17 @@ def split_combined_diff(diff_content: str) -> List[str]:
                             # Fix the header lines
                             if not lines[1].startswith('--- '):
                                 lines[1] = f'--- a/{file_path}'
-                            if len(lines) > 2 and not lines[2].startswith('+++ '):
-                                lines[2] = f'+++ b/{file_path}'
-                            fixed_part = '\n'.join(lines)
+                            
+                            # Only add +++ line if it doesn't exist
+                            if not has_plus_line:
+                                # Find where to insert the +++ line
+                                if len(lines) > 2:
+                                    # Insert after the --- line
+                                    new_lines = lines[:2] + [f'+++ b/{file_path}'] + lines[2:]
+                                    fixed_part = '\n'.join(new_lines)
+                            # If +++ line exists but is not in the right position, don't modify it
+                            
+                            logger.debug(f"split_combined_diff fixed header first 10 lines:\n{fixed_part.splitlines()[:10]}")
                 
                 diffs.append(fixed_part)
     else:
@@ -182,6 +202,7 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
     Returns:
         A list of dictionaries representing hunks
     """
+    logger.debug(f"parse_unified_diff_exact_plus input diff first 10 lines:\n{diff_content.splitlines()[:10]}")
     lines = diff_content.splitlines()
     logger.debug(f"Parsing diff with {len(lines)} lines:\n{diff_content}")
     hunks = []

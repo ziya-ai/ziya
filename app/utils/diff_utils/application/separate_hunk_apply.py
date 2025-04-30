@@ -35,18 +35,38 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
     # Track if any changes were written
     any_changes_written = False
     
-    # Process each hunk separately
+    # Parse the diff to get all hunks for line number adjustment
+    hunks = list(parse_unified_diff_exact_plus(pipeline.original_diff, pipeline.file_path))
+    
+    # Map hunk IDs to their indices in the hunks list
+    hunk_index_map = {}
+    for i, hunk in enumerate(hunks):
+        hunk_id = hunk.get('number', i+1)
+        hunk_index_map[hunk_id] = i
+    
+    # Track line number adjustments as we apply hunks
+    line_adjustment = 0
+    
+    # Sort hunks by their position in the file to ensure proper sequential application
+    separate_hunks.sort(key=lambda hunk_id: hunks[hunk_index_map.get(hunk_id, 0)].get('old_start', 0))
+    
+    # Process each hunk separately in order
     for hunk_id in separate_hunks:
-        hunk_data = pipeline.result.hunks[hunk_id].hunk_data
+        hunk_index = hunk_index_map.get(hunk_id)
+        if hunk_index is None:
+            logger.warning(f"Hunk #{hunk_id} not found in hunks list")
+            continue
+            
+        hunk = hunks[hunk_index]
         
-        # Extract this hunk into its own diff
+        # Extract this hunk into its own diff with line number adjustment
         try:
-            hunk_diff = extract_hunk_from_diff(pipeline.original_diff, hunk_id)
+            hunk_diff = extract_hunk_from_diff(pipeline.original_diff, hunk_id, line_adjustment)
             if not hunk_diff:
                 logger.warning(f"Failed to extract hunk #{hunk_id} from diff")
                 continue
 
-            logger.info(f"Extracted hunk #{hunk_id} for separate application")
+            logger.info(f"Extracted hunk #{hunk_id} for separate application with line adjustment {line_adjustment}")
             logger.debug(f"Hunk diff content:\n{hunk_diff}")
             
             # Apply this hunk with system patch
@@ -62,6 +82,14 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
                     confidence=pipeline.result.hunks[hunk_id].confidence
                 )
                 any_changes_written = True
+                
+                # Update line adjustment for future hunks
+                # Calculate the net change in line count from this hunk
+                added_lines = len(hunk.get('added_lines', []))
+                removed_lines = len(hunk.get('removed_lines', []))
+                net_change = added_lines - removed_lines
+                line_adjustment += net_change
+                logger.info(f"Updated line adjustment to {line_adjustment} after applying hunk #{hunk_id}")
             else:
                 logger.warning(f"Failed to apply hunk #{hunk_id} separately")
                 # Keep the hunk as is - it will be tried in later stages
@@ -131,13 +159,14 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str) ->
             os.unlink(temp_path)
             logger.debug(f"Removed temporary diff file {temp_path}")
 
-def extract_hunk_from_diff(diff_content: str, hunk_id: int) -> Optional[str]:
+def extract_hunk_from_diff(diff_content: str, hunk_id: int, line_adjustment: int = 0) -> Optional[str]:
     """
     Extract a single hunk from a diff based on its ID.
     
     Args:
         diff_content: The full diff content
         hunk_id: The ID of the hunk to extract
+        line_adjustment: Optional adjustment to line numbers
         
     Returns:
         A diff containing only the specified hunk, or None if the hunk couldn't be found
@@ -179,9 +208,16 @@ def extract_hunk_from_diff(diff_content: str, hunk_id: int) -> Optional[str]:
             logger.warning(f"Hunk #{hunk_id} not found in diff")
             return None
         
+        # Apply line number adjustment if provided
+        if line_adjustment != 0:
+            logger.info(f"Adjusting line numbers for hunk #{hunk_id} by {line_adjustment} lines")
+            target_hunk['old_start'] += line_adjustment
+            target_hunk['new_start'] += line_adjustment
+        
         # Construct a new diff with just this hunk
         # Recreate the hunk header from the hunk data
         hunk_header = f"@@ -{target_hunk['old_start']},{len(target_hunk['old_block'])} +{target_hunk['new_start']},{len(target_hunk['new_lines'])} @@"
+        logger.debug(f"Adjusted hunk header: {hunk_header}")
         
         header_lines = [
             f"--- {source_path}",
