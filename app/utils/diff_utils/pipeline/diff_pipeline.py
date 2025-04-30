@@ -358,7 +358,12 @@ class DiffPipeline:
         reset_count = 0
         for hunk_id, tracker in self.result.hunks.items():
             if tracker.status == HunkStatus.FAILED:
-                tracker.status = HunkStatus.PENDING
+                self.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=self.current_stage,
+                    status=HunkStatus.PENDING,
+                    error_details=None  # Clear previous errors
+                )
                 reset_count += 1
         
         return reset_count

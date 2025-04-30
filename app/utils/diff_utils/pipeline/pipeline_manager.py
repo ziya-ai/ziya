@@ -367,8 +367,16 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
             return False
         
         # Update hunk statuses based on dry run
-        for hunk_id, success in dry_run_status.items():
-            if success:
+        for hunk_id, status_info in dry_run_status.items():
+            status_value = status_info.get("status")
+            if status_value == "already_applied":
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.SYSTEM_PATCH,
+                    status=HunkStatus.ALREADY_APPLIED,
+                    position=status_info.get("position")
+                )
+            elif status_value == "succeeded":
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
@@ -383,12 +391,12 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
                 )
         
         # If no hunks succeeded in dry run, skip the actual patch
-        if not any(success for success in dry_run_status.values()):
+        if not any(status_info.get("status") == "succeeded" for status_info in dry_run_status.values()):
             logger.info("No hunks succeeded in dry run, skipping actual patch")
             return False
         
         # Apply the patch for real
-        logger.info(f"Applying {sum(1 for v in dry_run_status.values() if v)}/{len(dry_run_status)} hunks with system patch...")
+        logger.info(f"Applying {sum(1 for v in dry_run_status.values() if v.get('status') == 'succeeded')}/{len(dry_run_status)} hunks with system patch...")
         patch_command_apply = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '-i', '-']
         command_to_run_apply = patch_command_apply
         patch_result = subprocess.run(

@@ -70,18 +70,19 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
             logger.debug(f"Hunk diff content:\n{hunk_diff}")
             
             # Apply this hunk with system patch
-            success = apply_single_hunk(hunk_diff, user_codebase_dir, pipeline.file_path)
+            success, already_applied = apply_single_hunk(hunk_diff, user_codebase_dir, pipeline.file_path)
             
             if success:
-                logger.info(f"Successfully applied hunk #{hunk_id} separately")
+                status = HunkStatus.ALREADY_APPLIED if already_applied else HunkStatus.SUCCEEDED
+                logger.info(f"{'Hunk was already applied' if already_applied else 'Successfully applied hunk'} #{hunk_id} separately")
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
-                    status=HunkStatus.SUCCEEDED,  # Mark as SUCCEEDED, not PENDING
+                    status=status,
                     position=pipeline.result.hunks[hunk_id].position,
                     confidence=pipeline.result.hunks[hunk_id].confidence
                 )
-                any_changes_written = True
+                any_changes_written = any_changes_written or not already_applied
                 
                 # Update line adjustment for future hunks
                 # Calculate the net change in line count from this hunk
@@ -103,7 +104,7 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
         
     return any_changes_written
 
-def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str) -> bool:
+def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str) -> Tuple[bool, bool]:
     """
     Apply a single hunk with system patch.
     
@@ -113,7 +114,9 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str) ->
         file_path: Path to the file to modify
         
     Returns:
-        True if the hunk was applied successfully, False otherwise
+        Tuple of (success, already_applied) where:
+        - success: True if the hunk was applied successfully or was already applied
+        - already_applied: True if the hunk was already applied
     """
     # Create a temporary file for the diff
     try:
@@ -142,17 +145,20 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str) ->
         logger.debug(f"Patch stderr: {patch_result.stderr}")
         logger.debug(f"Patch return code: {patch_result.returncode}")
         
+        # Check if the patch was already applied
+        already_applied = "Reversed (or previously applied) patch detected" in patch_result.stdout
+        
         # Check if the patch was applied successfully
         if patch_result.returncode == 0:
-            logger.info(f"Successfully applied hunk to {file_path}")
-            return True
+            logger.info(f"{'Hunk was already applied to' if already_applied else 'Successfully applied hunk to'} {file_path}")
+            return True, already_applied
         else:
             logger.warning(f"Failed to apply hunk to {file_path}")
-            return False
+            return False, False
             
     except Exception as e:
         logger.error(f"Error applying single hunk: {str(e)}")
-        return False
+        return False, False
     finally:
         # Clean up the temporary file
         if 'temp_path' in locals() and os.path.exists(temp_path):

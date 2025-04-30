@@ -40,6 +40,9 @@ def parse_patch_output(stdout: str, stderr: str) -> Dict[int, Any]:
         logger.warning(f"Malformed patch detected: {stderr}")
         return result  # Return empty result for malformed patch
     
+    # Check if the patch was detected as already applied or reversed
+    reversed_or_applied = "Reversed (or previously applied)" in stdout
+    
     # Parse stdout for hunk application status
     hunk_pattern = r'Hunk #(\d+) succeeded at (\d+)'
     for line in stdout.splitlines():
@@ -47,8 +50,12 @@ def parse_patch_output(stdout: str, stderr: str) -> Dict[int, Any]:
         if match:
             hunk_num = int(match.group(1))
             position = int(match.group(2))
+            
+            # If the patch was detected as reversed or already applied, mark as already_applied
+            status = "already_applied" if reversed_or_applied else "succeeded"
+            
             result[hunk_num] = {
-                "status": "succeeded",
+                "status": status,
                 "position": position
             }
             continue
@@ -59,8 +66,12 @@ def parse_patch_output(stdout: str, stderr: str) -> Dict[int, Any]:
             hunk_num = int(fuzz_match.group(1))
             position = int(fuzz_match.group(2))
             fuzz = int(fuzz_match.group(3))
+            
+            # If the patch was detected as reversed or already applied, mark as already_applied
+            status = "already_applied" if reversed_or_applied else "succeeded"
+            
             result[hunk_num] = {
-                "status": "succeeded",
+                "status": status,
                 "position": position,
                 "fuzz": fuzz
             }
@@ -72,8 +83,12 @@ def parse_patch_output(stdout: str, stderr: str) -> Dict[int, Any]:
             hunk_num = int(offset_match.group(1))
             position = int(offset_match.group(2))
             offset = int(offset_match.group(3))
+            
+            # If the patch was detected as reversed or already applied, mark as already_applied
+            status = "already_applied" if reversed_or_applied else "succeeded"
+            
             result[hunk_num] = {
-                "status": "succeeded",
+                "status": status,
                 "position": position,
                 "offset": offset
             }
