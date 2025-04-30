@@ -252,6 +252,9 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         logger.debug(f"Actual patch stderr: {patch_result.stderr}")
         logger.debug(f"Actual patch return code: {patch_result.returncode}")
         
+        # Check if the patch was already applied
+        already_applied = "Reversed (or previously applied) patch detected" in patch_result.stdout
+        
         # Check if the patch was applied successfully
         if patch_result.returncode == 0:
             logger.info(f"Actual patch succeeded for hunk in {file_path}")
