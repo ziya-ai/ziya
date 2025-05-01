@@ -2,7 +2,7 @@ from typing import List, Optional, Tuple
 import re
 import logging
 from ..core.exceptions import PatchApplicationError
-from ..core.config import get_max_offset
+from ..core.config import get_max_offset, get_confidence_threshold
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from ..validation.validators import normalize_line_for_comparison
 from .fuzzy_match import find_best_chunk_position
@@ -10,8 +10,9 @@ from .fuzzy_match import find_best_chunk_position
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Constants
-MIN_CONFIDENCE = 0.7  # Minimum confidence threshold for fuzzy matching
+# Use the configuration system for confidence threshold
+# This constant is kept for backward compatibility but should use get_confidence_threshold('medium')
+MIN_CONFIDENCE = get_confidence_threshold('medium')  # Medium confidence threshold for fuzzy matching
 
 def clamp(value, min_val, max_val):
     """Clamp a value between min and max values."""

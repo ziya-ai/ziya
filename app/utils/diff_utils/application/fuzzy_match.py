@@ -6,6 +6,7 @@ import difflib
 import logging
 from typing import List, Optional, Tuple
 import os
+from ..core.config import get_search_radius, get_confidence_threshold
 
 def find_best_chunk_position(
     file_lines: List[str], 
@@ -27,11 +28,11 @@ def find_best_chunk_position(
     if not chunk_lines:
         return expected_pos, 1.0  # Empty chunks match perfectly at the expected position
 
-    # Get search radius from environment or use default
-    search_radius = int(os.environ.get('ZIYA_DIFF_SEARCH_RADIUS', '50'))
+    # Get search radius from config
+    search_radius = get_search_radius()
     
-    # Get confidence threshold from environment or use default
-    confidence_threshold = float(os.environ.get('ZIYA_DIFF_CONFIDENCE_THRESHOLD', '0.7'))
+    # Get confidence threshold from config (using 'medium' level)
+    confidence_threshold = get_confidence_threshold('medium')
     
     # Calculate search range
     start_pos = max(0, expected_pos - search_radius) if expected_pos is not None else 0
