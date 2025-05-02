@@ -23,6 +23,18 @@ export type Message = {
     isComplete?: boolean;
 };
 
+export interface ConversationFolder {
+    id: string;
+    name: string;
+    parentId?: string | null; // For nested folders
+    useGlobalContext: boolean; // Whether to use global file context
+    useGlobalModel: boolean; // Whether to use global model config
+    systemInstructions?: string; // Additional system instructions
+    createdAt: number;
+    updatedAt: number;
+}
+
+
 export interface Conversation {
     id: string;
     title: string;
@@ -32,6 +44,7 @@ export interface Conversation {
     _version?: number;  // Optional version field for tracking changes
     isNew?: boolean;    // Flag for newly created conversations
     isActive: boolean;
+    folderId?: string | null;
     displayMode?: 'raw' | 'pretty';  // Store display mode per conversation
 }
 

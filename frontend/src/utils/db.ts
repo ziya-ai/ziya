@@ -1,4 +1,4 @@
-import { Conversation } from './types';
+import { Conversation, ConversationFolder } from './types';
 import { message } from 'antd';
 
 declare global {
@@ -11,7 +11,7 @@ declare global {
 
 const DB_BASE_NAME = 'ZiyaDB';
 let currentDbName = DB_BASE_NAME;
-let currentVersion = 2;
+let currentVersion = 3; // Increment version to force upgrade
 const STORE_NAME = 'conversations';
 const BACKUP_STORE_NAME = 'conversationsBackup';
 
@@ -28,6 +28,10 @@ interface DB {
     getConversations(): Promise<Conversation[]>;
     exportConversations(): Promise<string>;
     importConversations(data: string): Promise<void>;
+    getFolders(): Promise<ConversationFolder[]>;
+    saveFolder(folder: ConversationFolder): Promise<void>;
+    deleteFolder(id: string): Promise<void>;
+    moveConversationToFolder(conversationId: string, folderId: string | null): Promise<boolean>;
     repairDatabase(): Promise<void>;
     forceReset(): Promise<void>;
     checkDatabaseHealth(): Promise<DatabaseHealth>;
@@ -60,16 +64,16 @@ class ConversationDB implements DB {
     private async _initWithLock(): Promise<void> {
         try {
             console.debug('Initializing database...');
-            
+
             if (this.db) {
                 this.db.close();
                 this.db = null;
             }
 
-	    // First check existing version
+            // First check existing version
             const checkRequest = indexedDB.open(currentDbName);
 
-	    return new Promise((resolve, reject) => {
+            return new Promise((resolve, reject) => {
                 checkRequest.onsuccess = () => {
                     const existingVersion = checkRequest.result.version;
                     checkRequest.result.close();
@@ -84,7 +88,7 @@ class ConversationDB implements DB {
                         usingVersion: currentVersion
                     });
 
-		    // Now open with correct version
+                    // Now open with correct version
                     const dbRequest = indexedDB.open(currentDbName, currentVersion);
 
                     dbRequest.onerror = () => {
@@ -93,7 +97,7 @@ class ConversationDB implements DB {
                         reject(dbRequest.error);
                     };
 
-		    dbRequest.onsuccess = () => {
+                    dbRequest.onsuccess = () => {
                         this.db = dbRequest.result;
 
                         this.db.onversionchange = () => {
@@ -114,26 +118,26 @@ class ConversationDB implements DB {
                             stores: Array.from(this.db.objectStoreNames)
                         });
                         resolve();
-                    
+
                     };
 
-                dbRequest.onupgradeneeded = (event: IDBVersionChangeEvent) => {
-                    console.debug('Upgrading database schema...');
-                    const db = (event.target as IDBOpenDBRequest).result;
-                    
-                    if (!db.objectStoreNames.contains(STORE_NAME)) {
-                        db.createObjectStore(STORE_NAME);
-                    }
-                    if (!db.objectStoreNames.contains(BACKUP_STORE_NAME)) {
-                        db.createObjectStore(BACKUP_STORE_NAME);
-                    }
-                };
- 
-                checkRequest.onerror = () => {
-                    console.error('Version check failed:', checkRequest.error);
-                    reject(checkRequest.error);
-	        };
-	      }
+                    dbRequest.onupgradeneeded = (event: IDBVersionChangeEvent) => {
+                        console.debug('Upgrading database schema from version', event.oldVersion, 'to', event.newVersion);
+                        const db = (event.target as IDBOpenDBRequest).result;
+
+                        if (event.oldVersion < 1) {
+                            db.createObjectStore(STORE_NAME);
+                        }
+                        if (event.oldVersion < 3) { // Update to match new version
+                            db.createObjectStore('folders', { keyPath: 'id' });
+                        }
+                    };
+
+                    checkRequest.onerror = () => {
+                        console.error('Version check failed:', checkRequest.error);
+                        reject(checkRequest.error);
+                    };
+                }
             });
         } catch (error) {
             this.initPromise = null;
@@ -350,7 +354,7 @@ class ConversationDB implements DB {
     }
 
     async exportConversations(): Promise<string> {
-	if (navigator.locks) {
+        if (navigator.locks) {
             return navigator.locks.request('ziya-db-read', async lock => {
                 return this._exportConversations();
             });
@@ -358,7 +362,7 @@ class ConversationDB implements DB {
         return this._exportConversations();
     }
     private async _exportConversations(): Promise<string> {
-	if (!this.db) {
+        if (!this.db) {
             throw new Error('Database not initialized');
         }
         try {
@@ -380,7 +384,7 @@ class ConversationDB implements DB {
     }
 
     async importConversations(data: string): Promise<void> {
-	if (navigator.locks) {
+        if (navigator.locks) {
             return navigator.locks.request('ziya-db-write', async lock => {
                 return this._importConversations(data);
             });
@@ -388,16 +392,16 @@ class ConversationDB implements DB {
         return this._importConversations(data);
     }
     private async _importConversations(data: string): Promise<void> {
-	if (!this.db) {
+        if (!this.db) {
             throw new Error('Database not initialized');
         }
         try {
-	    // Parse and validate the imported data
+            // Parse and validate the imported data
             const importedData = JSON.parse(data);
             if (!Array.isArray(importedData)) {
                 throw new Error('Invalid import format - expected array');
             }
-	    // Validate each conversation
+            // Validate each conversation
             const validConversations = importedData.filter(conv =>
                 this.validateConversations([conv])
             );
@@ -423,7 +427,7 @@ class ConversationDB implements DB {
                     });
                 }
             }
-	    // Start a transaction
+            // Start a transaction
             const tx = this.db.transaction([STORE_NAME], 'readwrite');
             const store = tx.objectStore(STORE_NAME);
             return new Promise((resolve, reject) => {
@@ -440,9 +444,115 @@ class ConversationDB implements DB {
                 request.onerror = () => reject(request.error);
             });
         } catch (error) {
-	    console.error('Import error:', error);
+            console.error('Import error:', error);
             throw new Error(error instanceof Error ? error.message : 'Failed to import conversations');
         }
+    }
+
+    async getFolders(): Promise<ConversationFolder[]> {
+        if (!this.db) {
+            try {
+                await this.init();
+            } catch (error) {
+                console.error('Failed to initialize database:', error);
+                return [];
+            }
+        }
+
+        try {
+            // Check if the 'folders' object store exists
+            if (!this.db!.objectStoreNames.contains('folders')) {
+                console.warn("Folders object store doesn't exist yet. Creating it now.");
+
+                // Close the current connection
+                this.db!.close();
+                this.db = null;
+
+                // Increment version and reinitialize
+                currentVersion++;
+                await this.init();
+
+                // Return empty array since no folders exist yet
+                return [];
+            } else {
+                return new Promise((resolve, reject) => {
+                    const tx = this.db!.transaction('folders', 'readonly');
+                    const store = tx.objectStore('folders');
+                    const request = store.getAll();
+                    request.onsuccess = () => resolve(request.result || []);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+        } catch (error) {
+            console.error('Error getting folders:', error);
+            return [];
+        }
+    }
+
+    async saveFolder(folder: ConversationFolder): Promise<void> {
+        await this.init();
+
+        // Check if the 'folders' object store exists
+        if (!this.db!.objectStoreNames.contains('folders')) {
+            console.warn("Folders object store doesn't exist yet. Creating it now.");
+
+            // Close the current connection
+            this.db!.close();
+            this.db = null;
+
+            // Increment version and reinitialize
+            currentVersion++;
+            await this.init();
+        }
+
+        return new Promise<void>((resolve, reject) => {
+            const tx = this.db!.transaction('folders', 'readwrite');
+            const store = tx.objectStore('folders');
+            const request = store.put(folder);
+            
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+            tx.oncomplete = () => resolve();
+        });
+    }
+
+    async deleteFolder(id: string): Promise<void> {
+        await this.init();
+        const tx = this.db!.transaction('folders', 'readwrite');
+        await tx.objectStore('folders').delete(id);
+    }
+
+    async moveConversationToFolder(conversationId: string, folderId: string | null): Promise<boolean> {
+        await this.init();
+        const tx = this.db!.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+
+        return new Promise((resolve, reject) => {
+            const getRequest = store.get('current');
+
+            getRequest.onsuccess = () => {
+                const conversations = Array.isArray(getRequest.result) ? getRequest.result : [];
+                let found = false;
+
+                const updatedConversations = conversations.map(conv => {
+                    if (conv.id === conversationId) {
+                        found = true;
+                        return { ...conv, folderId, _version: Date.now() };
+                    }
+                    return conv;
+                });
+
+                if (found) {
+                    const putRequest = store.put(updatedConversations, 'current');
+                    putRequest.onsuccess = () => resolve(true);
+                    putRequest.onerror = () => reject(putRequest.error);
+                } else {
+                    resolve(false);
+                }
+            };
+
+            getRequest.onerror = () => reject(getRequest.error);
+        });
     }
 
     async repairDatabase(): Promise<void> {
@@ -455,15 +565,15 @@ class ConversationDB implements DB {
     }
     private async _repairDatabase(): Promise<void> {
         console.debug('Starting database repair...');
-        
+
         if (this.db) {
             this.db.close();
             this.db = null;
         }
-        
+
         this.initPromise = null;
         await this.init();
-        
+
         const conversations = await this.getConversations();
         const validConversations = conversations.filter(conv =>
             this.validateConversations([conv])
@@ -476,7 +586,7 @@ class ConversationDB implements DB {
     }
 
     async clearDatabase(): Promise<void> {
-	if (navigator.locks) {
+        if (navigator.locks) {
             return navigator.locks.request('ziya-db-write', async lock => {
                 return this._clearDatabase();
             });

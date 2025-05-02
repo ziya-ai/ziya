@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo, useMemo, Suspense, useCallback } from 'react';
 import 'prismjs/themes/prism.css';
-import { Button, message, Radio, Space, Spin, RadioChangeEvent } from 'antd';
-import { marked, Tokens, Marked } from 'marked';
+import { Button, message, Radio, Space, Spin, RadioChangeEvent, Tooltip } from 'antd';
+import { marked, Tokens } from 'marked';
 import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
@@ -9,7 +9,7 @@ import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import {
     CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined,
-    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
+    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, ExclamationCircleOutlined
 } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
 import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
@@ -19,10 +19,14 @@ import type * as PrismType from 'prismjs';
 // Define the status interface
 interface HunkStatus {
     applied: boolean;
+    alreadyApplied?: boolean;
     reason: string;
 }
 
-const hunkStatuses = new WeakMap<object, HunkStatus>();
+// Use a regular Map with string keys for stable storage across renders
+// Key format: fileIndex-hunkIndex
+// This is more reliable than using WeakMap with object references
+const hunkStatusMap = new Map<string, HunkStatus>();
 
 export type RenderPath = 'full' | 'prismOnly' | 'diffOnly' | 'raw';
 
@@ -319,7 +323,7 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string =>
 
         const [oldPath, newPath] = extractPathsFromHeader(fullContent);
         console.log('Extracted paths from content:', { oldPath, newPath });
-        
+
 
         if (oldPath || newPath) {
             const path = newPath || oldPath;
@@ -391,7 +395,7 @@ const isDeletionDiff = (content: string) => {
 // Helper function to check if this is a new file diff
 const isNewFileDiff = (content: string) => {
     return (content.includes('--- /dev/null') && content.includes('+++ b/')) ||
-           (content.includes('new file mode') && content.includes('+++ b/'));
+        (content.includes('new file mode') && content.includes('+++ b/'));
 };
 
 const normalizeGitDiff = (diff: string): string => {
@@ -407,9 +411,9 @@ const normalizeGitDiff = (diff: string): string => {
         const hasDiffHeaders = lines.some(line =>
             (line.startsWith('---') || line.startsWith('+++'))
         ) && (
-            lines.some(line => line.startsWith('--- a/') || line.startsWith('+++ b/')) ||
-            lines.some(line => line.startsWith('--- /dev/null')) // Support new file diffs
-        );
+                lines.some(line => line.startsWith('--- a/') || line.startsWith('+++ b/')) ||
+                lines.some(line => line.startsWith('--- /dev/null')) // Support new file diffs
+            );
         console.log('Has diff headers:', hasDiffHeaders);
 
         const hasHunkHeader = lines.some(line =>
@@ -538,6 +542,13 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [parseError, setParseError] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>(initialDisplayMode as DisplayMode);
     const [statusUpdateCounter, setStatusUpdateCounter] = useState(0);
+    
+    // Clear the hunk status map when a new diff is rendered
+    useEffect(() => {
+        console.log("Clearing hunk status map for new diff");
+        hunkStatusMap.clear();
+        setStatusUpdateCounter(c => c + 1); // Force re-render
+    }, [diff]);
 
     // detect language from file path
     const detectLanguage = (filePath: string): string => {
@@ -689,7 +700,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         }
     }, [parsedFiles]);
 
-    const renderHunks = (hunks: any[], filePath: string) => {
+    const renderHunks = (hunks: any[], filePath: string, fileIndex: number) => {
         const tableClassName = `diff-table ${viewType === 'split' ? 'diff-split' : ''}`;
 
         return (
@@ -723,8 +734,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     )}
                 </colgroup>
                 <tbody>
-                    {hunks.map((hunk, index) => {
-                        const previousHunk = index > 0 ? (hunks[index - 1] as ExtendedHunk) : null;
+                    {hunks.map((hunk, hunkIndex) => {
+                        const previousHunk = hunkIndex > 0 ? (hunks[hunkIndex - 1] as ExtendedHunk) : null;
                         const linesBetween = previousHunk ?
                             hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines) : 0;
                         const showEllipsis = displayMode === 'pretty' &&
@@ -735,7 +746,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 `... (${linesBetween} lines)`;
 
                         // Get hunk status if available
-                        const status = hunkStatuses.get(hunk);
+                        // Create a stable key for this hunk
+                        const hunkKey = `${fileIndex}-${hunkIndex}`;
+                        const status = hunkStatusMap.get(hunkKey);
                         const isApplied = status?.applied;
                         const statusReason = status?.reason || '';
 
@@ -756,7 +769,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         );
 
                         return (
-                            <React.Fragment key={hunk.content}>
+                            <React.Fragment key={`${fileIndex}-${hunkIndex}`}>
                                 {/* Only show line count if there are lines between hunks */}
                                 {showEllipsis && (
                                     <tr>
@@ -880,8 +893,54 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         }
     };
 
-    const currentTheme = isDarkMode ? darkModeStyles : lightModeStyles;
-    return <>{parsedFiles.map((file, fileIndex) => {
+    const styles = `
+        .hunk-status-bar {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            margin: 0 auto 0 0;
+            padding: 0 8px;
+        }
+        
+        .hunk-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        
+        .hunk-status-dot.pending {
+            background-color: #8c8c8c;
+        }
+ 
+        .diff-header {
+            background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+            border-bottom: 1px solid ${isDarkMode ? '#303030' : '#e1e4e8'};
+            padding: 8px 16px;
+        }
+ 
+        .diff-header-content {
+            position: sticky;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 32px;
+            box-sizing: border-box;
+        }
+ 
+        .diff-header-content b {
+            color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 16px;
+        }
+    `;
+
+    const renderFile = (file: any, fileIndex: number) => {
+        console.log('Rendering diff view with hunks:', file.hunks.length, 'Status map size:', hunkStatusMap.size);
         return (
             <div
                 key={`diff-${fileIndex}`}
@@ -894,42 +953,83 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             >
                 <div className="diff-header">
                     <div className="diff-header-content">
-                        <b>{renderFileHeader(file)}</b>
-                        {!['delete'].includes(file.type) &&
-                            <ApplyChangesButton
-                                diff={diff}
-                                filePath={file.newPath || file.oldPath}
-                                enabled={window.enableCodeApply === 'true'}
-                            />
-                        }</div>
+                        <div className="header-left">
+                            <b>{renderFileHeader(file)}</b>
+
+                            {/* Add the hunk status indicators */}
+                            <span className="hunk-status-bar">
+                                {file.hunks.map((hunk, hunkIndex) => {
+                                    // Get the hunk status if available
+                                    // Create a stable key for this hunk
+                                    const hunkKey = `${fileIndex}-${hunkIndex}`;
+                                    console.log(`Checking status for hunk #${hunkIndex + 1} with key ${hunkKey}:`, hunkStatusMap.has(hunkKey) ? hunkStatusMap.get(hunkKey) : 'No status');
+                                    const status = hunkStatusMap.get(hunkKey);
+                                    const hunkId = hunkIndex + 1;
+
+                                    let statusIcon;
+                                    let statusColor;
+                                    let statusTooltip;
+                                
+                                    if (!status) {
+                                        // Pending status
+                                        statusIcon = <div className="hunk-status-dot pending" />;
+                                        statusColor = '#8c8c8c';
+                                        statusTooltip = `Hunk #${hunkId}: Pending`;
+                                    } else if (status.applied) {
+                                        if (status.alreadyApplied) {
+                                            // Already applied status
+                                            statusIcon = <CheckCircleOutlined style={{ color: '#faad14' }} />;
+                                            statusColor = '#faad14'; // Yellow
+                                            statusTooltip = `Hunk #${hunkId}: Already applied`;
+                                        } else {
+                                            // Successfully applied status
+                                            statusIcon = <CheckCircleOutlined style={{ color: '#52c41a' }} />;
+                                            statusColor = '#52c41a'; // Green
+                                            statusTooltip = `Hunk #${hunkId}: Successfully applied`;
+                                        }
+                                    } else {
+                                        // Failed status
+                                        statusIcon = <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
+                                        statusColor = '#ff4d4f'; // Red
+                                        statusTooltip = `Hunk #${hunkId}: Failed - ${status.reason}`;
+                                    }
+
+                                    return (
+                                        <Tooltip key={hunkId} title={statusTooltip}>
+                                            <div
+                                                className="hunk-status-indicator"
+                                                style={{
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    width: '24px',
+                                                    height: '24px',
+                                                    margin: '0 2px',
+                                                    borderRadius: '4px',
+                                                    backgroundColor: isDarkMode ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.05)',
+                                                    color: statusColor,
+                                                    cursor: 'pointer'
+                                                }}
+                                            >
+                                            {status ? statusIcon : hunkId}
+                                            </div>
+                                        </Tooltip>
+                                    );
+                                })}
+                            </span>
+                        </div>
+
+                        <div className="header-right">
+                            {!['delete'].includes(file.type) &&
+                                <ApplyChangesButton
+                                    diff={diff}
+                                    filePath={file.newPath || file.oldPath}
+                                    enabled={window.enableCodeApply === 'true'}
+                                />
+                            }
+                        </div>
+                    </div>
                 </div>
-                <style>{`
-                .diff-header {
-                    background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
-                    border-bottom: 1px solid ${isDarkMode ? '#303030' : '#e1e4e8'};
-                    padding: 8px 16px;
-                }
-
-                .diff-header-content {
-                    position: sticky;
-                    left: 0;
-                    right: 0;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    height: 32px;
-                    box-sizing: border-box;
-                }
-
-                .diff-header-content b {
-                    color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
-                    font-size: 14px;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    margin-right: 16px;
-                }
-            `}</style>
                 <div className="diff-view" style={{
                     position: 'relative',
                     width: '100%',
@@ -939,19 +1039,30 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     <div className="diff-content">
                         {renderHunks(
                             file.hunks,
-                            file.type === 'delete' ? file.oldPath : file.newPath || file.oldPath
+                            file.type === 'delete' ? file.oldPath : file.newPath || file.oldPath,
+                            fileIndex
                         )}
                     </div>
                 </div>
             </div>
         );
-    })}</>;
+    }
+
+    const currentTheme = isDarkMode ? darkModeStyles : lightModeStyles;
+    return (<div className="diff-files-container">
+        <style>{styles}</style>
+        {parsedFiles.map((file, fileIndex) =>
+            renderFile(file, fileIndex)
+        )}
+    </div>
+    );
 };
 
 const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, enabled }) => {
     const [isApplied, setIsApplied] = useState(false);
 
     const triggerDiffUpdate = () => {
+        console.log('Triggering diff update event');
         window.dispatchEvent(new Event('hunkStatusUpdate'));
     };
 
@@ -1055,9 +1166,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     setIsApplied(true);  // Complete success
                     // Update hunk statuses for successful application
                     const files = parseDiff(cleanDiff);
-                    files.forEach(file => {
-                        file.hunks.forEach(hunk => {
-                            hunkStatuses.set(hunk, {
+                    files.forEach((file, fileIndex) => {
+                        console.log('Setting status for file hunks:', file.hunks.length);
+                        file.hunks.forEach((hunk, hunkIndex) => {
+                            const hunkKey = `${fileIndex}-${hunkIndex}`;
+                            hunkStatusMap.set(hunkKey, {
                                 applied: true,
                                 reason: 'Successfully applied'
                             });
@@ -1075,28 +1188,41 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     // Handle the new format with hunk_statuses
                     parseDiff(cleanDiff).forEach((file, fileIndex) => {
                         file.hunks.forEach((hunk, hunkIndex) => {
+                            console.log(`Processing hunk #${hunkIndex + 1} status`);
+                            // Create a stable key for this hunk
+                            const hunkKey = `${fileIndex}-${hunkIndex}`;
                             // Get the hunk status from the response
                             // The hunk IDs in the response are 1-based, but our hunkIndex is 0-based
                             const hunkId = hunkIndex + 1;
                             const hunkStatus = data.details?.hunk_statuses?.[hunkId];
 
                             if (hunkStatus) {
-                                hunkStatuses.set(hunk, {
+                                console.log(`Setting status for hunk #${hunkId} with key ${hunkKey}:`, hunkStatus);
+                                hunkStatusMap.set(hunkKey, {
                                     applied: hunkStatus.status === 'succeeded',
+                                    alreadyApplied: hunkStatus.status === 'already_applied',
                                     reason: hunkStatus.status === 'failed'
                                         ? `Failed in ${hunkStatus.stage} stage`
                                         : 'Successfully applied'
                                 });
                             } else {
                                 // Fallback if we can't find the specific hunk status
+                                // Check if this hunk ID is in the failed list from the API response
+                                const isInSucceededList = data.details?.succeeded?.includes(hunkId);
+                                const isAlreadyAppliedList = data.details?.already_applied?.includes(hunkId);
                                 const isInFailedList = data.details?.failed?.includes(hunkId);
-                                hunkStatuses.set(hunk, {
+
+                                // Log this for debugging
+                                console.log(`Fallback status for hunk #${hunkId}: success=${isInSucceededList}, already=${isAlreadyAppliedList}, failed=${isInFailedList}`);
+
+                                hunkStatusMap.set(hunkKey, {
                                     applied: !isInFailedList,
                                     reason: isInFailedList ? 'Failed to apply' : 'Successfully applied'
                                 });
                             }
                         });
                     });
+                    console.log('Hunk statuses updated, triggering update');
                     triggerDiffUpdate();
 
                     // Show partial success message with failed hunks
@@ -1135,10 +1261,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     // Mark all hunks as failed
                     parseDiff(cleanDiff).forEach((file, fileIndex) => {
                         file.hunks.forEach((hunk, hunkIndex) => {
+                            console.log(`Setting failed status for hunk #${hunkIndex + 1}`);
+                            const hunkKey = `${fileIndex}-${hunkIndex}`;
                             const hunkId = hunkIndex + 1;
                             const hunkStatus = data.details?.hunk_statuses?.[hunkId];
 
-                            hunkStatuses.set(hunk, {
+                            hunkStatusMap.set(hunkKey, {
                                 applied: false,
                                 reason: hunkStatus?.stage
                                     ? `Failed in ${hunkStatus.stage} stage`
@@ -1146,6 +1274,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             });
                         });
                     });
+                    console.log('Failed statuses set, triggering update');
                     triggerDiffUpdate();
 
                     // Show error message
@@ -1166,9 +1295,13 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                                     <li key={index}>
                                                         <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
                                                         {`Hunk #${hunkId} failed`}
-                                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
-                                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
-                                                    </li>
+                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
+                                        
+                                        {/* Update the hunk status in our map to ensure UI is consistent with message */}
+                                        {(() => { hunkStatusMap.set(`0-${hunkId-1}`, { applied: false, reason: hunkStatus?.error_details?.error || 'Failed to apply' }); return null; })()}
+                                        
+                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
+                                    </li>
                                                 );
                                             })}
                                         </ul>
@@ -1204,13 +1337,16 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                         // Mark all hunks as failed
                         parseDiff(cleanDiff).forEach((file, fileIndex) => {
                             file.hunks.forEach((hunk, hunkIndex) => {
-                                hunkStatuses.set(hunk, {
+                                const hunkKey = `${fileIndex}-${hunkIndex}`;
+                                console.log(`Setting error status for hunk #${hunkIndex + 1}`);
+                                hunkStatusMap.set(hunkKey, {
                                     applied: false,
                                     reason: 'Failed to apply'
                                 });
                             });
                         });
                         triggerDiffUpdate();
+                        console.log('Error statuses set, triggering update');
                     }
 
                     message.error({
@@ -1346,6 +1482,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
 
     // Listen for status updates
     useEffect(() => {
+        console.log('Setting up hunkStatusUpdate listener');
         const handleStatusUpdate = () => setStatusUpdateCounter(c => c + 1);
         window.addEventListener('hunkStatusUpdate', handleStatusUpdate);
         return () => window.removeEventListener('hunkStatusUpdate', handleStatusUpdate);

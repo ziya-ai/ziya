@@ -1,5 +1,5 @@
 import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo } from 'react';
-import { Conversation, Message } from "../utils/types";
+import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import { debounce } from '../utils/debounce';
@@ -27,6 +27,14 @@ interface ChatContext {
     dbError: string | null;
     setIsTopToBottom: Dispatch<SetStateAction<boolean>>;
     scrollToBottom: () => void;
+    folders: ConversationFolder[];
+    setFolders: Dispatch<SetStateAction<ConversationFolder[]>>;
+    currentFolderId: string | null;
+    setCurrentFolderId: (id: string | null) => void;
+    createFolder: (name: string, parentId?: string | null) => Promise<string>;
+    moveConversationToFolder: (conversationId: string, folderId: string | null) => Promise<void>;
+    updateFolder: (folder: ConversationFolder) => Promise<void>;
+    deleteFolder: (id: string) => Promise<void>;
     setDisplayMode: (conversationId: string, mode: 'raw' | 'pretty') => void;
 }
 
@@ -50,6 +58,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isTopToBottom, setIsTopToBottom] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
     const lastSavedState = useRef<string>('');
+    const [folders, setFolders] = useState<ConversationFolder[]>([]);
+    const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+    const folderRef = useRef<string | null>(null);
+    const [folderPanelWidth, setFolderPanelWidth] = useState<number>(300); // Default width
+    const contentRef = useRef<HTMLDivElement>(null);
     const pendingSave = useRef<NodeJS.Timeout | null>(null);
     const messageUpdateCount = useRef(0);
     const [dbError, setDbError] = useState<string | null>(null);
@@ -62,6 +75,38 @@ export function ChatProvider({ children }: ChatProviderProps) {
             });
         }
     };
+
+    // Add a resize observer effect to monitor panel width changes
+    useEffect(() => {
+        const resizeObserver = new ResizeObserver(entries => {
+            for (const entry of entries) {
+                const folderPanel = document.querySelector('.folder-tree-panel');
+                if (folderPanel) {
+                    setFolderPanelWidth(entry.contentRect.width);
+                }
+            }
+        });
+
+        const folderPanel = document.querySelector('.folder-tree-panel');
+        if (folderPanel) {
+            resizeObserver.observe(folderPanel);
+        }
+
+        return () => {
+            resizeObserver.disconnect();
+        };
+    }, []);
+
+    // Listen for panel width changes
+    useEffect(() => {
+        const handlePanelResize = (e: CustomEvent) => {
+            if (e.detail && e.detail.width) {
+                setFolderPanelWidth(e.detail.width);
+            }
+        };
+        window.addEventListener('folderPanelResize', handlePanelResize as EventListener);
+        return () => window.removeEventListener('folderPanelResize', handlePanelResize as EventListener);
+    }, []);
 
     const addStreamingConversation = (id: string) => {
         setStreamingConversations(prev => {
@@ -129,6 +174,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const conversationId = targetConversationId || currentConversationId;
         if (!conversationId) return;
 
+        const folderId = currentFolderId;
+        // Calculate dynamic title length based on panel width
+        // We'll use a ratio of approximately 1 character per 6 pixels of width
+        const dynamicTitleLength = Math.max(30, Math.floor(folderPanelWidth / 6));
+
+        console.log('Dynamic title length:', { folderPanelWidth, dynamicTitleLength });
+
         messageUpdateCount.current += 1;
         setConversations(prevConversations => {
             const existingConversation = prevConversations.find(c => c.id === conversationId);
@@ -153,7 +205,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             hasUnreadResponse: shouldMarkUnread,
                             lastAccessedAt: Date.now(),
                             _version: Date.now(),
-                            title: isFirstMessage && message.role === 'human' ? message.content.slice(0, 45) + '...' : conv.title
+                            folderId: folderId,
+                            title: isFirstMessage && message.role === 'human' ? message.content.slice(0, dynamicTitleLength) + (message.content.length > dynamicTitleLength ? '...' : '') : conv.title
                         };
                     }
                     return conv;
@@ -161,9 +214,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 : [...prevConversations, {
                     id: conversationId,
                     title: message.role === 'human'
-                        ? message.content.slice(0, 45) + (message.content.length > 45 ? '...' : '')
+                        ? message.content.slice(0, dynamicTitleLength) + (message.content.length > dynamicTitleLength ? '...' : '')
                         : 'New Conversation',
                     messages: [message],
+                    folderId: folderId,
                     lastAccessedAt: Date.now(),
                     isActive: true,
                     _version: Date.now(),
@@ -201,7 +255,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 content: `Model changed from ${previousModel} to ${newModel}`,
                 _timestamp: Date.now(),
                 modelChange: {
-                    from: previousModel, 
+                    from: previousModel,
                     to: newModel
                 }
             };
@@ -227,6 +281,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     id: newId,
                     title: 'New Conversation',
                     messages: [],
+                    folderId: currentFolderId,
                     lastAccessedAt: Date.now(),
                     isActive: true,
                     _version: Date.now(),
@@ -262,6 +317,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setIsLoadingConversation(true);
         try {
             // First update conversations in memory
+            removeStreamingConversation(currentConversationId);
+            // Mark current conversation as read
             setConversations(prevConversations => {
                 const updatedConversations = prevConversations.map(conv =>
                     conv.id === currentConversationId
@@ -279,6 +336,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Set the current conversation ID after updating state
             await new Promise(resolve => setTimeout(resolve, 50));
             setCurrentConversationId(conversationId);
+
+            // Set the current folder ID based on the conversation's folder
+            const conversation = conversations.find(c => c.id === conversationId);
+            if (conversation && conversation.folderId !== undefined) {
+                setCurrentFolderId(conversation.folderId);
+            }
             console.log('Current conversation changed:', {
                 from: currentConversationId,
                 to: conversationId,
@@ -291,6 +354,84 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setStreamedContentMap(new Map());
     };
 
+    // Folder management functions
+    const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
+        const newFolder: ConversationFolder = {
+            id: uuidv4(),
+            name,
+            parentId: parentId || null,
+            useGlobalContext: true,
+            useGlobalModel: true,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        };
+
+        try {
+            await db.saveFolder(newFolder);
+            setFolders(prev => [...prev, newFolder]);
+            return newFolder.id;
+        } catch (error) {
+            console.error('Error creating folder:', error);
+            throw error;
+        }
+    }, []);
+
+    const updateFolder = useCallback(async (folder: ConversationFolder): Promise<void> => {
+        try {
+            folder.updatedAt = Date.now();
+            await db.saveFolder(folder);
+            setFolders(prev => prev.map(f => f.id === folder.id ? folder : f));
+        } catch (error) {
+            console.error('Error updating folder:', error);
+            throw error;
+        }
+    }, []);
+
+    const deleteFolder = useCallback(async (id: string): Promise<void> => {
+        try {
+            // Move all conversations in this folder to root
+            const conversationsInFolder = conversations.filter(c => c.folderId === id);
+
+            // Update conversations in memory first
+            setConversations(prev => prev.map(c =>
+                c.folderId === id ? { ...c, folderId: null, _version: Date.now() } : c
+            ));
+
+            // Then update in database
+            for (const conv of conversationsInFolder) {
+                await db.moveConversationToFolder(conv.id, null);
+            }
+
+            // Delete the folder
+            await db.deleteFolder(id);
+
+            // Update folders state
+            setFolders(prev => prev.filter(f => f.id !== id));
+
+            // If current folder is deleted, set current folder to null
+            if (currentFolderId === id) {
+                setCurrentFolderId(null);
+            }
+        } catch (error) {
+            console.error('Error deleting folder:', error);
+            throw error;
+        }
+    }, [conversations, currentFolderId]);
+
+    const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
+        try {
+            const success = await db.moveConversationToFolder(conversationId, folderId);
+            if (success) {
+                setConversations(prev => prev.map(c =>
+                    c.id === conversationId ? { ...c, folderId, _version: Date.now() } : c
+                ));
+            }
+        } catch (error) {
+            console.error('Error moving conversation to folder:', error);
+            throw error;
+        }
+    }, []);
+
     useEffect(() => {
         if (isInitialized) {
             const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
@@ -302,6 +443,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const initialize = async () => {
             try {
                 await db.init();
+                const savedFolders = await db.getFolders();
                 const saved = await db.getConversations();
                 setConversations(saved);
                 setIsInitialized(true);
@@ -309,6 +451,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 console.error('Failed to initialize:', error);
             }
         };
+
         initialize();
 
         const request = indexedDB.open('ZiyaDB');
@@ -324,6 +467,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
     }, []);
 
+    // Load folders when component mounts
+    useEffect(() => {
+        if (isInitialized) {
+            console.log("Loading folders from database...");
+            db.getFolders().then(setFolders).catch(console.error);
+        }
+    }, [isInitialized]);
+
     // Listen for model change events
     useEffect(() => {
         window.addEventListener('modelChanged', handleModelChange as EventListener);
@@ -335,6 +486,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     useEffect(() => {
         currentConversationRef.current = currentConversationId;
+        folderRef.current = currentFolderId;
         console.log('Current conversation ref updated:', {
             id: currentConversationId,
             streamingConversations: Array.from(streamingConversations),
@@ -343,6 +495,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             streamingToOther: streamingConversations.has(currentConversationId)
         });
     }, [currentConversationId]);
+
 
     useEffect(() => {
         const handleStorageChange = async () => {
@@ -403,7 +556,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
         isTopToBottom,
         setIsTopToBottom,
         scrollToBottom,
+        folders,
+        setFolders,
+        currentFolderId,
+        setCurrentFolderId,
+        createFolder,
+        updateFolder,
+        deleteFolder,
         setDisplayMode,
+        moveConversationToFolder,
         dbError,
         isLoadingConversation
     }), [
@@ -416,7 +577,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
         currentMessages,
         isTopToBottom,
         dbError,
+        currentFolderId,
+        createFolder,
+        updateFolder,
+        deleteFolder,
+        moveConversationToFolder,
         isLoadingConversation,
+        // Include setDisplayMode in the dependency array
         setQuestion,
         setStreamedContentMap,
         addStreamingConversation,

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Input, Tabs, Tree, TreeDataNode, Button, message } from 'antd';
 import { useFolderContext } from '../context/FolderContext';
 import { Folders } from '../utils/types';
@@ -9,6 +9,7 @@ import { ChatHistory } from "./ChatHistory";
 import { useTheme } from '../context/ThemeContext';
 import { ModelConfigButton } from './ModelConfigButton';
 import { ReloadOutlined, FolderOutlined, MessageOutlined } from '@ant-design/icons';
+import { FolderButton } from './FolderButton';
 import { convertToTreeData } from '../utils/folderUtil';
 const { TabPane } = Tabs;
 
@@ -34,12 +35,35 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const [modelId, setModelId] = useState<string>('');
     const { isDarkMode } = useTheme();
     const { currentConversationId } = useChatContext();
+    // Add state to track panel width
+    const [panelWidth, setPanelWidth] = useState<number>(300);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || DEFAULT_TAB);
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
+
+    // Add ref for the panel element
+    const panelRef = useRef<HTMLDivElement>(null);
+
+    // Add effect to track panel width
+    useEffect(() => {
+        if (!panelRef.current) return;
+
+        const resizeObserver = new ResizeObserver(entries => {
+            for (const entry of entries) {
+                setPanelWidth(entry.contentRect.width);
+                // Dispatch custom event for other components to react to width change
+                window.dispatchEvent(new CustomEvent('folderPanelResize', {
+                    detail: { width: entry.contentRect.width }
+                }));
+            }
+        });
+
+        resizeObserver.observe(panelRef.current);
+        return () => resizeObserver.disconnect();
+    }, []);
 
     useEffect(() => {
         if (searchValue) {
@@ -272,7 +296,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     );
 
     return (
-        <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
+        <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
             <TokenCountDisplay />
             <Tabs
                 activeKey={activeTab}
@@ -359,15 +383,22 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                     {
                         key: '2',
                         label: (
-                            <span>
-                                <MessageOutlined style={{ marginRight: 8 }} />
-                                Chat History
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                                <span>
+                                    <MessageOutlined style={{ marginRight: 8 }} />
+                                    Chat History
+                                </span>
+                                <div style={{ marginLeft: 'auto', marginRight: '-8px' }}>
+                                    <FolderButton />
+                                </div>
+                            </div>
                         ),
                         children: <ChatHistory />
                     }
                 ]}
-            />
+            >
+                {activeTab === '2' && <div style={{ display: 'none' }} id="panel-width-tracker" data-width={panelWidth}></div>}
+            </Tabs>
             <div className="model-id-display" style={{
                 display: 'flex',
                 alignItems: 'center',
