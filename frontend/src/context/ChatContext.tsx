@@ -543,6 +543,84 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, []);
 
+    // Folder management functions
+    const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
+        const newFolder: ConversationFolder = {
+            id: uuidv4(),
+            name,
+            parentId: parentId || null,
+            useGlobalContext: true,
+            useGlobalModel: true,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        };
+
+        try {
+            await db.saveFolder(newFolder);
+            setFolders(prev => [...prev, newFolder]);
+            return newFolder.id;
+        } catch (error) {
+            console.error('Error creating folder:', error);
+            throw error;
+        }
+    }, []);
+
+    const updateFolder = useCallback(async (folder: ConversationFolder): Promise<void> => {
+        try {
+            folder.updatedAt = Date.now();
+            await db.saveFolder(folder);
+            setFolders(prev => prev.map(f => f.id === folder.id ? folder : f));
+        } catch (error) {
+            console.error('Error updating folder:', error);
+            throw error;
+        }
+    }, []);
+
+    const deleteFolder = useCallback(async (id: string): Promise<void> => {
+        try {
+            // Move all conversations in this folder to root
+            const conversationsInFolder = conversations.filter(c => c.folderId === id);
+
+            // Update conversations in memory first
+            setConversations(prev => prev.map(c =>
+                c.folderId === id ? { ...c, folderId: null, _version: Date.now() } : c
+            ));
+
+            // Then update in database
+            for (const conv of conversationsInFolder) {
+                await db.moveConversationToFolder(conv.id, null);
+            }
+
+            // Delete the folder
+            await db.deleteFolder(id);
+
+            // Update folders state
+            setFolders(prev => prev.filter(f => f.id !== id));
+
+            // If current folder is deleted, set current folder to null
+            if (currentFolderId === id) {
+                setCurrentFolderId(null);
+            }
+        } catch (error) {
+            console.error('Error deleting folder:', error);
+            throw error;
+        }
+    }, [conversations, currentFolderId]);
+
+    const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
+        try {
+            const success = await db.moveConversationToFolder(conversationId, folderId);
+            if (success) {
+                setConversations(prev => prev.map(c =>
+                    c.id === conversationId ? { ...c, folderId, _version: Date.now() } : c
+                ));
+            }
+        } catch (error) {
+            console.error('Error moving conversation to folder:', error);
+            throw error;
+        }
+    }, []);
+
     useEffect(() => {
         if (isInitialized) {
             const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
