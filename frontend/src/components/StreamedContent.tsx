@@ -395,6 +395,33 @@ export const StreamedContent: React.FC = () => {
         };
     }, [isStreaming, currentConversationId, streamingConversations]);
     
+    // Set up observer to detect when user is viewing the bottom of content
+    useEffect(() => {
+        if (!contentRef.current) return;
+        
+        const observer = new IntersectionObserver(
+            (entries) => {
+                for (const entry of entries) {
+                    // If the content is visible and streaming is happening
+                    if (entry.isIntersecting && streamingConversations.has(currentConversationId)) {
+                        isAutoScrollingRef.current = true;
+                    } else {
+                        isAutoScrollingRef.current = false;
+                    }
+                }
+            },
+            { threshold: 0.1 }
+        );
+        
+        observer.observe(contentRef.current);
+        
+        return () => {
+            if (contentRef.current) {
+                observer.unobserve(contentRef.current);
+            }
+        };
+    }, [currentConversationId, streamingConversations]);
+
     // Add effect to handle conversation switches
     useEffect(() => {
         // Force scroll event to trigger re-render

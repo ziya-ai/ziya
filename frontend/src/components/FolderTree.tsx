@@ -223,7 +223,9 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                         children: <MUIChatHistory />
                     },
                 ]}
-            />
+            >
+                {activeTab === '2' && <div style={{ display: 'none' }} id="panel-width-tracker" data-width={panelWidth}></div>}
+            </Tabs>
             <div className="model-id-display" style={{
                 display: 'flex',
                 alignItems: 'center',
