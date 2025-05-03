@@ -31,7 +31,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         setCheckedKeys,
         expandedKeys,
         setExpandedKeys
-    } = useFolderContext();
+    } = useFolderContext(); 
     const [modelId, setModelId] = useState<string>('');
     const { isDarkMode } = useTheme();
     const { currentConversationId } = useChatContext();
@@ -42,6 +42,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
+    const { currentFolderId, folders: chatFolders, folderFileSelections, setFolderFileSelections } = useChatContext();
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
     // Add ref for the panel element
@@ -206,6 +207,27 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         setExpandedKeys(keys);
         setAutoExpandParent(false);
     };
+
+    // Save folder-specific file selections when they change
+    useEffect(() => {
+        if (currentFolderId) {
+            const folder = chatFolders.find(f => f.id === currentFolderId);
+            if (folder && !folder.useGlobalContext) {
+                // Store the current selections for this folder
+                setFolderFileSelections(prev => {
+                    const next = new Map(prev);
+                    next.set(currentFolderId, [...checkedKeys].map(key => String(key)));
+                    return next;
+                });
+            }
+        }
+    }, [checkedKeys, currentFolderId, chatFolders, setFolderFileSelections]);
+
+    // Update checked keys when folder changes
+    useEffect(() => {
+        // This is handled in FolderContext now
+    }, [currentFolderId, chatFolders, folderFileSelections]);
+
 
     const onCheck = React.useCallback(
         (checkedKeysValue, e) => {

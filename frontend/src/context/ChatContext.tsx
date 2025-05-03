@@ -22,7 +22,7 @@ interface ChatContext {
     addMessageToConversation: (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => void;
     currentMessages: Message[];
     loadConversation: (id: string) => void;
-    startNewChat: () => void;
+    startNewChat: (specificFolderId?: string | null) => Promise<void>;
     isTopToBottom: boolean;
     dbError: string | null;
     setIsTopToBottom: Dispatch<SetStateAction<boolean>>;
@@ -34,6 +34,8 @@ interface ChatContext {
     createFolder: (name: string, parentId?: string | null) => Promise<string>;
     moveConversationToFolder: (conversationId: string, folderId: string | null) => Promise<void>;
     updateFolder: (folder: ConversationFolder) => Promise<void>;
+    folderFileSelections: Map<string, string[]>;
+    setFolderFileSelections: Dispatch<SetStateAction<Map<string, string[]>>>;
     deleteFolder: (id: string) => Promise<void>;
     setDisplayMode: (conversationId: string, mode: 'raw' | 'pretty') => void;
 }
@@ -61,6 +63,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [folders, setFolders] = useState<ConversationFolder[]>([]);
     const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
     const folderRef = useRef<string | null>(null);
+    const [folderFileSelections, setFolderFileSelections] = useState<Map<string, string[]>>(new Map());
     const [folderPanelWidth, setFolderPanelWidth] = useState<number>(300); // Default width
     const contentRef = useRef<HTMLDivElement>(null);
     const pendingSave = useRef<NodeJS.Timeout | null>(null);
@@ -271,17 +274,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return updatedConversations;
             });
         }
-    }, [currentConversationId]);
+    }, [currentFolderId]);
 
-    const startNewChat = () => {
+    const startNewChat = (specificFolderId?: string | null) => {
         return new Promise<void>((resolve, reject) => {
             try {
                 const newId = uuidv4();
+
+                // Use the provided folder ID if available, otherwise use the current folder ID
+                const targetFolderId = specificFolderId !== undefined ? specificFolderId : currentFolderId;
+
                 const newConversation: Conversation = {
                     id: newId,
                     title: 'New Conversation',
                     messages: [],
-                    folderId: currentFolderId,
+                    folderId: targetFolderId,
                     lastAccessedAt: Date.now(),
                     isActive: true,
                     _version: Date.now(),
@@ -560,6 +567,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setFolders,
         currentFolderId,
         setCurrentFolderId,
+        folderFileSelections,
+        setFolderFileSelections,
         createFolder,
         updateFolder,
         deleteFolder,

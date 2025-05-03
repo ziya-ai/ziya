@@ -34,7 +34,7 @@ export const TokenCountDisplay = () => {
     const [containerWidth, setContainerWidth] = useState(0);
 
     const { folders, checkedKeys, getFolderTokenCount } = useFolderContext();
-    const { currentMessages, currentConversationId, isStreaming } = useChatContext();
+    const { currentMessages, currentConversationId, isStreaming, currentFolderId, folders: chatFolders, folderFileSelections } = useChatContext();
     const [totalTokenCount, setTotalTokenCount] = useState(0);
     const [chatTokenCount, setChatTokenCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
@@ -202,7 +202,21 @@ export const TokenCountDisplay = () => {
     // only calculate tokens when checked files change
     useEffect(() => {
         if (folders && checkedKeys.length > 0) {
-            console.debug('Recalculating file tokens due to checked files change');
+            // Check if we're in a folder with folder-specific file selections
+            const currentFolder = currentFolderId ? chatFolders.find(f => f.id === currentFolderId) : null;
+            const usesFolderContext = currentFolder && !currentFolder.useGlobalContext;
+            
+            // Determine which file selections to use
+            let effectiveCheckedKeys = [...checkedKeys];
+            if (usesFolderContext) {
+                const folderSelections = currentFolderId ? folderFileSelections.get(currentFolderId) : undefined;
+                if (folderSelections) {
+                    effectiveCheckedKeys = folderSelections;
+                }
+            }
+            
+            console.debug('Recalculating file tokens due to checked files change', { usesFolderContext, currentFolderId });
+            
             let total = 0;
             const details: { [key: string]: number } = {};
 
@@ -213,7 +227,7 @@ export const TokenCountDisplay = () => {
                     setTokenDetails({});
                     return;
                 }
-                const tokens = getFolderTokenCount(path, folders);
+                const tokens = getFolderTokenCount(path, folders); 
                 if (tokens > 0) {
                     details[path] = tokens;
                     total += tokens;
@@ -226,7 +240,7 @@ export const TokenCountDisplay = () => {
             setTokenDetails({});
             setTotalTokenCount(0);
         }
-    }, [checkedKeys, folders, getFolderTokenCount]);
+    }, [checkedKeys, folders, getFolderTokenCount, currentFolderId, chatFolders, folderFileSelections]);
 
     const getTokenColor = (count: number): string => {
         if (count >= dangerThreshold) return '#ff4d4f';  // Red

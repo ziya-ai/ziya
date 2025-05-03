@@ -58,7 +58,7 @@ export const FolderButton: React.FC = () => {
           <Form.Item
             name="name"
             label="Folder Name"
-            rules={[{ required: true, message: 'Please enter a folder name' }]}
+            rules={[{ required: true, message: 'Please enter a folder name', whitespace: true }]}
           >
             <Input placeholder="Enter folder name" />
           </Form.Item>
