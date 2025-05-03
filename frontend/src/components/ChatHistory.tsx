@@ -26,6 +26,7 @@ import { useFolderContext } from '../context/FolderContext';
 import type { DataNode, TreeProps } from 'antd/es/tree';
 import { FolderButton } from './FolderButton';
 
+import type { DataNode, TreeProps } from 'antd/es/tree';
 import { FolderButton } from './FolderButton';
 
 interface ChatHistoryItemProps {
@@ -238,6 +239,55 @@ export const ChatHistory: React.FC = () => {
     const scrollTimerRef = useRef<number | null>(null);
     const chatHistoryContainerRef = useRef<HTMLDivElement>(null);
     const isDraggingRef = useRef<boolean>(false);
+
+    const { checkedKeys, setCheckedKeys } = useFolderContext();
+
+    // Add state for pinned folders
+    const [pinnedFolders, setPinnedFolders] = useState<Set<string>>(new Set());
+
+    // Create a form instance at the component level to avoid React Hook rules violation
+    const [folderConfigForm] = Form.useForm();
+
+    // Define custom node type that extends DataNode
+    interface CustomTreeNode extends DataNode {
+        isConversation?: boolean;
+        isFolder?: boolean;
+        conversation?: Conversation;
+    }
+
+    // Load pinned folders from localStorage on mount
+    useEffect(() => {
+        try {
+            const savedPinnedFolders = localStorage.getItem('ZIYA_PINNED_FOLDERS');
+            if (savedPinnedFolders) {
+                setPinnedFolders(new Set(JSON.parse(savedPinnedFolders)));
+            }
+        } catch (error) {
+            console.error('Error loading pinned folders:', error);
+        }
+    }, []);
+
+    // Save pinned folders to localStorage when they change
+    useEffect(() => {
+        if (pinnedFolders.size > 0) {
+            localStorage.setItem('ZIYA_PINNED_FOLDERS', JSON.stringify([...pinnedFolders]));
+        }
+    }, [pinnedFolders]);
+
+    // Function to toggle pin status
+    const togglePinFolder = (folderId: string) => {
+        setPinnedFolders(prev => {
+            const newPinned = new Set(prev);
+            if (newPinned.has(folderId)) {
+                newPinned.delete(folderId);
+                message.info('Folder unpinned');
+            } else {
+                newPinned.add(folderId);
+                message.success('Folder pinned to top');
+            }
+            return newPinned;
+        });
+    };
 
     const { checkedKeys, setCheckedKeys } = useFolderContext();
 
@@ -734,6 +784,7 @@ export const ChatHistory: React.FC = () => {
     const handleFolderNameBlur = (folderId: string, newName: string) => {
         handleFolderNameChange(folderId, newName);
     };
+    */
 
     // Handle folder deletion
     const handleDeleteFolder = (folderId: string) => {
