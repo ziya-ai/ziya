@@ -383,7 +383,7 @@ export const TokenCountDisplay = memo(() => {
                     setTokenDetails({});
                     return;
                 }
-                const tokens = getFolderTokenCount(path, folders);
+                const tokens = getFolderTokenCount(path, folders); 
                 if (tokens > 0) {
                     details[path] = tokens;
                     total += tokens;

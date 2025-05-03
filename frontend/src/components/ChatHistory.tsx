@@ -1,21 +1,29 @@
 import React, { useState, useCallback, useEffect, memo, useRef } from 'react';
-import { List, Button, Input, message, Modal, Tree, Dropdown, Menu, Space, MenuProps, Typography } from 'antd';
+import { List, Button, Input, message, Modal, Tree, Dropdown, Menu, Space, MenuProps, Typography, Form, Switch, Radio, Divider } from 'antd';
 import {
     DeleteOutlined,
     EditOutlined,
     DownloadOutlined,
     UploadOutlined,
+    PlusOutlined,
     LoadingOutlined,
     CheckCircleOutlined,
     FolderOutlined,
     MoreOutlined,
-    DownOutlined
+    DownOutlined,
+    CopyOutlined,
+    CompressOutlined,
+    ToolOutlined,
+    PushpinOutlined
 } from '@ant-design/icons';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
-import { Conversation, ConversationFolder } from '../utils/types';
+import { Conversation, ConversationFolder, Message } from '../utils/types';
 import { db } from '../utils/db';
+import { v4 as uuidv4 } from 'uuid';
+import { useFolderContext } from '../context/FolderContext';
 
+import type { DataNode, TreeProps } from 'antd/es/tree';
 import { FolderButton } from './FolderButton';
 
 interface ChatHistoryItemProps {
@@ -207,19 +215,71 @@ export const ChatHistory: React.FC = () => {
         streamingConversations,
         startNewChat,
         loadConversation,
-        folders, setFolders, currentFolderId, setCurrentFolderId, createFolder, updateFolder, deleteFolder, moveConversationToFolder
+        folders, setFolders, currentFolderId, setCurrentFolderId, createFolder, updateFolder, deleteFolder, moveConversationToFolder,
+        folderFileSelections, setFolderFileSelections
     } = useChatContext();
     const { isDarkMode } = useTheme();
     const [isRepairing, setIsRepairing] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
+    const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
 
     // Preserve current conversation when component mounts
     const [folderTreeData, setFolderTreeData] = useState<any[]>([]);
     const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
     const [isInitialized, setIsInitialized] = useState(false);
+    const [pendingFolderId, setPendingFolderId] = useState<string | null>(null);
     const [dragState, setDragState] = useState<{ key: string, type: 'conversation' | 'folder' } | null>(null);
     const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
+
+    const { checkedKeys, setCheckedKeys } = useFolderContext();
+
+    // Add state for pinned folders
+    const [pinnedFolders, setPinnedFolders] = useState<Set<string>>(new Set());
+
+    // Create a form instance at the component level to avoid React Hook rules violation
+    const [folderConfigForm] = Form.useForm();
+
+    // Define custom node type that extends DataNode
+    interface CustomTreeNode extends DataNode {
+        isConversation?: boolean;
+        isFolder?: boolean;
+        conversation?: Conversation;
+    }
+
+    // Load pinned folders from localStorage on mount
+    useEffect(() => {
+        try {
+            const savedPinnedFolders = localStorage.getItem('ZIYA_PINNED_FOLDERS');
+            if (savedPinnedFolders) {
+                setPinnedFolders(new Set(JSON.parse(savedPinnedFolders)));
+            }
+        } catch (error) {
+            console.error('Error loading pinned folders:', error);
+        }
+    }, []);
+
+    // Save pinned folders to localStorage when they change
+    useEffect(() => {
+        if (pinnedFolders.size > 0) {
+            localStorage.setItem('ZIYA_PINNED_FOLDERS', JSON.stringify([...pinnedFolders]));
+        }
+    }, [pinnedFolders]);
+
+    // Function to toggle pin status
+    const togglePinFolder = (folderId: string) => {
+        setPinnedFolders(prev => {
+            const newPinned = new Set(prev);
+            if (newPinned.has(folderId)) {
+                newPinned.delete(folderId);
+                message.info('Folder unpinned');
+            } else {
+                newPinned.add(folderId);
+                message.success('Folder pinned to top');
+            }
+            return newPinned;
+        });
+    };
 
     useEffect(() => {
         if (currentConversationId && currentMessages.length > 0) {
@@ -250,7 +310,10 @@ export const ChatHistory: React.FC = () => {
                 children: [],
                 folder: folder,
                 conversationCount: 0,
-                isFolder: true
+                isFolder: true,
+                isPinned: pinnedFolders.has(folder.id),
+                lastActivityTime: 0 // Will be updated with conversation times
+
             });
         });
 
@@ -270,10 +333,18 @@ export const ChatHistory: React.FC = () => {
         // Add conversations to their respective folders
         const activeConversations = conversations.filter(conv => conv.isActive !== false);
         activeConversations.forEach(conv => {
-            // Count conversations per folder
+            // Count conversations per folder and track last activity time
             if (conv.folderId && folderMap.has(conv.folderId)) {
-                folderMap.get(conv.folderId).conversationCount++;
+                const folderNode = folderMap.get(conv.folderId);
+                folderNode.conversationCount++;
+
+                // Update folder's last activity time if this conversation is more recent
+                const convTime = conv.lastAccessedAt || 0;
+                if (convTime > folderNode.lastActivityTime) {
+                    folderNode.lastActivityTime = convTime;
+                }
             }
+
             const conversationNode = {
                 key: `conv-${conv.id}`,
                 title: conv.title,
@@ -294,13 +365,17 @@ export const ChatHistory: React.FC = () => {
         // Sort each level - folders first, then conversations
         const sortNodes = (nodes: any[]) => {
             return nodes.sort((a, b) => {
+                // Pinned folders come first
+                if (a.isPinned && !b.isPinned) return -1;
+                if (!a.isPinned && b.isPinned) return 1;
+
                 // Folders come before conversations
                 if (!a.isLeaf && b.isLeaf) return -1;
                 if (a.isLeaf && !b.isLeaf) return 1;
 
-                // Sort folders by name
+                // Sort folders by last activity time (most recent first)
                 if (!a.isLeaf && !b.isLeaf) {
-                    return a.title.localeCompare(b.title);
+                    return b.lastActivityTime - a.lastActivityTime;
                 }
 
                 // Sort conversations by last accessed time (most recent first)
@@ -326,7 +401,7 @@ export const ChatHistory: React.FC = () => {
         };
 
         return sortRecursive(rootItems);
-    }, [folders, conversations]);
+    }, [folders, conversations, pinnedFolders]);
 
     // Update folder tree data when folders or conversations change
     useEffect(() => {
@@ -397,8 +472,127 @@ export const ChatHistory: React.FC = () => {
         setExpandedKeys(expandedKeys);
     };
 
+    // Function to open folder configuration dialog
+    const openFolderConfig = (folder: ConversationFolder) => {
+        // Get current global file selections to use as a starting point
+        const currentGlobalSelections = [...checkedKeys].map(key => String(key));
+
+        // Get folder-specific file selections if they exist
+        const folderSelections = folderFileSelections.get(folder.id) || [...currentGlobalSelections];
+
+        Modal.confirm({
+            title: 'Folder Configuration',
+            width: 500,
+            icon: <ToolOutlined />,
+            content: (
+                <div style={{
+                    backgroundColor: isDarkMode ? '#1f1f1f' : '#ffffff',
+                    color: isDarkMode ? '#ffffff' : '#000000',
+                    padding: '16px',
+                    borderRadius: '8px'
+                }}>
+                    <Form
+                        form={folderConfigForm}
+                        layout="vertical"
+                        initialValues={{
+                            name: folder.name,
+                            contextMode: folder.useGlobalContext ? 'global' : 'folder',
+                            modelMode: folder.useGlobalModel ? 'global' : 'folder',
+                            systemInstructions: folder.systemInstructions || ''
+                        }}
+                    >
+                        <Form.Item label={
+                            <Typography.Text style={{ color: isDarkMode ? '#ffffff' : '#000000' }}>
+                                Folder Name
+                            </Typography.Text>
+                        } name="name">
+                            <Input
+                                style={{
+                                    backgroundColor: isDarkMode ? '#141414' : '#ffffff',
+                                    color: isDarkMode ? '#ffffff' : '#000000',
+                                    borderColor: isDarkMode ? '#434343' : '#d9d9d9'
+                                }}
+                            />
+                        </Form.Item>
+
+                        <Divider style={{ borderColor: isDarkMode ? '#303030' : '#f0f0f0' }} />
+
+                        <Form.Item label={
+                            <Typography.Text style={{ color: isDarkMode ? '#ffffff' : '#000000' }}>
+                                File Context
+                            </Typography.Text>
+                        } name="contextMode">
+                            <Radio.Group buttonStyle="solid">
+                                <Radio.Button value="global">Global</Radio.Button>
+                                <Radio.Button value="folder">Folder Only</Radio.Button>
+                            </Radio.Group>
+                        </Form.Item>
+
+                        <Form.Item label={
+                            <Typography.Text style={{ color: isDarkMode ? '#ffffff' : '#000000' }}>
+                                Model Configuration
+                            </Typography.Text>
+                        } name="modelMode">
+                            <Radio.Group buttonStyle="solid">
+                                <Radio.Button value="global">Global</Radio.Button>
+                                <Radio.Button value="folder">Folder Only</Radio.Button>
+                            </Radio.Group>
+                        </Form.Item>
+
+                        <Divider style={{ borderColor: isDarkMode ? '#303030' : '#f0f0f0' }} />
+
+                        <Form.Item label={
+                            <Typography.Text style={{ color: isDarkMode ? '#ffffff' : '#000000' }}>
+                                System Instructions
+                            </Typography.Text>
+                        } name="systemInstructions">
+                            <Input.TextArea
+                                autoSize={{ minRows: 4, maxRows: 12 }}
+                                placeholder="Custom system instructions for this folder"
+                                style={{
+                                    width: '100%',
+                                    backgroundColor: isDarkMode ? '#141414' : '#ffffff',
+                                    color: isDarkMode ? '#ffffff' : '#000000',
+                                    borderColor: isDarkMode ? '#434343' : '#d9d9d9'
+                                }}
+                            />
+                        </Form.Item>
+                    </Form>
+                </div>
+            ),
+            onOk: async () => {
+                try {
+                    const values = folderConfigForm.getFieldsValue();
+
+                    // Update folder properties
+                    folder.name = values.name;
+                    folder.useGlobalContext = values.contextMode === 'global';
+                    folder.useGlobalModel = values.modelMode === 'global';
+                    folder.systemInstructions = values.systemInstructions;
+
+                    // If switching to folder-specific context, initialize with current global selections
+                    if (values.contextMode === 'folder') {
+                        setFolderFileSelections(prev => {
+                            const next = new Map(prev);
+                            if (!next.has(folder.id)) {
+                                next.set(folder.id, [...currentGlobalSelections]);
+                            }
+                            return next;
+                        });
+                    }
+
+                    await updateFolder(folder);
+                    message.success('Folder configuration updated');
+                } catch (error) {
+                    message.error('Failed to update folder configuration');
+                }
+            }
+        });
+    };
+
     // Handle folder context menu
     const onFolderContextMenu = (folder: ConversationFolder) => {
+        const isPinned = pinnedFolders.has(folder.id);
         const menuItems: MenuProps['items'] = [
             {
                 key: 'edit',
@@ -407,13 +601,25 @@ export const ChatHistory: React.FC = () => {
                 onClick: () => handleEditFolder(folder)
             },
             {
+                key: 'config',
+                icon: <ToolOutlined />,
+                label: 'Configuration',
+                onClick: () => openFolderConfig(folder)
+            },
+            {
+                key: 'pin',
+                icon: <PushpinOutlined />,
+                label: isPinned ? 'Unpin' : 'Pin to Top',
+                onClick: () => togglePinFolder(folder.id)
+            },
+            {
                 key: 'delete',
                 icon: <DeleteOutlined />,
                 label: 'Delete',
                 onClick: () => handleDeleteFolder(folder.id)
             }
         ];
-        
+
         return <Menu items={menuItems} />;
     };
     const handleConversationClick = useCallback(async (conversationId: string) => {
@@ -428,21 +634,51 @@ export const ChatHistory: React.FC = () => {
         }
     }, [currentConversationId, isLoadingConversation, loadConversation]);
 
-    // Create a wrapper for handleEditClick that works with Menu.Item onClick
-    const handleMenuEditClick = (conversationId: string) => {
-        // Create a synthetic event that matches what handleEditClick expects
-        const syntheticEvent = { stopPropagation: () => { } } as React.MouseEvent;
-        handleEditClick(syntheticEvent, conversationId);
-    };
-
     // Create a wrapper for handleDeleteConversation that works with Menu.Item onClick
     const handleMenuDeleteConversation = (conversationId: string) => {
         // Create a synthetic event that matches what handleDeleteConversation expects
-        const syntheticEvent = { stopPropagation: () => { } } as React.MouseEvent;
+        const syntheticEvent = { stopPropagation: () => { }, preventDefault: () => { } } as React.MouseEvent;
         handleDeleteConversation(syntheticEvent, conversationId);
     };
 
     // Handle folder editing
+    const handleEditFolder = (folder: ConversationFolder) => {
+        setEditingFolderId(folder.id);
+    };
+
+    // Add a function to handle folder name changes
+    const handleFolderNameChange = async (folderId: string, newName: string) => {
+        try {
+            // Find the folder
+            const folder = folders.find(f => f.id === folderId);
+            if (!folder) return;
+
+            // Update the folder name
+            const updatedFolder = {
+                ...folder,
+                name: newName
+            };
+
+            // Save to database
+            await updateFolder(updatedFolder);
+
+            // Clear editing state
+            setEditingFolderId(null);
+
+            message.success('Folder renamed successfully');
+        } catch (error) {
+            console.error('Error saving folder name:', error);
+            message.error('Failed to save folder name');
+        }
+    };
+
+    // Add a function to handle blur event
+    const handleFolderNameBlur = (folderId: string, newName: string) => {
+        handleFolderNameChange(folderId, newName);
+    };
+
+    // Original modal-based folder editing (removed)
+    /* 
     const handleEditFolder = (folder: ConversationFolder) => {
         Modal.confirm({
             title: 'Rename Folder',
@@ -462,6 +698,7 @@ export const ChatHistory: React.FC = () => {
             }
         });
     };
+    */
 
     // Handle folder deletion
     const handleDeleteFolder = (folderId: string) => {
@@ -489,6 +726,44 @@ export const ChatHistory: React.FC = () => {
         }
     };
 
+    // Add fork conversation function
+    const handleForkConversation = async (conversation: Conversation) => {
+        try {
+            // Create a copy of the conversation with a new ID
+            const newId = uuidv4();
+            const forkedConversation: Conversation = {
+                ...conversation,
+                id: newId,
+                title: `Fork: ${conversation.title}`,
+                lastAccessedAt: Date.now(),
+                _version: Date.now(),
+                hasUnreadResponse: false
+            };
+
+            // Add the forked conversation to the list
+            const updatedConversations = [...conversations, forkedConversation];
+
+            // Save to database
+            await db.saveConversations(updatedConversations);
+
+            // Update state
+            setConversations(updatedConversations);
+
+            // Switch to the new conversation
+            await loadConversation(newId);
+
+            message.success('Conversation forked successfully');
+        } catch (error) {
+            console.error('Error forking conversation:', error);
+            message.error('Failed to fork conversation');
+        }
+    };
+
+    // Add compress conversation function (placeholder)
+    const handleCompressConversation = () => {
+        message.info('Conversation compression is not yet implemented in Ziya.');
+    };
+
     // Handle conversation context menu
     const onConversationContextMenu = (conversation: Conversation) => {
         // Create menu items for each folder as MenuProps items
@@ -512,7 +787,19 @@ export const ChatHistory: React.FC = () => {
                 key: 'edit',
                 icon: <EditOutlined />,
                 label: 'Rename',
-                onClick: () => handleMenuEditClick(conversation.id)
+                onClick: () => setEditingId(conversation.id)
+            },
+            {
+                key: 'fork',
+                icon: <CopyOutlined />,
+                label: 'Fork',
+                onClick: () => handleForkConversation(conversation)
+            },
+            {
+                key: 'compress',
+                icon: <CompressOutlined />,
+                label: 'Compress',
+                onClick: handleCompressConversation
             },
             {
                 key: 'move',
@@ -599,6 +886,7 @@ export const ChatHistory: React.FC = () => {
 
     const handleEditClick = (e: React.MouseEvent, conversationId: string) => {
         e.stopPropagation();
+        e.preventDefault();
         setEditingId(conversationId);
     };
 
@@ -612,6 +900,7 @@ export const ChatHistory: React.FC = () => {
             // Persist to IndexedDB before updating state
             await db.saveConversations(updatedConversations);
 
+            console.log('Title changed for conversation:', conversationId, 'to:', newTitle);
             // Update state after successful save
             setConversations(updatedConversations);
             setEditingId(null);
@@ -716,60 +1005,138 @@ export const ChatHistory: React.FC = () => {
             setDragState({ key: node.key, type: 'folder' });
         }
     };
- 
+
     // Handle drag end
     const onDragEnd = (info: any) => {
         setDropTargetKey(null);
         setDragState(null);
     };
- 
+
     // Handle drag enter
     const onDragEnter = (info: any) => {
         setDropTargetKey(info.node.key);
     };
 
+    // Helper function to check if a folder is a descendant of another folder
+    const isDescendantFolder = (folderId: string | null, potentialAncestorId: string): boolean => {
+        // If folderId is null, it can't be a descendant
+        if (folderId === null) {
+            return false;
+        }
+
+        // Base case: if the folder is the potential ancestor, return true
+        if (folderId === potentialAncestorId) {
+            return true;
+        }
+
+        // Get the folder
+        const folder = folders.find(f => f.id === folderId);
+        if (!folder || !folder.parentId) {
+            // If the folder doesn't exist or has no parent, it's not a descendant
+            return false;
+        }
+
+        // Recursively check if the parent is a descendant of the potential ancestor
+        return isDescendantFolder(folder.parentId, potentialAncestorId);
+    };
+
     // Handle drop
     const onDrop = async (info: any) => {
-        const { node: targetNode, dragNode } = info;
-        
-        // Only handle conversation drops
-        if (!dragState || dragState.type !== 'conversation') {
-            return;
-        }
-        
-        const conversationId = dragState.key;
-        
-        // Determine target folder
-        let targetFolderId: string | null = null;
-        
-        if (targetNode.isFolder) {
-            // Dropped on a folder
-            targetFolderId = targetNode.key;
-        } else if (targetNode.isConversation && targetNode.conversation.folderId) {
-            // Dropped on a conversation that's in a folder
-            targetFolderId = targetNode.conversation.folderId;
-        }
-        
-        // If the target is the same as the source, do nothing
-        const conversation = conversations.find(c => c.id === conversationId);
-        if (conversation && conversation.folderId === targetFolderId) {
-            return;
-        }
-        
-        // Move the conversation to the target folder
+        const { node: targetNode, dragNode, dropPosition, dropToGap } = info;
+
+        if (!dragState) return;
+
         try {
-            await moveConversationToFolder(conversationId, targetFolderId);
-            message.success('Conversation moved successfully');
+            if (dragState.type === 'conversation') {
+                // Handle conversation drop
+                const conversationId = dragState.key;
+
+                // Determine target folder
+                let targetFolderId: string | null = null;
+
+                if (targetNode.isFolder) {
+                    // Dropped on a folder
+                    targetFolderId = targetNode.key;
+                } else if (targetNode.isConversation && targetNode.conversation.folderId) {
+                    // Dropped on a conversation that's in a folder
+                    targetFolderId = targetNode.conversation.folderId;
+                }
+
+                // If the target is the same as the source, do nothing
+                const conversation = conversations.find(c => c.id === conversationId);
+                if (conversation && conversation.folderId === targetFolderId) {
+                    return;
+                }
+
+                // Move the conversation to the target folder
+                await moveConversationToFolder(conversationId, targetFolderId);
+                message.success('Conversation moved successfully');
+            } else if (dragState.type === 'folder') {
+                // Handle folder drop
+                const folderId = dragState.key;
+                const folder = folders.find(f => f.id === folderId);
+
+                if (!folder) return;
+
+                // Determine target parent folder
+                let targetParentId: string | null = null;
+
+                // Handle different drop scenarios:
+                // 1. dropPosition === 0 and dropToGap === true: Drop at the root level
+                // 2. dropPosition === -1: Drop inside the node (make it a child)
+                // 3. dropPosition > 0 and dropToGap === true: Drop between nodes
+
+                console.log('Drop info:', { dropPosition, dropToGap, targetKey: targetNode.key });
+
+                if (dropPosition === 0 || (dropToGap && !targetNode.isFolder)) {
+                    // This is a drop to root level
+                    targetParentId = null;
+                    console.log('Setting targetParentId to null (root level)');
+                }
+                else if (!dropToGap && targetNode.isFolder) {
+                    // Dropped on another folder - make it a child of that folder
+                    targetParentId = targetNode.key;
+
+                    // Prevent dropping a folder onto itself
+                    if (targetParentId === folderId) {
+                        return;
+                    }
+                    if (isDescendantFolder(targetParentId, folderId)) {
+                        message.error("Cannot move a folder into one of its descendants");
+                        return;
+                    }
+                } else if (targetNode.isConversation) {
+                    // Dropped on a conversation - make it a sibling of that conversation
+                    targetParentId = targetNode.conversation.folderId;
+                    console.log('Setting targetParentId to conversation folder:', targetParentId);
+                }
+
+                // If the target is the same as the source, do nothing
+                if (folder.parentId === targetParentId) {
+                    return;
+                }
+
+                // Update the folder's parent
+                const updatedFolder = {
+                    ...folder,
+                    parentId: targetParentId
+                };
+
+                console.log('Updating folder with new parentId:', targetParentId);
+                await updateFolder(updatedFolder);
+                message.success('Folder moved successfully');
+            }
         } catch (error) {
-            message.error('Failed to move conversation');
+            message.error(`Failed to move ${dragState.type}: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
-        
+
         setDropTargetKey(null);
     };
 
     const renderTreeNode = (nodeData: any) => {
         if (nodeData.isLeaf) {
             // This is a conversation
+            const isEditing = editingId === nodeData.conversation?.id;
             const conversation = nodeData.conversation;
             const isCurrentConversation = conversation.id === currentConversationId;
             const isStreaming = streamingConversations.has(conversation.id);
@@ -791,27 +1158,37 @@ export const ChatHistory: React.FC = () => {
                     }}
                 >
                     <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {conversation.hasUnreadResponse && !isCurrentConversation && (
-                            <CheckCircleOutlined
-                                style={{
-                                    marginRight: '4px',
-                                    fontSize: '12px',
-                                    color: isDarkMode ? '#49aa19' : '#52c41a'
-                                }}
+                        {isEditing ? (
+                            <Input
+                                defaultValue={conversation.title}
+                                onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
+                                onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
+                                style={{ width: '100%' }}
+                                onClick={(e) => e.stopPropagation()}
+                                autoFocus
                             />
-                        )}
-                        {nodeData.title}
-                        {isStreaming && (
+                        ) : (
                             <div style={{
-                                fontSize: '12px',
-                                color: isDarkMode ? '#177ddc' : '#1890ff',
-                                marginTop: '4px',
                                 display: 'flex',
-                                alignItems: 'center',
-                                gap: '4px'
+                                alignItems: 'center'
                             }}>
-                                <LoadingOutlined />
-                                Receiving response...
+                                {conversation.hasUnreadResponse &&
+                                    conversation.id !== currentConversationId && (
+                                        <CheckCircleOutlined
+                                            style={{
+                                                marginRight: '4px',
+                                                fontSize: '14px',
+                                                color: isDarkMode ? '#49aa19' : '#52c41a'
+                                            }}
+                                        />
+                                    )}
+                                <span>{nodeData.title}</span>
+                                {isStreaming && (
+                                    <div style={{ fontSize: '12px', color: isDarkMode ? '#177ddc' : '#1890ff', display: 'flex', alignItems: 'center', marginLeft: '4px' }}>
+                                        <LoadingOutlined />
+                                        <span style={{ marginLeft: '4px' }}>Receiving response...</span>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
@@ -833,6 +1210,8 @@ export const ChatHistory: React.FC = () => {
             // This is a folder
             const folder = nodeData.folder;
             const isDragTarget = dropTargetKey === nodeData.key && dragState?.type === 'conversation';
+            const isPinned = pinnedFolders.has(folder.id);
+            const isEditing = editingFolderId === folder.id;
 
             return (
                 <div
@@ -846,31 +1225,86 @@ export const ChatHistory: React.FC = () => {
                         fontWeight: 'bold'
                     }}
                 >
-                    <div style={{ flex: 1 }}>
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
                         <FolderOutlined style={{ marginRight: '8px', color: isDarkMode ? '#1890ff' : '#1890ff' }} />
-                        {nodeData.title}
-                        <Typography.Text
-                            type="secondary"
-                            style={{
-                                marginLeft: '8px',
-                                fontSize: '12px'
-                            }}
-                        >
-                            ({nodeData.conversationCount || 'empty'})
-                        </Typography.Text>
+                        {isEditing ? (
+                            <Input
+                                defaultValue={folder.name}
+                                onPressEnter={(e) => handleFolderNameChange(folder.id, e.currentTarget.value)}
+                                onBlur={(e) => handleFolderNameBlur(folder.id, e.currentTarget.value)}
+                                style={{ width: '60%' }}
+                                onClick={(e) => e.stopPropagation()}
+                                autoFocus
+                            />
+                        ) : (
+                            <>
+                                <span>{nodeData.title}</span>
+                                {isPinned && (
+                                    <PushpinOutlined style={{
+                                        marginLeft: '8px',
+                                        color: isDarkMode ? '#1890ff' : '#1890ff',
+                                        fontSize: '12px'
+                                    }} />
+                                )}
+                                <Typography.Text
+                                    type="secondary"
+                                    style={{
+                                        marginLeft: '8px',
+                                        fontSize: '12px'
+                                    }}
+                                >
+                                    ({nodeData.conversationCount || 'empty'})
+                                </Typography.Text>
+                            </>
+                        )}
                     </div>
-                    <Dropdown
-                        overlay={onFolderContextMenu(folder)}
-                        trigger={['click']}
-                        placement="bottomRight"
-                    >
+                    <div style={{ display: 'flex', alignItems: 'center' }}>
+                        {/* Add New Chat button */}
                         <Button
                             type="text"
-                            icon={<MoreOutlined />}
                             size="small"
-                            onClick={(e) => e.stopPropagation()}
+                            icon={<PlusOutlined />}
+                            onClick={(e) => {
+                                e.stopPropagation();
+
+                                // Set a pending folder ID to ensure we create in the right folder
+                                setPendingFolderId(folder.id);
+
+                                // If this folder is not expanded, add it to expanded keys
+                                if (!expandedKeys.includes(folder.id)) {
+                                    setExpandedKeys(prev => [...prev, folder.id]);
+                                }
+
+                                // Create a new chat with the specific folder ID
+                                const createNewChatInFolder = async () => {
+                                    try {
+                                        // Force the current folder ID to be the one we clicked on
+                                        await setCurrentFolderId(folder.id);
+                                        await startNewChat(folder.id);
+                                        setPendingFolderId(null);
+                                    } catch (error) {
+                                        console.error('Error creating new chat in folder:', error);
+                                    }
+                                };
+                                createNewChatInFolder();
+
+                            }}
+                            title="New chat in this folder"
+                            style={{ marginRight: '4px' }}
                         />
-                    </Dropdown>
+                        <Dropdown
+                            overlay={onFolderContextMenu(folder)}
+                            trigger={['click']}
+                            placement="bottomRight"
+                        >
+                            <Button
+                                type="text"
+                                icon={<MoreOutlined />}
+                                size="small"
+                                onClick={(e) => e.stopPropagation()}
+                            />
+                        </Dropdown>
+                    </div>
                 </div>
             );
         }
@@ -936,15 +1370,28 @@ export const ChatHistory: React.FC = () => {
 
                 <Tree
                     showLine={{ showLeafIcon: false }}
+                    blockNode
                     showIcon={false}
                     switcherIcon={<DownOutlined />}
                     onSelect={onSelect}
                     onExpand={onExpand}
                     expandedKeys={expandedKeys}
                     treeData={folderTreeData}
-                    draggable
+                    draggable={{
+                        icon: false,
+                        nodeDraggable: (node: any) => {
+                            // Allow dragging both conversations and folders
+                            return node.isConversation === true || node.isFolder === true;
+                        }
+                    }}
+                    allowDrop={({ dropNode, dropPosition }) => true} // Allow dropping anywhere
                     onDragStart={onDragStart}
+                    onDragOver={(info: any) => {
+                        // Log drag over information for debugging
+                        console.log('Drag over:', info);
+                    }}
                     onDragEnter={onDragEnter}
+                    onDragEnd={onDragEnd}
                     onDrop={onDrop}
                     titleRender={renderTreeNode}
                     style={{
