@@ -32,6 +32,14 @@ def create_new_file(git_diff: str, base_dir: str) -> None:
             if line.startswith('diff --git'):
                 file_path = line.split(' b/')[-1]
                 break
+            elif line.startswith('+++ b/'):
+                file_path = line[6:]  # Remove the '+++ b/' prefix
+                break
+                
+        # Make sure we found a file path
+        if file_path is None:
+            raise ValueError("Could not extract target file path from diff")
+            
         # Extract the file path from the diff --git line
         full_path = os.path.join(base_dir, file_path)
         logger.debug(f"Creating file at path: {file_path}")
