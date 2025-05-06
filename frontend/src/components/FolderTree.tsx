@@ -30,8 +30,9 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         checkedKeys,
         setCheckedKeys,
         expandedKeys,
-        setExpandedKeys
-    } = useFolderContext(); 
+        setExpandedKeys,
+        getFolderTokenCount
+    } = useFolderContext();
     const [modelId, setModelId] = useState<string>('');
     const { isDarkMode } = useTheme();
     const { currentConversationId } = useChatContext();
@@ -307,15 +308,100 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         setAutoExpandParent(true);
     };
 
-    const titleRender = (nodeData) => (
-        <span style={{
-            userSelect: 'text',
-            cursor: 'text',
-            color: isDarkMode ? '#ffffff' : '#000000',
-        }}>
-            {nodeData.title}
-        </span>
-    );
+    // Calculate included tokens for a directory
+    const getIncludedTokens = (node: TreeDataNode): { included: number, total: number } => {
+        if (!folders) return { included: 0, total: 0 };
+
+        const nodePath = node.key as string;
+
+        // Get the total tokens for this path directly from the folders data
+        // Extract the token count from the title if needed
+        let totalTokens = 0;
+
+        // Try to get token count from the folders structure
+        totalTokens = getFolderTokenCount(nodePath, folders);
+
+        // If we couldn't get tokens from folders, try to extract from title
+        if (totalTokens === 0) {
+            const titleMatch = String(node.title).match(/\(([0-9,]+) tokens\)/);
+            if (titleMatch && titleMatch[1]) {
+                totalTokens = parseInt(titleMatch[1].replace(/,/g, ''), 10);
+            }
+        }
+
+        // If this node is checked, all its tokens are included
+        if (checkedKeys.includes(node.key)) {
+            return { included: totalTokens, total: totalTokens };
+        }
+
+        // If no children, no tokens are included
+        if (!node.children || node.children.length === 0) {
+            return { included: 0, total: totalTokens };
+        }
+
+        // Calculate included tokens from children by checking which child nodes are selected
+        let includedTokens = 0;
+
+        // Recursively check each child
+        node.children.forEach(child => {
+            const childPath = child.key as string;
+
+            // If child is checked directly, add all its tokens
+            if (checkedKeys.includes(child.key)) {
+                const childTokens = getFolderTokenCount(childPath, folders);
+                includedTokens += childTokens;
+                console.log(`Child ${childPath} is checked, adding ${childTokens} tokens`);
+            }
+            // If child has children, recurse to check partial inclusion
+            else if (child.children && child.children.length > 0) {
+                const childResult = getIncludedTokens(child);
+                includedTokens += childResult.included;
+                console.log(`Child ${childPath} has partial inclusion: ${childResult.included}/${childResult.total}`);
+            }
+        });
+
+        console.log(`Node ${nodePath}: included=${includedTokens}, total=${totalTokens}`);
+        return { included: includedTokens, total: totalTokens };
+    };
+
+    const titleRender = (nodeData: any) => {
+        // Check if this is a directory (has children)
+        if (nodeData.children && nodeData.children.length > 0) {
+            // Calculate included vs total tokens
+            const { included, total } = getIncludedTokens(nodeData);
+
+            // Extract just the folder name without the token count
+            const titleText = String(nodeData.title).split(' (')[0];
+
+            // Show fraction for partially included directories, otherwise show total
+            const isPartiallyIncluded = included > 0 && included < total;
+
+            console.log(`Rendering ${titleText}: included=${included}, total=${total}, partial=${isPartiallyIncluded}`);
+
+            return (
+                <span style={{
+                    userSelect: 'text',
+                    cursor: 'text',
+                    color: isDarkMode ? '#ffffff' : '#000000',
+                }}>
+                    {titleText} {isPartiallyIncluded ?
+                        `(${included.toLocaleString()}/${total.toLocaleString()} tokens)` :
+                        `(${total.toLocaleString()} tokens)`}
+                </span>
+            );
+        }
+
+        // For files, just show the original title
+        return (
+            <span style={{
+                userSelect: 'text',
+                cursor: 'text',
+                color: isDarkMode ? '#ffffff' : '#000000',
+            }}>
+                {nodeData.title}
+            </span>
+        );
+    };
 
     return (
         <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
@@ -383,7 +469,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                                     onCheck={onCheck}
                                                     checkedKeys={checkedKeys}
                                                     treeData={searchValue ? filteredTreeData : treeData}
-                                                    titleRender={titleRender}
+                                    titleRender={(node) => titleRender(node)}
                                                     style={{
                                                         background: 'transparent',
                                                         color: isDarkMode ? '#ffffff' : '#000000',
