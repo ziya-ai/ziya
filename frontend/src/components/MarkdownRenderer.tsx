@@ -542,7 +542,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [parseError, setParseError] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>(initialDisplayMode as DisplayMode);
     const [statusUpdateCounter, setStatusUpdateCounter] = useState(0);
-    
+
     // Clear the hunk status map when a new diff is rendered
     useEffect(() => {
         console.log("Clearing hunk status map for new diff");
@@ -969,7 +969,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     let statusIcon;
                                     let statusColor;
                                     let statusTooltip;
-                                
+
                                     if (!status) {
                                         // Pending status
                                         statusIcon = <div className="hunk-status-dot pending" />;
@@ -1011,7 +1011,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                                     cursor: 'pointer'
                                                 }}
                                             >
-                                            {status ? statusIcon : hunkId}
+                                                {status ? statusIcon : hunkId}
                                             </div>
                                         </Tooltip>
                                     );
@@ -1295,13 +1295,13 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                                     <li key={index}>
                                                         <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
                                                         {`Hunk #${hunkId} failed`}
-                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
-                                        
-                                        {/* Update the hunk status in our map to ensure UI is consistent with message */}
-                                        {(() => { hunkStatusMap.set(`0-${hunkId-1}`, { applied: false, reason: hunkStatus?.error_details?.error || 'Failed to apply' }); return null; })()}
-                                        
-                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
-                                    </li>
+                                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
+
+                                                        {/* Update the hunk status in our map to ensure UI is consistent with message */}
+                                                        {(() => { hunkStatusMap.set(`0-${hunkId - 1}`, { applied: false, reason: hunkStatus?.error_details?.error || 'Failed to apply' }); return null; })()}
+
+                                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
+                                                    </li>
                                                 );
                                             })}
                                         </ul>
@@ -1987,6 +1987,81 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
     });
 };
 
+// Function to split multi-file diffs into separate diffs
+const splitMultiFileDiffs = (diffText: string): string[] => {
+    if (!diffText) return [];
+
+    // Regular expression to match the start of a new file diff
+    const fileHeaderRegex = /^diff --git .*$/m;
+
+    // If the diff doesn't start with a proper header, return it as is
+    if (!diffText.match(fileHeaderRegex)) {
+        return [diffText];
+    }
+
+    const fileDiffs: string[] = [];
+    let currentDiff = '';
+    let lines = diffText.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        // If we find a new file header and we already have content,
+        // save the current diff and start a new one
+        if (line.match(fileHeaderRegex) && currentDiff) {
+            fileDiffs.push(currentDiff);
+            currentDiff = line;
+        } else {
+            // Add the line to the current diff
+            currentDiff = currentDiff ? `${currentDiff}\n${line}` : line;
+        }
+    }
+
+    // Add the last diff if there's any content
+    if (currentDiff) {
+        fileDiffs.push(currentDiff);
+    }
+
+    return fileDiffs;
+};
+
+// Function to handle multi-file diffs
+const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean): JSX.Element => {
+    // Split the diff into separate file diffs
+    const fileDiffs = splitMultiFileDiffs(token.text);
+
+    // If there's only one diff or splitting failed, render as a single diff
+    if (fileDiffs.length <= 1) {
+        return (
+            <DiffToken
+                key={index}
+                token={token}
+                index={index}
+                enableCodeApply={enableCodeApply}
+                isDarkMode={false} // This will be determined inside the component
+            />
+        );
+    }
+
+    // Render each file diff separately
+    return (
+        <div key={index} className="multi-file-diff">
+            {fileDiffs.map((diffContent, fileIndex) => {
+                const diffToken = { ...token, text: diffContent };
+                return (
+                    <DiffToken
+                        key={`${index}-file-${fileIndex}`}
+                        token={diffToken}
+                        index={index * 100 + fileIndex} // Ensure unique indices
+                        enableCodeApply={enableCodeApply}
+                        isDarkMode={false} // This will be determined inside the component
+                    />
+                );
+            })}
+        </div>
+    );
+};
+
 interface MarkdownRendererProps {
     markdown: string;
     enableCodeApply: boolean;
@@ -2038,7 +2113,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     const renderedContent = useMemo(() => {
         return renderTokens(tokens, enableCodeApply, isDarkMode);
     }, [tokens, enableCodeApply, isDarkMode]);
-    return <div>{renderedContent}</div>;
+
+    // Check if the content is a multi-file diff
+    const isMultiFileDiff = markdown?.includes('diff --git') &&
+        markdown.split('diff --git').length > 2;
+
+    return isMultiFileDiff && tokens.length === 1 && tokens[0].type === 'code' && tokens[0].lang === 'diff' ?
+        renderMultiFileDiff(tokens[0] as TokenWithText, 0, enableCodeApply) :
+        <div>{renderedContent}</div>;
 });
 
 export default MarkdownRenderer;
