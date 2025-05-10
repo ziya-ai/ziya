@@ -423,6 +423,26 @@ export const StreamedContent: React.FC = () => {
         };
     }, [currentConversationId, streamingConversations]);
 
+    // Add a separate effect to handle scroll position restoration
+    useEffect(() => {
+        if (!streamingConversations.has(currentConversationId)) return;
+
+        const container = contentRef.current?.closest('.chat-container');
+        if (!container) return;
+
+        // Store current scroll position before any content changes
+        const storeScrollPosition = () => {
+            lastScrollPositionRef.current = container.scrollTop;
+        };
+
+        // Add event listener to store position before any updates
+        container.addEventListener('scroll', storeScrollPosition, { passive: true });
+
+        return () => {
+            container.removeEventListener('scroll', storeScrollPosition);
+        };
+    }, [currentConversationId, streamingConversations]);
+
     // Update loading state based on streaming status
     useEffect(() => {
         if (!isStreaming) {
