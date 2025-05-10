@@ -58,9 +58,17 @@ export const FolderButton: React.FC = () => {
           <Form.Item
             name="name"
             label="Folder Name"
-            rules={[{ required: true, message: 'Please enter a folder name', whitespace: true }]}
+            rules={[{ 
+              required: true, 
+              message: 'Please enter a folder name'
+            }]}
           >
-            <Input placeholder="Enter folder name" />
+            <Input 
+              placeholder="Enter folder name" 
+              onKeyDown={(e) => {
+                if (e.key === ' ') e.stopPropagation();
+              }}
+            />
           </Form.Item>
           
           <Form.Item

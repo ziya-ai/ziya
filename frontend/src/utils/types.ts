@@ -13,10 +13,15 @@ export type MessageRole = 'human' | 'assistant' | 'system';
 export type Message = {
     id?: string;
     content: string;
+    _edited?: boolean;
+    _truncatedAfter?: boolean;
     role: MessageRole;
     modelChange?: {
+        _edited?: boolean;      // Flag to indicate this message was edited
+        _truncatedAfter?: boolean; // Flag to indicate conversation was truncated after this message
         from: string;
         to: string;
+        changeKey?: string;
     };
     _timestamp?: number;
     _version?: number;
@@ -45,8 +50,11 @@ export interface Conversation {
     isNew?: boolean;    // Flag for newly created conversations
     isActive: boolean;
     folderId?: string | null;
+    _editInProgress?: boolean; // Flag to indicate an edit operation is in progress
     displayMode?: 'raw' | 'pretty';  // Store display mode per conversation
 }
+
+// Add _edited and _truncatedAfter to Message type
 
 export interface DiffNormalizerOptions {
     preserveWhitespace: boolean;

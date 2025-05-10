@@ -9,7 +9,8 @@ import {
     MenuUnfoldOutlined,
     PlusOutlined,
     BulbOutlined,
-    SwapOutlined
+    SwapOutlined,
+    SettingOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
 import { DebugControls } from './DebugControls';
@@ -54,25 +55,60 @@ class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode
     }
 }
 
+// Add a new error boundary specifically for layout issues
+class LayoutErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+    constructor(props: { children: React.ReactNode }) {
+        super(props);
+        this.state = { hasError: false };
+    }
+
+    static getDerivedStateFromError(error: Error) {
+        return { hasError: true };
+    }
+
+    componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+        console.error('Layout error detected:', error, errorInfo);
+    }
+
+    resetLayout = () => {
+        // Reset all layout-related localStorage items
+        localStorage.removeItem('ZIYA_PANEL_WIDTH');
+        localStorage.removeItem('ZIYA_PANEL_COLLAPSED');
+        document.documentElement.style.setProperty('--folder-panel-width', '300px');
+        window.location.reload();
+    }
+
+    render() {
+        return this.state.hasError ? <div className="layout-error"><h3>Layout Error Detected</h3><Button onClick={this.resetLayout} icon={<SettingOutlined />}>Reset Layout</Button></div> : this.props.children;
+    }
+}
+
 const PANEL_COLLAPSED_KEY = 'ZIYA_PANEL_COLLAPSED';
 const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
 
-export const App = () => {
+export const App: React.FC = () => {
     const { streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap } = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(() => {
         const saved = localStorage.getItem(PANEL_COLLAPSED_KEY);
         return saved ? JSON.parse(saved) : false;
     });
+
+    // Validate panel width from localStorage
+    const getValidPanelWidth = (width: number): number => {
+        const minWidth = 200;
+        return isNaN(width) || width <= 0 ? 300 : Math.max(minWidth, width);
+    };
     const [panelWidth, setPanelWidth] = useState(() => {
         const saved = localStorage.getItem(PANEL_WIDTH_KEY);
         return saved ? parseInt(saved, 10) : 300; // Default width: 300px
     });
+    const { dbError } = useChatContext();
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
 
     // Set initial CSS variable on mount
     useEffect(() => {
-        document.documentElement.style.setProperty('--folder-panel-width', `${panelWidth}px`);
+        document.documentElement.style.setProperty('--folder-panel-width', `${getValidPanelWidth(panelWidth)}px`);
         document.documentElement.style.setProperty('--model-display-height', '35px');
 
         // Force initial positioning of all elements after a short delay
@@ -99,7 +135,7 @@ export const App = () => {
         // Apply constraints
         const constrainedWidth = Math.min(newWidth, maxPanelWidth);
 
-        setPanelWidth(constrainedWidth);
+        setPanelWidth(getValidPanelWidth(constrainedWidth));
         localStorage.setItem(PANEL_WIDTH_KEY, constrainedWidth.toString());
         document.documentElement.style.setProperty('--folder-panel-max-width', 'none');
 
@@ -109,7 +145,7 @@ export const App = () => {
             const modelDisplay = document.querySelector('.model-id-display') as HTMLElement;
             const tokenDisplay = document.querySelector('.token-display') as HTMLElement;
 
-            if (folderPanel) {
+            if (folderPanel && constrainedWidth > 0) {
                 folderPanel.style.width = `${constrainedWidth}px`;
                 folderPanel.style.minWidth = `${constrainedWidth}px`;
                 folderPanel.style.maxWidth = 'none';
@@ -121,7 +157,7 @@ export const App = () => {
             }
 
             // Update CSS variable after DOM updates
-            document.documentElement.style.setProperty('--folder-panel-width', `${constrainedWidth}px`);
+            document.documentElement.style.setProperty('--folder-panel-width', `${getValidPanelWidth(constrainedWidth)}px`);
 
             // Dispatch resize event after a small delay to ensure all styles are applied
             setTimeout(() => {
@@ -326,7 +362,14 @@ export const App = () => {
                     <FolderTree isPanelCollapsed={isPanelCollapsed} />
                     <div className="chat-container">
                         <div className="chat-content-stabilizer">
-                            {chatContainerContent}
+                            <LayoutErrorBoundary>
+                                {chatContainerContent}
+                            </LayoutErrorBoundary>
+                            {/* Add a hidden element to check layout integrity */}
+                            <div id="layout-integrity-check" style={{
+                                position: 'absolute',
+                                visibility: 'hidden'
+                            }}></div>
                         </div>
                     </div>
                 </div>

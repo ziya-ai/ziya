@@ -1,4 +1,4 @@
-import { SetStateAction, Dispatch } from 'react';
+import { SetStateAction, Dispatch, MouseEvent } from 'react';
 import { createParser } from 'eventsource-parser';
 import { message } from 'antd';
 import { Message } from '../utils/types';
@@ -46,7 +46,7 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             // Check if this pattern is inside a code block
             const codeBlockRegex = /```[\s\S]*?(?:^Error:|^error:)[\s\S]*?```/m;
             const isInCodeBlock = codeBlockRegex.test(content);
-            
+
             // Only treat as error if not in a code block
             if (!isInCodeBlock) {
                 const errorMatch = content.match(/(?:^|\n)(?:Error|error):\s*(.+?)(?:\n|$)/);
@@ -62,10 +62,10 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
         // Check for "An error occurred" pattern - but not in code blocks
         if (content.toLowerCase().includes('an error occurred')) {
             // Check if this is likely part of code or documentation
-            const isInCodeOrExample = /```[\s\S]*?an error occurred[\s\S]*?```/i.test(content) || 
-                                     /`an error occurred`/i.test(content) ||
-                                     /example.*?an error occurred/i.test(content);
-            
+            const isInCodeOrExample = /```[\s\S]*?an error occurred[\s\S]*?```/i.test(content) ||
+                /`an error occurred`/i.test(content) ||
+                /example.*?an error occurred/i.test(content);
+
             if (!isInCodeOrExample) {
                 return {
                     error: 'Error detected',
@@ -183,6 +183,41 @@ export const sendPayload = async (
     let errorOccurred = false;
     let containsDiff = false;  // Flag to track if content contains diff blocks
 
+    // Create an AbortController to handle cancellation
+    const abortController = new AbortController();
+    const { signal } = abortController;
+
+    let isAborted = false;
+    
+    // Remove any existing listeners for this conversation ID to prevent duplicates
+    document.removeEventListener('abortStream', window[`abortListener_${conversationId}`]);
+    
+    // Set up abort event listener
+    const abortListener = (event: CustomEvent) => {
+        if (event.detail.conversationId === conversationId) {
+            console.log(`Aborting stream for conversation: ${conversationId}`);
+            abortController.abort();
+            isAborted = true;
+
+            console.log('Sending abort notification to server');
+            // Also notify the server about the abort
+            try {
+                fetch('/api/abort-stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ conversation_id: conversationId }),
+                }).catch(e => {
+                    // Ignore errors from the abort request
+                    console.warn('Error sending abort notification to server:', e);
+                });
+            } catch (e) {}
+
+            removeStreamingConversation(conversationId);
+            setIsStreaming(false);
+        }
+    };
+    document.addEventListener('abortStream', abortListener as EventListener);
+
     try {
         // Filter out empty messages
         const messagesToSend = messages.filter(isValidMessage);
@@ -197,7 +232,7 @@ export const sendPayload = async (
         }
 
         setIsStreaming(true);
-        let response = await getApiResponse(messagesToSend, question, checkedItems);
+        let response = await getApiResponse(messagesToSend, question, checkedItems, signal);
         console.log("Initial API response:", response.status, response.statusText);
 
         if (!response.ok) {
@@ -207,7 +242,7 @@ export const sendPayload = async (
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 // Retry the request once
-                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems);
+                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, signal);
                 if (!retryResponse.ok) {
                     throw await handleStreamError(retryResponse);
                 }
@@ -251,17 +286,33 @@ export const sendPayload = async (
 
                     // Check if this chunk contains diff syntax and set the flag
                     if (!containsDiff && (
-                        data.includes('```diff') || data.includes('diff --git') || 
+                        data.includes('```diff') || data.includes('diff --git') ||
                         data.match(/^@@ /) || data.match(/^\+\+\+ /) || data.match(/^--- /))) {
                         containsDiff = true;
                         console.log("Detected diff content, disabling error detection");
+                    }
+
+                    // Check if this is a hunk status update
+                    try {
+                        const jsonData = JSON.parse(data);
+                        if (jsonData.request_id && jsonData.details && jsonData.details.hunk_statuses) {
+                            // Dispatch a custom event with the hunk status update
+                            window.dispatchEvent(new CustomEvent('hunkStatusUpdate', {
+                                detail: {
+                                    requestId: jsonData.request_id,
+                                    hunkStatuses: jsonData.details.hunk_statuses
+                                }
+                            }));
+                        }
+                    } catch (e) {
+                        // Not JSON or not a hunk status update, ignore
                     }
 
                     // Check for errors using our new function - but be careful not to match code examples
                     // Skip error checking if the data looks like it contains code blocks or diffs
                     const containsCodeBlock = data.includes('```');
                     const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(data);
-                    
+
                     if (errorResponse) {
                         console.log("Error detected in SSE data:", errorResponse);
                         message.error({
@@ -325,16 +376,16 @@ export const sendPayload = async (
                                         if (msg.content && typeof msg.content === 'string') {
                                             // Check if this message contains diff syntax and set the flag
                                             if (!containsDiff && (
-                                                msg.content.includes('```diff') || msg.content.includes('diff --git') || 
+                                                msg.content.includes('```diff') || msg.content.includes('diff --git') ||
                                                 msg.content.match(/^@@ /m) || msg.content.match(/^\+\+\+ /m) || msg.content.match(/^--- /m))) {
                                                 containsDiff = true;
                                                 console.log("Detected diff content in message, disabling error detection");
                                             }
-                                            
+
                                             // Skip error checking if the message contains code blocks or diffs
                                             const containsCodeBlock = msg.content.includes('```');
                                             const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(msg.content);
-                                            
+
                                             if (errorResponse) {
                                                 console.log("Error detected in message content:", errorResponse);
                                                 message.error({
@@ -364,9 +415,22 @@ export const sendPayload = async (
             try {
                 while (true) {
                     try {
+                        if (signal.aborted) {
+                            console.log("Stream aborted by user");
+                            errorOccurred = true;
+                            removeStreamingConversation(conversationId);
+                            setIsStreaming(false);
+                            return 'Response generation stopped by user.';
+                        }
                         const { done, value } = await reader.read();
                         if (done) {
                             console.log("Stream read complete (done=true)");
+                            // If the stream was aborted, don't process the final content
+                            if (isAborted) {
+                                console.log("Stream was aborted, discarding final content");
+                                removeStreamingConversation(conversationId);
+                                return 'Response generation stopped by user.';
+                            }
                             break;
                         }
                         if (errorOccurred) {
@@ -375,13 +439,20 @@ export const sendPayload = async (
                         }
                         const chunk = decoder.decode(value);
                         if (!chunk) {
+                            // Check if the stream was aborted during processing
+                            if (isAborted) {
+                                console.log("Stream was aborted during processing, discarding chunk");
+                                removeStreamingConversation(conversationId);
+                                setIsStreaming(false);
+                                return 'Response generation stopped by user.';
+                            }
                             console.log("Empty chunk received, continuing");
                             continue;
                         }
 
                         // Check if this chunk contains diff syntax and set the flag
                         if (!containsDiff && (
-                            chunk.includes('```diff') || chunk.includes('diff --git') || 
+                            chunk.includes('```diff') || chunk.includes('diff --git') ||
                             chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
                             containsDiff = true;
                             console.log("Detected diff content in chunk, disabling error detection");
@@ -391,7 +462,7 @@ export const sendPayload = async (
                         try {
                             // Skip error checking if the chunk contains code blocks or diffs
                             const containsCodeBlock = chunk.includes('```');
-                            
+
                             if (!containsCodeBlock && !containsDiff) {
                                 // Check for nested errors in LangChain ops structure
                                 const nestedError = extractErrorFromNestedOps(chunk);
@@ -440,11 +511,24 @@ export const sendPayload = async (
             if (currentContent && !errorOccurred) {
                 console.log("Stream completed successfully");
 
+                // Check if the stream was aborted before adding the message
+                if (isAborted) {
+                    console.log("Stream was aborted, not adding final message");
+                    removeStreamingConversation(conversationId);
+                    return 'Response generation stopped by user.';
+                }
+
+                // Check if the stream was aborted before adding the message
+                if (isAborted) {
+                    console.log("Stream was aborted, not adding final message");
+                    removeStreamingConversation(conversationId);
+                    return 'Response generation stopped by user.';
+                }
                 // Check if the content is an error message using our new function
                 // Skip error checking if the content contains code blocks or diffs
                 const containsCodeBlock = currentContent.includes('```');
                 const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(currentContent);
-                
+
                 if (errorResponse) {
                     console.log("Error detected in final content:", errorResponse);
                     message.error({
@@ -468,9 +552,15 @@ export const sendPayload = async (
                 removeStreamingConversation(conversationId);
             }
             return result;
+            
         } catch (error) {
             // Type guard for DOMException
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                console.log('Request was aborted');
+                return 'Response generation stopped by user.';
+            }
             if (error instanceof DOMException && error.name === 'AbortError') return '';
+            
             console.error('Stream processing error in readStream catch block:', { error });
             removeStreamingConversation(conversationId);
             setIsStreaming(false);
@@ -478,9 +568,14 @@ export const sendPayload = async (
         } finally {
             setIsStreaming(false);
             return !errorOccurred && currentContent ? currentContent : '';
+            
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
+        // Check for abort error
+        if (error instanceof DOMException && error.name === 'AbortError') {
+            return 'Response generation stopped by user.';
+        }
         // Type guard for Error objects
         if (error instanceof Error) {
             console.error('Error details:', {
@@ -497,13 +592,14 @@ export const sendPayload = async (
         throw error;
     } finally {
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
+        document.removeEventListener('abortStream', abortListener as EventListener);
         setIsStreaming(false);
         removeStreamingConversation(conversationId);
         return '';
     }
 };
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[]) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], signal?: AbortSignal) {
     const messageTuples: string[][] = [];
 
     for (const message of messages) {
@@ -521,6 +617,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal
     });
 }

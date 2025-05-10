@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, memo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, memo, useRef, useMemo } from 'react';
 import { List, Button, Input, message, Modal, Tree, Dropdown, Menu, Space, MenuProps, Typography, Form, Switch, Radio, Divider } from 'antd';
 import {
     DeleteOutlined,
@@ -127,9 +127,10 @@ const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
                         <div style={{
                             position: 'relative',
                             width: '100%',
-                            paddingLeft: conversation.hasUnreadResponse &&
-                                conversation.id !== currentConversationId ?
-                                '24px' : '0'
+                            //paddingLeft: conversation.hasUnreadResponse &&
+                            //    conversation.id !== currentConversationId ?
+                            //    '24px' : '0',
+                            paddingRight: '24px'
                         }}>
                             {conversation.hasUnreadResponse &&
                                 conversation.id !== currentConversationId && (
@@ -154,8 +155,8 @@ const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
                                 // Use container width to determine max width
                                 // Subtract 80px for action buttons and padding
                                 maxWidth: containerWidth > 0 ?
-                                    `${Math.max(0, containerWidth - 80)}px` :
-                                    'calc(100% - 80px)',
+                                    `${Math.max(0, containerWidth - 24)}px` :
+                                    'calc(100% - 24px)',
                                 paddingRight: '65px'
                             }}>
                                 {conversation.title}
@@ -178,7 +179,7 @@ const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
                     <div className="chat-history-actions" style={{
                         padding: '0 4px',
                         display: 'flex',
-                        gap: '2px',
+                        gap: '4px',
                         position: 'absolute',
                         right: 0,
                         top: 0,
@@ -225,12 +226,15 @@ export const ChatHistory: React.FC = () => {
     const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
 
     // Preserve current conversation when component mounts
-    const [folderTreeData, setFolderTreeData] = useState<any[]>([]);
     const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
     const [isInitialized, setIsInitialized] = useState(false);
+    const lastClickTime = useRef<{ [key: string]: number }>({});
     const [pendingFolderId, setPendingFolderId] = useState<string | null>(null);
     const [dragState, setDragState] = useState<{ key: string, type: 'conversation' | 'folder' } | null>(null);
     const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
+    const scrollTimerRef = useRef<number | null>(null);
+    const chatHistoryContainerRef = useRef<HTMLDivElement>(null);
+    const isDraggingRef = useRef<boolean>(false);
 
     const { checkedKeys, setCheckedKeys } = useFolderContext();
 
@@ -404,12 +408,10 @@ export const ChatHistory: React.FC = () => {
     }, [folders, conversations, pinnedFolders]);
 
     // Update folder tree data when folders or conversations change
-    useEffect(() => {
-        if (isInitialized) {
-            const treeData = buildFolderTree();
-            setFolderTreeData(treeData);
-        }
-    }, [folders, conversations, buildFolderTree, isInitialized]);
+    const folderTreeData = useMemo(() => {
+        if (!isInitialized) return [];
+        return buildFolderTree();
+    }, [folders, conversations, pinnedFolders, isInitialized, buildFolderTree]);
 
     // Periodically check for updates when the component is mounted
     useEffect(() => {
@@ -417,6 +419,7 @@ export const ChatHistory: React.FC = () => {
         const checkForUpdates = async () => {
             try {
                 const saved = await db.getConversations();
+
                 // Only log and update if there's an actual change
                 const hasChanged = saved.some(savedConv => {
                     const existingConv = conversations.find(conv => conv.id === savedConv.id);
@@ -424,18 +427,28 @@ export const ChatHistory: React.FC = () => {
                     return !existingConv ||
                         (savedConv._version || 0) > (existingConv._version || 0);
                 });
+
                 if (hasChanged) {
+                    // Filter out inactive conversations from the database
+                    const activeSaved = saved.filter(conv => conv.isActive !== false);
+
                     let mergedConversations = conversations.map(conv => {
-                        const savedConv = saved.find(s => s.id === conv.id);
-                        // Keep current conversation if it's being edited or is more recent
+                        const savedConv = activeSaved.find(s => s.id === conv.id);
+                        // If we don't have a saved version or our version is newer, keep our version
+                        if (!savedConv || (conv._version || 0) > (savedConv._version || 0)) {
+                            return conv;
+                        }
+                        // Keep current conversation if it's being edited
                         if (conv.id === currentConversationId && editingId === conv.id) {
                             return conv;
                         }
+                        // If the conversation is marked as inactive in our state, keep it that way
+                        if (conv.isActive === false) return conv;
                         return savedConv || conv;
                     });
 
-                    // Add any new conversations that don't exist locally
-                    mergedConversations = [...mergedConversations, ...saved.filter(savedConv =>
+                    // Add any new active conversations that don't exist locally
+                    mergedConversations = [...mergedConversations, ...activeSaved.filter(savedConv =>
                         !mergedConversations.some(conv => conv.id === savedConv.id)
                     )];
                     // Sort by last accessed time
@@ -456,6 +469,32 @@ export const ChatHistory: React.FC = () => {
     const onSelect = (selectedKeys: React.Key[], info: any) => {
         const key = selectedKeys[0] as string;
         if (!key) return;
+
+        // Handle folder click behavior
+        if (!key.startsWith('conv-')) {
+            // This is a folder
+            const now = Date.now();
+            const lastClick = lastClickTime.current[key] || 0;
+            const isDoubleClick = now - lastClick < 300; // 300ms threshold for double click
+
+            // Update last click time
+            lastClickTime.current[key] = now;
+
+            // If it's a double click, toggle expansion
+            if (isDoubleClick) {
+                if (expandedKeys.includes(key)) {
+                    setExpandedKeys(expandedKeys.filter(k => k !== key));
+                } else {
+                    setExpandedKeys([...expandedKeys, key]);
+                }
+                return;
+            }
+
+            // If folder is collapsed and it's a single click, expand it
+            if (!expandedKeys.includes(key)) {
+                setExpandedKeys([...expandedKeys, key]);
+            }
+        }
 
         if (key.startsWith('conv-')) {
             // This is a conversation
@@ -704,7 +743,7 @@ export const ChatHistory: React.FC = () => {
     const handleDeleteFolder = (folderId: string) => {
         Modal.confirm({
             title: 'Delete Folder',
-            content: 'Are you sure you want to delete this folder? All conversations will be moved to the root level.',
+            content: 'Are you sure you want to delete this folder? All conversations within the folder will also be deleted.',
             onOk: async () => {
                 try {
                     await deleteFolder(folderId);
@@ -977,11 +1016,16 @@ export const ChatHistory: React.FC = () => {
         return bTime - aTime;
     });
 
-    // Add debug logging for folder tree data
+
     useEffect(() => {
-        console.log('Folder tree data:', folderTreeData);
-        console.log('Folders from context:', folders);
-    }, [folderTreeData, folders]);
+        if (process.env.NODE_ENV !== 'production') {
+            // Only log when folders actually change
+            console.debug('Folders updated:', {
+                folderCount: folders.length,
+                conversationCount: conversations.filter(c => c.isActive !== false).length
+            });
+        }
+    }, [folders.length, conversations.length]); // Only depend on counts to reduce triggers
 
     const importConversationsFromFile = () => {
         const input = document.createElement('input');
@@ -999,6 +1043,61 @@ export const ChatHistory: React.FC = () => {
     // Handle drag start
     const onDragStart = (info: any) => {
         const { node } = info;
+        isDraggingRef.current = true;
+
+        // Set up auto-scrolling when dragging
+        const startAutoScroll = () => {
+            if (scrollTimerRef.current) {
+                window.clearInterval(scrollTimerRef.current);
+            }
+
+            scrollTimerRef.current = window.setInterval(() => {
+                if (!isDraggingRef.current || !chatHistoryContainerRef.current) {
+                    if (scrollTimerRef.current) {
+                        window.clearInterval(scrollTimerRef.current);
+                        scrollTimerRef.current = null;
+                    }
+                    return;
+                }
+
+                const container = chatHistoryContainerRef.current;
+                const containerRect = container.getBoundingClientRect();
+                const mouseY = window.event ? (window.event as MouseEvent).clientY : 0;
+
+                // Define scroll zones at top and bottom of container
+                const topScrollZone = containerRect.top + 50; // 50px from top
+                const bottomScrollZone = containerRect.bottom - 50; // 50px from bottom
+
+                // Calculate scroll speed based on distance from edge
+                // The closer to the edge, the faster the scroll
+                if (mouseY < topScrollZone) {
+                    // Scroll up when near the top
+                    const scrollSpeed = Math.max(1, (topScrollZone - mouseY) / 2);
+                    container.scrollBy({ top: -scrollSpeed, behavior: 'auto' });
+                } else if (mouseY > bottomScrollZone) {
+                    // Scroll down when near the bottom
+                    const scrollSpeed = Math.max(1, (mouseY - bottomScrollZone) / 2);
+                    container.scrollBy({ top: scrollSpeed, behavior: 'auto' });
+                }
+            }, 16); // ~60fps for smooth scrolling
+        };
+
+        // Start auto-scroll mechanism
+        startAutoScroll();
+
+        // Add event listener for mouse movement during drag
+        document.addEventListener('mousemove', handleMouseMove);
+
+        // Clean up function to be called on drag end
+        const cleanupDrag = () => {
+            isDraggingRef.current = false;
+            if (scrollTimerRef.current) {
+                window.clearInterval(scrollTimerRef.current);
+                scrollTimerRef.current = null;
+            }
+            document.removeEventListener('mousemove', handleMouseMove);
+        };
+
         if (node.isConversation) {
             setDragState({ key: node.key.substring(5), type: 'conversation' });
         } else if (node.isFolder) {
@@ -1006,8 +1105,15 @@ export const ChatHistory: React.FC = () => {
         }
     };
 
+    // Handle mouse movement during drag
+    const handleMouseMove = (e: MouseEvent) => {
+        // This function is needed to ensure the auto-scroll has access to the latest mouse position
+        // The actual scrolling logic is in the interval timer
+    };
+
     // Handle drag end
     const onDragEnd = (info: any) => {
+        isDraggingRef.current = false;
         setDropTargetKey(null);
         setDragState(null);
     };
@@ -1016,6 +1122,14 @@ export const ChatHistory: React.FC = () => {
     const onDragEnter = (info: any) => {
         setDropTargetKey(info.node.key);
     };
+
+    // Clean up any timers when component unmounts
+    useEffect(() => {
+        return () => {
+            if (scrollTimerRef.current)
+                window.clearInterval(scrollTimerRef.current);
+        };
+    }, []);
 
     // Helper function to check if a folder is a descendant of another folder
     const isDescendantFolder = (folderId: string | null, potentialAncestorId: string): boolean => {
@@ -1054,6 +1168,8 @@ export const ChatHistory: React.FC = () => {
                 // Determine target folder
                 let targetFolderId: string | null = null;
 
+                let newTimestamp: number | null = null;
+
                 if (targetNode.isFolder) {
                     // Dropped on a folder
                     targetFolderId = targetNode.key;
@@ -1062,14 +1178,62 @@ export const ChatHistory: React.FC = () => {
                     targetFolderId = targetNode.conversation.folderId;
                 }
 
+                // Handle reordering within the same folder
+                if (targetNode.isConversation &&
+                    targetNode.conversation.folderId ===
+                    conversations.find(c => c.id === conversationId)?.folderId) {
+
+                    // Calculate a new timestamp that will place this conversation
+                    // in the desired position in the sorted list
+                    const targetTime = targetNode.conversation.lastAccessedAt || Date.now();
+
+                    // Find conversations immediately before and after the drop target
+                    const sortedConvs = [...conversations]
+                        .filter(c => c.folderId === targetNode.conversation.folderId)
+                        .sort((a, b) => (b.lastAccessedAt || 0) - (a.lastAccessedAt || 0));
+
+                    const targetIndex = sortedConvs.findIndex(c => c.id === targetNode.conversation.id);
+
+                    // If dropping above the target, use a timestamp slightly newer than the target
+                    // If dropping below, use a timestamp slightly older
+                    if (dropPosition < 0) { // Above target
+                        newTimestamp = targetTime + 1000; // 1 second newer
+                    } else { // Below target
+                        newTimestamp = targetTime - 1000; // 1 second older
+                    }
+                }
+
                 // If the target is the same as the source, do nothing
                 const conversation = conversations.find(c => c.id === conversationId);
                 if (conversation && conversation.folderId === targetFolderId) {
                     return;
                 }
 
-                // Move the conversation to the target folder
-                await moveConversationToFolder(conversationId, targetFolderId);
+                // Update conversation in memory first
+                setConversations(prev => prev.map(conv => {
+                    if (conv.id === conversationId) {
+                        return {
+                            ...conv,
+                            folderId: targetFolderId,
+                            lastAccessedAt: newTimestamp || conv.lastAccessedAt,
+                            _version: Date.now()
+                        };
+                    }
+                    return conv;
+                }));
+
+                // Then update in database
+                if (targetFolderId !== conversation?.folderId) {
+                    await moveConversationToFolder(conversationId, targetFolderId);
+                } else if (newTimestamp) {
+                    // Just update the timestamp in the database
+                    await db.saveConversations(conversations.map(conv =>
+                        conv.id === conversationId
+                            ? { ...conv, lastAccessedAt: newTimestamp, _version: Date.now() }
+                            : conv
+                    ));
+                }
+
                 message.success('Conversation moved successfully');
             } else if (dragState.type === 'folder') {
                 // Handle folder drop
@@ -1147,7 +1311,7 @@ export const ChatHistory: React.FC = () => {
                     style={{
                         display: 'flex',
                         border: isDragTarget ? '1px dashed #1890ff' : 'none',
-                        alignItems: 'center',
+                        alignItems: 'flex-start',
                         justifyContent: 'space-between',
                         backgroundColor: isCurrentConversation ? (isDarkMode ? '#177ddc' : '#e6f7ff') : 'transparent',
                         padding: '4px 8px',
@@ -1156,11 +1320,20 @@ export const ChatHistory: React.FC = () => {
                         opacity: dragState && dragState.key === conversation.id.substring(5) ? 0.5 : 1,
                         width: '100%'
                     }}
+                    className="conversation-item"
+                    onClick={(e) => {
+                        // Prevent click from triggering when clicking on dropdown
+                        if ((e.target as HTMLElement).closest('.conversation-actions')) {
+                            e.stopPropagation();
+                            return;
+                        }
+                        handleConversationClick(conversation.id);
+                    }}
                 >
-                    <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
                         {isEditing ? (
                             <Input
-                                defaultValue={conversation.title}
+                                defaultValue={conversation.title || ''}
                                 onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
                                 onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
                                 style={{ width: '100%' }}
@@ -1182,7 +1355,16 @@ export const ChatHistory: React.FC = () => {
                                             }}
                                         />
                                     )}
-                                <span>{nodeData.title}</span>
+                                <span style={{
+                                    display: 'inline-block',
+                                    maxWidth: 'calc(100% - 30px)', // Reserve more space for dropdown
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    verticalAlign: 'middle'
+                                }}>
+                                    {nodeData.title}
+                                </span>
                                 {isStreaming && (
                                     <div style={{ fontSize: '12px', color: isDarkMode ? '#177ddc' : '#1890ff', display: 'flex', alignItems: 'center', marginLeft: '4px' }}>
                                         <LoadingOutlined />
@@ -1190,20 +1372,31 @@ export const ChatHistory: React.FC = () => {
                                     </div>
                                 )}
                             </div>
-                        )}
-                    </div>
-                    <Dropdown
-                        overlay={onConversationContextMenu(conversation)}
-                        trigger={['click']}
-                        placement="bottomRight"
+                        )}</div>
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        marginLeft: 'auto',
+                        minWidth: '30px',
+                        flexShrink: 0
+                    }}
                     >
-                        <Button
-                            type="text"
-                            icon={<MoreOutlined />}
-                            size="small"
-                            onClick={(e) => e.stopPropagation()}
-                        />
-                    </Dropdown>
+                        <Dropdown
+                            className="conversation-dropdown"
+                            overlay={onConversationContextMenu(conversation)}
+                            trigger={['click']}
+                            placement="bottomRight">
+                            <div
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                    cursor: 'pointer',
+                                    padding: '0 8px',
+                                    fontSize: '18px',
+                                    lineHeight: '1',
+                                    fontWeight: 'bold'
+                                }}>⋮</div>
+                        </Dropdown>
+                    </div>
                 </div>
             );
         } else {
@@ -1218,7 +1411,7 @@ export const ChatHistory: React.FC = () => {
                     style={{
                         display: 'flex',
                         border: isDragTarget ? '1px dashed #1890ff' : 'none',
-                        alignItems: 'center',
+                        alignItems: 'flex-start',
                         justifyContent: 'space-between',
                         padding: '4px 8px',
                         opacity: dragState && dragState.key === folder.id ? 0.5 : 1,
@@ -1226,10 +1419,10 @@ export const ChatHistory: React.FC = () => {
                     }}
                 >
                     <div style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
-                        <FolderOutlined style={{ marginRight: '8px', color: isDarkMode ? '#1890ff' : '#1890ff' }} />
+                        <FolderOutlined style={{ marginRight: '8px', color: isDarkMode ? '#1890ff' : '#1890ff', fontSize: '16px' }} />
                         {isEditing ? (
                             <Input
-                                defaultValue={folder.name}
+                                defaultValue={folder.name || ''}
                                 onPressEnter={(e) => handleFolderNameChange(folder.id, e.currentTarget.value)}
                                 onBlur={(e) => handleFolderNameBlur(folder.id, e.currentTarget.value)}
                                 style={{ width: '60%' }}
@@ -1258,7 +1451,7 @@ export const ChatHistory: React.FC = () => {
                             </>
                         )}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', marginLeft: 'auto' }}>
                         {/* Add New Chat button */}
                         <Button
                             type="text"
@@ -1360,7 +1553,7 @@ export const ChatHistory: React.FC = () => {
     );
 
     const renderTreeView = () => (
-        <div className="chat-history-container" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div ref={chatHistoryContainerRef} className="chat-history-container" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
             <div className="chat-history-content" style={{ flex: 1, overflow: 'auto' }}>
                 {loadError && (
                     <div style={{ padding: '8px', color: 'red' }}>
@@ -1413,6 +1606,102 @@ export const ChatHistory: React.FC = () => {
             </div>
         </div>
     );
+
+    // Add custom CSS to fix tree indentation and alignment
+    useEffect(() => {
+        // Create a style element
+        const styleElement = document.createElement('style');
+        styleElement.textContent = `
+            /* Adjust the tree node indentation */
+            .ant-tree .ant-tree-treenode {
+                padding: 0 0 4px 0 !important;
+                width: 100%;
+            }
+            
+            /* Fix alignment of tree node content */
+            .ant-tree .ant-tree-node-content-wrapper {
+                padding: 0 !important;
+                width: calc(100% - 8 px) !important;
+            }
+            
+            /* Ensure proper indentation for child nodes */
+            .ant-tree-indent-unit {
+                width: 16px !important;
+            }
+        `;
+
+        // Add additional rule for conversation titles in tree nodes
+        styleElement.textContent += `
+            /* Ensure conversation titles don't overflow */
+            .ant-tree .conversation-item span {
+                max-width: calc(100% - 32px) !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                white-space: nowrap !important;
+            }
+            
+            /* Fix dropdown position in tree nodes */
+            .ant-tree .conversation-actions {
+                position: absolute !important;
+                right: 0 !important;
+                z-index: 10 !important;
+            }
+            
+            /* Ensure tree node content doesn't clip the dropdown */
+            .ant-tree-list-holder-inner {
+                overflow: visible !important;
+            }
+            
+        `;
+
+        // Add specific rules to fix SVG visibility in regular conversation items
+        styleElement.textContent += `
+            /* Force SVG visibility in buttons */
+            .chat-history-actions .anticon svg {
+                visibility: visible !important;
+                opacity: 1 !important;
+                fill: currentColor !important;
+                display: inline-block !important;
+                width: 1em !important;
+                height: 1em !important;
+            }
+            
+            /* Ensure the buttons are visible */
+            .chat-history-actions .ant-btn {
+                visibility: visible !important;
+                opacity: 1 !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 24px !important;
+                height: 24px !important;
+                background-color: transparent !important;
+                z-index: 100 !important;
+            }
+        `;
+        document.head.appendChild(styleElement);
+
+        // Add a more specific rule with higher specificity to override any other styles
+        const additionalStyle = document.createElement('style');
+        additionalStyle.textContent = `
+            .ant-tree-node-content-wrapper .ant-tree-title .conversation-item span {
+                maxWidth: calc(100% - 30px) !important;
+            }
+
+            /* Make dropdown container non-shrinkable */
+            .ant-tree .conversation-item > div:last-child {
+                min-width: 30px !important;
+                flex-shrink: 0 !important;
+            }
+        `;
+        document.head.appendChild(additionalStyle);
+
+        // Return cleanup function with correct void return type
+        return () => {
+            document.head.removeChild(styleElement);
+            document.head.removeChild(additionalStyle);
+        };
+    }, []);
 
     return folders.length > 0 ? renderTreeView() : renderListView();
 };

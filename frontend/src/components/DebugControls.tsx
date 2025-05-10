@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
-import { Button, Tooltip, Dropdown, Menu, Modal, message } from 'antd';
+import { Button, Tooltip, Dropdown, Menu, Modal, message, Alert } from 'antd';
 import {
     ExperimentOutlined,
     CodeOutlined,
     ToolOutlined,
     DatabaseOutlined,
+    MedicineBoxOutlined,
     DiffOutlined
 } from '@ant-design/icons';
 import { db } from '../utils/db';
+import { performEmergencyRecovery } from '../utils/emergencyRecovery';
 
 interface DebugControlsProps {
     setDebugView: (view: 'prism' | 'syntax' | 'applydiff' | null) => void;
@@ -15,6 +17,7 @@ interface DebugControlsProps {
 
 export const DebugControls: React.FC<DebugControlsProps> = ({ setDebugView }) => {
     const [isRepairing, setIsRepairing] = useState(false);
+    const [isEmergencyRepairing, setIsEmergencyRepairing] = useState(false);
     const [menuVisible, setMenuVisible] = useState(false);
 
     const handleRepairDatabase = async () => {
@@ -38,6 +41,39 @@ export const DebugControls: React.FC<DebugControlsProps> = ({ setDebugView }) =>
         });
     };
 
+    const handleEmergencyRecovery = async () => {
+        Modal.confirm({
+            title: 'Emergency Database Recovery',
+            content: (
+                <>
+                    <Alert
+                        message="This will attempt to recover your data using all available methods."
+                        description="This operation will try to fix database schema issues and recover data from backups if available. Use this only when regular repair fails."
+                        type="warning"
+                        showIcon
+                        style={{ marginBottom: 16 }}
+                    />
+                    <p>Do you want to continue?</p>
+                </>
+            ),
+            okText: 'Recover',
+            okType: 'danger',
+            cancelText: 'Cancel',
+            onOk: async () => {
+                setIsEmergencyRepairing(true);
+                try {
+                    const result = await performEmergencyRecovery();
+                    message.success('Emergency recovery completed. Reloading page...');
+                    setTimeout(() => window.location.reload(), 1500);
+                } catch (error) {
+                    message.error('Recovery failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+                } finally {
+                    setIsEmergencyRepairing(false);
+                }
+            }
+        });
+    };
+
     const handleClearDatabase = () => {
         Modal.confirm({
             title: 'Clear Database',
@@ -56,7 +92,7 @@ export const DebugControls: React.FC<DebugControlsProps> = ({ setDebugView }) =>
         switch (key) {
             case 'prism':
             case 'syntax':
-	    case 'applydiff':
+            case 'applydiff':
                 setDebugView(key);
                 break;
         }
@@ -71,12 +107,15 @@ export const DebugControls: React.FC<DebugControlsProps> = ({ setDebugView }) =>
             <Menu.Item key="syntax">
                 <CodeOutlined /> Test Complex Syntax
             </Menu.Item>
-	    <Menu.Item key="applydiff">
-               <DiffOutlined /> Test Diff Application
-           </Menu.Item>
+            <Menu.Item key="applydiff">
+                <DiffOutlined /> Test Diff Application
+            </Menu.Item>
             <Menu.Divider />
             <Menu.Item key="repair" onClick={handleRepairDatabase}>
                 <ToolOutlined /> Repair Database
+            </Menu.Item>
+            <Menu.Item key="emergency" onClick={handleEmergencyRecovery}>
+                <MedicineBoxOutlined /> Emergency Recovery
             </Menu.Item>
             <Menu.Item key="clear" onClick={handleClearDatabase} danger>
                 <DatabaseOutlined /> Clear Database
@@ -87,8 +126,8 @@ export const DebugControls: React.FC<DebugControlsProps> = ({ setDebugView }) =>
     return (
         <>
             <Tooltip title="Debug Tools">
-                <Dropdown 
-                    overlay={menu} 
+                <Dropdown
+                    overlay={menu}
                     trigger={['click']}
                     onVisibleChange={setMenuVisible}
                     visible={menuVisible}

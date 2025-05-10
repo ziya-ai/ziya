@@ -1,10 +1,11 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { Input, Tabs, Tree, TreeDataNode, Button, message } from 'antd';
 import { useFolderContext } from '../context/FolderContext';
 import { Folders } from '../utils/types';
 import { useChatContext } from '../context/ChatContext';
 import { TokenCountDisplay } from "./TokenCountDisplay";
 import union from 'lodash/union';
+import { debounce } from 'lodash';
 import { ChatHistory } from "./ChatHistory";
 import { useTheme } from '../context/ThemeContext';
 import { ModelConfigButton } from './ModelConfigButton';
@@ -19,12 +20,15 @@ interface FolderTreeProps {
     isPanelCollapsed: boolean;
 }
 
+// Create a cache for token calculations to avoid redundant logs
+const tokenCalculationCache = new Map<string, { included: number, total: number }>();
+const DEBUG_LOGGING_ENABLED = false; // Set to false to disable verbose logging
+
 const ACTIVE_TAB_KEY = 'ZIYA_ACTIVE_TAB';
 const DEFAULT_TAB = '1'; // File Explorer tab
 
-export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
+export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => {
     const {
-        folders,
         treeData,
         setTreeData,
         checkedKeys,
@@ -33,9 +37,22 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         setExpandedKeys,
         getFolderTokenCount
     } = useFolderContext();
+
+    // Extract only the specific values needed from ChatContext
+    // to prevent unnecessary re-renders
     const [modelId, setModelId] = useState<string>('');
     const { isDarkMode } = useTheme();
-    const { currentConversationId } = useChatContext();
+
+    // Use a more selective approach to extract only what we need from ChatContext
+    const chatContext = useChatContext();
+    const currentConversationId = chatContext.currentConversationId;
+    const currentFolderId = chatContext.currentFolderId;
+    const chatFolders = chatContext.folders;
+    const folderFileSelections = chatContext.folderFileSelections;
+    const setFolderFileSelections = chatContext.setFolderFileSelections;
+
+    const { folders } = useFolderContext(); // Keep this to get the proper Folders type
+
     // Add state to track panel width
     const [panelWidth, setPanelWidth] = useState<number>(300);
     const [isRefreshing, setIsRefreshing] = useState(false);
@@ -43,7 +60,6 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
     const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
-    const { currentFolderId, folders: chatFolders, folderFileSelections, setFolderFileSelections } = useChatContext();
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
     // Add ref for the panel element
@@ -67,7 +83,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         return () => resizeObserver.disconnect();
     }, []);
 
-    useEffect(() => {
+    const debouncedSearch = useCallback(debounce((value: string) => {
         if (searchValue) {
             const { filteredData, expandedKeys } = filterTreeData(treeData, searchValue);
             setFilteredTreeData(filteredData);
@@ -76,7 +92,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
             setFilteredTreeData(treeData);
             setExpandedKeys([]);
         }
-    }, [searchValue, treeData]);
+    }, 300), [treeData]);
 
     // Save active tab whenever it changes
     useEffect(() => {
@@ -308,8 +324,107 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         setAutoExpandParent(true);
     };
 
-    // Calculate included tokens for a directory
-    const getIncludedTokens = (node: TreeDataNode): { included: number, total: number } => {
+    // Alternative approach: Calculate tokens directly from the tree structure
+    const calculateTokens = useCallback((path: string): number => {
+        if (!folders) return 0; // Early return if folders is undefined
+
+        // Navigate through the folders structure to find the node
+        let current: any = folders;
+        const parts = path.split('/');
+
+        for (const part of parts) {
+            if (!current[part]) {
+                return 0; // Path not found
+            }
+            current = current[part];
+        }
+
+        // If we found the node, return its token count
+        return current.token_count || 0;
+    }, [folders]);
+
+    // Get all selected paths under a directory
+    const getSelectedPaths = (basePath: string): string[] => {
+        return checkedKeys
+            .map(key => key.toString())
+            .filter(path => path.startsWith(basePath + '/') || path === basePath);
+    };
+
+    // Calculate included tokens for a directory using direct path checking
+    const getDirectIncludedTokens = useCallback((node: TreeDataNode): { included: number, total: number } => {
+        const nodePath = node.key as string;
+
+        // Calculate total tokens by summing up all children
+        let totalTokens = 0;
+
+        if (folders) {
+            // If this is a file, get its token count directly
+            if (!node.children || node.children.length === 0) {
+                totalTokens = getFolderTokenCount(nodePath, folders);
+            } else {
+                // For directories, sum up tokens from all children recursively
+                // This ensures we get the total tokens for the entire subtree
+                totalTokens = calculateTotalTokensForDirectory(nodePath, folders);
+            }
+        }
+
+        // If this node is directly checked, all tokens are included
+        if (checkedKeys.includes(node.key)) {
+            return { included: totalTokens, total: totalTokens };
+        }
+
+        // If this is a directory, check if any children are selected
+        if (node.children && node.children.length > 0) {
+            let includedTokens = 0;
+
+            // Process each child node
+            for (const child of node.children) {
+                const childPath = child.key as string;
+
+                // Case 1: Child is directly selected
+                if (checkedKeys.includes(child.key)) {
+                    const childTokens = folders ? getFolderTokenCount(childPath, folders) : 0;
+                    includedTokens += childTokens;
+                }
+                // Case 2: Child is a directory that might have selected descendants
+                else if (child.children && child.children.length > 0) {
+                    // Recursively check this child directory
+                    const childResult = getDirectIncludedTokens(child);
+                    includedTokens += childResult.included;
+                }
+            }
+
+            return { included: includedTokens, total: totalTokens };
+        }
+
+        return { included: 0, total: totalTokens };
+    }, [folders, checkedKeys]);
+
+    // Helper function to calculate total tokens for a directory by traversing the folder structure
+    const calculateTotalTokensForDirectory = useCallback((dirPath: string, folderData: Folders): number => {
+        if (!folderData) return 0;
+
+        // Navigate to the directory in the folder structure
+        let current = folderData;
+        const parts = dirPath.split('/');
+
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            if (!current[part]) return 0;
+            if (i === parts.length - 1) break; // Don't navigate into the last part
+            current = current[part].children || {};
+        }
+
+        // Get the directory node
+        const dirNode = current[parts[parts.length - 1]];
+        if (!dirNode) return 0;
+
+        // Return the token_count if it exists (this should be the sum of all files in the directory)
+        return dirNode.token_count || 0;
+    }, [getFolderTokenCount, calculateTokens, checkedKeys]);
+
+    // Original implementation with improved debugging
+    const getIncludedTokens = useCallback((node: TreeDataNode): { included: number, total: number } => {
         if (!folders) return { included: 0, total: 0 };
 
         const nodePath = node.key as string;
@@ -319,7 +434,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
         let totalTokens = 0;
 
         // Try to get token count from the folders structure
-        totalTokens = getFolderTokenCount(nodePath, folders);
+        totalTokens = folders ? getFolderTokenCount(nodePath, folders) : 0;
 
         // If we couldn't get tokens from folders, try to extract from title
         if (totalTokens === 0) {
@@ -339,56 +454,85 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
             return { included: 0, total: totalTokens };
         }
 
-        // Calculate included tokens from children by checking which child nodes are selected
+        // Initialize included tokens counter
         let includedTokens = 0;
 
-        // Recursively check each child
-        node.children.forEach(child => {
+        // Process each child node
+        for (const child of node.children) {
             const childPath = child.key as string;
 
-            // If child is checked directly, add all its tokens
+            // Case 1: Child is directly selected
             if (checkedKeys.includes(child.key)) {
                 const childTokens = getFolderTokenCount(childPath, folders);
                 includedTokens += childTokens;
-                console.log(`Child ${childPath} is checked, adding ${childTokens} tokens`);
+                console.log(`Direct selection: ${childPath} adds ${childTokens} tokens`);
             }
-            // If child has children, recurse to check partial inclusion
+            // Case 2: Child is a directory that might have selected descendants
             else if (child.children && child.children.length > 0) {
+                // Recursively check this child directory
                 const childResult = getIncludedTokens(child);
-                includedTokens += childResult.included;
-                console.log(`Child ${childPath} has partial inclusion: ${childResult.included}/${childResult.total}`);
-            }
-        });
 
+                // Only add if there are included tokens
+                if (childResult.included > 0) {
+                    includedTokens += childResult.included;
+                    console.log(`Partial selection: ${childPath} adds ${childResult.included}/${childResult.total} tokens`);
+                }
+            }
+        }
+
+        // Debug output
+        if (includedTokens > 0) {
+            console.log(`Directory ${nodePath}: ${includedTokens}/${totalTokens} tokens included`);
+        } else {
+            console.log(`Directory ${nodePath}: No tokens included (total: ${totalTokens})`);
+        }
+
+        // Return both the included and total token counts
         console.log(`Node ${nodePath}: included=${includedTokens}, total=${totalTokens}`);
         return { included: includedTokens, total: totalTokens };
-    };
+    }, [folders, checkedKeys, getFolderTokenCount]);
 
-    const titleRender = (nodeData: any) => {
+    // Use the alternative implementation for now
+    const getTokensForDisplay = useCallback((node: TreeDataNode): { included: number, total: number } => {
+        return getDirectIncludedTokens(node);
+    }, [getDirectIncludedTokens]);
+
+    const titleRender = (nodeData: any): React.ReactNode => {
         // Check if this is a directory (has children)
         if (nodeData.children && nodeData.children.length > 0) {
             // Calculate included vs total tokens
-            const { included, total } = getIncludedTokens(nodeData);
+            const { included, total } = getTokensForDisplay(nodeData);
+            const nodePath = nodeData.key as string;
 
             // Extract just the folder name without the token count
             const titleText = String(nodeData.title).split(' (')[0];
 
             // Show fraction for partially included directories, otherwise show total
             const isPartiallyIncluded = included > 0 && included < total;
+            const hasTokens = total > 0;  // Keep this line to define hasTokens
 
-            console.log(`Rendering ${titleText}: included=${included}, total=${total}, partial=${isPartiallyIncluded}`);
+            // Only log if debug logging is enabled
+            if (DEBUG_LOGGING_ENABLED) {
+                console.log(`Rendering ${titleText}: included=${included}, total=${total}, partial=${isPartiallyIncluded}`);
+            }
 
-            return (
+            // Cache the calculation result
+            tokenCalculationCache.set(nodePath, { included, total });
+
+            const titleContent = (
                 <span style={{
                     userSelect: 'text',
                     cursor: 'text',
                     color: isDarkMode ? '#ffffff' : '#000000',
                 }}>
-                    {titleText} {isPartiallyIncluded ?
+                    {titleText} {hasTokens ? (isPartiallyIncluded ?
                         `(${included.toLocaleString()}/${total.toLocaleString()} tokens)` :
-                        `(${total.toLocaleString()} tokens)`}
+                        `(${total.toLocaleString()} tokens)`) : '(0 tokens)'}
                 </span>
             );
+
+            // Return memoized content
+            return titleContent;
         }
 
         // For files, just show the original title
@@ -402,6 +546,68 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
             </span>
         );
     };
+
+    // Memoize the title render function to prevent unnecessary recalculations
+    const memoizedTitleRender = useCallback((nodeData: any): React.ReactNode => {
+        // Use node key as cache key
+        const cacheKey = nodeData.key as string;
+
+        // For directories with children, check if we have a cached calculation
+        if (nodeData.children && nodeData.children.length > 0 && tokenCalculationCache.has(cacheKey)) {
+            // Skip recalculation and just render the title
+            return titleRender(nodeData);
+        }
+
+        // For uncached items or files, calculate normally
+        return titleRender(nodeData);
+    }, [folders, checkedKeys, getFolderTokenCount, isDarkMode]);
+
+    // Memoize the entire tree component to prevent re-renders when typing in chat
+    const memoizedTree = useMemo(() => {
+        return (
+            <Tree
+                checkable
+                onExpand={onExpand}
+                expandedKeys={expandedKeys}
+                autoExpandParent={autoExpandParent}
+                onCheck={onCheck}
+                checkedKeys={checkedKeys}
+                treeData={searchValue ? filteredTreeData : treeData}
+                titleRender={memoizedTitleRender}
+                style={{
+                    background: 'transparent',
+                    color: isDarkMode ? '#ffffff' : '#000000',
+                    height: 'calc(100% - 40px)',
+                    overflow: 'auto',
+                    position: 'relative'
+                }}
+                className={isDarkMode ? 'dark' : ''}
+            />
+        );
+    }, [
+        onExpand,
+        expandedKeys,
+        autoExpandParent,
+        onCheck,
+        checkedKeys,
+        searchValue,
+        filteredTreeData,
+        treeData,
+        memoizedTitleRender,
+        isDarkMode
+    ]);
+
+    // Memoize the search component
+    const memoizedSearch = useMemo(() => {
+        return (
+            <Search
+                style={{ marginBottom: 8, backgroundColor: isDarkMode ? '#1f1f1f' : undefined }}
+                placeholder="Search folders"
+                onChange={onSearch}
+                allowClear
+            />
+        );
+    }, [onSearch, isDarkMode]);
 
     return (
         <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
@@ -442,15 +648,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                         overflowY: 'auto',
                                         overflowX: 'hidden'
                                     }}>
-                                        <Search
-                                            style={{
-                                                marginBottom: 8,
-                                                backgroundColor: isDarkMode ? '#1f1f1f' : undefined,
-                                            }}
-                                            placeholder="Search folders"
-                                            onChange={onSearch}
-                                            allowClear
-                                        />
+                                        {memoizedSearch}
                                         {folders ? (
                                             <>
                                                 <Button
@@ -461,24 +659,7 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                                                 >
                                                     Refresh Files
                                                 </Button>
-                                                <Tree
-                                                    checkable
-                                                    onExpand={onExpand}
-                                                    expandedKeys={expandedKeys}
-                                                    autoExpandParent={autoExpandParent}
-                                                    onCheck={onCheck}
-                                                    checkedKeys={checkedKeys}
-                                                    treeData={searchValue ? filteredTreeData : treeData}
-                                    titleRender={(node) => titleRender(node)}
-                                                    style={{
-                                                        background: 'transparent',
-                                                        color: isDarkMode ? '#ffffff' : '#000000',
-                                                        height: 'calc(100% - 40px)',
-                                                        overflow: 'auto',
-                                                        position: 'relative'
-                                                    }}
-                                                    className={isDarkMode ? 'dark' : ''}
-                                                />
+                                                {memoizedTree}
                                             </>
                                         ) : (
                                             <div>Loading Folders...</div>
@@ -518,4 +699,4 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
             </div>
         </div>
     );
-};
+}, (prevProps, nextProps) => prevProps.isPanelCollapsed === nextProps.isPanelCollapsed);

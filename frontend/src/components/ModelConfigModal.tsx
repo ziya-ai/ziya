@@ -249,9 +249,16 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   // Use selected model capabilities for form limits
   const tempLimits = selectedModelCapabilities?.temperature_range || capabilities?.temperature_range || { min: 0, max: 1, default: 0.3 };
   const topKLimits = selectedModelCapabilities?.top_k_range || capabilities?.top_k_range || { min: 0, max: 500, default: 15 };
-  // Define ranges using the new structure from capabilities, with fallbacks
-  const outputRange = selectedModelCapabilities?.max_output_tokens_range || capabilities?.max_output_tokens_range || { min: 1, max: 4096, default: 4096 };
-  const inputRange = selectedModelCapabilities?.max_input_tokens_range || capabilities?.max_input_tokens_range || { min: 1, max: 4096, default: 4096 };
+
+  // Safely define ranges with complete fallback objects
+  const defaultRange = { min: 1, max: 4096, default: 4096 };
+  const outputRange = selectedModelCapabilities?.max_output_tokens_range ||
+    capabilities?.max_output_tokens_range ||
+    defaultRange;
+
+  const inputRange = selectedModelCapabilities?.max_input_tokens_range ||
+    capabilities?.max_input_tokens_range ||
+    defaultRange;
 
   // Determine the effective max output/input tokens for display/default
   const effectiveMaxOutput = selectedModelCapabilities?.max_output_tokens || capabilities?.max_output_tokens || outputRange.default;
@@ -394,14 +401,14 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                 Current: {sliderValues.max_output_tokens?.toLocaleString() || '0'}
               </Text>
               <Text type="secondary" style={{ marginLeft: 'auto' }}>
-                Maximum: {outputRange.max.toLocaleString()} tokens {/* <-- Use max from range */}
+                Maximum: {outputRange?.max?.toLocaleString() || '4096'} tokens {/* <-- Use max from range with fallback */}
               </Text>
             </div>
           }
         >
           <Slider
             min={1}
-            max={outputRange.max} // <-- Use max from range
+            max={outputRange?.max || 4096} // <-- Use max from range with fallback
             step={outputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
             onChange={(value) => form.setFieldsValue({ max_output_tokens: value })}
             tooltip={{
@@ -439,13 +446,13 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                 Current: {sliderValues.max_input_tokens?.toLocaleString() || '0'} tokens
               </Text>
               <Text type="secondary" style={{ marginLeft: 'auto' }}>
-                Maximum: {inputRange.max.toLocaleString()} tokens {/* <-- Use max from range */}
+                Maximum: {inputRange?.max?.toLocaleString() || '4096'} tokens {/* <-- Use max from range with fallback */}
               </Text>
             </div>
           }>
           <Slider
             min={1}
-            max={inputRange.max} // <-- Use max from range
+            max={inputRange?.max || 4096} // <-- Use max from range with fallback
             step={inputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
             onChange={(value) => form.setFieldsValue({ max_input_tokens: value })}
             tooltip={{

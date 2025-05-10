@@ -21,13 +21,19 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging) return;
-      
-      // Calculate new width based on mouse position with better constraints
-      const minWidth = 200; // Minimum width
-      const maxWidth = Math.max(600, window.innerWidth * 0.8); // Maximum width (80% of window or 600px, whichever is larger)
-      
-      // Ensure we don't make the panel too small or too large
-      const newWidth = Math.max(minWidth, Math.min(maxWidth, e.clientX));
+
+      // Validate and sanitize the width value
+      const validateWidth = (width: number): number => {
+        // Minimum width
+        const minWidth = 200;
+        // Maximum width (80% of window or 600px, whichever is larger)
+        const maxWidth = Math.max(600, window.innerWidth * 0.8);
+        // Ensure width is positive and within constraints
+        return Math.max(minWidth, Math.min(maxWidth, Math.abs(width)));
+      };
+
+      // Calculate and validate new width
+      const newWidth = validateWidth(e.clientX);
       
       onResize(newWidth);
     };

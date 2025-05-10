@@ -247,20 +247,21 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
         if (currentModel.model_id === selectedModelId) {
           setCurrentModelId(selectedModelId);
           message.success(`Model updated to ${selectedModelId} successfully`);
-          
+
           // Get model display name for the notification
           const selectedModel = availableModels.find(m => m.id === selectedModelId);
           const displayName = selectedModel?.display_name || selectedModel?.name || selectedModelId;
-          const previousModelObj = availableModels.find(m => m.id === modelId);
+          const previousModelObj = availableModels.find(m => m.id === modelId || m.name === modelId);
           const previousDisplayName = previousModelObj?.display_name || previousModelObj?.name || modelId;
-          
+
           // Dispatch a custom event for model change notification
           if (selectedModelId !== modelId) {
             window.dispatchEvent(new CustomEvent('modelChanged', {
               detail: {
                 previousModel: previousDisplayName,
                 newModel: displayName,
-                modelId: selectedModelId
+                modelId: selectedModelId,
+                previousModelId: modelId
               }
             }));
           }

@@ -156,33 +156,58 @@ export const TokenCountDisplay = () => {
     // Listen for model settings changes
     useEffect(() => {
         const handleModelSettingsChange = async (event: CustomEvent<ModelSettingsEventDetail>) => {
-            console.debug('Model settings changed:', event.detail);
+        console.log('TokenCountDisplay received modelSettingsChanged event:', {
+            eventDetail: event.detail,
+            hasSettings: !!event.detail?.settings,
+            hasCapabilities: !!event.detail?.capabilities, 
+            currentLimits: modelLimits
+        });
+            
             try {
 
                 if (!event.detail) {
                     // If no detail provided, fetch fresh data
                     const response = await fetch('/api/current-model');
-                    if (!response.ok) throw new Error('Failed to fetch model settings');
+                    if (!response.ok) throw new Error(`Failed to fetch model settings: ${response.status}`);
                     const data = await response.json();
-
+                    
+                    // Use token_limit from capabilities if available, otherwise use max_input_tokens
+                    const tokenLimit = data.capabilities?.token_limit || data.settings?.max_input_tokens || 4096;
+                    
                     setModelLimits({
+                        token_limit: tokenLimit,
+                        max_input_tokens: data.settings.max_input_tokens || tokenLimit,
+                        max_output_tokens: data.settings.max_output_tokens
+                    });
+                    console.log('TokenCountDisplay updated limits from API call:', {
                         token_limit: data.capabilities.token_limit,
                         max_input_tokens: data.settings.max_input_tokens || data.capabilities.token_limit,
                         max_output_tokens: data.settings.max_output_tokens
                     });
                 } else {
                     // Use provided data
-
-                }
-                if (event.detail.settings && event.detail.capabilities) {
-                    const { settings, capabilities } = event.detail;
-                    setModelLimits({
-                        token_limit: capabilities.token_limit,
-                        max_input_tokens: settings.max_input_tokens || capabilities.token_limit,
-                        max_output_tokens: settings.max_output_tokens || capabilities.max_output_tokens
-                    });
-                } else {
-                    throw new Error('Missing settings or capabilities in event data');
+                    if (event.detail.settings && event.detail.capabilities) {
+                        const { settings, capabilities } = event.detail;
+                        
+                        // Use token_limit from capabilities if available, otherwise use max_input_tokens
+                        const tokenLimit = capabilities.token_limit || settings.max_input_tokens || 4096;
+                        
+                        const newLimits = {
+                            token_limit: tokenLimit,
+                            max_input_tokens: settings.max_input_tokens || tokenLimit,
+                            max_output_tokens: settings.max_output_tokens || capabilities.max_output_tokens
+                        };
+                        console.log('TokenCountDisplay updating limits from event:', newLimits);
+                        setModelLimits(newLimits);
+                        
+                        // Force a re-render by updating state
+                        setTotalTokenCount(prev => {
+                            console.log('Forcing token count re-render');
+                            return prev;
+                        });
+                    } else {
+                        throw new Error('Missing settings or capabilities in event data');
+                    }
                 }
             } catch (error) {
                 console.error('Error updating token limits:', error);
@@ -215,7 +240,7 @@ export const TokenCountDisplay = () => {
                 }
             }
             
-            console.debug('Recalculating file tokens due to checked files change', { usesFolderContext, currentFolderId });
+            // Only recalculate without logging every time
             
             let total = 0;
             const details: { [key: string]: number } = {};
@@ -233,7 +258,9 @@ export const TokenCountDisplay = () => {
                     total += tokens;
                 }
             });
-            console.debug('Token count details:', details);
+            // Only log token details when debugging specific issues
+            // console.debug('Token count details:', details);
+            
             setTokenDetails(details);
             setTotalTokenCount(total);
         } else {
@@ -302,14 +329,18 @@ export const TokenCountDisplay = () => {
 
     // update chat tokens only when messages or conversation change
     useEffect(() => {
-        console.debug('Conversation or messages changed:', {
-            conversationId: currentConversationId,
-            messageCount: currentMessages.length,
-            isStreaming
-        });
+        // Only log in development mode and not for routine checks
+        if (process.env.NODE_ENV === 'development' && 
+            (currentMessages.length > 0 || hasMessagesChanged(currentMessages))) {
+            console.debug('Conversation or messages changed:', {
+                conversationId: currentConversationId
+            });
+        }
+        
         if (!currentConversationId || currentMessages.length === 0) {
-            console.debug('Resetting token count - empty conversation');
+            // Silently reset token count without logging
             setChatTokenCount(0);
+            
             lastMessageCount.current = 0;
             lastMessageContent.current = '';
             previousMessagesRef.current = '';

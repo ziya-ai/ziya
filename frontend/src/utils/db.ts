@@ -1,5 +1,6 @@
 import { Conversation, ConversationFolder } from './types';
 import { message } from 'antd';
+import { performEmergencyRecovery } from './emergencyRecovery';
 
 declare global {
     interface Navigator {
@@ -7,9 +8,17 @@ declare global {
             request(name: string, callback: (lock: any) => Promise<any>): Promise<any>;
         };
     }
+    interface IDBDatabase { }
 }
 
-const DB_BASE_NAME = 'ZiyaDB';
+// Get database name from localStorage or use default
+const DB_BASE_NAME = (() => {
+    const storedName = localStorage.getItem('ZIYA_DB_NAME');
+    if (storedName) {
+        console.log('Using custom database name:', storedName);
+    }
+    return storedName || 'ZiyaDB';
+})();
 let currentDbName = DB_BASE_NAME;
 let currentVersion = 3; // Increment version to force upgrade
 const STORE_NAME = 'conversations';
@@ -43,7 +52,7 @@ class ConversationDB implements DB {
     private lastKnownVersion: number = 0;
     private connectionAttempts = 0;
     private _pendingMigrationData: Conversation[] | null = null;
-    private initializing = true;
+    private initializing = false;
     private initPromise: Promise<void> | null = null;
 
     db: IDBDatabase | null = null;
@@ -51,6 +60,7 @@ class ConversationDB implements DB {
     async init(): Promise<void> {
         if (this.initPromise) return this.initPromise;
 
+        this.initializing = true;
         if (navigator.locks) {
             this.initPromise = navigator.locks.request('ziya-db-init', async lock => {
                 return this._initWithLock();
@@ -71,6 +81,7 @@ class ConversationDB implements DB {
             }
 
             // First check existing version
+            console.debug('Checking existing database version');
             const checkRequest = indexedDB.open(currentDbName);
 
             return new Promise((resolve, reject) => {
@@ -78,11 +89,29 @@ class ConversationDB implements DB {
                     const existingVersion = checkRequest.result.version;
                     checkRequest.result.close();
 
+                    // Check for Safari migration issue - missing conversations store
+                    const db = checkRequest.result;
+                    const hasFolders = db.objectStoreNames.contains('folders');
+                    const hasConversations = db.objectStoreNames.contains('conversations');
+                    if (hasFolders && !hasConversations) {
+                        console.warn('Safari migration issue detected: folders store exists but conversations store is missing');
+                        // Auto-trigger emergency recovery
+                        performEmergencyRecovery().then(() => {
+                            console.log('Recovery completed, forcing page reload');
+                            // Force reload to reinitialize everything
+                            setTimeout(() => {
+                                window.location.href = window.location.href;
+                            }, 100);
+                        }).catch(err => console.error('Auto-recovery failed:', err));
+                        return;
+                    }
+
                     // Use existing version if it's higher
                     if (existingVersion > currentVersion) {
                         currentVersion = existingVersion;
                     }
 
+                    // Log the version we're using
                     console.debug('Database version check:', {
                         existingVersion,
                         usingVersion: currentVersion
@@ -90,11 +119,16 @@ class ConversationDB implements DB {
 
                     // Now open with correct version
                     const dbRequest = indexedDB.open(currentDbName, currentVersion);
+                    let upgradeCompleted = false;
 
                     dbRequest.onerror = () => {
                         console.error('Database initialization error:', dbRequest.error);
                         this.initPromise = null;
                         reject(dbRequest.error);
+                    };
+
+                    dbRequest.onblocked = () => {
+                        console.warn('Database opening blocked. Closing other connections...');
                     };
 
                     dbRequest.onsuccess = () => {
@@ -107,6 +141,11 @@ class ConversationDB implements DB {
                         };
 
                         this.db.onclose = () => {
+                            console.debug('Database connection closed');
+                            if (this.initializing && !upgradeCompleted) {
+                                console.warn('Database closed during initialization');
+                                this.initPromise = null;
+                            }
                             this.db = null;
                             this.initPromise = null;
                         };
@@ -123,13 +162,33 @@ class ConversationDB implements DB {
 
                     dbRequest.onupgradeneeded = (event: IDBVersionChangeEvent) => {
                         console.debug('Upgrading database schema from version', event.oldVersion, 'to', event.newVersion);
+                        upgradeCompleted = false;
                         const db = (event.target as IDBOpenDBRequest).result;
 
-                        if (event.oldVersion < 1) {
+                        // Create stores based on what's missing, not just version
+                        if (!db.objectStoreNames.contains(STORE_NAME)) {
+                            console.debug(`Creating ${STORE_NAME} store`);
                             db.createObjectStore(STORE_NAME);
                         }
-                        if (event.oldVersion < 3) { // Update to match new version
+
+                        if (!db.objectStoreNames.contains('folders')) {
+                            console.debug('Creating folders store');
                             db.createObjectStore('folders', { keyPath: 'id' });
+                        }
+
+                        // Create backup store if needed
+                        if (!db.objectStoreNames.contains(BACKUP_STORE_NAME)) {
+                            console.debug(`Creating ${BACKUP_STORE_NAME} store`);
+                            db.createObjectStore(BACKUP_STORE_NAME);
+                        }
+
+                        // Add a transaction complete handler
+                        const transaction = (event.target as IDBOpenDBRequest).transaction;
+                        if (transaction) {
+                            transaction.oncomplete = () => {
+                                console.debug('Database upgrade transaction completed successfully');
+                                upgradeCompleted = true;
+                            }
                         }
                     };
 
@@ -142,6 +201,7 @@ class ConversationDB implements DB {
         } catch (error) {
             this.initPromise = null;
             console.error('Database initialization failed:', error);
+            this.initializing = false;
             throw error;
         }
     }
@@ -229,6 +289,14 @@ class ConversationDB implements DB {
                 await this.init();
             } catch (error) {
                 console.error('Failed to initialize database:', error);
+                try {
+                    const recovered = await this.handleMissingStore();
+                    if (!recovered) {
+                        console.error('Failed to recover database');
+                    }
+                } catch (e) {
+                    console.error('Failed to handle missing store:', e);
+                }
                 throw new Error('Database initialization failed');
             }
             if (!this.db) throw new Error('Database not initialized');
@@ -236,13 +304,37 @@ class ConversationDB implements DB {
 
         if (navigator.locks) {
             return navigator.locks.request('ziya-db-write', async lock => {
-                return this._saveConversationsWithLock(conversations);
+                try {
+                    return await this._saveConversationsWithLock(conversations);
+                } catch (error) {
+                    // If this is a missing store error, attempt recovery
+                    if (error instanceof Error &&
+                        error.name === 'NotFoundError' &&
+                        error.message.includes('object stores was not found')) {
+                        console.warn('Missing store during save, attempting recovery');
+                        const recovered = await this.handleMissingStore();
+                        if (!recovered) {
+                            console.error('Failed to recover database during save');
+                            // Try emergency recovery as a last resort
+                            await this.forceReset();
+                            await this.init();
+
+                            // Force reload to reinitialize everything
+                            setTimeout(() => {
+                                window.location.href = window.location.href;
+                            }, 100);
+                        }
+                        return this._saveConversationsWithLock(conversations);
+                    }
+                    throw error;
+                }
             });
         }
         return this._saveConversationsWithLock(conversations);
     }
 
     private async _saveConversationsWithLock(conversations: Conversation[]): Promise<void> {
+        console.debug('Starting _saveConversationsWithLock with', conversations.length, 'conversations');
         if (this.saveInProgress) {
             console.warn('Save already in progress, skipping');
             return;
@@ -251,6 +343,13 @@ class ConversationDB implements DB {
         this.saveInProgress = true;
         let saveCompleted = false;
 
+        // Check if the store exists before attempting to save
+        if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+            console.error('Cannot save - conversations store not found');
+            this.saveInProgress = false;
+            throw new Error('Conversations store not found');
+        }
+
         try {
             console.debug('Starting save operation:', {
                 conversationCount: conversations.length,
@@ -258,6 +357,7 @@ class ConversationDB implements DB {
             });
 
             const tx = this.db!.transaction([STORE_NAME], 'readwrite');
+            console.debug('Transaction created successfully');
             const store = tx.objectStore(STORE_NAME);
 
             return new Promise<void>((resolve, reject) => {
@@ -271,6 +371,17 @@ class ConversationDB implements DB {
                     lastAccessedAt: conv.lastAccessedAt || Date.now(),
                     isActive: conv.isActive !== false
                 }));
+
+                // Create a backup in localStorage before saving
+                try {
+                    const activeConversations = conversationsToSave.filter(c => c.isActive !== false);
+                    if (activeConversations.length > 0) {
+                        localStorage.setItem('ZIYA_CONVERSATION_BACKUP', JSON.stringify(activeConversations));
+                        console.debug('Created backup of', activeConversations.length, 'conversations in localStorage');
+                    }
+                } catch (e) {
+                    console.error('Error backing up conversations to localStorage:', e);
+                }
 
                 const putRequest = store.put(conversationsToSave, 'current');
 
@@ -289,6 +400,7 @@ class ConversationDB implements DB {
                 };
 
                 tx.oncomplete = () => {
+                    console.debug('Transaction completed');
                     if (!saveCompleted) {
                         reject(new Error('Transaction completed but save operation did not complete'));
                         return;
@@ -297,6 +409,7 @@ class ConversationDB implements DB {
                 };
 
                 tx.onerror = () => {
+                    console.error('Transaction error:', tx.error);
                     reject(tx.error);
                 };
             });
@@ -305,12 +418,43 @@ class ConversationDB implements DB {
         }
     }
 
+    // Add a method to restore from backup if needed
+    async restoreFromBackup(): Promise<Conversation[]> {
+        try {
+            const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
+            if (backup) {
+                const conversations = JSON.parse(backup);
+                if (Array.isArray(conversations) && conversations.length > 0) {
+                    console.log('Restoring', conversations.length, 'conversations from backup');
+
+                    // Save to database
+                    try {
+                        await this.saveConversations(conversations);
+                        console.log('Successfully restored conversations to database');
+                    } catch (e) {
+                        console.error('Failed to save restored conversations to database:', e);
+                    }
+
+                    return conversations;
+                }
+            }
+        } catch (e) {
+            console.error('Error restoring from backup:', e);
+        }
+
+        // Return empty array if no backup or error
+        return [];
+    }
+
+
     async getConversations(): Promise<Conversation[]> {
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try {
                 await this.init();
             } catch (error) {
+                console.warn('Failed to initialize database, returning empty conversations array');
                 console.error('Failed to initialize database:', error);
+                return this.restoreFromBackup();
                 throw new Error('Database initialization failed');
             }
             if (!this.db) throw new Error('Database not initialized');
@@ -325,13 +469,45 @@ class ConversationDB implements DB {
     }
 
     private async _getConversationsWithLock(): Promise<Conversation[]> {
-        const tx = this.db!.transaction([STORE_NAME], 'readonly');
+        if (!this.db) {
+            console.warn('Database not initialized in _getConversationsWithLock');
+            return [];
+        }
+
+        let result: Conversation[] = [];
+
+        // Check if the store exists
+        if (!this.db.objectStoreNames.contains(STORE_NAME)) {
+            console.warn(`${STORE_NAME} store not found, attempting recovery`);
+            const recovered = await this.handleMissingStore();
+            if (recovered) {
+                return this.getConversations(); // Try again with recovered database
+            }
+            return this.restoreFromBackup(); // Try to restore from backup
+        }
+
+        let tx;
+        try {
+            tx = this.db.transaction([STORE_NAME], 'readonly');
+        } catch (error) {
+            console.error('Error creating transaction:', error);
+            const recovered = await this.handleMissingStore();
+            if (recovered) {
+                return this.getConversations(); // Try again with recovered database
+            }
+            return this.restoreFromBackup(); // Try to restore from backup
+        }
+
         const store = tx.objectStore(STORE_NAME);
 
         return new Promise<Conversation[]>((resolve, reject) => {
             const request = store.get('current');
 
             request.onsuccess = () => {
+                // Only log in development mode and with less frequency
+                if (process.env.NODE_ENV === 'development' && Math.random() < 0.1) { // Only log ~10% of the time
+                    console.debug('Successfully retrieved conversations from database');
+                }
                 const conversations = Array.isArray(request.result) ? request.result : [];
 
                 if (conversations.length > 0) {
@@ -340,17 +516,58 @@ class ConversationDB implements DB {
                     );
 
                     if (validConversations.length > 0) {
+                        result = validConversations;
                         resolve(validConversations);
                         return;
                     }
                 }
                 resolve([]);
+                // If we got no valid conversations, try to restore from backup
+                this.restoreFromBackup().then(backupConversations => {
+                    result = backupConversations;
+                    resolve(backupConversations);
+                }).catch(() => resolve([]));
             };
 
             request.onerror = () => {
                 reject(request.error);
             };
         });
+    }
+
+    private async handleMissingStore(): Promise<boolean> {
+        console.warn('Handling missing store issue (seen in Safari migration)');
+
+        // Close any existing connection
+        if (this.db) {
+            this.db.close();
+            this.db = null;
+        }
+
+        // Force version increment to trigger schema recreation
+        currentVersion++;
+        this.initPromise = null;
+        localStorage.removeItem('ZIYA_DB_NAME'); // Clear any custom DB name
+
+        try {
+            // Reinitialize with new version
+            await this.init();
+
+            // Check if we have the required stores now
+            if (this.db &&
+                (this.db as IDBDatabase).objectStoreNames.contains(STORE_NAME) &&
+                (this.db as IDBDatabase).objectStoreNames.contains('folders')) {
+
+                console.log('Database recovery successful - schema restored with version', (this.db as any).version);
+                return true;
+            }
+
+            console.warn('Recovery attempt failed - stores still missing');
+            return false;
+        } catch (error) {
+            console.error('Error during store recovery:', error);
+            return false;
+        }
     }
 
     async exportConversations(): Promise<string> {
@@ -397,14 +614,19 @@ class ConversationDB implements DB {
         }
         try {
             // Parse and validate the imported data
-            const importedData = JSON.parse(data);
-            if (!Array.isArray(importedData)) {
+            const parsedData = JSON.parse(data);
+            if (!Array.isArray(parsedData)) {
                 throw new Error('Invalid import format - expected array');
             }
+
+            // Ensure all imported conversations are marked as active
+            const importedData = parsedData.map(conv => ({ ...conv, isActive: true }));
+
             // Validate each conversation
             const validConversations = importedData.filter(conv =>
                 this.validateConversations([conv])
             );
+
             if (validConversations.length === 0) {
                 throw new Error('No valid conversations found in import file');
             }
@@ -509,7 +731,7 @@ class ConversationDB implements DB {
             const tx = this.db!.transaction('folders', 'readwrite');
             const store = tx.objectStore('folders');
             const request = store.put(folder);
-            
+
             request.onsuccess = () => resolve();
             request.onerror = () => reject(request.error);
             tx.oncomplete = () => resolve();
@@ -518,8 +740,18 @@ class ConversationDB implements DB {
 
     async deleteFolder(id: string): Promise<void> {
         await this.init();
-        const tx = this.db!.transaction('folders', 'readwrite');
-        await tx.objectStore('folders').delete(id);
+
+        try {
+            // Delete the folder
+            const tx = this.db!.transaction('folders', 'readwrite');
+            const store = tx.objectStore('folders');
+            await store.delete(id);
+
+            console.log(`Folder ${id} deleted from database`);
+        } catch (error) {
+            console.error(`Error deleting folder ${id}:`, error);
+            throw error;
+        }
     }
 
     async moveConversationToFolder(conversationId: string, folderId: string | null): Promise<boolean> {
@@ -534,6 +766,9 @@ class ConversationDB implements DB {
                 const conversations = Array.isArray(getRequest.result) ? getRequest.result : [];
                 let found = false;
 
+                // Log the conversation being moved
+                console.log('Moving conversation to folder:', { conversationId, folderId });
+
                 const updatedConversations = conversations.map(conv => {
                     if (conv.id === conversationId) {
                         found = true;
@@ -542,6 +777,7 @@ class ConversationDB implements DB {
                     return conv;
                 });
 
+                // Only update if the conversation was found
                 if (found) {
                     const putRequest = store.put(updatedConversations, 'current');
                     putRequest.onsuccess = () => resolve(true);

@@ -24,7 +24,7 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
 
     // Check for both escaped and unescaped markers
     const hasWsMarkers = content.includes('class="ws-marker"') ||
-                        content.includes('class=\\"ws-marker\\"');
+        content.includes('class=\\"ws-marker\\"');
     // Don't process content that already has whitespace markers
     if (hasWsMarkers) {
         return content;
@@ -33,17 +33,17 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
     // Debug logging for generic JSX processing
     if (content.match(/<[A-Z][A-Za-z]*<[A-Z][A-Za-z]*>/)) {
         console.log('preserveTokens processing:', { type, content, stage: 'start' });
-	console.log('preserveTokens steps:', {
-        type,
-	stage: 'start',
-        initial: content,
-	caller: new Error().stack,
-        hasTokens: content.includes('<span class="token'),
-        hasWsMarkers: content.includes('class="ws-marker"'),
-        hasPreservedTags: content.includes('___PRESERVED_TAG___'),
-	hasAngleBrackets: content.includes('<'),
-        hasGenericParams: content.match(/<[A-Z][A-Za-z]*</)
-    });
+        console.log('preserveTokens steps:', {
+            type,
+            stage: 'start',
+            initial: content,
+            caller: new Error().stack,
+            hasTokens: content.includes('<span class="token'),
+            hasWsMarkers: content.includes('class="ws-marker"'),
+            hasPreservedTags: content.includes('___PRESERVED_TAG___'),
+            hasAngleBrackets: content.includes('<'),
+            hasGenericParams: content.match(/<[A-Z][A-Za-z]*</)
+        });
     }
 
     // First protect complete JSX elements
@@ -64,9 +64,8 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
     // Handle whitespace-only lines before any other processing
     if (content === '' || content === '\n' || !content.trim()) {
         const markers = content.replace(/[ \t]/g, '\u2591');
-        return `___PRESERVED_TAG___<span class="ws-marker ${
-            type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : ''
-        }">${markers}</span>___END_TAG___${content}`;
+        return `___PRESERVED_TAG___<span class="ws-marker ${type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : ''
+            }">${markers}</span>___END_TAG___${content}`;
     }
 
     // Handle consecutive whitespace markers
@@ -96,8 +95,8 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
     );
 
     content = content.replace(/___PRESERVED_TAG___/g, '')
-                     .replace(/___END_TAG___/g, '');
-    
+        .replace(/___END_TAG___/g, '');
+
     content = content
         // Restore JSX elements
         .replace(/___PRESERVED_JSX___(.*?)___END_JSX___/g, '$1')
@@ -174,19 +173,19 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         if (!text.trim()) {
             const markers = text.replace(/[ \t]/g, c => c === ' ' ? '\u2591' : '→');
             const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : 'ws-normal';
-	    return `<span class="token-line">` +
-                   `<span class="ws-marker ${wsClass}">${markers}</span>${text}` +
-                   `</span>`;
+            return `<span class="token-line">` +
+                `<span class="ws-marker ${wsClass}">${markers}</span>${text}` +
+                `</span>`;
         }
         // For trailing whitespace
-	const match = text.match(/^(.*?)([ \t]+)$/);
+        const match = text.match(/^(.*?)([ \t]+)$/);
         if (match) {
-	    const [_, baseText, trailingWs] = match;
+            const [_, baseText, trailingWs] = match;
             // Create the visual markers
             const markers = Array.from(trailingWs)
                 .map(c => c === ' ' ? '\u2591' : (c === '\t' ? '→' : c))
                 .join('');
-	    // Only apply markers if we're not inside a JSX/HTML tag
+            // Only apply markers if we're not inside a JSX/HTML tag
             if (language === 'jsx' || language === 'tsx') {
                 const openBracket = baseText.lastIndexOf('<');
                 const closeBracket = baseText.lastIndexOf('>');
@@ -203,26 +202,26 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
     useEffect(() => {
         const highlightCode = async () => {
             try {
-		if (!languageLoadedRef.current)
+                if (!languageLoadedRef.current)
                     await loadPrismLanguage(language);
                 if (!window.Prism || content.length <= 1) return;
 
-		// If already has Prism tokens, use as-is
+                // If already has Prism tokens, use as-is
                 if (content.includes('<span class="token')) {
-		    if (contentRef.current) {
-			lastGoodRenderRef.current = content;
-			setHighlighted(content);
-			languageLoadedRef.current = true;
+                    if (contentRef.current) {
+                        lastGoodRenderRef.current = content;
+                        setHighlighted(content);
+                        languageLoadedRef.current = true;
                         contentRef.current.innerHTML = content;
                     }
                     setIsLoading(false);
                     return;
                 }
 
-		// Handle whitespace-only lines before any other processing
+                // Handle whitespace-only lines before any other processing
                 if (!content.trim()) {
                     const rendered = visualizeWhitespace(content);
-		    if (contentRef.current && rendered !== lastGoodRenderRef.current) {
+                    if (contentRef.current && rendered !== lastGoodRenderRef.current) {
                         contentRef.current.innerHTML = rendered;
                         lastGoodRenderRef.current = rendered;
                     }
@@ -232,34 +231,34 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                     return;
                 }
 
-		let code = content;
+                let code = content;
 
-		// First get the actual content without the diff marker
+                // First get the actual content without the diff marker
                 if (content.startsWith('+') || content.startsWith('-')) {
-		    // Keep the original indentation by preserving all spaces after the marker
+                    // Keep the original indentation by preserving all spaces after the marker
                     const marker = content[0];
-		    console.log('Marker removal:', {marker, beforeSlice: code, afterSlice: content.slice(1)});
+                    console.log('Marker removal:', { marker, beforeSlice: code, afterSlice: content.slice(1) });
                     code = content.slice(1);  // Remove just the marker
                 }
 
-		// escape JSX/HTML or Skip escaping if content is already escaped
-		// note that because of some oddity that i haven't tracked down add and delete lines 
-		// are handled differently, and delete comes to us pre-escaped but add doesn't.
-		// getting this to work overall was pretty touchy so i'm not going to replumb it to unify them as this works
+                // escape JSX/HTML or Skip escaping if content is already escaped
+                // note that because of some oddity that i haven't tracked down add and delete lines 
+                // are handled differently, and delete comes to us pre-escaped but add doesn't.
+                // getting this to work overall was pretty touchy so i'm not going to replumb it to unify them as this works
                 // const codeToHighlight = code.includes('&') || type === 'delete' ? code : code.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c] || c);
-		const codeToHighlight = code.includes('&') ? code : code;
+                const codeToHighlight = code.includes('&') ? code : code;
 
                 // Highlight the code with Prism
                 const grammar = window.Prism.languages[language] || window.Prism.languages.plaintext;
                 let highlightedCode = window.Prism.highlight(codeToHighlight, grammar, language);
 
-		// Apply whitespace visualization after syntax highlighting
+                // Apply whitespace visualization after syntax highlighting
                 highlightedCode = visualizeWhitespace(highlightedCode);
 
 
 
                 if (highlightedCode.includes('<span class="token')) {
-		    if (contentRef.current) {
+                    if (contentRef.current) {
                         contentRef.current.innerHTML = highlightedCode;
                         lastGoodRenderRef.current = highlightedCode;
                     }
@@ -272,14 +271,14 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                     '<': '&lt;',
                     '>': '&gt;'
                 })[c] || c);
-		const rendered = `${escapedCode}`;
-		if (contentRef.current && rendered !== lastGoodRenderRef.current) {
+                const rendered = `${escapedCode}`;
+                if (contentRef.current && rendered !== lastGoodRenderRef.current) {
                     lastGoodRenderRef.current = rendered;
-		    setHighlighted(visualizeWhitespace(rendered));
+                    setHighlighted(visualizeWhitespace(rendered));
                     contentRef.current.innerHTML = rendered;
                 }
 
-		// Handle whitespace-only lines immediately
+                // Handle whitespace-only lines immediately
                 if (!code.trim()) {
                     const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
                     highlightedCode = highlightedCode.replace(/^(\s+)/, (spaces) => {
@@ -289,11 +288,11 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                         return `<span class="ws-marker ${wsClass}">${markers}</span>${spaces}`;
                     });
                 }
-             
-	     	// Wrap the highlighted code in a span to preserve Prism classes
+
+                // Wrap the highlighted code in a span to preserve Prism classes
                 highlightedCode = `<span class="token-line">${highlightedCode}</span>`;
-                
-		if (contentRef.current) {
+
+                if (contentRef.current) {
                     contentRef.current.innerHTML = highlightedCode;
                     lastGoodRenderRef.current = highlightedCode;
                 }
@@ -302,16 +301,16 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 // Check for whitespace-only differences in insert/delete lines
                 if (type === 'insert' || type === 'delete') {
 
-		    // For insert lines, look for matching delete lines and vice versa
+                    // For insert lines, look for matching delete lines and vice versa
                     const matchLineNumber = type === 'insert' ? oldLineNumber || 1 : newLineNumber || 1;
                     const otherType = type === 'insert' ? 'delete' : 'insert';
-		    const selector = `.diff-line-${otherType}[data-line="${matchLineNumber}"]`;
+                    const selector = `.diff-line-${otherType}[data-line="${matchLineNumber}"]`;
                     const otherLineElement = document.querySelector(selector);
 
                     if (otherLineElement instanceof HTMLElement) {
                         // Extract content from the div.diff-line-content inside the td
 
-			const contentDiv = otherLineElement.querySelector<HTMLElement>('.diff-line-content');
+                        const contentDiv = otherLineElement.querySelector<HTMLElement>('.diff-line-content');
 
                         let otherContent: string | null = null;
 
@@ -327,7 +326,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 
                         const isWhitespaceDiff = compareLines(content, otherContent);
 
-			// Process code consistently for both paths
+                        // Process code consistently for both paths
                         const processCode = (input: string) => {
                             return preserveTokens(
                                 preserveUnpairedBrackets(input),
@@ -338,8 +337,8 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                         // If we found a whitespace-only difference, highlight it
                         if (isWhitespaceDiff) {
                             const changeType = type === 'insert' ? 'ws-add' : 'ws-delete';
- 
-			    // Handle leading whitespace for whitespace-only differences
+
+                            // Handle leading whitespace for whitespace-only differences
                             let processedCode = highlightedCode.replace(/^(<span class="token-line">)?(\s+)/, (match, span, spaces) => {
                                 if (!spaces) return match;
                                 const markers = Array.from(spaces)
@@ -354,12 +353,11 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                             if (match) {
                                 const index = match.index!;
                                 const ws = match[0];
-				console.log('Whitespace processing:', { text: code, match: ws, index });
 
                                 const beforeWs = code.slice(0, index);
 
-				// First tokenize the code
-				const rendered = visualizeWhitespace(processCode(code));
+                                // First tokenize the code
+                                const rendered = visualizeWhitespace(processCode(code));
                                 if (contentRef.current) {
                                     contentRef.current.innerHTML = rendered;
                                     lastGoodRenderRef.current = rendered;
@@ -368,7 +366,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                             }
 
                             // If no trailing whitespace, just highlight normally
-			    setHighlighted(visualizeWhitespace(processCode(code)));
+                            setHighlighted(visualizeWhitespace(processCode(code)));
 
                             return;
                         }
@@ -376,14 +374,14 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 }
 
                 // Default case: just return highlighted code with marker
-		if (contentRef.current) {
+                if (contentRef.current) {
                     contentRef.current.innerHTML = highlightedCode;
                     lastGoodRenderRef.current = highlightedCode;
                 }
                 setIsLoading(false);
             } catch (error) {
                 console.error(`Failed to highlight ${language}:`, error);
-		if (lastGoodRenderRef.current && contentRef.current) {
+                if (lastGoodRenderRef.current && contentRef.current) {
                     contentRef.current.innerHTML = lastGoodRenderRef.current;
                 }
             } finally {
@@ -392,7 +390,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         };
 
         highlightCode();
-	return () => { languageLoadedRef.current = false; };
+        return () => { languageLoadedRef.current = false; };
     }, [content, language, type, oldLineNumber, newLineNumber]);
 
     // Define base styles that work for both light and dark modes
@@ -400,30 +398,30 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         display: 'inline-block',
         width: '100%',
         fontFamily: 'ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace',
-	font: '12px/20px ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace',
-	whiteSpace: 'pre-wrap',
-	wordBreak: 'break-word'
+        font: '12px/20px ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word'
     };
 
     // Add theme-specific colors
     const themeStyles = isDarkMode ? {
         backgroundColor: type === 'insert' ? '#1a4d1a' :
-                         type === 'delete' ? '#4d1a1a' :
-                         'transparent',
-        color: type === 'insert' ? '#4afa4a' : 
-               type === 'delete' ? '#ff6b6b' : 
-               '#e6e6e6'
+            type === 'delete' ? '#4d1a1a' :
+                'transparent',
+        color: type === 'insert' ? '#4afa4a' :
+            type === 'delete' ? '#ff6b6b' :
+                '#e6e6e6'
     } : {
         backgroundColor: type === 'insert' ? '#e6ffec' :
-                         type === 'delete' ? '#ffebe9' :
-                        'transparent',
-        color: type === 'insert' ? '#28a745' : 
-               type === 'delete' ? '#d73a49' : 
-               '#24292e'
+            type === 'delete' ? '#ffebe9' :
+                'transparent',
+        color: type === 'insert' ? '#28a745' :
+            type === 'delete' ? '#d73a49' :
+                '#24292e'
     };
 
     const wrapWithLineBreak = (content: string) => {
-	return content; 
+        return content;
     };
 
     const preserveUnpairedBrackets = (str: string) => {
@@ -435,70 +433,70 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 
     const renderContent = () => (
         <td
-           className={`diff-code diff-code-${type}`}
+            className={`diff-code diff-code-${type}`}
         >
-             <div
-                 className="diff-line-content token-container"
-		 ref={contentRef}
-                 style={{
-                     whiteSpace: 'pre',
-                     overflow: viewType === 'split' ? 'hidden' : 'auto',
-                     ...(isLoading ? {...baseStyles, ...themeStyles} : {}),
-                     ...(style || {})
-                 }}
-		 dangerouslySetInnerHTML={{ 
-		     __html: lastGoodRenderRef.current || 
-		     visualizeWhitespace(content || ' ')
-                 }}
-             />
-         </td>
+            <div
+                className="diff-line-content token-container"
+                ref={contentRef}
+                style={{
+                    whiteSpace: 'pre',
+                    overflow: viewType === 'split' ? 'hidden' : 'auto',
+                    ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
+                    ...(style || {})
+                }}
+                dangerouslySetInnerHTML={{
+                    __html: lastGoodRenderRef.current ||
+                        visualizeWhitespace(content || ' ')
+                }}
+            />
+        </td>
     );
 
     if (viewType === 'split') {
         return (
             <tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
-	        {showLineNumbers && (
-		    <td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
+                {showLineNumbers && (
+                    <td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
                         {oldLineNumber}
                     </td>
                 )}
-	        <td className="diff-code diff-code-left" style={{ width: 'calc(50% - 50px)' }}>
-		    <div className={`diff-code-content diff-code-${type}`}>
+                <td className="diff-code diff-code-left" style={{ width: 'calc(50% - 50px)' }}>
+                    <div className={`diff-code-content diff-code-${type}`}>
                         {type !== 'insert' ? (
-			renderContent()
+                            renderContent()
                         ) : <div className="diff-code-placeholder">&nbsp;</div>}
-                     </div>
-		</td>
+                    </div>
+                </td>
 
-		{showLineNumbers && (
-		    <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
+                {showLineNumbers && (
+                    <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
                         {newLineNumber}
                     </td>
                 )}
-	        <td className="diff-code diff-code-right" style={{ width: 'calc(50% - 50px)' }}>
+                <td className="diff-code diff-code-right" style={{ width: 'calc(50% - 50px)' }}>
                     <div className={`diff-code-content diff-code-${type}`}>
                         {type !== 'delete' ? (
-		    renderContent()
+                            renderContent()
                         ) : <div className="diff-code-placeholder">&nbsp;</div>}
-                     </div>
+                    </div>
                 </td>
             </tr>
         );
     }
-			
+
     return (
-	<tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
+        <tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
             {showLineNumbers && (
-		<td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
-		    {oldLineNumber}
+                <td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
+                    {oldLineNumber}
                 </td>
             )}
             {showLineNumbers && (
-	        <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>	
+                <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
                     {newLineNumber}
                 </td>
             )}
-	    {renderContent()}
+            {renderContent()}
         </tr>
     );
 };

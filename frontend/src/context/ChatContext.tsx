@@ -3,7 +3,8 @@ import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import { debounce } from '../utils/debounce';
-
+import { Modal, message } from 'antd';
+import { performEmergencyRecovery } from '../utils/emergencyRecovery';
 interface ChatContext {
     question: string;
     setQuestion: (q: string) => void;
@@ -61,14 +62,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isInitialized, setIsInitialized] = useState(false);
     const lastSavedState = useRef<string>('');
     const [folders, setFolders] = useState<ConversationFolder[]>([]);
+    const [dbError, setDbError] = useState<string | null>(null);
     const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
     const folderRef = useRef<string | null>(null);
     const [folderFileSelections, setFolderFileSelections] = useState<Map<string, string[]>>(new Map());
     const [folderPanelWidth, setFolderPanelWidth] = useState<number>(300); // Default width
+    const processedModelChanges = useRef<Set<string>>(new Set());
     const contentRef = useRef<HTMLDivElement>(null);
     const pendingSave = useRef<NodeJS.Timeout | null>(null);
     const messageUpdateCount = useRef(0);
-    const [dbError, setDbError] = useState<string | null>(null);
 
     const scrollToBottom = () => {
         const chatContainer = document.querySelector('.chat-container');
@@ -247,9 +249,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     // Add a function to handle model change notifications
     const handleModelChange = useCallback((event: CustomEvent) => {
+        // Extract model change details
         const { previousModel, newModel, modelId, previousModelId } = event.detail;
 
-        // Add a system message to the current conversation about the model change
+        console.log('ChatContext received modelChanged event:', {
+            previousModel,
+            newModel,
+            modelId,
+            currentConversationId
+        });
+
+        // Create a unique key for this model change to prevent duplicates
+        const changeKey = `${previousModel}->${newModel}`;
+
+        // Skip if we've already processed this exact change
+        if (processedModelChanges.current.has(changeKey)) {
+            console.log('Skipping duplicate model change:', changeKey);
+            return;
+        }
+
+        // Skip if we've already processed this exact change
+        if (processedModelChanges.current.has(changeKey)) {
+            return;
+        }
+        // Only add model change message if we have a valid conversation
+
         if (currentConversationId) {
             // Explicitly type the modelChangeMessage as Message
             const modelChangeMessage: Message = {
@@ -259,11 +283,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 _timestamp: Date.now(),
                 modelChange: {
                     from: previousModel,
-                    to: newModel
+                    to: newModel,
+                    changeKey: changeKey
                 }
             };
 
+            console.log('Adding model change system message:', modelChangeMessage);
+
             // Add the message to the conversation
+            const existingConversation = conversations.find(c => c.id === currentConversationId);
+            console.log('Current conversation state:', {
+                conversationId: currentConversationId,
+                hasConversation: !!existingConversation,
+                messageCount: existingConversation?.messages.length || 0
+            });
+
             setConversations((prevConversations) => {
                 const updatedConversations = prevConversations.map(conv => {
                     if (conv.id === currentConversationId) {
@@ -271,8 +305,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
                     return conv;
                 });
+
+                // Log the updated conversation
+                const updatedConv = updatedConversations.find(c => c.id === currentConversationId);
+                console.log('Updated conversation with model change message:', {
+                    messageCount: updatedConv?.messages.length || 0
+                });
                 return updatedConversations;
             });
+
+            // Mark this change as processed
+            processedModelChanges.current.add(changeKey);
         }
     }, [currentFolderId]);
 
@@ -396,18 +439,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const deleteFolder = useCallback(async (id: string): Promise<void> => {
         try {
-            // Move all conversations in this folder to root
+            // Find all conversations in this folder
             const conversationsInFolder = conversations.filter(c => c.folderId === id);
 
-            // Update conversations in memory first
+            // Mark all conversations in this folder as inactive
             setConversations(prev => prev.map(c =>
-                c.folderId === id ? { ...c, folderId: null, _version: Date.now() } : c
+                c.folderId === id ? { ...c, isActive: false, _version: Date.now() } : c
             ));
 
-            // Then update in database
+            // Update conversations in database to mark them as inactive
             for (const conv of conversationsInFolder) {
-                await db.moveConversationToFolder(conv.id, null);
+                const updatedConv = { ...conv, isActive: false, _version: Date.now() };
+                await db.saveConversations([updatedConv]);
             }
+
+            // Log the deletion
+            console.log(`Deleted folder ${id} with ${conversationsInFolder.length} conversations`);
 
             // Delete the folder
             await db.deleteFolder(id);
@@ -427,12 +474,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
         try {
-            const success = await db.moveConversationToFolder(conversationId, folderId);
-            if (success) {
-                setConversations(prev => prev.map(c =>
-                    c.id === conversationId ? { ...c, folderId, _version: Date.now() } : c
-                ));
-            }
+            // First update the conversation in memory with a new version
+            const newVersion = Date.now();
+            setConversations(prev => prev.map(conv =>
+                conv.id === conversationId
+                    ? { ...conv, folderId, _version: newVersion }
+                    : conv
+            ));
+
+            // Then update in the database
+            await db.moveConversationToFolder(conversationId, folderId);
+
+            return;
         } catch (error) {
             console.error('Error moving conversation to folder:', error);
             throw error;
@@ -456,8 +509,74 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 setIsInitialized(true);
             } catch (error) {
                 console.error('Failed to initialize:', error);
+
+                // Check if we have a backup in localStorage
+                try {
+                    const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
+                    if (backup) {
+                        const backupConversations = JSON.parse(backup);
+                        if (Array.isArray(backupConversations) && backupConversations.length > 0) {
+                            console.log('Found backup conversations in localStorage:', backupConversations.length);
+                            setConversations(backupConversations);
+                            setIsInitialized(true);
+
+                            // Try to repair in the background
+                            performEmergencyRecovery().then(() => {
+                                message.success('Database repaired successfully');
+                                // Save the recovered conversations
+                                db.saveConversations(backupConversations).catch(console.error);
+                            }).catch(console.error);
+
+                            // Return early since we've restored from backup
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error checking for backup:', e);
+                }
+
+                // Show user-friendly recovery dialog
+                Modal.confirm({
+                    title: 'Database Issue Detected',
+                    content: 'We found an issue with your data storage. Would you like to repair it automatically?',
+                    okText: 'Repair Now',
+                    cancelText: 'Cancel',
+                    onOk: async () => {
+                        try {
+                            const result = await performEmergencyRecovery();
+                            if (result.success) {
+                                message.success('Recovery completed. Reloading page...');
+                                setTimeout(() => window.location.reload(), 1500);
+                            } else {
+                                message.error(`Recovery failed: ${result.message}`);
+                            }
+                        } catch (recoveryError) {
+                            message.error('Recovery failed. Please try again.');
+                        }
+                    }
+                });
             }
         };
+        // Set up periodic backup of conversations to localStorage
+        const backupConversations = () => {
+            if (conversations.length > 0) {
+                try {
+                    // Only backup active conversations
+                    const activeConversations = conversations.filter(c => c.isActive !== false);
+                    if (activeConversations.length > 0) {
+                        localStorage.setItem('ZIYA_CONVERSATION_BACKUP',
+                            JSON.stringify(activeConversations));
+                        console.debug('Backed up', activeConversations.length, 'conversations to localStorage');
+                    }
+                } catch (e) {
+                    console.error('Error backing up conversations:', e);
+                }
+            }
+        };
+
+        // Set up periodic backup every 30 seconds
+        const backupInterval = setInterval(backupConversations, 30000);
+
 
         initialize();
 
@@ -470,6 +589,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         return () => {
             if (db.db) {
                 db.db.close();
+                clearInterval(backupInterval);
             }
         };
     }, []);
@@ -489,6 +609,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
         return () => {
             window.removeEventListener('modelChanged', handleModelChange as EventListener);
         };
+
+        // Reset processed changes when component unmounts
+        return () => { processedModelChanges.current.clear(); };
     }, [handleModelChange]);
 
     useEffect(() => {
@@ -509,11 +632,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
             try {
                 const saved = await db.getConversations();
                 if (saved.length > 0) {
-                    setConversations(saved);
+                    setConversations(prev => {
+                        // Don't update conversations that are being edited
+                        return prev.map(conv => {
+                            const savedConv = saved.find(s => s.id === conv.id);
+                            // Keep our version if we're editing or if our version is newer
+                            return (conv._editInProgress || (conv._version || 0) > (savedConv?._version || 0))
+                                ? conv : (savedConv || conv);
+                        });
+                    });
                 }
             } catch (error) {
-                console.error('Error syncing conversations:', error);
+                console.error('Error during conversation poll:', error);
             }
+
         };
         window.addEventListener('storage', handleStorageChange);
         return () => window.removeEventListener('storage', handleStorageChange);

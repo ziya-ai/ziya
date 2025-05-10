@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo, useMemo, Suspense, useCallback } from 'react';
+import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect } from 'react';
 import 'prismjs/themes/prism.css';
 import { Button, message, Radio, Space, Spin, RadioChangeEvent, Tooltip } from 'antd';
 import { marked, Tokens } from 'marked';
@@ -23,10 +23,30 @@ interface HunkStatus {
     reason: string;
 }
 
-// Use a regular Map with string keys for stable storage across renders
-// Key format: fileIndex-hunkIndex
-// This is more reliable than using WeakMap with object references
-const hunkStatusMap = new Map<string, HunkStatus>();
+// Define the status type returned from the API
+interface ApiHunkStatus {
+    status: 'succeeded' | 'failed' | 'already_applied';
+    stage?: string;
+    error_details?: any;
+}
+
+// Create a global event bus for hunk status updates
+const hunkStatusEventBus = new EventTarget();
+const HUNK_STATUS_EVENT = 'hunkStatusUpdate';
+// Add a global set to track processed window events
+const processedWindowEvents = new Set<string>();
+
+// Add a map to track which request ID corresponds to which diff element
+const diffRequestMap = new Map<string, string>();
+
+interface ApplyChangesButtonProps {
+    diff: string;
+    filePath: string;
+    fileIndex: number;
+    diffElementId: string;
+    enabled: boolean;
+    setHunkStatuses?: (updater: (prev: Map<string, HunkStatus>) => Map<string, HunkStatus>) => void;
+}
 
 export type RenderPath = 'full' | 'prismOnly' | 'diffOnly' | 'raw';
 
@@ -62,12 +82,6 @@ interface ExtendedHunk extends BaseHunk {
     status?: HunkStatus;
 }
 
-declare global {
-    interface Window {
-        Prism: typeof PrismType;
-    }
-}
-
 interface BaseToken {
     type: string;
     raw?: string;
@@ -89,6 +103,14 @@ interface ErrorBoundaryProps {
 
 interface ErrorBoundaryState {
     hasError: boolean;
+}
+
+declare global {
+    interface Window {
+        Prism: typeof PrismType;
+        diffElementPaths?: Map<string, string>;
+        hunkStatusRegistry: Map<string, Map<string, HunkStatus>>;
+    }
 }
 
 type ErrorType = 'graphviz' | 'code' | 'unknown';
@@ -132,12 +154,6 @@ class ErrorBoundary extends React.Component<
     }
 }
 
-interface ApplyChangesButtonProps {
-    diff: string;
-    filePath: string;
-    enabled: boolean;
-}
-
 export const DisplayModes = ['raw', 'pretty'] as const;
 export type DisplayMode = typeof DisplayModes[number];
 export interface DiffViewProps {
@@ -145,6 +161,8 @@ export interface DiffViewProps {
     viewType: 'split' | 'unified';
     initialDisplayMode: DisplayMode;
     showLineNumbers: boolean;
+    fileIndex?: number;
+    elementId?: string;
 }
 
 interface DiffControlsProps {
@@ -227,20 +245,11 @@ const DiffControls = memo(({
     );
 });
 
-const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string => {
-
-    console.log('=== renderFileHeader Debug ===');
-    console.log('Input file object:', {
-        type: file.type,
-        oldPath: file.oldPath,
-        newPath: file.newPath,
-        hunks: file.hunks?.length
-    });
+const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], fileIndex?: number): string => {
 
     // If we have paths in the file object, use them directly
     if (file.oldPath || file.newPath) {
         const path = file.newPath || file.oldPath;
-        console.log('Using path from file object:', path);
         return `File: ${path}`;
     }
 
@@ -383,6 +392,131 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number]): string =>
     return 'Unknown file operation';
 };
 
+
+const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
+    // If the diff doesn't contain multiple files, return it as is
+    if (!fullDiff.includes("diff --git") || fullDiff.indexOf("diff --git") === fullDiff.lastIndexOf("diff --git")) {
+        return fullDiff;
+    }
+
+    try {
+        // Split the diff into sections by diff --git headers
+        const lines: string[] = fullDiff.split('\n');
+        const result: string[] = [];
+
+        // Clean up file path for matching
+        const cleanFilePath = filePath.replace(/^[ab]\//, '');
+
+        let currentFile: { oldPath: string; newPath: string } | null = null;
+        let currentFileIndex = -1;
+        let inTargetFile = false;
+        let collectingHunk = false;
+        let currentHunkHeader: string | null = null;
+        let currentHunkContent: string[] = [];
+
+        // Process each line
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const nextLine = i < lines.length - 1 ? lines[i + 1] : '';
+
+            // Check for file header
+            if (line.startsWith('diff --git')) {
+                // If we were collecting a hunk, add it to the result
+                if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
+                    result.push(currentHunkHeader);
+                    result.push(...currentHunkContent);
+                }
+
+                // Reset state for new file
+                collectingHunk = false;
+                currentHunkHeader = null;
+                currentFileIndex++;
+                currentHunkContent = [];
+                inTargetFile = false;
+
+                // Check if this is our target file
+                const fileMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                if (fileMatch) {
+                    const oldPath = fileMatch[1];
+                    const newPath = fileMatch[2];
+
+                    // Check if this file matches our target by exact path
+                    if (oldPath === cleanFilePath || newPath === cleanFilePath ||
+                        oldPath.endsWith(`/${cleanFilePath}`) || newPath.endsWith(`/${cleanFilePath}`)) {
+                        inTargetFile = true;
+                        currentFile = { oldPath, newPath };
+                        result.push(line);
+
+                        // Also check the next line for index info
+                        if (nextLine.startsWith('index ')) {
+                            result.push(nextLine);
+                            i++; // Skip this line in the next iteration
+                        }
+                    } else {
+                        inTargetFile = false;
+                        currentFile = null;
+
+                        // Log for debugging
+                        console.debug(`Skipping file: old=${oldPath}, new=${newPath}, target=${cleanFilePath}`);
+                    }
+                }
+            }
+            // If we're in the target file, collect all headers and content
+            else if (inTargetFile) {
+                // File headers (index, ---, +++)
+                if (line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
+                    result.push(line);
+                }
+                // Hunk header
+                else if (line.startsWith('@@ ')) {
+                    // If we were collecting a previous hunk, add it to the result
+                    if (collectingHunk && currentHunkHeader !== null) {
+                        result.push(currentHunkHeader);
+                        result.push(...currentHunkContent);
+                    }
+
+                    // Start collecting a new hunk
+                    collectingHunk = true;
+                    currentHunkHeader = line;
+                    currentHunkContent = [];
+                }
+                // Hunk content (context, additions, deletions)
+                else if (collectingHunk && (line.startsWith(' ') || line.startsWith('+') || line.startsWith('-') || line.startsWith('\\'))) {
+                    currentHunkContent.push(line);
+                }
+                // Empty lines within a hunk
+                else if (collectingHunk && line.trim() === '') {
+                    currentHunkContent.push(line);
+                }
+            }
+        }
+
+        // Log the extraction results
+        console.debug(`Extracted diff for ${filePath}:`, {
+            targetFileFound: inTargetFile || result.length > 0,
+            extractedLines: result.length
+        });
+        // Add the last hunk if we were collecting one
+        if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
+            result.push(currentHunkHeader!);
+            result.push(...currentHunkContent);
+        }
+
+        // If we found our target file, return the extracted diff
+        if (result.length > 0) {
+            return result.join('\n').trim();
+        }
+
+        // If we didn't find the target file, return the original diff
+        console.warn(`Could not find file ${cleanFilePath} in the diff`);
+        return fullDiff;
+
+    } catch (error) {
+        console.error("Error extracting single file diff:", error);
+        return fullDiff.trim(); // Return the full diff as a fallback
+    }
+};
+
 // Helper function to check if this is a deletion diff
 const isDeletionDiff = (content: string) => {
     return content.includes('diff --git') &&
@@ -395,6 +529,7 @@ const isDeletionDiff = (content: string) => {
 // Helper function to check if this is a new file diff
 const isNewFileDiff = (content: string) => {
     return (content.includes('--- /dev/null') && content.includes('+++ b/')) ||
+        content.includes('new file mode') ||
         (content.includes('new file mode') && content.includes('+++ b/'));
 };
 
@@ -403,9 +538,7 @@ const normalizeGitDiff = (diff: string): string => {
     if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null')) {
         const lines: string[] = diff.split('\n');
         const normalizedLines: string[] = [];
-
-        console.log('=== normalizeGitDiff Debug ===');
-        console.log('Input diff preview:', diff.split('\n').slice(0, 5));
+        let fileIndex = 0;
 
         // Check if this is a properly formatted diff
         const hasDiffHeaders = lines.some(line =>
@@ -414,23 +547,18 @@ const normalizeGitDiff = (diff: string): string => {
                 lines.some(line => line.startsWith('--- a/') || line.startsWith('+++ b/')) ||
                 lines.some(line => line.startsWith('--- /dev/null')) // Support new file diffs
             );
-        console.log('Has diff headers:', hasDiffHeaders);
-
         const hasHunkHeader = lines.some(line =>
             /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line)
         );
-        console.log('Has hunk header:', hasHunkHeader);
 
         if (hasDiffHeaders && hasHunkHeader) {
-            console.log('Diff is already properly formatted, returning original');
             return diff;  // Return original diff if it's properly formatted
         }
 
         // Extract file path from unified diff headers if present
-        let filePath: string | null = null;
+        let filePath = '';
         for (const line of lines) {
             const unifiedMatch = line.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?(.+)$/);
-            console.log('Checking line for unified header:', { line, match: unifiedMatch });
             if (unifiedMatch) {
                 filePath = unifiedMatch[1];
                 break;
@@ -439,14 +567,12 @@ const normalizeGitDiff = (diff: string): string => {
 
         // If no path found from unified headers, try git diff header
         if (!filePath) {
-            console.log('No path found in unified headers, trying git diff header');
             const gitMatch = lines[0].match(/diff --git a\/(.*?) b\/(.*?)$/);
-            if (gitMatch) {
+            if (gitMatch && gitMatch[1]) {
                 filePath = gitMatch[1];
             }
         }
 
-        console.log('Final extracted filePath:', filePath);
         if (!filePath) {
             return diff;  // Return original if we can't parse the git diff line
         }
@@ -534,21 +660,167 @@ const normalizeGitDiff = (diff: string): string => {
     return diff;
 };
 
-const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers }) => {
+const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex }) => {
     const [isLoading, setIsLoading] = useState(true);
     const [tokenizedHunks, setTokenizedHunks] = useState<any>(null);
     const { isDarkMode } = useTheme();
-    const [parsedFiles, setParsedFiles] = useState<any[]>([]);
+    const parsedFilesRef = useRef<any[]>([]);
     const [parseError, setParseError] = useState<boolean>(false);
-    const [displayMode, setDisplayMode] = useState<DisplayMode>(initialDisplayMode as DisplayMode);
-    const [statusUpdateCounter, setStatusUpdateCounter] = useState(0);
+    const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
+    const [statusUpdateCounter, setStatusUpdateCounter] = useState<number>(0);
+    const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty'); // Use window setting
+    const diffRef = useRef<string>(diff);
+    const diffIdRef = useRef<string>(elementId || `diff-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`);
+    const diffId = useRef<string>(elementId || `diff-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`).current;
 
-    // Clear the hunk status map when a new diff is rendered
+    // Flag to prevent rendering during streaming
+    const isStreamingRef = useRef<boolean>(false);
+    // Store the diff in a ref to avoid unnecessary re-renders
     useEffect(() => {
-        console.log("Clearing hunk status map for new diff");
-        hunkStatusMap.clear();
-        setStatusUpdateCounter(c => c + 1); // Force re-render
+        diffRef.current = diff;
     }, [diff]);
+
+    // Initialize global registry if needed
+    useEffect(() => {
+        // Initialize the global registry if it doesn't exist
+        window.diffElementPaths = window.diffElementPaths || new Map();
+        window.hunkStatusRegistry = window.hunkStatusRegistry || new Map();
+
+    }, []);
+
+    // Listen for hunk status updates
+    useEffect(() => {
+        const handleStatusUpdate = (event: Event) => {
+            if (!isStreamingRef.current) {
+                console.log("DiffView received hunk status update event");
+                setStatusUpdateCounter(prev => prev + 1);
+            }
+        };
+        hunkStatusEventBus.addEventListener(HUNK_STATUS_EVENT, handleStatusUpdate);
+
+        return () => {
+            hunkStatusEventBus.removeEventListener(HUNK_STATUS_EVENT, handleStatusUpdate);
+        };
+
+        // Check the global registry for existing status updates for this diff
+        if (window.hunkStatusRegistry && window.hunkStatusRegistry.has(diffId)) {
+            const existingStatuses = window.hunkStatusRegistry.get(diffId);
+            if (existingStatuses) {
+                setInstanceHunkStatusMap(new Map(existingStatuses));
+                setStatusUpdateCounter(prev => prev + 1);
+            }
+        }
+    }, []);
+
+    // Function to update hunk statuses from API response
+    const updateHunkStatuses = useCallback((hunkStatuses: Record<string, any>, targetDiffId: string = diffId, force: boolean = false) => {
+        if (!hunkStatuses) return;
+        console.log(`Updating hunk statuses for ${targetDiffId} (we are ${diffId})`, hunkStatuses);
+
+        try {
+            const files = parseDiff(diff);
+            files.forEach((file, fileIndex) => {
+                file.hunks.forEach((hunk, hunkIndex) => {
+                    // Create a key for this hunk
+                    const hunkKey = `0-${hunkIndex}`;
+
+                    // Get the hunk ID (1-based)
+                    const hunkId = hunkIndex + 1;
+
+                    // Check if we have status for this hunk
+                    if (hunkStatuses[hunkId]) {
+                        const status = hunkStatuses[hunkId];
+                        console.log(`Updating status for hunk #${hunkId}:`, status);
+                        // Update the status in our local map
+                        setInstanceHunkStatusMap(prev => {
+                            const newMap = new Map(prev);
+
+                            // Also update the global registry
+                            if (!window.hunkStatusRegistry.has(diffId)) {
+                                window.hunkStatusRegistry.set(diffId, new Map());
+                            }
+                            const registryMap = window.hunkStatusRegistry.get(diffId);
+                            if (registryMap) {
+                                registryMap.set(hunkKey, newMap.get(hunkKey) as HunkStatus);
+
+                                // Only trigger re-render if not streaming or if forced
+                                if (!isStreamingRef.current || force) setStatusUpdateCounter(prev => prev + 1);
+                            }
+
+                            newMap.set(hunkKey, {
+                                applied: status.status === 'succeeded' || status.status === 'already_applied',
+                                alreadyApplied: status.status === 'already_applied',
+                                reason: status.status === 'failed'
+                                    ? `Failed in ${status.stage} stage`
+                                    : status.status === 'already_applied'
+                                        ? 'Already applied'
+                                        : 'Successfully applied'
+                            });
+                            return newMap;
+                        });
+                        // Update will happen in the renderHunks function
+                    };
+                });
+            });
+        } catch (error) {
+            console.error("Error updating hunk statuses:", error);
+        }
+    }, [diff]);
+
+    // Listen for window-level hunk status updates with data, but don't update during streaming
+    useEffect(() => {
+        const handleWindowStatusUpdate = (event: CustomEvent) => {
+            if (event.detail && event.detail.hunkStatuses) {
+                console.log("DiffView received window hunk status update with data:", event.detail);
+
+                // Check if this update is for our diff element
+                let isForThisDiff = false;
+
+                // First check if the targetDiffElementId matches our diffId
+                if (event.detail.targetDiffElementId === diffId) {
+                    isForThisDiff = true;
+                    console.log(`direct match for diffId ${diffId}`);
+
+                    // Apply the hunk statuses directly to our component state
+                    if (event.detail.hunkStatuses) {
+                        Object.entries(event.detail.hunkStatuses).forEach(([hunkId, status]) => {
+                            updateHunkStatuses({ [hunkId]: status }, diffId);
+                        });
+                    }
+                }
+
+                // If not a match, skip processing
+                if (!isForThisDiff) {
+                    console.log(`Ignoring event for diff ${event.detail.targetDiffElementId || 'unknown'}, we are ${diffId}`);
+                    return;
+                }
+
+                // Call updateHunkStatuses with the provided data
+                // Only update if not streaming or if this is a completion event
+                const isCompletionEvent = event.detail.isCompletionEvent === true;
+                updateHunkStatuses(event.detail.hunkStatuses || {}, diffId, isCompletionEvent);
+
+                // Also store in global registry
+                if (window.hunkStatusRegistry) {
+                    if (!window.hunkStatusRegistry.has(diffId)) {
+                        window.hunkStatusRegistry.set(diffId, new Map());
+                    }
+                }
+
+                // Force re-render only if not streaming or if this is a completion event
+                if (!isStreamingRef.current || isCompletionEvent) {
+                    setStatusUpdateCounter(prev => prev + 1);
+                }
+            }
+        };
+
+        window.addEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
+
+        return () => {
+            window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
+        };
+    }, [updateHunkStatuses]);
+
 
     // detect language from file path
     const detectLanguage = (filePath: string): string => {
@@ -580,18 +852,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         const parseAndSetFiles = () => {
             try {
                 let parsedFiles = parseDiff(normalizeGitDiff(diff));
-
-                console.log('parseDiff result:', {
-                    fileCount: parsedFiles.length,
-                    firstFile: parsedFiles[0] ? {
-                        type: parsedFiles[0].type,
-                        oldPath: parsedFiles[0].oldPath,
-                        newPath: parsedFiles[0].newPath,
-                        hunks: parsedFiles[0].hunks?.map(h => ({
-                            content: h.content.split('\n').slice(0, 3)
-                        }))
-                    } : null
-                });
 
                 // If we have a unified diff without git headers, try to extract the file path
                 if (parsedFiles.length > 0 && !parsedFiles[0].oldPath && !parsedFiles[0].newPath) {
@@ -648,12 +908,12 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         }];
                     }
                 }
-                setParsedFiles(parsedFiles);
+                parsedFilesRef.current = parsedFiles;
                 setParseError(false);
             } catch (error) {
                 console.error('Error parsing diff:', error);
                 setParseError(true);
-                setParsedFiles([]);
+                parsedFilesRef.current = [];
             }
         };
         parseAndSetFiles();
@@ -694,11 +954,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             }
         };
 
-        if (parsedFiles?.[0]) {
-            const file = parsedFiles[0];
+        if (parsedFilesRef.current?.[0]) {
+            const file = parsedFilesRef.current[0];
             tokenizeHunks(file.hunks, file.newPath || file.oldPath);
         }
-    }, [parsedFiles]);
+    }, [diff]);
 
     const renderHunks = (hunks: any[], filePath: string, fileIndex: number) => {
         const tableClassName = `diff-table ${viewType === 'split' ? 'diff-split' : ''}`;
@@ -748,7 +1008,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         // Get hunk status if available
                         // Create a stable key for this hunk
                         const hunkKey = `${fileIndex}-${hunkIndex}`;
-                        const status = hunkStatusMap.get(hunkKey);
+                        const status = instanceHunkStatusMap.get(hunkKey);
                         const isApplied = status?.applied;
                         const statusReason = status?.reason || '';
 
@@ -762,7 +1022,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 marginLeft: '8px'
                             }}>
                                 {isApplied ?
-                                    <><CheckCircleOutlined /> Applied</> :
+                                    status?.alreadyApplied ?
+                                        <><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</> :
+                                        <><CheckCircleOutlined /> Applied</> :
                                     <><CloseCircleOutlined /> Failed: {statusReason}</>
                                 }
                             </span>
@@ -940,7 +1202,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     `;
 
     const renderFile = (file: any, fileIndex: number) => {
-        console.log('Rendering diff view with hunks:', file.hunks.length, 'Status map size:', hunkStatusMap.size);
         return (
             <div
                 key={`diff-${fileIndex}`}
@@ -962,8 +1223,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     // Get the hunk status if available
                                     // Create a stable key for this hunk
                                     const hunkKey = `${fileIndex}-${hunkIndex}`;
-                                    console.log(`Checking status for hunk #${hunkIndex + 1} with key ${hunkKey}:`, hunkStatusMap.has(hunkKey) ? hunkStatusMap.get(hunkKey) : 'No status');
-                                    const status = hunkStatusMap.get(hunkKey);
+                                    const status = instanceHunkStatusMap.get(hunkKey);
                                     const hunkId = hunkIndex + 1;
 
                                     let statusIcon;
@@ -971,7 +1231,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     let statusTooltip;
 
                                     if (!status) {
-                                        // Pending status
+                                        // Pending status 
                                         statusIcon = <div className="hunk-status-dot pending" />;
                                         statusColor = '#8c8c8c';
                                         statusTooltip = `Hunk #${hunkId}: Pending`;
@@ -979,7 +1239,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                         if (status.alreadyApplied) {
                                             // Already applied status
                                             statusIcon = <CheckCircleOutlined style={{ color: '#faad14' }} />;
-                                            statusColor = '#faad14'; // Yellow
+                                            statusColor = '#faad14'; // Yellow/orange for already applied
                                             statusTooltip = `Hunk #${hunkId}: Already applied`;
                                         } else {
                                             // Successfully applied status
@@ -1023,7 +1283,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                             {!['delete'].includes(file.type) &&
                                 <ApplyChangesButton
                                     diff={diff}
+                                    fileIndex={fileIndex}
+                                    diffElementId={`diff-${fileIndex}`}
                                     filePath={file.newPath || file.oldPath}
+                                    setHunkStatuses={setInstanceHunkStatusMap}
                                     enabled={window.enableCodeApply === 'true'}
                                 />
                             }
@@ -1049,37 +1312,102 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     }
 
     const currentTheme = isDarkMode ? darkModeStyles : lightModeStyles;
-    return (<div className="diff-files-container">
-        <style>{styles}</style>
-        {parsedFiles.map((file, fileIndex) =>
-            renderFile(file, fileIndex)
-        )}
-    </div>
+    return (
+        <div className="diff-files-container">
+            <style>{styles}</style>
+            {parsedFilesRef.current.map((file, fileIndex) =>
+                renderFile(file, fileIndex)
+            )}
+        </div>
     );
 };
 
-const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, enabled }) => {
+const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, fileIndex, diffElementId, enabled, setHunkStatuses }) => {
     const [isApplied, setIsApplied] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
+    const statusUpdateCounterRef = useRef<number>(0);
+    const isStreamingRef = useRef<boolean>(false);
 
-    const triggerDiffUpdate = () => {
-        console.log('Triggering diff update event');
-        window.dispatchEvent(new Event('hunkStatusUpdate'));
+    // Track processed request IDs to prevent infinite update loops
+    const processedRequestIds = useRef(new Set<string>());
+
+    // Define a function to trigger diff updates
+    const triggerDiffUpdate = (hunkStatuses: Record<string, any> | null = null, requestId: string | null = null, diffElementId: string | null = null) => {
+        // Create a unique event key for this specific diff element
+        const event = new CustomEvent(HUNK_STATUS_EVENT, { detail: { isCompletionEvent: true } });
+        // hunkStatusEventBus.dispatchEvent(event); // We'll use component-specific updates instead
+
+        // Also dispatch a window event for backward compatibility
+        console.log(`Triggering diff update event with statuses for request ${requestId}:`, hunkStatuses);
+
+        // Prevent duplicate updates for the same request ID
+        if (requestId && processedRequestIds.current.has(requestId)) {
+            console.log(`Skipping duplicate update for already processed request: ${requestId}`);
+            return;
+        }
+        if (requestId) processedRequestIds.current.add(requestId);
+
+        const customEvent = new CustomEvent('hunkStatusUpdate', {
+            detail: {
+                requestId,
+                hunkStatuses,
+                filePath,
+                isCompletionEvent: true, // Flag to indicate this is a completion event
+                targetDiffElementId: diffElementId // Add the target diff element ID
+            }
+        });
+        window.dispatchEvent(customEvent);
     };
+
+    // Check if we're in a streaming state
+    useEffect(() => {
+        const checkStreamingState = () => {
+            const streamingElements = document.querySelectorAll('.streaming-content');
+            isStreamingRef.current = streamingElements.length > 0;
+        };
+
+        // Check immediately
+        checkStreamingState();
+
+        // Set up a mutation observer to detect streaming state changes
+        const observer = new MutationObserver(checkStreamingState);
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        return () => {
+            observer.disconnect();
+        };
+    }, []);
 
     const handleApplyChanges = async () => {
         // Extract the actual diff content
+        setIsProcessing(true);
         const cleanDiff = (() => {
-            console.log('Pre-fetch diff content:', diff);
+            console.log('Pre-fetch diff content for file:', filePath);
             // Log the incoming diff content
             console.log('Raw diff content:', {
+                processing: true,
+                elementId: diffElementId,
                 length: diff.length,
                 firstLine: diff.split('\n')[0],
                 totalLines: diff.split('\n').length,
                 fullContent: diff
             });
-            // If it's already a raw diff, use it directly
+
+            // Store the file path for this diff element ID for later matching
+            if (diffElementId) {
+                window.diffElementPaths = window.diffElementPaths || new Map();
+                window.diffElementPaths.set(diffElementId, filePath);
+            }
+
+            // If it's already a raw diff, extract only the relevant file's diff if multipart
             if (diff.startsWith('diff --git')) {
-                return diff.trim();
+                const singleFileDiff = extractSingleFileDiff(diff, filePath);
+                console.log('Extracted single file diff:', {
+                    filePath,
+                    diffLength: singleFileDiff.length
+                });
+                return singleFileDiff.trim();
             }
 
             // Otherwise extract diff from markdown code block
@@ -1087,6 +1415,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             console.log('Diff match result:', {
                 found: !!diffMatch,
                 groups: diffMatch ? diffMatch.length : 0,
+
                 matchContent: diffMatch ? {
                     fullMatch: diffMatch[0],
                     diffContent: diffMatch[1],
@@ -1096,7 +1425,18 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 return diffMatch[1].trim();
             }
 
-            // Fallback to original cleaning method
+            // If we extracted a diff from markdown and it's a multi-file diff,
+            // extract only the relevant file's diff
+            if (diffMatch) {
+                const diffContent = diffMatch[1] as string;
+                if (diffContent.includes('diff --git') && diffContent.indexOf('diff --git') !== diffContent.lastIndexOf('diff --git')) {
+                    const extractedDiff = diffContent.trim();
+                    const singleFileDiff = extractSingleFileDiff(extractedDiff, filePath);
+                    return singleFileDiff;
+                }
+            }
+
+            // Fallback to original content
             return diff.trim();
         })();
 
@@ -1110,10 +1450,19 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             truncated: cleanDiff.length < diff.length
         });
 
+        // Generate a unique request ID for this specific diff application
+        const requestId = `${diffElementId}-${Date.now()}`;
+
         // Log the actual request body
-        const requestBody = JSON.stringify({ diff: cleanDiff, filePath: filePath.trim() });
+        const requestBody = JSON.stringify({
+            diff: cleanDiff,
+            filePath: filePath.trim(),
+            requestId: requestId,
+            elementId: diffElementId
+        });
         console.log('Request body:', requestBody);
 
+        console.log(`Applying changes for diff ${diffElementId} with request ID ${requestId}, element ID: ${diffElementId}`);
         const requestBodyParsed = JSON.parse(requestBody);
         console.log('Parsed request body diff length:', requestBodyParsed.diff.split('\n').length);
 
@@ -1121,7 +1470,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             console.log('About to send fetch request with body length:', cleanDiff.length);
             console.log('Request body:', {
                 diff: cleanDiff.substring(0, 100) + '...',
-                filePath: filePath.trim()
+                filePath: filePath.trim(),
+                requestId: requestId, elementId: diffElementId
             });
 
             const response = await fetch('/api/apply-changes', {
@@ -1129,7 +1479,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     diff: cleanDiff,
+                    elementId: diffElementId, // Add the element ID to the request
                     filePath: filePath.trim(),
+                    requestId: requestId
                 }),
             });
 
@@ -1147,36 +1499,123 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 const data = await response.json();
                 console.log('Apply changes response data:', data);
                 console.log('Response data structure:', {
+                    rawData: JSON.stringify(data),
                     status: data.status,
                     message: data.message,
-                    hasDetails: !!data.details,
+                    requestId: data.request_id,
+                    hasRequestId: !!data.request_id,
+                    diffElementId: diffElementId,
+                    mappingAdded: data.request_id ? diffRequestMap.set(data.request_id, diffElementId) : false,
+                    hasDetails: !!data.details || !!data.hunk_statuses,
                     detailsKeys: data.details ? Object.keys(data.details) : [],
                     succeeded: data.details?.succeeded,
                     failed: data.details?.failed,
                     hunkStatuses: data.details?.hunk_statuses
                 });
 
+                // Store the mapping between request ID and diff element ID
+                if (data.request_id) {
+                    diffRequestMap.set(data.request_id, diffElementId);
+                    console.log(`Mapped request ${data.request_id} to diff element ${diffElementId}`);
+                    console.log(`Mapped request ${data.request_id} to diff element ${diffElementId}`);
+                }
+
                 // Check if ANY hunks succeeded before marking as applied
                 const hasSuccessfulHunks = data.details?.succeeded?.length > 0;
                 console.log('Has successful hunks:', hasSuccessfulHunks);
-                console.log('Succeeded hunks:', data.details?.succeeded);
+                console.log('Succeeded hunks:', data.details?.succeeded || []);
 
                 if (data.status === 'success') {
                     console.log('Processing success status');
                     setIsApplied(true);  // Complete success
                     // Update hunk statuses for successful application
-                    const files = parseDiff(cleanDiff);
-                    files.forEach((file, fileIndex) => {
-                        console.log('Setting status for file hunks:', file.hunks.length);
-                        file.hunks.forEach((hunk, hunkIndex) => {
-                            const hunkKey = `${fileIndex}-${hunkIndex}`;
-                            hunkStatusMap.set(hunkKey, {
-                                applied: true,
-                                reason: 'Successfully applied'
+                    // Check if we have detailed hunk statuses in the response
+                    if (data.details?.hunk_statuses) {
+                        const hunkStatuses = data.hunk_statuses || data.details?.hunk_statuses || {};
+                        const files = parseDiff(cleanDiff);
+                        files.forEach((file, fileIndex) => {
+                            file.hunks.forEach((hunk, hunkIndex) => {
+                                const hunkKey = `${fileIndex}-${hunkIndex}`;
+                                // The hunk IDs in the response are 1-based, but our hunkIndex is 0-based
+                                console.log(`Processing hunk status for request ${data.request_id}, hunk #${hunkIndex + 1}`);
+                                const hunkId = hunkIndex + 1;
+                                const hunkStatus = hunkStatuses[hunkId];
+
+                                if (hunkStatus) {
+                                    console.log(`Setting status for hunk #${hunkId} with key ${hunkKey}:`, hunkStatus);
+                                    if (typeof setHunkStatuses === 'function') {
+                                        console.log('Calling setHunkStatuses function');
+
+                                        setHunkStatuses((prev: Map<string, HunkStatus>) => {
+                                            const newMap = new Map(prev);
+                                            newMap.set(hunkKey, {
+                                                applied: hunkStatus.status === 'succeeded' || hunkStatus.status === 'already_applied',
+                                                alreadyApplied: hunkStatus.status === 'already_applied',
+                                                reason: hunkStatus.status === 'succeeded' ?
+                                                    'Successfully applied' :
+                                                    hunkStatus.status === 'already_applied' ? 'Already applied' : 'Failed'
+                                            } as HunkStatus);
+                                            return newMap;
+
+                                            // Also update the global registry
+                                            if (window.hunkStatusRegistry) {
+                                                if (!window.hunkStatusRegistry.has(diffElementId)) {
+                                                    window.hunkStatusRegistry.set(diffElementId, new Map());
+                                                }
+                                                const registryMap = window.hunkStatusRegistry.get(diffElementId)!;
+                                                registryMap.set(hunkKey, newMap.get(hunkKey) as HunkStatus);
+                                            }
+                                        });
+                                        // Default to success if not found in hunk_statuses
+
+                                        const isAlreadyApplied = hunkStatus.status === 'already_applied';
+
+                                        if (setHunkStatuses) {
+                                            setHunkStatuses((prev: Map<string, HunkStatus>) => {
+                                                const newMap = new Map(prev);
+                                                newMap.set(hunkKey, {
+                                                    applied: true,
+                                                    reason: isAlreadyApplied ? 'Already applied' : 'Successfully applied',
+                                                    alreadyApplied: isAlreadyApplied
+                                                } as HunkStatus);
+
+                                                // Also update the global registry
+                                                if (window.hunkStatusRegistry) {
+                                                    if (!window.hunkStatusRegistry.has(diffElementId)) {
+                                                        window.hunkStatusRegistry.set(diffElementId, new Map());
+                                                    }
+                                                    const registryMap = window.hunkStatusRegistry.get(diffElementId)!;
+                                                    registryMap.set(hunkKey, { applied: true, reason: isAlreadyApplied ? 'Already applied' : 'Successfully applied', alreadyApplied: isAlreadyApplied });
+                                                }
+                                                return newMap;
+                                            });
+                                            // Force a re-render by updating the status update counter
+                                            statusUpdateCounterRef.current++;
+                                        }
+                                    }
+                                }
                             });
                         });
-                    });
-                    triggerDiffUpdate();
+                    } else {
+                        console.log('Setting success status for all hunks (no detailed statuses)');
+                        const files = parseDiff(cleanDiff);
+                        files.forEach((file, fileIndex) => {
+                            console.log(`Setting status for file hunks (${diffElementId}):`, file.hunks.length);
+                            file.hunks.forEach((hunk, hunkIndex) => {
+                                const hunkKey = `${fileIndex}-${hunkIndex}`;
+                                setInstanceHunkStatusMap(prev => {
+                                    const newMap = new Map(prev);
+                                    newMap.set(hunkKey, {
+                                        applied: true,
+                                        reason: 'Successfully applied',
+                                        alreadyApplied: false
+                                    });
+                                    return newMap;
+                                });
+                            });
+                        });
+                    }
+                    triggerDiffUpdate(data.details?.hunk_statuses || {}, data.request_id, diffElementId);
 
                     message.success(`Changes applied successfully to ${filePath}`);
                 } else if (data.status === 'partial') {
@@ -1198,7 +1637,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
                             if (hunkStatus) {
                                 console.log(`Setting status for hunk #${hunkId} with key ${hunkKey}:`, hunkStatus);
-                                hunkStatusMap.set(hunkKey, {
+                                instanceHunkStatusMap.set(hunkKey, {
                                     applied: hunkStatus.status === 'succeeded',
                                     alreadyApplied: hunkStatus.status === 'already_applied',
                                     reason: hunkStatus.status === 'failed'
@@ -1215,15 +1654,19 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                 // Log this for debugging
                                 console.log(`Fallback status for hunk #${hunkId}: success=${isInSucceededList}, already=${isAlreadyAppliedList}, failed=${isInFailedList}`);
 
-                                hunkStatusMap.set(hunkKey, {
-                                    applied: !isInFailedList,
+                                instanceHunkStatusMap.set(hunkKey, {
+                                    applied: isInSucceededList || isAlreadyAppliedList,
+                                    alreadyApplied: isAlreadyAppliedList,
                                     reason: isInFailedList ? 'Failed to apply' : 'Successfully applied'
                                 });
                             }
+                            // Force a re-render to update the UI
+                            statusUpdateCounterRef.current++;
+                            return;
                         });
                     });
                     console.log('Hunk statuses updated, triggering update');
-                    triggerDiffUpdate();
+                    triggerDiffUpdate(data.details?.hunk_statuses || {}, data.request_id, diffElementId);
 
                     // Show partial success message with failed hunks
                     message.warning({
@@ -1266,7 +1709,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             const hunkId = hunkIndex + 1;
                             const hunkStatus = data.details?.hunk_statuses?.[hunkId];
 
-                            hunkStatusMap.set(hunkKey, {
+                            instanceHunkStatusMap.set(hunkKey, {
                                 applied: false,
                                 reason: hunkStatus?.stage
                                     ? `Failed in ${hunkStatus.stage} stage`
@@ -1274,8 +1717,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             });
                         });
                     });
-                    console.log('Failed statuses set, triggering update');
-                    triggerDiffUpdate();
+                    console.log('Failed statuses set, triggering update for error');
+                    triggerDiffUpdate(data.details?.hunk_statuses || null, data.request_id, diffElementId);
 
                     // Show error message
                     message.error({
@@ -1298,7 +1741,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                                         {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
 
                                                         {/* Update the hunk status in our map to ensure UI is consistent with message */}
-                                                        {(() => { hunkStatusMap.set(`0-${hunkId - 1}`, { applied: false, reason: hunkStatus?.error_details?.error || 'Failed to apply' }); return null; })()}
+                                                        {(() => { instanceHunkStatusMap.set(`0-${hunkId - 1}`, { applied: false, reason: hunkStatus?.error_details?.error || 'Failed to apply' }); return null; })()}
 
                                                         {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
                                                     </li>
@@ -1307,6 +1750,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                         </ul>
                                     </div>
                                 )}
+                                triggerDiffUpdate({}, data.request_id);
                             </div>
                         ),
                         duration: 10
@@ -1317,7 +1761,37 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 }
             } else {
                 try {
-                    const errorData = await response.json();
+                    // Parse the error response
+                    const errorData = await response.json().catch(() => ({}));
+
+                    // Mark all hunks as failed when we get a global error
+                    if (response.status === 422 || errorData.status === 'error') {
+                        // Parse the diff to get the number of hunks
+                        try {
+                            const files = parseDiff(cleanDiff);
+                            files.forEach((file, fileIndex) => {
+                                file.hunks.forEach((hunk, hunkIndex) => {
+                                    const hunkKey = `${fileIndex}-${hunkIndex}`;
+                                    const errorMessage = errorData.detail?.message || errorData.message || errorData.detail || 'Failed to apply changes';
+
+                                    // Update the hunk status to failed
+                                    if (typeof setHunkStatuses === 'function') {
+                                        setHunkStatuses((prev: Map<string, HunkStatus>) => {
+                                            const newMap = new Map(prev);
+                                            newMap.set(hunkKey, {
+                                                applied: false,
+                                                reason: `Error: ${errorMessage}`
+                                            });
+                                            return newMap;
+                                        });
+                                    }
+                                });
+                            });
+                        } catch (parseError) {
+                            console.error('Error parsing diff for error propagation:', parseError);
+                        }
+                    }
+
                     console.log('Apply changes error response:', {
                         status: response.status,
                         errorData,
@@ -1339,13 +1813,13 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             file.hunks.forEach((hunk, hunkIndex) => {
                                 const hunkKey = `${fileIndex}-${hunkIndex}`;
                                 console.log(`Setting error status for hunk #${hunkIndex + 1}`);
-                                hunkStatusMap.set(hunkKey, {
+                                instanceHunkStatusMap.set(hunkKey, {
                                     applied: false,
                                     reason: 'Failed to apply'
                                 });
                             });
                         });
-                        triggerDiffUpdate();
+                        triggerDiffUpdate(null, errorData.request_id, diffElementId);
                         console.log('Error statuses set, triggering update');
                     }
 
@@ -1390,15 +1864,108 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             console.error('Error properties:', Object.keys(error as object));
             message.error({
                 content: 'Error applying changes: ' + (error instanceof Error ? error.message : String(error)),
+                key: 'apply-changes-error',
                 duration: 5
             });
+        } finally {
+            setIsProcessing(false);
         }
     };
+
+    // Listen for hunk status updates from the server
+    useEffect(() => {
+        const handleHunkStatusUpdate = (event: CustomEvent) => {
+            if (!event.detail) return;
+
+            const { requestId, hunkStatuses, filePath: eventFilePath } = event.detail;
+
+            // Create a unique key for this event to prevent duplicate processing
+            // Include the target diff element ID in the key
+            const eventKey = `${event.detail.requestId}-${event.detail.targetDiffElementId || 'global'}`;
+
+            // Only process events targeted at this specific diff element
+            if (event.detail.targetDiffElementId && event.detail.targetDiffElementId !== diffElementId) {
+                return; // Skip events not meant for this instance
+            }
+
+            // Skip if we've already processed this exact event
+            if (processedWindowEvents.has(eventKey)) {
+                console.debug(`Skipping already processed window event: ${eventKey}`);
+                return;
+            }
+
+            // Mark this event as processed
+            processedWindowEvents.add(eventKey);
+
+            // Set a timeout to remove this event from the processed set after a short delay
+            setTimeout(() => processedWindowEvents.delete(eventKey), 500);
+
+            const targetDiffElementId = diffRequestMap.get(requestId);
+            const targetDiffElementIdFromMap = diffRequestMap.get(requestId);
+            let isRelevantUpdate = false;
+
+            // First check if this event is explicitly targeted at our element ID
+            if (event.detail.targetDiffElementId === diffElementId) {
+                isRelevantUpdate = true;
+            }
+
+            // Otherwise check if the request ID maps to our element ID via the map
+            else if (targetDiffElementIdFromMap === diffElementId && (!eventFilePath || eventFilePath === filePath)) {
+                isRelevantUpdate = true;
+            }
+
+            // Log the matching attempt - this helps us debug
+            console.log(`ApplyChangesButton ${diffElementId}: Matching update. Event target: ${event.detail.targetDiffElementId}, Mapped target: ${targetDiffElementIdFromMap}, File: ${eventFilePath}, Match: ${isRelevantUpdate}`);
+
+
+            if (!isRelevantUpdate) {
+                // This update is for a different diff element or file, ignore it
+                console.log(`Ignoring update for ${event.detail.targetDiffElementId || 'unknown'} (we are ${diffElementId})`);
+                return; // Exit early if not relevant
+            }
+
+            // If we get here, the update is relevant to this component
+            console.log(`Received hunk status update for diff ${diffElementId} (request ${requestId}, file ${eventFilePath || 'unknown'}):`, hunkStatuses);
+
+            // Process and update the status for each hunk
+            if (hunkStatuses) {
+                Object.entries(hunkStatuses).forEach(([hunkId, status]) => {
+                    const hunkIndex = parseInt(hunkId, 10) - 1; // Convert 1-based to 0-based
+                    const hunkKey = `${fileIndex}-${hunkIndex}`;
+                    if (typeof setHunkStatuses === 'function') {
+                        setHunkStatuses((prev: Map<string, HunkStatus>) => {
+                            const newMap = new Map(prev);
+                            newMap.set(hunkKey, {
+                                applied: (status as ApiHunkStatus).status === 'succeeded' || (status as ApiHunkStatus).status === 'already_applied',
+                                alreadyApplied: (status as ApiHunkStatus).status === 'already_applied',
+                                reason: (status as ApiHunkStatus).status === 'failed' ? `Failed in ${(status as ApiHunkStatus).stage || 'unknown'} stage` : 'Successfully applied'
+                            } as HunkStatus);
+                            return newMap;
+                        });
+                    }
+                    // Force a re-render to update the UI
+                    statusUpdateCounterRef.current++;
+                });
+            }
+
+        };
+
+        window.addEventListener('hunkStatusUpdate', handleHunkStatusUpdate as EventListener);
+        return () => window.removeEventListener('hunkStatusUpdate', handleHunkStatusUpdate as EventListener);
+    }, [diffElementId, filePath, setHunkStatuses, fileIndex]);
+
+    // Clear processed request IDs when component unmounts
+    useEffect(() => {
+        return () => processedRequestIds.current.clear();
+    }, []);
 
     return enabled ? (
         <Button
             onClick={handleApplyChanges}
-            disabled={isApplied}
+            disabled={isApplied || isProcessing}
+            loading={isProcessing}
+            type="primary"
+            style={{ marginLeft: '8px' }}
             icon={<CheckOutlined />}
         >
             Apply Changes (beta)
@@ -1422,27 +1989,43 @@ interface DiffTokenProps {
 }
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
-    console.log(">>> STEP 2: DiffToken received token", { index, lang: token.lang, textPreview: token.text?.substring(0, 100) });
+    // Check if we're in a streaming response
+    const [isStreaming, setIsStreaming] = useState(false);
+    const streamingCheckedRef = useRef(false);
+
     const isDiffValid = useMemo(() => {
         const trimmedText = token.text?.trim();
         // Allow diffs starting with 'diff --git' OR '--- a/' OR '--- /dev/null' (file creation)
         if (!trimmedText || (!trimmedText.startsWith('diff --git') && !trimmedText.startsWith('--- a/') && !trimmedText.startsWith('--- /dev/null'))) {
-            console.log(">>> STEP 3: Diff text doesn't start with 'diff --git', '--- a/', or '--- /dev/null', skipping parseDiff.");
             return false;
         }
+
+        // Check if we're in a streaming response - only do this once per component
+        if (!streamingCheckedRef.current) {
+            streamingCheckedRef.current = true;
+            const streamingElement = document.querySelector('.streaming-content');
+            if (streamingElement) {
+                setIsStreaming(true);
+                return false; // Skip validation during streaming
+            }
+        }
+
         try {
-            console.log(">>> STEP 3: Calling parseDiff with text preview:", token.text?.substring(0, 100));
             // Ensure token.text is a string before passing
             const diffInput = typeof token.text === 'string' ? token.text : '';
             const files = parseDiff(diffInput); // From react-diff-view
-            console.log(">>> STEP 3: parseDiff raw result:", files); // Log the raw result
-            console.log(">>> STEP 3: parseDiff structured result:", { fileCount: files?.length, firstFileHunks: files?.[0]?.hunks?.length }); // Log structured result
             return files && files.length > 0 && files[0].hunks && files[0].hunks.length > 0;
         } catch (e) {
             console.error('Error parsing diff:', e);
             return false;
         }
     }, [token.text]);
+
+    // If we're in a streaming response, show a placeholder
+    if (isStreaming) {
+        console.log("Skipping diff rendering during streaming");
+        return <div className="streaming-diff-placeholder">Processing diff...</div>;
+    }
 
     if (isDiffValid) {
         return (
@@ -1470,7 +2053,6 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>('pretty');
-    const [statusUpdateCounter, setStatusUpdateCounter] = useState(0);
     const { isDarkMode } = useTheme();
 
     // Ensure window settings are synced with initial state
@@ -1478,15 +2060,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
         if (window.diffViewType !== viewType) {
             window.diffViewType = viewType;
         }
-    }, [token]);
-
-    // Listen for status updates
-    useEffect(() => {
-        console.log('Setting up hunkStatusUpdate listener');
-        const handleStatusUpdate = () => setStatusUpdateCounter(c => c + 1);
-        window.addEventListener('hunkStatusUpdate', handleStatusUpdate);
-        return () => window.removeEventListener('hunkStatusUpdate', handleStatusUpdate);
-    }, []);
+    }, [token, viewType]);
 
     if (!hasText(token)) {
         return null;
@@ -1497,6 +2071,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     }
 
     const diffText = token.text || ''; // Ensure it's a string
+    const elementId = `diff-view-${index || 0}-${diffText.length}`; // Use diffText.length for stability
 
     return (
         <div>
@@ -1508,7 +2083,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
                 onViewTypeChange={setViewType}
                 onLineNumbersChange={setShowLineNumbers}
             />
-            <div className="diff-container" id={`diff-view-${index || 0}`}>
+            <div className="diff-container" id={`diff-view-wrapper-${elementId}`}>
                 {(displayMode as DisplayMode) === 'raw' ? (
                     <pre className="diff-raw-block" style={{
                         padding: '16px',
@@ -1522,7 +2097,8 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
                         diff={diffText}
                         viewType={viewType}
                         initialDisplayMode={displayMode}
-                        key={statusUpdateCounter}  // Force re-render on status updates
+                        key={elementId}
+                        elementId={elementId}
                         showLineNumbers={showLineNumbers}
                     />
                 )}
@@ -1537,14 +2113,6 @@ interface CodeBlockProps {
 }
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
-    console.log('CodeBlock constructor called');
-    console.debug('CodeBlock mounting:', {
-        tokenType: token.type,
-        language: token.lang,
-        contentLength: token.text?.length,
-        prismLoaded: Boolean(window.Prism),
-        availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : []
-    });
 
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -1684,7 +2252,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 };
 
 // Define the possible determined types
-type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' | 'd3' | 'mermaid' | 'code' | 'html' | 'text' | 'list' | 'table' | 'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' | 'br' | 'list_item' | 'unknown';
+type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' | 'd3' | 'mermaid' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' | 'br' | 'list_item' | 'unknown';
 
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
@@ -1750,7 +2318,7 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     // 3. Map other standard marked token types directly
     // Add more types from marked.Tokens here as needed
     const knownTypes: DeterminedTokenType[] = [
-        'paragraph', 'heading', 'hr', 'blockquote', 'list', 'list_item', 'table',
+        'paragraph', 'heading', 'hr', 'blockquote', 'list', 'list_item', 'table', 'escape',
         'html', 'text', 'space', 'codespan', 'strong', 'em', 'del', 'link',
         'image', 'br'
     ];
@@ -1775,22 +2343,15 @@ const decodeHtmlEntities = (text: string): string => {
 };
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode => {
-    console.debug('renderTokens called with:', {
-        tokenCount: tokens.length,
-        tokenTypes: tokens.map(t => t.type)
-    });
 
     return tokens.map((token, index) => {
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
         const tokenWithText = token as TokenWithText; // Helper cast
 
-        console.log(`>>> Processing token index ${index}: Type=${token.type}, Determined=${determinedType}, Lang=${(token as any).lang}`);
-
         try {
             switch (determinedType) {
                 case 'diff':
-                    console.log(`>>> Rendering as Diff (lang: ${(token as any).lang})`, { tokenTextPreview: tokenWithText.text?.substring(0, 100) });
                     const rawDiffText = decodeHtmlEntities(tokenWithText.text || '');
                     // Apply cleaning specific to diff content AFTER decoding
                     const cleanedDiff = cleanDiffContent(rawDiffText);
@@ -1872,9 +2433,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'list_item':
                     const listItemToken = token as Tokens.ListItem;
-                    // --- DEBUG LOG for list item tokens ---
-                    console.log(`>>> List Item Index ${index} Tokens:`, listItemToken.tokens);
-                    // --- END DEBUG LOG ---
 
                     const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode);
 
@@ -1956,6 +2514,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'link':
                     const linkToken = token as Tokens.Link;
                     return <a key={index} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode)}</a>;
+
+                case 'escape':
+                    if (!hasText(tokenWithText)) return null;
+                    return <>{decodeHtmlEntities(tokenWithText.text || '')}</>;
+
                 case 'image':
                     const imageToken = token as Tokens.Image;
                     return <img key={index} src={imageToken.href} alt={imageToken.text} title={imageToken.title ?? undefined} />;
@@ -2050,7 +2613,7 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
                 const diffToken = { ...token, text: diffContent };
                 return (
                     <DiffToken
-                        key={`${index}-file-${fileIndex}`}
+                        key={`${index}-file-${fileIndex}-${Date.now()}`}
                         token={diffToken}
                         index={index * 100 + fileIndex} // Ensure unique indices
                         enableCodeApply={enableCodeApply}
@@ -2076,12 +2639,6 @@ marked.setOptions({
 });
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply }) => {
-    console.debug('MarkdownRenderer received:', {
-        markdownLength: markdown?.length || 0,
-        hasCodeBlock: markdown?.includes('```'),
-        firstLine: markdown?.split('\n')[0],
-        enableCodeApply
-    });
 
     const { isDarkMode } = useTheme();
 
@@ -2093,15 +2650,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         try {
             // Use marked.lexer directly
             const lexedTokens = marked.lexer(markdown);
-            console.debug('Lexer output:', {
-                tokenCount: lexedTokens.length,
-                tokens: lexedTokens.map(t => ({
-                    type: t.type,
-                    lang: t.type === 'code' ? (t as any).lang : undefined,
-                    preview: t.type === 'code' ?
-                        (t as any).text?.substring(0, 50) : undefined
-                }))
-            });
             return lexedTokens as (Tokens.Generic | TokenWithText)[]; // Cast for processing
         } catch (error) {
             console.error("Error lexing markdown:", error);
@@ -2110,11 +2658,25 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
     }, [markdown]);
 
+    // Track if we're in a streaming response - this is for the overall component
+    const [isStreaming, setIsStreaming] = useState(false);
+
+    // Use useLayoutEffect to detect streaming state before rendering
+    useLayoutEffect(() => {
+        // Check if this component is being rendered inside a streaming response
+        const parentElement = document.querySelector('.streaming-content');
+        setIsStreaming(!!parentElement);
+    }, [markdown]);
+
+    // Debug log streaming state
+    useEffect(() => {
+        console.log(`MarkdownRenderer streaming state: ${isStreaming ? 'streaming' : 'not streaming'}`);
+    }, [isStreaming]);
+
+    // Only memoize the rendered content when not streaming or when streaming completes
     const renderedContent = useMemo(() => {
         return renderTokens(tokens, enableCodeApply, isDarkMode);
-    }, [tokens, enableCodeApply, isDarkMode]);
-
-    // Check if the content is a multi-file diff
+    }, [tokens, enableCodeApply, isDarkMode, isStreaming]);
     const isMultiFileDiff = markdown?.includes('diff --git') &&
         markdown.split('diff --git').length > 2;
 

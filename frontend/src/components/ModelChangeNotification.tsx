@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { useTheme } from '../context/ThemeContext';
 
 interface ModelChangeNotificationProps {
   previousModel: string;
   newModel: string;
+  changeKey?: string;
+  key?: string;
 }
 
-const ModelChangeNotification: React.FC<ModelChangeNotificationProps> = ({ previousModel, newModel }) => {
+const ModelChangeNotification: React.FC<ModelChangeNotificationProps> = memo(({ previousModel, newModel }) => {
   const { isDarkMode } = useTheme();
   
   // Define colors that work well in both light and dark modes
@@ -46,6 +48,12 @@ const ModelChangeNotification: React.FC<ModelChangeNotificationProps> = ({ previ
       </span>
     </div>
   );
-};
+}, (prevProps, nextProps) => {
+  // Only re-render if the models actually change
+  return prevProps.previousModel === nextProps.previousModel && 
+         prevProps.newModel === nextProps.newModel &&
+         prevProps.changeKey === nextProps.changeKey;
+});
 
+ModelChangeNotification.displayName = 'ModelChangeNotification';
 export default ModelChangeNotification;
