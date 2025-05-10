@@ -5,6 +5,7 @@ Middleware for handling streaming responses and errors.
 import os
 import json
 from typing import AsyncIterator, Any
+from app.agents.wrappers.nova_formatter import NovaFormatter
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import StreamingResponse, Response

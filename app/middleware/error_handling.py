@@ -45,7 +45,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     # Create an error message
                     logger.error(f"Error caught after response started: {str(e)}")
                     error_msg = {
-                        "error": "server_error",
+                    "error": "stream_error",
                         "detail": str(e),
                         "status_code": 500
                     }
@@ -54,7 +54,8 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     return Response(status_code=500, content=json.dumps(error_msg))
                 
                 # Create a streaming response with the error
-                async def error_stream():
+                # Use a more descriptive error format for SSE
+                async def error_stream(error_message):
                     yield f"data: Error: {str(e)}\n\n"
                     yield "data: [DONE]\n\n"
                 
@@ -65,6 +66,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                 )
                 
                 # Add CORS headers
+                response.headers["Content-Type"] = "text/event-stream"
                 response.headers["Cache-Control"] = "no-cache"
                 response.headers["Connection"] = "keep-alive"
                 response.headers["Access-Control-Allow-Origin"] = "*"

@@ -6,8 +6,10 @@ from fastapi import Request, Response
 import json
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
+from starlette.responses import JSONResponse
 import os
 from app.utils.logging_utils import logger
+# Middleware for handling request size limits and model settings
 
 class RequestSizeMiddleware(BaseHTTPMiddleware):
     """Middleware for limiting request size."""
@@ -24,7 +26,7 @@ class RequestSizeMiddleware(BaseHTTPMiddleware):
         """Limit request size."""
         # Get content length from headers
         content_length = request.headers.get("content-length")
-        
+
         # If content length is provided, check if it exceeds the limit
         if content_length:
             content_length = int(content_length)
@@ -34,14 +36,15 @@ class RequestSizeMiddleware(BaseHTTPMiddleware):
                     content=f"Request size {content_length} exceeds limit {self.max_size}",
                     status_code=413,
                     media_type="text/plain"
-                )
-        
-        # Call the next middleware or endpoint
+                )  
+            
+        # Call the next middleware or endpoint only if size check passes
         return await call_next(request)
 
 class ModelSettingsMiddleware(BaseHTTPMiddleware):
     """Middleware for ensuring model settings are properly applied."""
     
+    _hunk_statuses = {}  # Class-level storage for hunk statuses by request ID
     def __init__(self, app: ASGIApp):
         super().__init__(app)
         logger.info("ModelSettingsMiddleware initialized")
@@ -69,6 +72,11 @@ class ModelSettingsMiddleware(BaseHTTPMiddleware):
                     # Also set ZIYA_MAX_TOKENS to ensure it's used by the model
                     os.environ["ZIYA_MAX_TOKENS"] = str(max_output_tokens)
                     logger.info(f"ModelSettingsMiddleware: Set ZIYA_MAX_TOKENS={max_output_tokens}")
+                
+                # Set max_input_tokens in environment if provided
+                if "max_input_tokens" in body:
+                    max_input_tokens = body["max_input_tokens"]
+                    os.environ["ZIYA_MAX_INPUT_TOKENS"] = str(max_input_tokens)
                     
                     # Handle top_k parameter - check if it's supported by the current model
                     if "top_k" in body:
@@ -84,9 +92,9 @@ class ModelSettingsMiddleware(BaseHTTPMiddleware):
                         if 'supported_parameters' in model_config and 'top_k' in model_config['supported_parameters']:
                             os.environ["ZIYA_TOP_K"] = str(body["top_k"])
                             logger.info(f"ModelSettingsMiddleware: Set ZIYA_TOP_K={body['top_k']}")
-                        else:
+                        elif "ZIYA_TOP_K" in os.environ:
                             # If not supported, remove from environment
-                            if "ZIYA_TOP_K" in os.environ:
+                            if os.environ.get("ZIYA_TOP_K"):
                                 del os.environ["ZIYA_TOP_K"]
                                 logger.info("ModelSettingsMiddleware: Removed ZIYA_TOP_K as it's not supported by current model")
                         
