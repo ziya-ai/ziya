@@ -478,7 +478,7 @@ export const sendPayload = async (
 
                         // Check if this chunk contains diff syntax and set the flag
                         if (!containsDiff && (
-                            chunk.includes('```diff') || chunk.includes('diff --git') || 
+                            chunk.includes('```diff') || chunk.includes('diff --git') ||
                             chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
                             containsDiff = true;
                             console.log("Detected diff content in chunk, disabling error detection");
@@ -488,7 +488,7 @@ export const sendPayload = async (
                         try {
                             // Skip error checking if the chunk contains code blocks or diffs
                             const containsCodeBlock = chunk.includes('```');
-                            
+
                             if (!containsCodeBlock && !containsDiff) {
                                 // Check for nested errors in LangChain ops structure
                                 const nestedError = extractErrorFromNestedOps(chunk);

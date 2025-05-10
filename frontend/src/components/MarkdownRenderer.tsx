@@ -428,6 +428,131 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
     return 'Unknown file operation';
 };
 
+
+const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
+    // If the diff doesn't contain multiple files, return it as is
+    if (!fullDiff.includes("diff --git") || fullDiff.indexOf("diff --git") === fullDiff.lastIndexOf("diff --git")) {
+        return fullDiff;
+    }
+
+    try {
+        // Split the diff into sections by diff --git headers
+        const lines: string[] = fullDiff.split('\n');
+        const result: string[] = [];
+
+        // Clean up file path for matching
+        const cleanFilePath = filePath.replace(/^[ab]\//, '');
+
+        let currentFile: { oldPath: string; newPath: string } | null = null;
+        let currentFileIndex = -1;
+        let inTargetFile = false;
+        let collectingHunk = false;
+        let currentHunkHeader: string | null = null;
+        let currentHunkContent: string[] = [];
+
+        // Process each line
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const nextLine = i < lines.length - 1 ? lines[i + 1] : '';
+
+            // Check for file header
+            if (line.startsWith('diff --git')) {
+                // If we were collecting a hunk, add it to the result
+                if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
+                    result.push(currentHunkHeader);
+                    result.push(...currentHunkContent);
+                }
+
+                // Reset state for new file
+                collectingHunk = false;
+                currentHunkHeader = null;
+                currentFileIndex++;
+                currentHunkContent = [];
+                inTargetFile = false;
+
+                // Check if this is our target file
+                const fileMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                if (fileMatch) {
+                    const oldPath = fileMatch[1];
+                    const newPath = fileMatch[2];
+
+                    // Check if this file matches our target by exact path
+                    if (oldPath === cleanFilePath || newPath === cleanFilePath ||
+                        oldPath.endsWith(`/${cleanFilePath}`) || newPath.endsWith(`/${cleanFilePath}`)) {
+                        inTargetFile = true;
+                        currentFile = { oldPath, newPath };
+                        result.push(line);
+
+                        // Also check the next line for index info
+                        if (nextLine.startsWith('index ')) {
+                            result.push(nextLine);
+                            i++; // Skip this line in the next iteration
+                        }
+                    } else {
+                        inTargetFile = false;
+                        currentFile = null;
+
+                        // Log for debugging
+                        console.debug(`Skipping file: old=${oldPath}, new=${newPath}, target=${cleanFilePath}`);
+                    }
+                }
+            }
+            // If we're in the target file, collect all headers and content
+            else if (inTargetFile) {
+                // File headers (index, ---, +++)
+                if (line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
+                    result.push(line);
+                }
+                // Hunk header
+                else if (line.startsWith('@@ ')) {
+                    // If we were collecting a previous hunk, add it to the result
+                    if (collectingHunk && currentHunkHeader !== null) {
+                        result.push(currentHunkHeader);
+                        result.push(...currentHunkContent);
+                    }
+
+                    // Start collecting a new hunk
+                    collectingHunk = true;
+                    currentHunkHeader = line;
+                    currentHunkContent = [];
+                }
+                // Hunk content (context, additions, deletions)
+                else if (collectingHunk && (line.startsWith(' ') || line.startsWith('+') || line.startsWith('-') || line.startsWith('\\'))) {
+                    currentHunkContent.push(line);
+                }
+                // Empty lines within a hunk
+                else if (collectingHunk && line.trim() === '') {
+                    currentHunkContent.push(line);
+                }
+            }
+        }
+
+        // Log the extraction results
+        console.debug(`Extracted diff for ${filePath}:`, {
+            targetFileFound: inTargetFile || result.length > 0,
+            extractedLines: result.length
+        });
+        // Add the last hunk if we were collecting one
+        if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
+            result.push(currentHunkHeader!);
+            result.push(...currentHunkContent);
+        }
+
+        // If we found our target file, return the extracted diff
+        if (result.length > 0) {
+            return result.join('\n').trim();
+        }
+
+        // If we didn't find the target file, return the original diff
+        console.warn(`Could not find file ${cleanFilePath} in the diff`);
+        return fullDiff;
+
+    } catch (error) {
+        console.error("Error extracting single file diff:", error);
+        return fullDiff.trim(); // Return the full diff as a fallback
+    }
+};
+
 // Helper function to check if this is a deletion diff
 const isDeletionDiff = (content: string) => {
     return content.includes('diff --git') &&
@@ -464,10 +589,8 @@ const normalizeGitDiff = (diff: string): string => {
         const hasHunkHeader = lines.some(line =>
             /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line)
         );
-        console.log('Has hunk header:', hasHunkHeader);
 
         if (hasDiffHeaders && hasHunkHeader) {
-            console.log('Diff is already properly formatted, returning original');
             return diff;  // Return original diff if it's properly formatted
         }
 
@@ -1689,6 +1812,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             fullContent: cleanDiff,
             truncated: cleanDiff.length < diff.length
         });
+
+        // Generate a unique request ID for this specific diff application
+        const requestId = `${diffElementId}-${Date.now()}`;
 
         // Log the actual request body
         const requestBody = JSON.stringify({

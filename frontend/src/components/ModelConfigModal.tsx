@@ -735,13 +735,13 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                 Current: {sliderValues.max_input_tokens?.toLocaleString() || '0'} tokens
               </Text>
               <Text type="secondary" style={{ marginLeft: 'auto' }}>
-                Maximum: {inputRange.max.toLocaleString()} tokens {/* <-- Use max from range */}
+                Maximum: {inputRange?.max?.toLocaleString() || '4096'} tokens {/* <-- Use max from range with fallback */}
               </Text>
             </div>
           }>
           <Slider
             min={1}
-            max={inputRange.max} // <-- Use max from range
+            max={inputRange?.max || 4096} // <-- Use max from range with fallback
             step={inputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
             onChange={(value) => form.setFieldsValue({ max_input_tokens: value })}
             tooltip={{
