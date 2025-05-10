@@ -1,4 +1,4 @@
-import React, { useEffect, Suspense, useState, useRef, useCallback, useLayoutEffect } from 'react';
+import React, { useEffect, Suspense, useState, useRef, useCallback, useLayoutEffect, useMemo } from 'react';
 import { useChatContext } from '../context/ChatContext';
 import { Space, Alert } from 'antd';
 import StopStreamButton from './StopStreamButton';
@@ -12,6 +12,7 @@ export const StreamedContent: React.FC = () => {
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const contentRef = useRef<HTMLDivElement>(null);
     const isAutoScrollingRef = useRef<boolean>(false);
+    const lastScrollPositionRef = useRef<number>(0);
     const {
         streamedContentMap,
         isStreaming,
@@ -23,6 +24,7 @@ export const StreamedContent: React.FC = () => {
         isTopToBottom
     } = useChatContext();
 
+    const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) || '', [streamedContentMap, currentConversationId]);
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
         streamedContentMap.get(currentConversationId) !== '';
@@ -156,7 +158,7 @@ export const StreamedContent: React.FC = () => {
         if (!contentRef.current) return false;
 
         const container = contentRef.current.closest('.chat-container');
-        if (!container) return false;
+        if (!container) return true; // Default to true if we can't determine
 
         const containerRect = container.getBoundingClientRect();
         const contentRect = contentRef.current.getBoundingClientRect();
@@ -171,12 +173,16 @@ export const StreamedContent: React.FC = () => {
         return contentRect.bottom <= containerRect.bottom + 20; // 20px tolerance
     };
 
+    // Preserve scroll position during streaming updates
     // Function to smoothly scroll to keep the streaming content in view
     const scrollToKeepInView = () => {
         if (!contentRef.current || !isAutoScrollingRef.current) return;
 
         const container = contentRef.current.closest('.chat-container');
         if (!container) return;
+
+        // Store current scroll position
+        lastScrollPositionRef.current = container.scrollTop;
 
         if (!isTopToBottom) {
             // In bottom-up mode, scroll to keep the top of the content visible
@@ -190,11 +196,19 @@ export const StreamedContent: React.FC = () => {
                 });
             }
         } else {
-            // In top-down mode, scroll to bottom
-            container.scrollTo({
-                top: container.scrollHeight,
-                behavior: 'smooth'
-            });
+            // In top-down mode, check if we were already at the bottom
+            const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
+
+            // Only auto-scroll if we were already at the bottom
+            if (isAtBottom) {
+                // Use requestAnimationFrame to ensure scroll happens after render
+                requestAnimationFrame(() => {
+                    container.scrollTo({
+                        top: container.scrollHeight,
+                        behavior: 'auto' // Use 'auto' to prevent jank during streaming
+                    });
+                });
+            }
         }
     };
 
@@ -280,6 +294,26 @@ export const StreamedContent: React.FC = () => {
         return () => clearInterval(scrollInterval);
     }, [currentConversationId, streamingConversations, streamedContentMap]);
 
+    // Add a separate effect to handle scroll position restoration
+    useEffect(() => {
+        if (!streamingConversations.has(currentConversationId)) return;
+
+        const container = contentRef.current?.closest('.chat-container');
+        if (!container) return;
+
+        // Store current scroll position before any content changes
+        const storeScrollPosition = () => {
+            lastScrollPositionRef.current = container.scrollTop;
+        };
+
+        // Add event listener to store position before any updates
+        container.addEventListener('scroll', storeScrollPosition, { passive: true });
+
+        return () => {
+            container.removeEventListener('scroll', storeScrollPosition);
+        };
+    }, [currentConversationId, streamingConversations]);
+
     // Update loading state based on streaming status
     useEffect(() => {
         if (!isStreaming) {
@@ -318,7 +352,8 @@ export const StreamedContent: React.FC = () => {
                                 {error && <ErrorDisplay message={error} />}
                                 {!error && (
                                     <MarkdownRenderer
-                                        markdown={streamedContentMap.get(currentConversationId) || ''}
+                                        markdown={streamedContent}
+                                        isStreaming={streamingConversations.has(currentConversationId)}
                                         enableCodeApply={enableCodeApply}
                                     />
                                 )}

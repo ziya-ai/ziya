@@ -1576,6 +1576,11 @@ body:not(.dark) .token.attr-name {
     border-color: rgba(120, 120, 120, 0.9);
 }
 
+.hunk-status-indicator:hover {
+    filter: brightness(1.1);
+    transform: scale(1.05);
+    transition: all 0.2s ease;
+}
 
 /* dark theme scrollbars */
 .dark .chat-container::-webkit-scrollbar,
