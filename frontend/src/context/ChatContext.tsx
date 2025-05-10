@@ -701,18 +701,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const deleteFolder = useCallback(async (id: string): Promise<void> => {
         try {
-            // Move all conversations in this folder to root
+            // Find all conversations in this folder
             const conversationsInFolder = conversations.filter(c => c.folderId === id);
 
-            // Update conversations in memory first
+            // Mark all conversations in this folder as inactive
             setConversations(prev => prev.map(c =>
-                c.folderId === id ? { ...c, folderId: null, _version: Date.now() } : c
+                c.folderId === id ? { ...c, isActive: false, _version: Date.now() } : c
             ));
 
-            // Then update in database
+            // Update conversations in database to mark them as inactive
             for (const conv of conversationsInFolder) {
-                await db.moveConversationToFolder(conv.id, null);
+                const updatedConv = { ...conv, isActive: false, _version: Date.now() };
+                await db.saveConversations([updatedConv]);
             }
+
+            // Log the deletion
+            console.log(`Deleted folder ${id} with ${conversationsInFolder.length} conversations`);
 
             // Delete the folder
             await db.deleteFolder(id);
@@ -732,12 +736,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
         try {
-            const success = await db.moveConversationToFolder(conversationId, folderId);
-            if (success) {
-                setConversations(prev => prev.map(c =>
-                    c.id === conversationId ? { ...c, folderId, _version: Date.now() } : c
-                ));
-            }
+            // First update the conversation in memory with a new version
+            const newVersion = Date.now();
+            setConversations(prev => prev.map(conv =>
+                conv.id === conversationId
+                    ? { ...conv, folderId, _version: newVersion }
+                    : conv
+            ));
+
+            // Then update in the database
+            await db.moveConversationToFolder(conversationId, folderId);
+
+            return;
         } catch (error) {
             console.error('Error moving conversation to folder:', error);
             throw error;
@@ -852,6 +862,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
         return () => {
             window.removeEventListener('modelChanged', handleModelChange as EventListener);
         };
+
+        // Reset processed changes when component unmounts
+        return () => { processedModelChanges.current.clear(); };
     }, [handleModelChange]);
 
     useEffect(() => {

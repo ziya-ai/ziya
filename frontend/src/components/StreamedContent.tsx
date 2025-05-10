@@ -387,18 +387,18 @@ export const StreamedContent: React.FC = () => {
                 }
             }
         };
- 
+
         window.addEventListener('error', handleStreamError);
- 
+
         return () => {
             window.removeEventListener('error', handleStreamError);
         };
     }, [isStreaming, currentConversationId, streamingConversations]);
-    
+
     // Set up observer to detect when user is viewing the bottom of content
     useEffect(() => {
         if (!contentRef.current) return;
-        
+
         const observer = new IntersectionObserver(
             (entries) => {
                 for (const entry of entries) {
@@ -412,9 +412,9 @@ export const StreamedContent: React.FC = () => {
             },
             { threshold: 0.1 }
         );
-        
+
         observer.observe(contentRef.current);
-        
+
         return () => {
             if (contentRef.current) {
                 observer.unobserve(contentRef.current);
