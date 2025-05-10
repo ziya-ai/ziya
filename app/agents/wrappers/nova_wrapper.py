@@ -244,6 +244,15 @@ class NovaWrapper(BaseChatModel):
             logger.info("Bedrock converse API call completed successfully")
             
             # Parse the response
+            text = self._parse_response(response)
+            
+            # Clean any empty brackets from the response
+            if isinstance(text, str) and ('[]' in text):
+                cleaned_text = text.strip('[]')
+                if cleaned_text != text:
+                    logger.info(f"Cleaned empty brackets from Nova streaming response")
+                    text = cleaned_text
+
             logger.info("About to parse response")
             text = self._parse_response(response)
             logger.info(f"Parsed response text length: {len(text)}")
@@ -378,6 +387,14 @@ class NovaWrapper(BaseChatModel):
             logger.info(f"Parsed response text length: {len(text)}")
             
             # Create an AIMessage with the text
+
+            # Clean any empty brackets from the response
+            if isinstance(text, str) and ('[]' in text):
+                cleaned_text = text.strip('[]')
+                if cleaned_text != text:
+                    logger.info(f"Cleaned empty brackets from Nova response")
+                    text = cleaned_text
+
             ai_message = AIMessage(content=text)
             
             # Create a Generation object
@@ -400,6 +417,18 @@ class NovaWrapper(BaseChatModel):
             
             # Yield the generation
             logger.info("=== NOVA WRAPPER _astream END ===")
+
+            # Apply NovaFormatter cleaning to the chunk before yielding
+            if hasattr(generation, 'message') and hasattr(generation.message, 'content'):
+                content = generation.message.content
+                if isinstance(content, str) and ('[]' in content):
+                    cleaned_content = content.strip('[]')
+                    if cleaned_content != content:
+                        logger.info(f"Cleaned empty brackets from Nova streaming chunk")
+                        # Create new message with cleaned content
+                        new_message = AIMessage(content=cleaned_content)
+                        generation = ChatGeneration(message=new_message, generation_info=generation.generation_info)
+
             yield generation
         except Exception as e:
             logger.error(f"Error calling Nova model: {str(e)}")

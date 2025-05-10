@@ -13,5 +13,6 @@ def init_post_instructions():
     """
     # Import all post-instruction modules to register them
     from app.extensions.post_instructions import gemini_post_instructions
+    from app.extensions.post_instructions import sonnet_post_instructions
     
     # Add more imports here as needed

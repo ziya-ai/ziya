@@ -12,7 +12,7 @@ DEFAULT_PORT = 8000
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
     "bedrock": "sonnet3.7",
-    "google": "gemini-1.5-pro"
+    "google": "gemini-pro"
 }
 
 # Default regions for specific models
@@ -77,7 +77,7 @@ MODEL_FAMILIES = {
             "maxTokens": 1000
         }
     },
-    "nova-pro": {
+    "nova-pro": { 
         "wrapper_class": "NovaBedrock",
         "parent": "nova",
         "supports_thinking": True  # Only Nova-Pro supports thinking
@@ -86,6 +86,40 @@ MODEL_FAMILIES = {
         "wrapper_class": "NovaBedrock",
         "parent": "nova",
         "supports_thinking": False
+    },
+    "nova-premier": {
+        "wrapper_class": "NovaBedrock",
+        "parent": "nova",
+        "supports_thinking": True,
+        "token_limit": 1000000,  # Explicitly set token limit for nova-premier
+        "supports_multimodal": True,
+        "context_window": 1000000
+    },
+    "deepseek": {
+        "wrapper_class": "ThrottleSafeBedrock",
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 1.0, "default": 0.7},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.9},
+            "max_tokens": {"min": 1, "max": 8192, "default": 2048}
+        },
+        "internal_parameters": {
+            "stop_sequences": {"default": []}
+        },
+        "token_limit": 128000
+    },
+    "gemini-pro": {
+        "supported_parameters": ["temperature", "top_k", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 2.0, "default": 1.0},
+            "topP": {"min": 0.0, "max": 1.0, "default": 0.95},
+            "maxOutputTokens": {"min": 1000, "max": 65535, "defailt": 20000},
+            "frequencyPenalty": {"min": -2, "max": 1.99, "default": 0},
+            "presencePenalty": {"min": -2, "max": 1.99, "default": 0}
+        }
+    },
+    "gemini-flash": {
+        "supported_parameters": ["temperature", "top_k", "top_p"] 
     }
 }
 
@@ -110,12 +144,12 @@ ENDPOINT_DEFAULTS = {
     },
     "google": {
         "token_limit": 30720,
-        "max_output_tokens": 2048,
-        "default_max_output_tokens": 2048,
+        "max_output_tokens": 20048,
+        "default_max_output_tokens": 20048,
         "supported_parameters": ["temperature", "max_tokens"],
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 1.0, "default": 0.3},
-            "max_tokens": {"min": 1, "max": 2048, "default": 1024}
+            "max_tokens": {"min": 1, "max": 65535, "default": 16000}
         },
         "convert_system_message_to_human": True,
         "enforce_size_limit": True,
@@ -194,51 +228,78 @@ MODEL_CONFIGS = {
             "supports_multimodal": False,  # Override the family default
             "context_window": 128000  # Override the family default
         },
+        "nova-premier": {
+            "model_id": {
+                "us": "us.amazon.nova-premier-v1:0"
+            },
+            "family": "nova-premier", 
+            "supports_multimodal": True,
+            "token_limit": 1000000,  # Total context window size
+            "context_window": 1000000
+        },
         "deepseek-r1": {
-            "model_id": "us.deepseek.r1-v1:0",
+            "model_id": {
+                "us": "us.deepseek.r1-v1:0"
+            },
+            "family": "deepseek",
             "max_input_tokens": 128000,
+            "context_window": 128000
         },
     },
     "google": {
         "gemini-pro": {
-            "model_id": "gemini-2.5-pro-preview-03-25",
+            "model_id": "gemini-2.5-pro-preview-05-06",
             "token_limit": 1048576,
-            "max_output_tokens": 8192,
+            "family": "gemini-pro",
+            "max_output_tokens": 65535,
             "convert_system_message_to_human": True,
+        },
+        "gemini-flash": {
+            "model_id": "gemini-2.5-flash-preview-04-17",
+            "token_limit": 1048576,
+            "family": "gemini-flash",
+            "max_output_tokens": 65535,
+            "convert_system_message_to_human": False,
         },
         "gemini-2.0-pro": {
             "model_id": "gemini-2.0-pro-exp-02-05",
             "token_limit": 2097152,
+            "family": "gemini-pro",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
         },
         "gemini-2.0-flash": {
             "model_id": "gemini-2.0-flash",
             "token_limit": 1048576,
+            "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
         },
         "gemini-2.0-flash-lite": {
             "model_id": "gemini-2.0-flash-lite",
             "token_limit": 1048576,
+            "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
         },
         "gemini-1.5-flash": {
             "model_id": "gemini-1.5-flash",
             "token_limit": 1048576,
+            "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
         },
         "gemini-1.5-flash-8b": {
             "model_id": "gemini-1.5-flash-8b",
             "token_limit": 1048576,
+            "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
         },
         "gemini-1.5-pro": {
             "model_id": "gemini-1.5-pro",
             "token_limit": 1000000,
+            "family": "gemini-pro",
             "max_output_tokens": 2048,
             "convert_system_message_to_human": False,
         }

@@ -374,6 +374,7 @@ class ModelManager:
         try:
             model_config = cls.get_model_config(endpoint, model_name)
             
+            # Copy all relevant settings from model_config
             # Start with all settings from the model config
             settings = {}
             
@@ -382,6 +383,11 @@ class ModelManager:
                 # Skip internal/metadata keys
                 if key not in ["name", "model_id", "parameter_mappings"]:
                     settings[key] = value
+            
+            # Ensure token_limit is included in settings
+            if "token_limit" in model_config:
+                settings["token_limit"] = model_config["token_limit"]
+                logger.info(f"Including token_limit in settings: {model_config['token_limit']}")
             
             # Override with environment variables if they exist
             for env_var, config_key in config.ENV_VAR_MAPPING.items():

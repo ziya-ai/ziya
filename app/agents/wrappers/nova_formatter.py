@@ -6,6 +6,7 @@ Handles the specific message format required by Nova models.
 from typing import Dict, List, Any, Optional, Tuple
 import json
 from app.utils.logging_utils import logger
+from langchain_core.messages import AIMessageChunk
 
 class NovaFormatter:
     """
@@ -31,6 +32,7 @@ class NovaFormatter:
         # Remove empty brackets at the end of the text
         while text.endswith("[]"):
             text = text[:-2]
+
             
         # Handle the case where there are multiple empty brackets at the end
         if text.endswith("][]"):
@@ -42,6 +44,93 @@ class NovaFormatter:
     def format_system_prompt(system_prompt: str) -> List[Dict[str, str]]:
         """Format system prompt for Nova models."""
         return [{"text": system_prompt}] if system_prompt else []
+
+    @staticmethod
+    def clean_content_blocks(blocks: List[Any]) -> List[Any]:
+        """Removes empty content blocks from Nova-style responses"""
+        cleaned = []
+        for block in blocks:
+            if isinstance(block, dict) and 'text' in block:
+                original_text = block['text']
+                cleaned_text = original_text.strip("[]")
+                if cleaned_text:
+                    # Only keep blocks with non-empty text after cleaning
+                    cleaned.append({'text': cleaned_text})
+                else:
+                    logger.debug("Removed empty content block from Nova response")
+            elif isinstance(block, str):
+                cleaned_text = block.strip("[]")
+                if cleaned_text:
+                    cleaned.append(cleaned_text)
+            else:
+                cleaned.append(block)
+        return cleaned
+
+    @staticmethod
+    def clean_streaming_chunk(chunk: Any) -> Any:
+        """
+        Clean empty brackets from Nova streaming chunks while preserving structure.
+        Only cleans if the chunk matches Nova's expected format.
+        """
+        # Only process Nova-style chunks
+        if not NovaFormatter.is_nova_chunk(chunk):
+            return chunk
+            
+        content = chunk.content
+        if isinstance(content, list):
+            # Direct array of content blocks
+            cleaned = NovaFormatter._clean_content_blocks(content)
+            if cleaned != content:
+                logger.debug("Cleaned empty brackets from Nova content blocks")
+                return AIMessageChunk(content=cleaned)
+                
+        elif isinstance(content, dict) and 'content' in content:
+            # Nested content structure
+            cleaned = NovaFormatter._clean_content_blocks(content['content'])
+            if cleaned != content['content']:
+                logger.debug("Cleaned empty brackets from nested Nova content")
+                return AIMessageChunk(content={**content, 'content': cleaned})
+
+        return chunk
+
+    @staticmethod
+    def is_nova_chunk(chunk: Any) -> bool:
+        """Check if a chunk matches Nova's expected format."""
+        if not isinstance(chunk, AIMessageChunk):
+            return False
+            
+        content = chunk.content
+        # Check for Nova's array of text blocks format
+        if isinstance(content, list):
+            return all(isinstance(b, dict) and 'text' in b for b in content)
+            
+        # Check for Nova's nested content format    
+        if isinstance(content, dict) and 'content' in content:
+            blocks = content['content']
+            return isinstance(blocks, list) and all(isinstance(b, dict) and 'text' in b for b in blocks)
+            
+        return False
+
+    @staticmethod
+    def _clean_content_blocks(blocks: List[Any]) -> List[Any]:
+        """
+        Remove empty brackets from Nova content blocks.
+        Preserves non-empty content and block structure.
+        """
+        cleaned = []
+        for block in blocks:
+            if not isinstance(block, dict) or 'text' not in block:
+                cleaned.append(block)
+                continue
+                
+            text = block['text']
+            # Only clean if text consists solely of empty brackets
+            if text.strip() in ('[]', '[][]'):
+                continue
+                
+            cleaned.append(block)
+            
+        return cleaned
 
     @staticmethod
     def format_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
