@@ -3,8 +3,11 @@ import re
 import time
 import json
 import asyncio
+import uuid
 import traceback
 from typing import Dict, Any, List, Tuple, Optional, Union
+from starlette.background import BackgroundTask
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import tiktoken
 from fastapi import FastAPI, Request, HTTPException, APIRouter, routing
@@ -28,6 +31,7 @@ from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalE
 from botocore.exceptions import EventStreamError
 import botocore.errorfactory
 from starlette.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from langchain_core.outputs import Generation
 
 # import pydevd_pycharm
@@ -37,6 +41,10 @@ import uvicorn
 from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff
 from app.utils.code_util import PatchApplicationError, split_combined_diff, extract_target_file_from_diff
 from app.utils.directory_util import get_ignored_patterns
+
+# Initialize extensions
+from app.extensions import init_extensions
+init_extensions()
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
 from app.utils.error_handlers import (
@@ -46,7 +54,11 @@ from app.utils.error_handlers import (
 )
 from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
-from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware
+from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware
+from fastapi.websockets import WebSocketState
+
+# Dictionary to track active streaming tasks
+active_streams = {}
 
 # Use configuration from config module
 # For model configurations, see app/config.py
@@ -97,9 +109,16 @@ app.add_middleware(ModelSettingsMiddleware)
 # Add error handling middleware
 app.add_middleware(ErrorHandlingMiddleware)
 
+# Add hunk status middleware
+app.add_middleware(HunkStatusMiddleware)
+
 # Import and include AST routes
 from app.routes.ast_routes import router as ast_router
 app.include_router(ast_router)
+
+# Dictionary to track active WebSocket connections
+active_websockets = set()
+hunk_status_updates = []
 
 # Get the directory of the current file
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -220,6 +239,17 @@ async def stream_log_endpoint(request: Request, body: dict):
             }
         )
 
+async def cleanup_stream(conversation_id: str):
+    """Clean up resources when a stream ends or is aborted."""
+    if conversation_id in active_streams:
+        logger.info(f"Cleaning up stream for conversation: {conversation_id}")
+        # Remove from active streams
+        del active_streams[conversation_id]
+        # Any other cleanup needed
+        logger.info(f"Stream cleanup complete for conversation: {conversation_id}")
+    else:
+        logger.warning(f"Attempted to clean up non-existent stream: {conversation_id}")
+
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
     # Send heartbeat to keep connection alive (don't send processing message as it appears in the UI)
@@ -229,6 +259,13 @@ async def stream_chunks(body):
         # Get the question from the request body
         question = body.get("question", "")
         conversation_id = body.get("conversation_id", "default")
+
+        # Register this stream as active
+        active_streams[conversation_id] = {
+            "start_time": time.time(),
+            "question": question[:100] + "..." if len(question) > 100 else question
+        }
+
         chat_history = body.get("chat_history", [])
         
         # Get the files from the config if available
@@ -378,14 +415,20 @@ async def stream_chunks(body):
         # Flag to track if we've sent the done marker
         done_marker_sent = False
         
+        # Create a background task for cleanup when the stream ends
         # Set up the model with the stop sequence
         # This ensures the model will properly stop at the sentinel
         model_with_stop = model_instance.bind(stop=["</tool_input>"])
         
         try:
             async for chunk in model_with_stop.astream(messages):
+
+                # Check if client disconnected
+                if conversation_id not in active_streams:
+                    logger.info(f"Client disconnected for conversation: {conversation_id}")
+                    return
                 
-                # Check if the chunk contains a structured error message first
+                # Check if the chunk contains a structured error message
                 is_error_chunk = False
                 error_data = None
                 if hasattr(chunk, 'content'):
@@ -438,12 +481,18 @@ async def stream_chunks(body):
                 if isinstance(chunk, list):
                     logger.info("Detected chunk as list, likely Nova format")
                     combined_text = ""
+                    raw_items = []
                     for item in chunk:
                         if isinstance(item, dict) and 'text' in item:
-                            combined_text += item['text']
+                            raw_items.append(item)
+                                    
+                            # Use NovaFormatter to process the entire chunk properly
+                            if raw_items:
+                                from app.agents.wrappers.nova_formatter import NovaFormatter
+                                combined_text = NovaFormatter.parse_response({"output": {"message": {"content": raw_items}}})
+                                logger.info(f"Used NovaFormatter directly in stream_chunks: {combined_text[:50]}...")
                     
                     if combined_text:
-                        logger.info(f"Extracted combined text from Nova format: {combined_text[:50]}...")
                         # Use the format that the frontend expects for streamed output
                         ops = [
                             {
@@ -453,6 +502,7 @@ async def stream_chunks(body):
                             }
                         ]
                         
+                        logger.info(f"Sending ops to client with text: {combined_text[:50]}...")
                         yield f"data: {json.dumps({'ops': ops})}\n\n"
                         # Update full_response for stop sentinel check
                         full_response += combined_text
@@ -523,7 +573,7 @@ async def stream_chunks(body):
                                         raw_text_content = chunk.text
                                     else:
                                         raw_text_content = str(chunk) # Last resort
- 
+
                                     # Ensure it's a string
                                     text_to_yield = str(raw_text_content)
  
@@ -556,6 +606,11 @@ async def stream_chunks(body):
                         else:
                             raw_text_content = str(chunk) # Last resort
 
+                        # Check if client disconnected
+                        if conversation_id not in active_streams:
+                            logger.info(f"Client disconnected for conversation: {conversation_id}")
+                            return
+
                         # Ensure text_to_yield is a string                         
                         # Use the already extracted raw_text_content for the actual value
                         text_to_yield = str(raw_text_content)
@@ -580,6 +635,11 @@ async def stream_chunks(body):
                 # Send the done marker and stop processing more chunks
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 done_marker_sent = True
+
+                # Clean up the stream
+                if conversation_id in active_streams:
+                    del active_streams[conversation_id]
+
                 # We need to break out of the async for loop
                 return  # Exit the entire generator function
                     
@@ -588,12 +648,25 @@ async def stream_chunks(body):
             # After successful streaming, log the complete response
             if full_response:
                 logger.info("=== FULL SERVER RESPONSE ===")
+                
+                # Clean brackets from the full response
+                if full_response.startswith("[]") or full_response.endswith("[]"):
+                    cleaned_response = full_response.strip("[]")
+                    if cleaned_response != full_response:
+                        logger.info("Cleaned brackets from full server response")
+                        full_response = cleaned_response
+                        currentContent = cleaned_response
+                
                 logger.info(f"Response length: {len(full_response)}")
                 logger.info(f"Response content:\n{full_response}")
                 logger.info("=== END SERVER RESPONSE ===")
             
             # If the loop finished normally (no error break) and we sent content, send DONE
             if not done_marker_sent and chunk_count > 0 and not is_error_chunk:
+                # Clean up the stream
+                if conversation_id in active_streams:
+                    del active_streams[conversation_id]
+
                 yield f"data: {json.dumps({'done': True})}\n\n"
 
         except ChatGoogleGenerativeAIError as e:
@@ -606,6 +679,10 @@ async def stream_chunks(body):
             # Send DONE only if not already sent
             if not done_marker_sent:
                 yield "data: [DONE]\n\n"
+
+            # Clean up the stream
+            if conversation_id in active_streams:
+                del active_streams[conversation_id]
             return
             
         except (CredentialRetrievalError, BotoCoreError) as e:
@@ -626,6 +703,10 @@ async def stream_chunks(body):
                 logger.info("Sending done marker after credential error")
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 done_marker_sent = True
+
+            # Clean up the stream
+            if conversation_id in active_streams:
+                del active_streams[conversation_id]
             return
                 
         except Exception as e:
@@ -634,6 +715,10 @@ async def stream_chunks(body):
                 # Let the middleware handle formatting this unexpected error and sending DONE
                 # logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+                # Clean up the stream
+                if conversation_id in active_streams:
+                    del active_streams[conversation_id]
 
                 # yield f"data: {json.dumps({'done': True})}\n\n" # Middleware will send DONE
                 # done_marker_sent = True
@@ -645,6 +730,9 @@ async def stream_chunks(body):
             update_conversation_state(conversation_id, [])
         except Exception as e:
             logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
+            # Clean up the stream
+            if conversation_id in active_streams:
+                del active_streams[conversation_id]
             
     except Exception as e:
         raise # re-raise for middleware to catch        
@@ -655,7 +743,10 @@ async def stream_chunks(body):
             update_conversation_state(conversation_id, [])
         except Exception as e:
             logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
-            
+            # Clean up the stream
+            if conversation_id in active_streams:
+                del active_streams[conversation_id]
+
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")
 async def stream_endpoint(request: Request, body: dict):
@@ -944,6 +1035,7 @@ async def apply_patch(request: PatchRequest):
         # If file_path is not provided, try to extract it from the diff
         target_file = request.file_path
         if not target_file:
+            logger.info("No file_path provided, attempting to extract from diff")
             target_file = extract_target_file_from_diff(request.diff)
             
         if not target_file:
@@ -951,7 +1043,15 @@ async def apply_patch(request: PatchRequest):
             
         # Apply the patch
         try:
-            result = use_git_to_apply_code_diff(request.diff, target_file)
+            # Use the request ID if provided, otherise generate one
+            learned_id = getattr(request, 'requestId', None)
+            if learned_id:
+                request_id = getattr(request, 'requestId', None) or str(uuid.uuid4()) 
+                logger.info(f"Using request ID from frontend for patch application: {request_id}")
+            else:
+                request_id = str(uuid.uuid4()) 
+                logger.warning(f"Generated request ID for patch application: {request_id}")
+            result = request_id
 
             # Check if result contains error information
             if isinstance(result, dict) and result.get('status') == 'error':
@@ -959,7 +1059,8 @@ async def apply_patch(request: PatchRequest):
                     status_code=422,
                     content={
                         "status": "error",
-                        "type": result.get("type", "patch_error"),
+                        "request_id": request_id,
+                        "type": result.get("type", "patch_error"), 
                         "message": result.get("message", "Failed to apply patch"),
                         "details": result.get("details", {})
                     }
@@ -986,6 +1087,7 @@ async def apply_patch(request: PatchRequest):
                             content={
                                 "status": "partial",
                                 "message": "Some hunks failed to apply",
+                                "request_id": request_id,
                                 "details": {
                                     "failed": failed_hunks,
                                     "succeeded": successful_hunks,
@@ -1001,6 +1103,7 @@ async def apply_patch(request: PatchRequest):
                             content={
                                 "status": "error",
                                 "message": "All hunks failed to apply",
+                                "request_id": request_id,
                                 "details": {
                                     "failed": failed_hunks,
                                     "succeeded": [],
@@ -1014,6 +1117,7 @@ async def apply_patch(request: PatchRequest):
                 content={
                     "status": "success",
                     "message": "Changes applied successfully",
+                    "request_id": request_id,
                     "details": {
                         "succeeded": list(result['hunk_statuses'].keys()) if isinstance(result, dict) and result.get('hunk_statuses') else [],
                         "failed": [],
@@ -1021,7 +1125,7 @@ async def apply_patch(request: PatchRequest):
                     }
                 }
             )
-        except Exception as e:
+        except Exception as e: 
             logger.error("Error in apply_path: {e}")
 
     except PatchApplicationError as e:
@@ -1618,6 +1722,7 @@ def get_model_capabilities(model: str = None):
 class ApplyChangesRequest(BaseModel):
     diff: str
     filePath: str = Field(..., description="Path to the file being modified")
+    requestId: Optional[str] = Field(None, description="Unique ID to track this specific diff application")
 
     class Config:
         json_schema_extra = {
@@ -1787,9 +1892,34 @@ async def update_model_settings(settings: ModelSettingsRequest):
             detail=f"Error updating model settings: {str(e)}"
         )
 
+@app.post('/api/abort-stream')
+async def abort_stream(request: Request):
+    """Explicitly abort a streaming response from the client side."""
+    try:
+        body = await request.json()
+        conversation_id = body.get("conversation_id") or body.get("conversationId")
+        
+        if not conversation_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "conversation_id is required"}
+            )
+            
+        if conversation_id in active_streams:
+            logger.info(f"Explicitly aborting stream for conversation: {conversation_id}")
+            # Remove from active streams to signal to any ongoing processing that it should stop
+            del active_streams[conversation_id]
+            return JSONResponse(content={"status": "success", "message": "Stream aborted"})
+        else:
+            return JSONResponse(content={"status": "not_found", "message": "No active stream found for this conversation"})
+    except Exception as e:
+        logger.error(f"Error aborting stream: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post('/api/apply-changes')
 async def apply_changes(request: ApplyChangesRequest):
     try:
+        logger.info(f"TRACE_ID: Received apply-changes request with ID: {request.requestId}")
         # Validate diff size
         if len(request.diff) < 100:  # Arbitrary minimum for a valid git diff
             logger.warning(f"Suspiciously small diff received: {len(request.diff)} bytes")
@@ -1797,7 +1927,17 @@ async def apply_changes(request: ApplyChangesRequest):
 
         logger.info(f"Received request to apply changes to file: {request.filePath}")
         logger.info(f"Raw request diff length: {len(request.diff)} bytes")
-        logger.info("First 100 chars of raw diff:")
+        logger.info(f"First 100 chars of raw diff for request {request.requestId}:")
+        
+        # Always use the client-provided request ID if available
+        if request.requestId:
+            request_id = request.requestId
+            logger.info(f"Using client-provided request ID: {request_id}")
+        else:
+            # Only generate a server-side ID if absolutely necessary
+            request_id = str(uuid.uuid4())
+            logger.warning(f"Using server-side generated request ID: {request_id}")
+
         logger.info(request.diff[:100])
         logger.info(f"Full diff content: \n{request.diff}")
 
@@ -1854,8 +1994,7 @@ async def apply_changes(request: ApplyChangesRequest):
             logger.info("Single diff found")
             target_diff = individual_diffs[0]
 
-        request.diff = target_diff
-        result = apply_diff_pipeline(request.diff, file_path)
+        result = apply_diff_pipeline(request.diff, file_path, request_id)
         
         # Check the result status and return appropriate response
         status_code = 200 # Default to OK
@@ -1883,12 +2022,14 @@ async def apply_changes(request: ApplyChangesRequest):
                 return JSONResponse(status_code=200, content={
                     'status': 'success',
                     'message': 'Changes applied successfully',
+                    'request_id' : request_id,
                     'details': details
                 })
             elif status == 'partial':
                 return JSONResponse(status_code=207, content={
                     'status': 'partial',
                     'message': str(e),
+                    'request_id' : request_id,
                     'details': details
                 })
             elif status == 'error':
@@ -1905,7 +2046,8 @@ async def apply_changes(request: ApplyChangesRequest):
                 # Format error response based on whether we have multiple failures
                 error_content = {
                     'status': 'error',
-                    'message': str(e)
+                    'message': str(e),
+                    'request_id': request_id
                 }
                 if 'failures' in details:
                     error_content['failures'] = details['failures']
@@ -1914,6 +2056,7 @@ async def apply_changes(request: ApplyChangesRequest):
 
                 raise HTTPException(status_code=status_code, detail={
                     'status': 'error',
+                    'request_id': request_id,
                     **error_content
                 })
         logger.error(f"Error applying changes: {error_msg}")
@@ -1928,6 +2071,7 @@ async def apply_changes(request: ApplyChangesRequest):
             status_code = status_code,
             detail={
                 'status': 'error',
+                'request_id': request_id,
                 'message': f"Unexpected error: {error_msg}"
             }
         )

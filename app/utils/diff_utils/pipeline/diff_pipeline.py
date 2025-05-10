@@ -76,6 +76,7 @@ class PipelineResult:
     changes_written: bool = False
     error: Optional[str] = None
     status: str = "pending"  # Add a status field to track the overall status
+    request_id: Optional[str] = None  # Store the request ID for tracking
 
     # Removed redundant methods and properties to avoid confusion
     # We'll use the existing succeeded_hunks, failed_hunks, etc. properties consistently
@@ -83,28 +84,30 @@ class PipelineResult:
     def determine_final_status(self) -> str:
         """Determines the overall status based on hunk outcomes."""
         # Check for an explicit pipeline-level error first
-        if self.error:
+        if self.error and not self.changes_written:
             logger.debug(f"Determining final status: Explicit error found: {self.error}")
             return "error"
 
         succeeded_count = len(self.succeeded_hunks)
         failed_count = len(self.failed_hunks)
         already_applied_count = len(self.already_applied_hunks)
+        total_hunks = succeeded_count + failed_count + already_applied_count
 
         logger.debug(f"Determining final status: S={succeeded_count}, F={failed_count}, A={already_applied_count}, ChangesWritten={self.changes_written}")
 
-        if failed_count > 0:
-            # If any hunk failed, it's either partial or error
-            # Use changes_written to differentiate: if changes were written despite failures, it's partial.
-            return "partial" if (succeeded_count > 0 or already_applied_count > 0 or self.changes_written) else "error"
-        elif succeeded_count > 0 or already_applied_count > 0:
-            # If none failed, and some succeeded or were already applied
+        # If we have any failed hunks AND any succeeded/already applied hunks, it's partial
+        if failed_count > 0 and (succeeded_count > 0 or already_applied_count > 0):
+            return "partial"
+        # If all hunks failed and no changes were written, it's an error
+        elif failed_count > 0 and succeeded_count == 0 and already_applied_count == 0:
+            return "error"
+        # If all hunks succeeded or were already applied, it's success
+        elif failed_count == 0 and (succeeded_count > 0 or already_applied_count > 0):
             return "success"
+        # Default case (e.g., empty diff or new file creation where changes_written is true)
         else:
-            # If no hunks were processed (e.g., empty diff) or only pending (shouldn't happen if complete)
-            # Also consider the case where changes_written is true but no hunks succeeded/failed/applied (e.g., new file creation)
             # If changes were written (like new file creation), it's success. Otherwise, it's success (no-op).
-            return "success" # Treat no-op/empty diff/new file as success if no errors occurred
+            return "success" if self.changes_written else "success" # Treat no-op/empty diff/new file as success if no errors occurred
     def get_summary_message(self) -> str:
         """Generates a user-friendly summary message based on the final status."""
         final_status = self.determine_final_status()
@@ -212,11 +215,13 @@ class PipelineResult:
         # Use the actual lists, not property methods
         return {
             "status": final_status,
+            "request_id": self.request_id,
             "message": final_message,
             "succeeded": self.succeeded_hunks,
             "failed": self.failed_hunks,
             "already_applied": already_applied_hunks, # Use the locally corrected list
             "changes_written": self.changes_written,
+            "request_id": self.request_id,  # Include the request ID in the response
             "error": self.error,
             "hunk_statuses": hunk_details,
             "details": {

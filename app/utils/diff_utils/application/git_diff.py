@@ -21,110 +21,204 @@ from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts, r
 # Remove circular import
 # from .patch_apply import apply_diff_with_difflib
 
-def parse_patch_output(stdout: str, stderr: str) -> Dict[int, Any]:
+def debug_patch_issues(patch_content: str) -> None:
     """
-    Parse the output of the patch command to determine which hunks succeeded.
+    Debug common issues in patch files that might cause git apply to fail.
     
     Args:
-        stdout: Standard output from the patch command
-        stderr: Standard error from the patch command
+        patch_content: The patch content to debug
+    """
+    lines = patch_content.splitlines()
+    issues = []
+    
+    # Check for basic structure
+    if not any(line.startswith('diff --git') for line in lines):
+        issues.append("Missing 'diff --git' header")
+    
+    if not any(line.startswith('--- ') for line in lines):
+        issues.append("Missing '--- ' header")
+        
+    if not any(line.startswith('+++ ') for line in lines):
+        issues.append("Missing '+++ ' header")
+    
+    if not any(line.startswith('@@ ') for line in lines):
+        issues.append("Missing '@@ ' hunk header")
+    
+    # Check for line ending consistency
+    crlf_count = patch_content.count('\r\n')
+    lf_count = patch_content.count('\n') - crlf_count
+    if crlf_count > 0 and lf_count > 0:
+        issues.append(f"Mixed line endings: {crlf_count} CRLF, {lf_count} LF")
+    
+    # Check for malformed hunk headers
+    for i, line in enumerate(lines):
+        if line.startswith('@@ '):
+            if not re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@', line):
+                issues.append(f"Malformed hunk header at line {i+1}: {line}")
+    
+    # Check for lines in hunks without proper prefix
+    in_hunk = False
+    for i, line in enumerate(lines):
+        if line.startswith('@@ '):
+            in_hunk = True
+            continue
+        
+        if in_hunk and line and not line.startswith((' ', '+', '-', '\\')):
+            if line.startswith('diff ') or line.startswith('index ') or line.startswith('--- ') or line.startswith('+++ '):
+                in_hunk = False
+            else:
+                issues.append(f"Line in hunk without proper prefix at line {i+1}: {line}")
+    
+    # Log all issues
+    if issues:
+        logger.warning(f"Found {len(issues)} issues in patch:")
+        for issue in issues:
+            logger.warning(f"  - {issue}")
+    else:
+        logger.info("No obvious issues found in patch format")
+ 
+def sanitize_patch_for_git_apply(patch_content: str) -> str:
+    """
+    Sanitize a patch to make it compatible with git apply.
+    
+    Args:
+        patch_content: The original patch content
         
     Returns:
-        A dictionary mapping hunk numbers to success status
+        Sanitized patch content
     """
-    # Initialize result dictionary
-    result = {}
+    # Normalize line endings to LF
+    patch_content = patch_content.replace('\r\n', '\n')
     
-    # Check for common error patterns in stderr
-    if "malformed patch" in stderr:
-        logger.warning(f"Malformed patch detected: {stderr}")
-        return result  # Return empty result for malformed patch
+    lines = patch_content.splitlines()
+    sanitized_lines = []
+    in_hunk = False
     
-    # Check if the patch was detected as already applied or reversed
-    reversed_or_applied = "Reversed (or previously applied)" in stdout
-    
-    # Parse stdout for hunk application status
-    hunk_pattern = r'Hunk #(\d+) succeeded at (\d+)'
-    for line in stdout.splitlines():
-        match = re.search(hunk_pattern, line)
-        if match:
-            hunk_num = int(match.group(1))
-            position = int(match.group(2))
-            
-            # If the patch was detected as reversed or already applied, mark as already_applied
-            status = "already_applied" if reversed_or_applied else "succeeded"
-            
-            result[hunk_num] = {
-                "status": status,
-                "position": position
-            }
+    for line in lines:
+        # Fix patch headers (no spaces allowed at start of these lines)
+        if line.startswith('diff --git') or line.startswith('index ') or \
+           line.startswith('--- ') or line.startswith('+++ ') or \
+           line.startswith('@@ '):
+            in_hunk = line.startswith('@@ ')
+            # Ensure no trailing whitespace in headers
+            sanitized_lines.append(line.rstrip())
             continue
             
-        # Check for fuzz factor
-        fuzz_match = re.search(r'Hunk #(\d+) succeeded at (\d+) with fuzz (\d+)', line)
-        if fuzz_match:
-            hunk_num = int(fuzz_match.group(1))
-            position = int(fuzz_match.group(2))
-            fuzz = int(fuzz_match.group(3))
-            
-            # If the patch was detected as reversed or already applied, mark as already_applied
-            status = "already_applied" if reversed_or_applied else "succeeded"
-            
-            result[hunk_num] = {
-                "status": status,
-                "position": position,
-                "fuzz": fuzz
-            }
-            continue
-            
-        # Check for offset
-        offset_match = re.search(r'Hunk #(\d+) succeeded at (\d+) with an offset of (-?\d+)', line)
-        if offset_match:
-            hunk_num = int(offset_match.group(1))
-            position = int(offset_match.group(2))
-            offset = int(offset_match.group(3))
-            
-            # If the patch was detected as reversed or already applied, mark as already_applied
-            status = "already_applied" if reversed_or_applied else "succeeded"
-            
-            result[hunk_num] = {
-                "status": status,
-                "position": position,
-                "offset": offset
-            }
-            continue
-            
-        # Check for already applied
-        already_match = re.search(r'Hunk #(\d+) already applied at (\d+)', line)
-        if already_match:
-            hunk_num = int(already_match.group(1))
-            position = int(already_match.group(2))
-            result[hunk_num] = {
-                "status": "already_applied",
-                "position": position
-            }
-            continue
-            
-        # Check for failed hunks
-        failed_match = re.search(r'Hunk #(\d+) FAILED', line)
-        if failed_match:
-            hunk_num = int(failed_match.group(1))
-            result[hunk_num] = {
-                "status": "failed",
-                "error": "hunk_failed"
-            }
-            continue
+        # Handle hunk content
+        if in_hunk:
+            # Ensure lines start with proper prefix: ' ', '+', '-', or '\'
+            if not line.startswith((' ', '+', '-', '\\')):
+                # If we're in a hunk and the line doesn't start with a valid prefix,
+                # this is likely the start of a new section
+                in_hunk = False
+            else:
+                sanitized_lines.append(line)
+                continue
+        
+        # Non-hunk lines
+        sanitized_lines.append(line)
     
-    # If no hunks were found in the output, check for overall success/failure
-    if not result:
-        if "Reversed (or previously applied)" in stdout:
-            # All hunks were already applied
-            # We don't know which hunks specifically, so we can't populate the result
-            logger.info("All hunks appear to be already applied")
-        elif "failed" in stdout.lower() or "error" in stdout.lower():
-            logger.warning(f"Patch failed: {stdout}")
+    # Ensure the patch ends with a newline
+    sanitized = '\n'.join(sanitized_lines)
+    if not sanitized.endswith('\n'):
+        sanitized += '\n'
+        
+    return sanitized
+ 
+def normalize_patch_with_whatthepatch(patch_content: str) -> str:
+    """
+    Normalize a patch using whatthepatch to ensure it's valid for git apply.
     
-    return result
+    Args:
+        patch_content: The original patch content
+        
+    Returns:
+        Normalized patch content
+    """
+    try:
+        import whatthepatch
+        
+        # First try to parse the patch
+        try:
+            patches = list(whatthepatch.parse_patch(patch_content))
+        except ValueError as e:
+            logger.warning(f"whatthepatch parsing error: {str(e)}")
+            # If parsing fails, try to handle embedded diff markers
+            return handle_embedded_diff_markers(patch_content)
+                
+        if not patches:
+            logger.warning("No valid patches found in diff")
+            return patch_content
+        
+        # Fall back to custom sanitization which is more reliable
+        return sanitize_patch_for_git_apply(patch_content)
+        
+    except Exception as e:
+        logger.error(f"Error normalizing diff: {str(e)}")
+        # Fall back to custom sanitization
+        return sanitize_patch_for_git_apply(patch_content)
+ 
+def handle_embedded_diff_markers(diff_content: str) -> str:
+    """
+    Handle diffs that contain embedded diff markers (lines starting with '---' or '+++')
+    that could confuse the parser.
+    
+    Args:
+        diff_content: The diff content to process
+        
+    Returns:
+        The processed diff content
+    """
+    lines = diff_content.splitlines()
+    result = []
+    
+    # Track if we're in a hunk
+    in_hunk = False
+    in_header = True
+    
+    for i, line in enumerate(lines):
+        # Always keep diff headers
+        if line.startswith(('diff --git', 'index')):
+            result.append(line)
+            in_header = True
+            in_hunk = False
+            continue
+            
+        # File path headers
+        if line.startswith(('--- ', '+++ ')):
+            result.append(line)
+            in_header = True
+            in_hunk = False
+            continue
+            
+        # Hunk headers
+        if line.startswith('@@'):
+            result.append(line)
+            in_header = False
+            in_hunk = True
+            continue
+            
+        # Handle content lines
+        if in_hunk:
+            # Only include lines that start with proper diff markers
+            if line.startswith((' ', '+', '-')):
+                result.append(line)
+            elif line.startswith('\\'):  # No newline marker
+                result.append(line)
+            else:
+                # We've reached the end of the hunk
+                in_hunk = False
+                # If this is a new header, process it in the next iteration
+                if line.startswith(('diff --git', '--- ', '+++ ', '@@')):
+                    i -= 1  # Back up to reprocess this line
+                    continue
+        elif not in_header:
+            # We're outside a hunk and not in a header
+            if line.startswith(('diff --git', '--- ', '+++ ', '@@')):
+                i -= 1  # Back up to reprocess this line as a header
+                continue
+    
+    return '\n'.join(result)
 
 def clean_input_diff(diff_content: str) -> str:
     """
@@ -769,50 +863,58 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
     """
     logger.debug("Extracting remaining hunks from diff")
 
-    logger.debug(f"Hunk status before extraction: {json.dumps(hunk_status, indent=2)}")
+    logger.debug(f"Hunk status before extraction: {json.dumps({str(k): v for k, v in hunk_status.items()}, indent=2)}")
 
     # Parse the original diff into hunks
     lines = git_diff.splitlines()
     hunks = []
     current_hunk = []
-    headers = []
     file_headers = []
     current_file_headers = []
-    seen_headers = set()
     hunk_count = 0
     in_hunk = False
     in_file = False
+    current_file = None
+
+    # Group hunks by file
+    file_to_hunks = {}
 
     for line in lines:
         # Track file boundaries
         if line.startswith('diff --git'):
             # Save previous file headers and hunks
-            if in_file and current_file_headers:
-                if any(h[1] for h in hunks if isinstance(h, tuple) and len(h) > 1):
-                    # Only include file headers if we have hunks for this file
-                    headers.extend(current_file_headers)
+            if current_file and current_file_headers:
+                file_to_hunks[current_file] = {
+                    'headers': current_file_headers.copy(),
+                    'hunks': []
+                }
                 
             # Start new file
             in_file = True
+            current_file = line
             current_file_headers = [line]
             continue
         
-        # Deduplicate file headers
-        if line in seen_headers:
-            continue
         # Collect file headers
         if line.startswith(('--- ', '+++ ', 'index ')):
             if in_file:
                 current_file_headers.append(line)
-            else:
-                headers.append(line)
+                if line.startswith('+++ '):
+                    # Extract file path as key
+                    current_file = line
             continue
             
         # Process hunk headers
         if line.startswith('@@'):
             hunk_count += 1
             if current_hunk:
-                hunks.append((hunk_count - 1, current_hunk, current_file_headers))
+                if current_file in file_to_hunks:
+                    file_to_hunks[current_file]['hunks'].append((hunk_count - 1, current_hunk))
+                else:
+                    file_to_hunks[current_file] = {
+                        'headers': current_file_headers.copy(),
+                        'hunks': [(hunk_count - 1, current_hunk)]
+                    }
 
             # Only start collecting if this hunk failed
             if hunk_count in hunk_status and not hunk_status[hunk_count]:
@@ -831,58 +933,53 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
             # Check for end of hunk (non-context, non-diff line)
             if not line.startswith((' ', '+', '-', '\\')):
                 # End of hunk reached
-                if current_hunk:
-                    hunks.append((hunk_count, current_hunk, current_file_headers))
+                if current_hunk and current_file:
+                    if current_file in file_to_hunks:
+                        file_to_hunks[current_file]['hunks'].append((hunk_count, current_hunk))
+                    else:
+                        file_to_hunks[current_file] = {
+                            'headers': current_file_headers.copy(),
+                            'hunks': [(hunk_count, current_hunk)]
+                        }
                 current_hunk = []
                 in_hunk = False
 
     # Add the last hunk if we have one
-    if current_hunk:
-        hunks.append((hunk_count, current_hunk, current_file_headers))
+    if current_hunk and current_file:
+        if current_file in file_to_hunks:
+            file_to_hunks[current_file]['hunks'].append((hunk_count, current_hunk))
+        else:
+            file_to_hunks[current_file] = {
+                'headers': current_file_headers.copy(),
+                'hunks': [(hunk_count, current_hunk)]
+            }
 
     # Build final result with proper file structure
     result = []
-    current_file = None
     
-    # Group hunks by file
-    file_to_hunks = {}
-    for hunk_data in hunks:
-        if isinstance(hunk_data, tuple) and len(hunk_data) == 3:
-            hunk_id, hunk_lines, file_headers = hunk_data
+    # Now build the result with proper file structure
+    for file_key, file_data in file_to_hunks.items():
+        # Only include files that have at least one failed hunk
+        if not file_data['hunks']:
+            continue
+            
+        # Add file headers
+        result.extend(file_data['headers'])
+        
+        # Add all hunks for this file
+        for hunk_id, hunk_lines in file_data['hunks']:
             # Skip empty hunks
             if not hunk_lines:
                 continue
-                
-            # Use the file path as key
-            file_key = None
-            for header in file_headers:
-                if header.startswith('+++ '):
-                    file_key = header
-                    break
-            
-            if not file_key:
-                file_key = "unknown_file"
-                
-            if file_key not in file_to_hunks:
-                file_to_hunks[file_key] = []
-            
-            file_to_hunks[file_key].append((hunk_id, hunk_lines, file_headers))
-    
-    # Now build the result with proper file structure
-    for file_key, file_hunks in file_to_hunks.items():
-        # Add file headers only once per file
-        if file_hunks:
-            result.extend(file_hunks[0][2])  # Add file headers
-            
-            # Add all hunks for this file
-            for _, hunk_lines, _ in file_hunks:
-                result.extend(hunk_lines)
+            result.extend(hunk_lines)
 
     if not result:
         logger.warning("No hunks to extract")
         return ''
 
-    final_diff = '\n'.join(result) + '\n'
+    final_diff = '\n'.join(result)
+    if not final_diff.endswith('\n'):
+        final_diff += '\n'
     logger.debug(f"Extracted diff for remaining hunks:\n{final_diff}")
     return final_diff
 

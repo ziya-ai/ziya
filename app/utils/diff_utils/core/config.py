@@ -19,7 +19,7 @@ MAXIMUM_SEARCH_RADIUS = 200       # Maximum search radius for very difficult cas
 # Confidence thresholds
 EXACT_MATCH_THRESHOLD = 1.0       # Threshold for exact matches
 HIGH_CONFIDENCE_THRESHOLD = 0.75   # Threshold for high confidence matches
-MEDIUM_CONFIDENCE_THRESHOLD = 0.58  # Threshold for medium confidence matches (default for fuzzy matching)
+MEDIUM_CONFIDENCE_THRESHOLD = 0.52  # Threshold for medium confidence matches (default for fuzzy matching)
 LOW_CONFIDENCE_THRESHOLD = 0.4    # Threshold for low confidence matches (lowered to handle function collision cases)
 MINIMUM_CONFIDENCE_THRESHOLD = 0.3 # Minimum threshold to consider a match
 

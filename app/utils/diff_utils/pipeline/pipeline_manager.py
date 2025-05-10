@@ -10,6 +10,7 @@ import re
 import json
 import subprocess
 import tempfile
+import uuid
 from typing import Dict, List, Any, Optional, Tuple
 
 from app.utils.logging_utils import logger
@@ -22,7 +23,7 @@ from ..application.git_diff import parse_patch_output
 
 from .diff_pipeline import DiffPipeline, PipelineStage, HunkStatus, PipelineResult
 
-def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
+def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Apply a git diff using a structured pipeline approach.
     
@@ -37,6 +38,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     Args:
         git_diff: The git diff to apply
         file_path: Path to the target file
+        request_id: (Optional) request ID for tracking
         
     Returns:
         A dictionary with the result of the pipeline
@@ -47,6 +49,13 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     
     # Initialize the pipeline
     pipeline = DiffPipeline(file_path, git_diff)
+
+    if not request_id:
+        logger.warning("No request ID provided to pipeline, this should not happen")
+        request_id = str(uuid.uuid4())
+
+    pipeline.result.request_id = request_id
+    logger.info(f"Pipeline initialized with request ID: {request_id}")
     pipeline.update_stage(PipelineStage.INIT)
     
     # Split combined diffs if present
@@ -129,6 +138,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     # Check if file exists before attempting patch
     if not os.path.exists(file_path) and not is_new_file_creation(diff_lines):
         error = f"Target file does not exist: {file_path}"
+        mark_all_hunks_as_failed(pipeline, error, "file_not_found")
         logger.error(error)
         pipeline.complete(error=error)
         return pipeline.result.to_dict()
@@ -168,6 +178,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
+        pipeline.result.status = "success"
         # CRITICAL FIX: Only mark changes as written if system patch actually succeeded
         # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
         if system_patch_result:
@@ -181,7 +192,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     
     if not remaining_diff.strip():
         logger.warning("No valid hunks remaining to process")
-        if pipeline.result.changes_written:
+        if pipeline.result.changes_written or pipeline.result.succeeded_hunks:
             pipeline.complete()
             return pipeline.result.to_dict()
         else:
@@ -193,6 +204,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
+        pipeline.result.status = "success"
         # CRITICAL FIX: Only mark changes as written if git apply actually succeeded
         if git_apply_result:
             pipeline.result.changes_written = True
@@ -213,7 +225,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     
     if not remaining_diff.strip():
         logger.warning("No valid hunks remaining to process after git apply")
-        if pipeline.result.changes_written:
+        if pipeline.result.changes_written or pipeline.result.succeeded_hunks:
             pipeline.complete()
             return pipeline.result.to_dict()
         else:
@@ -252,7 +264,15 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
     # If no hunks succeeded and no changes were written, set the error
     if not pipeline.result.succeeded_hunks and not pipeline.result.already_applied_hunks and not pipeline.result.changes_written:
         pipeline.complete(error="Failed to apply changes: all hunks failed")
+        pipeline.result.status = "error"
     else:
+        # If we have a mix of succeeded and failed hunks, explicitly set partial status
+        if pipeline.result.succeeded_hunks and pipeline.result.failed_hunks:
+            logger.info("Mixed results: some hunks succeeded, some failed")
+            pipeline.result.status = "partial"
+        elif pipeline.result.succeeded_hunks or pipeline.result.already_applied_hunks:
+            logger.info("All processed hunks succeeded")
+            pipeline.result.status = "success"
         pipeline.complete()
     
     # Add detailed debug logging about hunk statuses
@@ -272,7 +292,6 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
         if tracker.error_details:
             logger.info(f"  Error details: {tracker.error_details}")
     
-    # Verify the final status is consistent with the actual changes
     # Get the final result dictionary directly from the PipelineResult object
     # This dictionary now includes the correctly determined status and message
     final_result_dict = pipeline.result.to_dict()
@@ -294,6 +313,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
             "failed": len(final_result_dict.get('failed', [])),
             "already_applied": len(final_result_dict.get('already_applied', [])),
             "changes_written": final_result_dict.get('changes_written', False),
+            "request_id": final_result_dict.get('request_id', ''),
             "error": str(final_result_dict.get('error', ''))
         }
         logger.info(f"Simplified result details: {json.dumps(simplified_details, indent=2)}")
@@ -510,7 +530,26 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
                 status=HunkStatus.FAILED,
                 error_details={"error": str(e)}
             )
+            return False
         return False
+
+def mark_all_hunks_as_failed(pipeline: DiffPipeline, error_message: str, error_type: str = "application_failed") -> None:
+    """
+    Mark all hunks in the pipeline as failed with the given error message.
+    
+    Args:
+        pipeline: The diff pipeline
+        error_message: The error message to set
+        error_type: The type of error that occurred
+    """
+    logger.info(f"Marking all hunks as failed: {error_message} (type: {error_type})")
+    for hunk_id in pipeline.result.hunks:
+        pipeline.update_hunk_status(
+            hunk_id=hunk_id,
+            stage=pipeline.current_stage,
+            status=HunkStatus.FAILED,
+            error_details={"error": error_type, "details": error_message}
+        )
 
 def run_git_apply_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff: str) -> bool:
     """
@@ -532,8 +571,13 @@ def run_git_apply_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff
     
     # Create a temporary file for the diff
     try:
+        # Normalize the diff using whatthepatch before writing to file
+        from ..application.git_diff import normalize_patch_with_whatthepatch, debug_patch_issues
+        logger.info("Normalizing diff with whatthepatch before git apply")
+        normalized_diff = normalize_patch_with_whatthepatch(git_diff)
+        debug_patch_issues(normalized_diff)
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.diff', delete=False) as temp_file:
-            temp_file.write(git_diff)
+            temp_file.write(normalized_diff)
             temp_path = temp_file.name
         
         # Do a dry run with git apply --check

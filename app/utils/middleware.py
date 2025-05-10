@@ -93,7 +93,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     
                 except Exception as chunk_error:
                     logger.error(f"Error processing chunk: {str(chunk_error)}")
-                    error_msg = f"Error processing response: {str(chunk_error)}"
+                    error_msg = json.dumps({"error": "server_error", "detail": f"Error processing response: {str(chunk_error)}"})
                     yield f"data: {error_msg}\n\n"
                     continue
                     
