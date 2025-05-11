@@ -184,9 +184,9 @@ const DiffTestView: React.FC = () => {
                     <Card style={{ margin: '16px' }}>
                         <Space direction="vertical">
                             <Text strong>Render Pipeline Control</Text>
-                            <Radio.Group 
-                                options={renderPathOptions} 
-                                onChange={e => setRenderPath(e.target.value)} 
+                            <Radio.Group
+                                options={renderPathOptions}
+                                onChange={e => setRenderPath(e.target.value)}
                                 value={renderPath}
                                 optionType="button"
                                 buttonStyle="solid"
@@ -277,7 +277,6 @@ const DiffTestView: React.FC = () => {
                                         <MarkdownRenderer
                                             markdown={`\`\`\`diff\n${testCase.diff}\n\`\`\``}
                                             enableCodeApply={false}
-                                            renderPath={renderPath}
                                         />
                                     </div>
                                     {testCase.sourceContent && (

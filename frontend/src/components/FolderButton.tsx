@@ -65,6 +65,7 @@ export const FolderButton: React.FC = () => {
           >
             <Input 
               placeholder="Enter folder name" 
+              id="new-folder-name"
               onKeyDown={(e) => {
                 if (e.key === ' ') e.stopPropagation();
               }}
@@ -96,6 +97,7 @@ export const FolderButton: React.FC = () => {
           >
             <Input.TextArea
               placeholder="Enter additional system instructions for this folder"
+              id="folder-system-instructions"
               rows={4}
             />
           </Form.Item>

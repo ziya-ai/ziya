@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, RefObject } from 'react';
+import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, useId, useContext } from 'react';
 import 'prismjs/themes/prism.css';
 import { Button, message, Radio, Space, Spin, RadioChangeEvent, Tooltip } from 'antd';
 import { marked, Tokens } from 'marked';
@@ -7,6 +7,7 @@ import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
+import { useChatContext } from '../context/ChatContext';
 import {
     CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, ExclamationCircleOutlined
@@ -660,14 +661,26 @@ const normalizeGitDiff = (diff: string): string => {
     return diff;
 };
 
+// Helper function to detect streaming diffs
+const isStreamingDiff = (content: string) => {
+    return content.includes('diff --git') &&
+        (!content.includes('\n\n') ||
+            content.split('\n').slice(-1)[0].startsWith('+') ||
+            content.split('\n').slice(-1)[0].startsWith('-') ||
+            content.endsWith('\n'));
+};
+
 const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex }) => {
     const [isLoading, setIsLoading] = useState(true);
     const [tokenizedHunks, setTokenizedHunks] = useState<any>(null);
     const { isDarkMode } = useTheme();
     const parsedFilesRef = useRef<any[]>([]);
     const [parseError, setParseError] = useState<boolean>(false);
+    const lastValidDiffRef = useRef<string | null>(null);
+    const { isStreaming: isGlobalStreaming } = useChatContext();
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
     const [statusUpdateCounter, setStatusUpdateCounter] = useState<number>(0);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty'); // Use window setting
     const diffRef = useRef<string>(diff);
     const diffIdRef = useRef<string>(elementId || `diff-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`);
@@ -715,6 +728,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     // Function to update hunk statuses from API response
     const updateHunkStatuses = useCallback((hunkStatuses: Record<string, any>, targetDiffId: string = diffId, force: boolean = false) => {
         if (!hunkStatuses) return;
+        if (!diff) return;
         console.log(`Updating hunk statuses for ${targetDiffId} (we are ${diffId})`, hunkStatuses);
 
         try {
@@ -763,7 +777,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 });
             });
         } catch (error) {
-            console.error("Error updating hunk statuses:", error);
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            console.error("Error updating hunk statuses:", errorMsg);
         }
     }, [diff]);
 
@@ -853,6 +868,17 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             try {
                 let parsedFiles = parseDiff(normalizeGitDiff(diff));
 
+                // After all parsing attempts, check if we have valid, renderable files/hunks
+                if (!parsedFiles || parsedFiles.length === 0 ||
+                    !parsedFiles[0].hunks || parsedFiles[0].hunks.length === 0) {
+                    // If not, it's effectively a parse error for rich rendering purposes
+                    setParseError(true);
+                    parsedFilesRef.current = []; // Ensure ref is also empty
+                } else {
+                    parsedFilesRef.current = parsedFiles;
+                    setParseError(false);
+                }
+
                 // If we have a unified diff without git headers, try to extract the file path
                 if (parsedFiles.length > 0 && !parsedFiles[0].oldPath && !parsedFiles[0].newPath) {
                     const lines = diff.split('\n');
@@ -908,12 +934,32 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         }];
                     }
                 }
-                parsedFilesRef.current = parsedFiles;
-                setParseError(false);
+                // Check if we have valid, renderable hunks
+                if (parsedFiles && parsedFiles.length > 0 && parsedFiles[0].hunks && parsedFiles[0].hunks.length > 0) {
+                    // We have a valid diff structure - update the reference and clear parse error
+                    parsedFilesRef.current = parsedFiles;
+                    lastValidDiffRef.current = diff; // Store this as our last valid diff
+                    setParseError(false);
+                } else if (lastValidDiffRef.current && isGlobalStreaming) {
+                    // During streaming, if parsing fails but we have a previous valid state, keep using it
+                    setParseError(false); // Don't set parse error - we'll use the last valid state
+                } else {
+                    // No valid previous state and current parse failed - set parse error
+                    setParseError(true);
+                    parsedFilesRef.current = [];
+                }
             } catch (error) {
+                setErrorMessage(error instanceof Error ? error.message : String(error));
                 console.error('Error parsing diff:', error);
-                setParseError(true);
-                parsedFilesRef.current = [];
+
+                // If we're streaming and have a previous valid state, keep using it
+                if (lastValidDiffRef.current && isGlobalStreaming) {
+                    setParseError(false);
+                } else {
+                    // Otherwise set parse error
+                    setParseError(true);
+                    parsedFilesRef.current = [];
+                }
             }
         };
         parseAndSetFiles();
@@ -922,6 +968,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     // tokenize hunks
     useEffect(() => {
         const tokenizeHunks = async (hunks: any[], filePath: string) => {
+            if (!hunks || hunks.length === 0) {
+                setIsLoading(false);
+                return;
+            }
             setIsLoading(true);
             const language = detectLanguage(filePath);
             try {
@@ -931,6 +981,13 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     loadPrismLanguage('clike'),
                     loadPrismLanguage(language)
                 ]);
+
+                // If parseError is true (e.g. because it's streaming and incomplete),
+                // we don't need to tokenize for the rich view.
+                if (parseError) {
+                    setIsLoading(false);
+                    return;
+                }
 
                 // Verify Prism is properly initialized
                 if (!window.Prism?.languages?.[language]) {
@@ -946,7 +1003,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     // Try with the detected language
                     setTokenizedHunks(null);
                 }
-            } catch (error) {
+            } catch (error: unknown) {
                 console.warn(`Error during tokenization for ${language}:`, error);
                 setTokenizedHunks(null);
             } finally {
@@ -954,14 +1011,21 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             }
         };
 
-        if (parsedFilesRef.current?.[0]) {
+        // Only tokenize if not in parseError state and we have hunks
+        if (!parseError && parsedFilesRef.current?.[0]?.hunks?.length > 0) {
             const file = parsedFilesRef.current[0];
             tokenizeHunks(file.hunks, file.newPath || file.oldPath);
+        } else {
+            setIsLoading(false); // Not loading if we will render raw or have no hunks
         }
-    }, [diff]);
+    }, [diff, parseError]); // Re-tokenize if diff changes or parseError state changes
 
     const renderHunks = (hunks: any[], filePath: string, fileIndex: number) => {
         const tableClassName = `diff-table ${viewType === 'split' ? 'diff-split' : ''}`;
+
+        if (!hunks || hunks.length === 0) {
+            return <div className="diff-empty-hunks">No changes found in this diff.</div>;
+        }
 
         return (
             <table className={tableClassName}>
@@ -1063,7 +1127,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     // Handle parse error case
     if (parseError) {
         return (
-            <pre style={{
+            <pre data-testid="diff-parse-error" style={{
                 backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                 color: isDarkMode ? '#e6e6e6' : 'inherit',
                 padding: '10px',
@@ -1338,7 +1402,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const currentTheme = isDarkMode ? darkModeStyles : lightModeStyles;
     return (
         <div className="diff-files-container">
-            <style>{styles}</style>
+            <style key={`diff-styles-${diffId}`}>{styles}</style>
             {parsedFilesRef.current.map((file, fileIndex) =>
                 renderFile(file, fileIndex)
             )}
@@ -1356,10 +1420,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     // Track processed request IDs to prevent infinite update loops
     const processedRequestIds = useRef(new Set<string>());
 
+    const buttonId = useId();
     // Define a function to trigger diff updates
     const triggerDiffUpdate = (hunkStatuses: Record<string, any> | null = null, requestId: string | null = null, diffElementId: string | null = null) => {
         // Create a unique event key for this specific diff element
-        const event = new CustomEvent(HUNK_STATUS_EVENT, { detail: { isCompletionEvent: true } });
+        const event = new CustomEvent(HUNK_STATUS_EVENT, { detail: { hunkStatuses, requestId, isCompletionEvent: true } });
         // hunkStatusEventBus.dispatchEvent(event); // We'll use component-specific updates instead
 
         // Also dispatch a window event for backward compatibility
@@ -1989,7 +2054,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             disabled={isApplied || isProcessing}
             loading={isProcessing}
             type="primary"
-            style={{ marginLeft: '8px' }}
+            style={{ marginLeft: '8px' }} id={`apply-changes-${buttonId}`}
             icon={<CheckOutlined />}
         >
             Apply Changes (beta)
@@ -2010,14 +2075,25 @@ interface DiffTokenProps {
     index: number;
     enableCodeApply: boolean;
     isDarkMode: boolean;
+    isStreaming?: boolean;
 }
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
+    const { isStreaming } = useChatContext();
     // Check if we're in a streaming response
-    const [isStreaming, setIsStreaming] = useState(false);
     const streamingCheckedRef = useRef(false);
+    const [streamingContent, setStreamingContent] = useState<string | null>(null);
 
     const isDiffValid = useMemo(() => {
+        // During streaming, always attempt to render as diff if it looks like one
+        if (isStreaming) {
+            const trimmedText = token.text?.trim() || '';
+            if (trimmedText.startsWith('diff --git') || trimmedText.startsWith('--- a/')) {
+                console.debug('Forcing diff render during streaming');
+                return true;
+            }
+        }
+
         const trimmedText = token.text?.trim();
         // Allow diffs starting with 'diff --git' OR '--- a/' OR '--- /dev/null' (file creation)
         if (!trimmedText || (!trimmedText.startsWith('diff --git') && !trimmedText.startsWith('--- a/') && !trimmedText.startsWith('--- /dev/null'))) {
@@ -2027,36 +2103,38 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         // Check if we're in a streaming response - only do this once per component
         if (!streamingCheckedRef.current) {
             streamingCheckedRef.current = true;
-            const streamingElement = document.querySelector('.streaming-content');
+            const streamingElement = isStreaming; // Use context value
             if (streamingElement) {
-                setIsStreaming(true);
-                return false; // Skip validation during streaming
+                // During streaming, we'll still try to render what we have so far
+                setStreamingContent(trimmedText);
+                // Return true to allow rendering attempt
+                return true;
             }
         }
 
         try {
             // Ensure token.text is a string before passing
-            const diffInput = typeof token.text === 'string' ? token.text : '';
-            const files = parseDiff(diffInput); // From react-diff-view
-            return files && files.length > 0 && files[0].hunks && files[0].hunks.length > 0;
+            const diffInput = typeof token.text === 'string' ? token.text : ''; // This is the streaming content
+            // During streaming, we assume it's a valid diff if it starts like one,
+            // even if parseDiff would fail on the incomplete content.
+            // The DiffViewWrapper will handle the actual parsing and fallback.
+            return diffInput.startsWith('diff --git') || diffInput.startsWith('--- a/') || diffInput.startsWith('+++ b/');
         } catch (e) {
             console.error('Error parsing diff:', e);
             return false;
         }
-    }, [token.text]);
+    }, [token.text, isStreaming]);
 
-    // If we're in a streaming response, show a placeholder
-    if (isStreaming) {
-        console.log("Skipping diff rendering during streaming");
-        return <div className="streaming-diff-placeholder">Processing diff...</div>;
-    }
 
-    if (isDiffValid) {
+    //if (isDiffValid) {
+    if (true) {
+
         return (
             <DiffViewWrapper
                 token={token}
                 index={index}
                 enableCodeApply={enableCodeApply}
+                isStreaming={isStreaming}
             />
         );
     } else {
@@ -2067,9 +2145,53 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
     }
 });
 
+const BasicDiffView = ({ diff }: { diff: string }) => {
+    const [lines, setLines] = useState<string[]>([]);
+
+    useEffect(() => {
+        if (diff) {
+            setLines(diff.split('\n'));
+        }
+    }, [diff]);
+
+    return (
+        <div className="basic-diff-view">
+            {lines.map((line, i) => (
+                <div
+                    key={i}
+                    className={`diff-line ${line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove' : ''}`}
+                >
+                    <span className="diff-marker">
+                        {line.startsWith('+') ? '+' : line.startsWith('-') ? '-' : ' '}
+                    </span>
+                    <code>{line.slice(1)}</code>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+// Component to handle streaming diffs
+const StreamingDiffView = ({ content }: { content: string }) => {
+    const [lines, setLines] = useState<string[]>([]);
+
+    useEffect(() => {
+        if (content) {
+            setLines(content.split('\n'));
+        }
+    }, [content]);
+
+    return (
+        <div className="streaming-diff-view">
+            <BasicDiffView diff={content} />
+        </div>
+    );
+};
+
 interface DiffViewWrapperProps {
     token: TokenWithText;
     enableCodeApply: boolean;
+    isStreaming?: boolean;
     index?: number;
 }
 
@@ -2077,7 +2199,12 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>('pretty');
+    const [currentContent, setCurrentContent] = useState<string>(token.text || '');
+    const lastValidDiffRef = useRef<string | null>(null);
+    const { isStreaming: isGlobalStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
+    const isStreamingRef = useRef<boolean>(false);
+    const parseTimeoutRef = useRef<number | null>(null);
 
     // Ensure window settings are synced with initial state
     useEffect(() => {
@@ -2085,6 +2212,49 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
             window.diffViewType = viewType;
         }
     }, [token, viewType]);
+
+    // Update content when token text changes (for streaming)
+    useEffect(() => {
+        if (isGlobalStreaming) {
+            // Queue the update to allow multiple chunks to arrive
+            if (parseTimeoutRef.current) {
+                window.clearTimeout(parseTimeoutRef.current);
+            }
+
+            parseTimeoutRef.current = window.setTimeout(() => {
+                setCurrentContent(token.text || '');
+                parseTimeoutRef.current = null;
+            }, 10); // Adjust debounce time as needed
+        } else {
+            setCurrentContent(token.text || '');
+        }
+    }, [token.text, isGlobalStreaming]);
+
+    // Maintain last valid parsed diff
+    const parsedFilesRef = useRef<any[]>([]);
+
+    useEffect(() => {
+        try {
+            const parsed = parseDiff(normalizeGitDiff(currentContent));
+            if (parsed.length > 0) {
+                parsedFilesRef.current = parsed;
+                lastValidDiffRef.current = currentContent;
+            }
+        } catch (error) {
+            // Use last valid parse if available
+            if (lastValidDiffRef.current) {
+                try {
+                    parsedFilesRef.current = parseDiff(normalizeGitDiff(lastValidDiffRef.current));
+                } catch (e) { }
+            }
+        }
+    }, [currentContent]);
+
+    // Track streaming state in a ref to avoid re-renders
+    useEffect(() => {
+        isStreamingRef.current = isGlobalStreaming;
+        return () => { isStreamingRef.current = false; };
+    }, [isGlobalStreaming]);
 
     if (!hasText(token)) {
         return null;
@@ -2094,7 +2264,36 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
         return null;
     }
 
-    const diffText = token.text || ''; // Ensure it's a string
+    // If we're streaming and have any parsed files, always show them
+    if ((isGlobalStreaming) && parsedFilesRef.current.length > 0) {
+        return (
+            <div>
+                <DiffControls
+                    displayMode={displayMode}
+                    viewType={viewType}
+                    showLineNumbers={showLineNumbers}
+                    onDisplayModeChange={setDisplayMode}
+                    onViewTypeChange={setViewType}
+                    onLineNumbersChange={setShowLineNumbers}
+                />
+                <div id={`diff-view-${index || 0}`}>
+                    {parsedFilesRef.current.map((file, fileIndex) => (
+                        <DiffView
+                            key={fileIndex}
+                            diff={lastValidDiffRef.current || ''}
+                            viewType={viewType}
+                            initialDisplayMode={displayMode}
+                            showLineNumbers={showLineNumbers}
+                            fileIndex={fileIndex}
+                            elementId={`diff-${fileIndex}-${index}`}
+                        />
+                    ))}
+                </div>
+            </div>
+        );
+    }
+
+    const diffText = currentContent; // Use the state variable for streaming support
     const elementId = `diff-view-${index || 0}-${diffText.length}`; // Use diffText.length for stability
 
     return (
@@ -2102,7 +2301,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
             <DiffControls
                 displayMode={displayMode}
                 viewType={viewType}
-                showLineNumbers={showLineNumbers}
+                showLineNumbers={showLineNumbers && !isStreamingRef.current}
                 onDisplayModeChange={setDisplayMode}
                 onViewTypeChange={setViewType}
                 onLineNumbersChange={setShowLineNumbers}
@@ -2119,7 +2318,7 @@ const DiffViewWrapper: React.FC<DiffViewWrapperProps> = ({ token, enableCodeAppl
                 ) : (
                     <DiffView
                         diff={diffText}
-                        viewType={viewType}
+                        viewType={isStreamingRef.current ? 'unified' : viewType}
                         initialDisplayMode={displayMode}
                         key={elementId}
                         elementId={elementId}
@@ -2467,6 +2666,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                 <input
                                     type="checkbox"
                                     checked={listItemToken.checked}
+                                    id={`task-checkbox-${index}-${Math.random().toString(36).substring(2, 9)}`}
+                                    name={`task-checkbox-${index}`}
                                     readOnly
                                     style={{ marginRight: '0.5em', verticalAlign: 'middle' }}
                                 />
@@ -2545,7 +2746,15 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'image':
                     const imageToken = token as Tokens.Image;
-                    return <img key={index} src={imageToken.href} alt={imageToken.text} title={imageToken.title ?? undefined} />;
+                    // Check if href is a valid URL or path before rendering
+                    const imageHref = imageToken.href || '';
+                    // Skip rendering if href is empty or contains template literals
+                    if (!imageHref || imageHref.includes('{') || imageHref.includes('}')) {
+                        console.warn('Invalid image URL detected:', imageHref);
+                        return <span key={index}>[Invalid image: {imageToken.text || 'No description'}]</span>;
+                    }
+                    // Only render valid image URLs
+                    return <img key={index} src={imageHref} alt={imageToken.text || ''} title={imageToken.title ?? undefined} />;
 
                 // --- Other Block Types ---
                 case 'heading':
@@ -2653,7 +2862,6 @@ interface MarkdownRendererProps {
     markdown: string;
     isStreaming?: boolean;
     enableCodeApply: boolean;
-    renderPath?: RenderPath;
 }
 
 // Configure marked options
@@ -2664,19 +2872,20 @@ marked.setOptions({
 });
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false }) => {
-
+    const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
     const [isPending, startTransition] = useTransition();
+    // State for the tokens that are currently displayed
+    const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
+    // Ref to store the previous set of tokens, useful for certain streaming optimizations or comparisons
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
-    const [stableTokens, setStableTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
-
     // Track if we're in a streaming response - this is for the overall component
-    const [isStreamingState, setIsStreamingState] = useState(false);
+    const isStreamingState = isStreaming;
 
-    // Only parse tokens when not streaming or in a transition
-    const tokens = useMemo(() => {
+    // Memoize the parsing of markdown into tokens.
+    const lexedTokens = useMemo(() => {
         if (!markdown?.trim()) {
-            return [];
+            return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
         }
 
         try {
@@ -2684,7 +2893,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             if ((externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
                 const hasDiff = previousTokensRef.current.some(token =>
                     token.type === 'code' && (token as TokenWithText).lang === 'diff');
-                if (hasDiff) {
+                if (hasDiff && false) { // Disable this optimization to allow streaming diffs
                     return previousTokensRef.current;
                 }
             }
@@ -2699,45 +2908,28 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
     }, [markdown, externalStreaming, isStreamingState]);
 
-    // Store tokens for stability during streaming
+    // Update tokens state when the memoized tokens change
     useEffect(() => {
-        if (externalStreaming || isStreamingState) {
-            // During streaming, only update tokens in a transition to avoid flickering
-            startTransition(() => {
-                // Check if we have a diff token - if so, keep it stable
-                const hasDiff = tokens.some(token =>
-                    token.type === 'code' && (token as TokenWithText).lang === 'diff');
+        // Always update the tokens state and the ref
+        previousTokensRef.current = lexedTokens;
+        setDisplayTokens(lexedTokens);
+    }, [lexedTokens]); // This effect runs when lexedTokens (from useMemo) is updated.
 
-                if (!hasDiff || previousTokensRef.current.length === 0) {
-                    previousTokensRef.current = tokens;
-                    setStableTokens(tokens);
-                }
-            });
-        } else {
-            previousTokensRef.current = tokens;
-            setStableTokens(tokens);
-        }
-    }, [tokens, externalStreaming, isStreamingState]);
-
-    // Use useLayoutEffect to detect streaming state before rendering
-    useLayoutEffect(() => {
-        // Check if this component is being rendered inside a streaming response
-        const parentElement = document.querySelector('.streaming-content');
-        setIsStreamingState(!!parentElement);
-    }, [markdown]);
-
-    // Debug log streaming state
+    // Debug log streaming state - keep this for debugging
+    // but it doesn't affect functionality
     useEffect(() => {
         console.log(`MarkdownRenderer streaming state: ${externalStreaming || isStreamingState ? 'streaming' : 'not streaming'}`);
     }, [externalStreaming, isStreamingState]);
 
     // Only memoize the rendered content when not streaming or when streaming completes 
     const renderedContent = useMemo(() => {
-        return renderTokens((externalStreaming || isStreamingState) && previousTokensRef.current.length > 0 ? previousTokensRef.current : tokens, enableCodeApply, isDarkMode);
-    }, [tokens, enableCodeApply, isDarkMode, externalStreaming, isStreamingState]);
+        return renderTokens(displayTokens, enableCodeApply, isDarkMode);
+    }, [displayTokens, enableCodeApply, isDarkMode, isStreamingState]); // Add isStreamingState to dependencies
+
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
-    return isMultiFileDiff && tokens.length === 1 && tokens[0].type === 'code' && tokens[0].lang === 'diff' ?
-        renderMultiFileDiff(tokens[0] as TokenWithText, 0, enableCodeApply) :
+    return isMultiFileDiff && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
+        renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply) :
+
         <div>{renderedContent}</div>;
 }, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply);
 

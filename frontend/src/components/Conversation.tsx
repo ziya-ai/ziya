@@ -27,6 +27,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         currentConversationId,
         setIsStreaming,
         setStreamedContentMap,
+        isStreaming,
         addMessageToConversation,
         removeStreamingConversation
     } = useChatContext();
@@ -274,6 +275,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                         <MarkdownRenderer
                                             markdown={msg.content}
                                             enableCodeApply={enableCodeApply}
+                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
                                         />
                                     </Suspense>
                                 </div>

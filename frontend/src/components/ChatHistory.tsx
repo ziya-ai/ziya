@@ -118,6 +118,7 @@ const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
                     {editingId === conversation.id ? (
                         <Input
                             defaultValue={conversation.title}
+                            id={`edit-conversation-${conversation.id}`}
                             onPressEnter={(e) => onTitleChange(conversation.id, e.currentTarget.value)}
                             onBlur={(e) => onTitleBlur(conversation.id, e.currentTarget.value)}
                             style={{ width: '100%' }}
@@ -716,29 +717,6 @@ export const ChatHistory: React.FC = () => {
         handleFolderNameChange(folderId, newName);
     };
 
-    // Original modal-based folder editing (removed)
-    /* 
-    const handleEditFolder = (folder: ConversationFolder) => {
-        Modal.confirm({
-            title: 'Rename Folder',
-            content: (
-                <Input
-                    defaultValue={folder.name}
-                    onChange={(e) => (folder.name = e.target.value)}
-                />
-            ),
-            onOk: async () => {
-                try {
-                    await updateFolder(folder);
-                    message.success('Folder renamed successfully');
-                } catch (error) {
-                    message.error('Failed to rename folder');
-                }
-            }
-        });
-    };
-    */
-
     // Handle folder deletion
     const handleDeleteFolder = (folderId: string) => {
         Modal.confirm({
@@ -1031,6 +1009,7 @@ export const ChatHistory: React.FC = () => {
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.json';
+        input.id = 'import-conversations-input';
         input.onchange = (e) => {
             const target = e.target as HTMLInputElement;
             if (target && target.files) {
@@ -1334,6 +1313,7 @@ export const ChatHistory: React.FC = () => {
                         {isEditing ? (
                             <Input
                                 defaultValue={conversation.title || ''}
+                                id={`edit-conversation-${conversation.id}`}
                                 onPressEnter={(e) => handleTitleChange(conversation.id, e.currentTarget.value)}
                                 onBlur={(e) => handleTitleBlur(conversation.id, e.currentTarget.value)}
                                 style={{ width: '100%' }}
@@ -1423,6 +1403,7 @@ export const ChatHistory: React.FC = () => {
                         {isEditing ? (
                             <Input
                                 defaultValue={folder.name || ''}
+                                id={`edit-folder-${folder.id}`}
                                 onPressEnter={(e) => handleFolderNameChange(folder.id, e.currentTarget.value)}
                                 onBlur={(e) => handleFolderNameBlur(folder.id, e.currentTarget.value)}
                                 style={{ width: '60%' }}

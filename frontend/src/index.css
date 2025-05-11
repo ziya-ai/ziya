@@ -100,6 +100,11 @@ body.dark {
   transition: background-color 0.3s ease, border-color 0.3s ease, left 0.3s ease, width 0.3s ease;
 }
 
+/* Prevent scroll jumps during streaming */
+.chat-container.streaming {
+  scroll-behavior: auto !important;
+}
+
 .chat-content-stabilizer {
   transform: translateZ(0);  /* Force GPU acceleration */
   backface-visibility: hidden;

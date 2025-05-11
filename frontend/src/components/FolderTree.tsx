@@ -604,6 +604,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 style={{ marginBottom: 8, backgroundColor: isDarkMode ? '#1f1f1f' : undefined }}
                 placeholder="Search folders"
                 onChange={onSearch}
+                id="folder-search-input"
                 allowClear
             />
         );

@@ -168,6 +168,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 ref={textareaRef}
                 value={question}
 		onChange={handleQuestionChange}
+                id="chat-question-textarea"
                 placeholder="Enter your question.."
                 autoComplete="off"
 		autoSize={{ minRows: 1 }}

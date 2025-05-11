@@ -99,6 +99,7 @@ export const App: React.FC = () => {
         const minWidth = 200;
         return isNaN(width) || width <= 0 ? 300 : Math.max(minWidth, width);
     };
+    const { streamingConversations, currentConversationId, isStreaming } = useChatContext();
     const [panelWidth, setPanelWidth] = useState(() => {
         const saved = localStorage.getItem(PANEL_WIDTH_KEY);
         return saved ? parseInt(saved, 10) : 300; // Default width: 300px
@@ -223,7 +224,7 @@ export const App: React.FC = () => {
     // in top-down mode autoscroll to end
     useEffect(() => {
         if (isTopToBottom) {
-            const chatContainer = document.querySelector('.chat-container');
+            const chatContainer = document.querySelector('.chat-container:not(.streaming)');
             if (!chatContainer) return;
             const scrollToBottom = (smooth = false) => {
                 requestAnimationFrame(() => {
@@ -234,7 +235,11 @@ export const App: React.FC = () => {
                 });
             };
             // Scroll on initial render and when messages change
-            scrollToBottom();
+
+            // Skip scrolling if we're streaming to avoid flicker
+            if (!streamingConversations.has(currentConversationId)) {
+                scrollToBottom();
+            }
             // Add a small delay for smooth scroll after content renders
             const timeoutId = setTimeout(() => scrollToBottom(true), 50);
             return () => clearTimeout(timeoutId);
@@ -257,7 +262,7 @@ export const App: React.FC = () => {
                 requestAnimationFrame(() => bottomUpContent.scrollTop = 0);
             }
         }, 100);
-    }, [isTopToBottom]);
+    }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
 
     const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
 
