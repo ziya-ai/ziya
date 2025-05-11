@@ -1220,6 +1220,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             return <div className="diff-empty-hunks">No changes found in this diff.</div>;
         }
 
+        if (!hunks || hunks.length === 0) {
+            return <div className="diff-empty-hunks">No changes found in this diff.</div>;
+        }
+
         return (
             <table className={tableClassName}>
                 <colgroup>
@@ -2876,7 +2880,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                 ) : (
                     <DiffView
                         diff={diffText}
-                        viewType={viewType}
+                        viewType={isStreamingRef.current ? 'unified' : viewType}
                         initialDisplayMode={displayMode}
                         key={stableElementIdRef.current}
                         forceRender={isGlobalStreaming} // Force render during streaming
