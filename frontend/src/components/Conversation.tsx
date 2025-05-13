@@ -301,7 +301,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                             />
                                         </Suspense>
                                     </div>
-                                    )
                                 </>
                             ) : null
                         )}
