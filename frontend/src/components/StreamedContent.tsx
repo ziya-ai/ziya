@@ -12,6 +12,7 @@ export const StreamedContent: React.FC = () => {
     const [connectionLost, setConnectionLost] = useState<boolean>(false);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const contentRef = useRef<HTMLDivElement>(null);
+    const lastQuestionRef = useRef<string>('');
     const isAutoScrollingRef = useRef<boolean>(false);
     const [isPendingResponse, setIsPendingResponse] = useState<boolean>(false);
     const streamingInstanceId = useId();
@@ -349,29 +350,29 @@ export const StreamedContent: React.FC = () => {
     }, [isStreaming, currentConversationId, streamingConversations]);
 
     // Set up observer to detect when user is viewing the bottom of content
+    const observerRef = useRef<IntersectionObserver>();
+
     useEffect(() => {
         if (!contentRef.current) return;
 
-        const observer = new IntersectionObserver(
-            (entries) => {
-                for (const entry of entries) {
-                    // If the content is visible and streaming is happening
-                    if (entry.isIntersecting && streamingConversations.has(currentConversationId)) {
-                        isAutoScrollingRef.current = true;
-                    } else {
-                        isAutoScrollingRef.current = false;
-                    }
-                }
-            },
-            { threshold: 0.1 }
-        );
+        if (observerRef.current) {
+            observerRef.current.disconnect();
+        }
 
-        observer.observe(contentRef.current);
+        observerRef.current = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    isAutoScrollingRef.current = true;
+                } else {
+                    isAutoScrollingRef.current = false;
+                }
+            });
+        }, { threshold: 0.1, rootMargin: '0px' });
+
+        observerRef.current.observe(contentRef.current);
 
         return () => {
-            if (contentRef.current) {
-                observer.unobserve(contentRef.current);
-            }
+            observerRef.current?.disconnect();
         };
     }, [currentConversationId, streamingConversations]);
 

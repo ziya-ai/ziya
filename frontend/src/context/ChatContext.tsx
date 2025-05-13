@@ -750,9 +750,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
             processedModelChanges.current.clear();
             window.removeEventListener('modelChanged', handleModelChange as EventListener);
         };
-
-        // Reset processed changes when component unmounts
-        return () => { processedModelChanges.current.clear(); };
     }, [handleModelChange]);
 
     useEffect(() => {
