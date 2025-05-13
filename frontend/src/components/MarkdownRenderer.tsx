@@ -232,7 +232,7 @@ const DiffControls = memo(({
                         <Radio.Group
                             value={viewType}
                             buttonStyle="solid"
-                            style={{
+                            style={{ 
                                 backgroundColor: isDarkMode ? '#141414' : '#ffffff',
                                 color: isDarkMode ? '#ffffff' : '#000000'
                             }}
@@ -240,7 +240,7 @@ const DiffControls = memo(({
                                 onViewTypeChange(e.target.value);
                             }}
                         >
-                            <Radio.Button value="unified">Unified View</Radio.Button>
+                            <Radio.Button value="unified">Unified View</Radio.Button> 
                             <Radio.Button value="split">Split View</Radio.Button>
                         </Radio.Group>
                         <Radio.Group
@@ -252,7 +252,7 @@ const DiffControls = memo(({
                             }}
                             onChange={(e) => onLineNumbersChange(e.target.value)}
                         >
-                            <Radio.Button value={false}>Hide Line Numbers</Radio.Button>
+                            <Radio.Button value={false}>Hide Line Numbers</Radio.Button> 
                             <Radio.Button value={true}>Show Line Numbers</Radio.Button>
                         </Radio.Group>
                     </Space>
@@ -274,6 +274,22 @@ const DiffControls = memo(({
     );
 });
 DiffControls.displayName = 'DiffControls';
+
+// Add a function to save diff view settings to localStorage
+const saveDiffSettings = (viewType: 'split' | 'unified', showLineNumbers: boolean) => {
+    try {
+        const settings = {
+            viewType,
+            showLineNumbers
+        };
+        localStorage.setItem(DIFF_SETTINGS_KEY, JSON.stringify(settings));
+        // Also update global settings for new diffs
+        window.diffViewType = viewType;
+    } catch (error) {
+        console.error('Error saving diff settings:', error);
+    }
+};
+
 const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], fileIndex?: number): string => {
 
     // If we have paths in the file object, use them directly
@@ -1252,7 +1268,7 @@ const DiffView = React.memo(function DiffView({ diff, viewType, initialDisplayMo
                                 <tr className="hunk-content-wrapper">
                                     <td colSpan={viewType === 'split' ? 4 : 3} style={{
                                         padding: 0,
-                                        border: status ? `1px solid ${isApplied ?
+                                        borderTop: status ? `1px solid ${isApplied ?
                                             (isAlreadyApplied ? '#faad14' : '#52c41a') :
                                             '#ff4d4f'}` : 'none',
                                         borderLeft: status ? `3px solid ${isApplied ?
@@ -1261,7 +1277,7 @@ const DiffView = React.memo(function DiffView({ diff, viewType, initialDisplayMo
                                         borderRadius: '3px',
                                         overflow: 'hidden'
                                     }}>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse' }}><tbody>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}><tbody>
                                             {renderContent(hunk, filePath, status, fileIndex, hunkIndex)}
                                         </tbody></table>
                                     </td>
@@ -1374,6 +1390,24 @@ const DiffView = React.memo(function DiffView({ diff, viewType, initialDisplayMo
         .hunk-content-wrapper {
         margin-bottom: 12px;
         margin-top: 4px;
+        }
+
+        /* Fix for line number alignment */
+        .diff-gutter-col {
+            width: 50px !important;
+            min-width: 50px !important;
+            max-width: 50px !important;
+            text-align: right !important;
+            padding-right: 10px !important;
+            box-sizing: border-box !important;
+            user-select: none !important;
+        }
+
+        /* Fix for nested tables */
+        .hunk-content-wrapper table {
+            table-layout: fixed !important;
+            width: 100% !important;
+            border-collapse: collapse !important;
         }
         
         .hunk-status-indicator {
@@ -2476,6 +2510,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
 
         // Save settings to localStorage
         try {
+            // Save settings and update global setting
+            saveDiffSettings(viewType, showLineNumbers);
+            window.diffViewType = viewType;
             localStorage.setItem(`${DIFF_SETTINGS_KEY}_${conversationId}_${elementId}`, JSON.stringify({
                 viewType,
                 showLineNumbers
@@ -2493,11 +2530,6 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
             window.diffViewType = viewType;
         }
     }, [token, viewType]);
-
-    // Update settings when viewType or showLineNumbers change
-    useEffect(() => {
-        dispatch({ type: 'SET_VIEW_TYPE', payload: viewType });
-    }, [viewType]);
 
     useEffect(() => {
         dispatch({ type: 'SET_LINE_NUMBERS', payload: showLineNumbers });
@@ -2542,7 +2574,6 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
     }
 
     const isStreamingDiff = isStreamingRef.current && parsedFilesRef.current.length > 0;
-
 
     const content = (
         <div className="diff-view-wrapper">

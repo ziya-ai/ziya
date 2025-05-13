@@ -9,7 +9,7 @@ interface DiffLineProps {
     type: 'normal' | 'insert' | 'delete';
     oldLineNumber?: number;
     newLineNumber?: number;
-    viewType: 'unified' | 'split';
+    viewType: string;
     showLineNumbers?: boolean;
     similarity?: number;
     style?: React.CSSProperties;
@@ -469,38 +469,12 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                 '#24292e'
     };
 
-    const wrapWithLineBreak = (content: string) => {
-        return content;
-    };
-
     const preserveUnpairedBrackets = (str: string) => {
         // Replace standalone < with HTML entity but leave </ and <word alone
         return str.replace(/</g, (match, offset, string) => {
             return /^<[/\w]/.test(string.slice(offset)) ? match : '&lt;';
         });
-    };
-
-    const renderContent = () => (
-        <td
-            className={`diff-code diff-code-${type}`}
-        >
-            <div
-                className="diff-line-content token-container"
-                ref={contentRef}
-                style={{
-                    visibility: isHighlighting ? 'hidden' : 'visible',
-                    whiteSpace: 'pre',
-                    overflow: viewType === 'split' ? 'hidden' : 'auto',
-                    ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
-                    ...(style || {})
-                }}
-                dangerouslySetInnerHTML={{
-                    __html: lastGoodRenderRef.current ||
-                        visualizeWhitespace(content || ' ')
-                }}
-            />
-        </td>
-    );
+    }
 
     if (viewType === 'split') {
         return (
@@ -511,10 +485,20 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                     </td>
                 )}
                 <td className="diff-code diff-code-left" style={{ width: 'calc(50% - 50px)' }}>
-                    <div className={`diff-code-content diff-code-${type}`}>
+                    <div className={`diff-code-content`} style={{ backgroundColor: type === 'delete' ? (isDarkMode ? '#4d1a1a' : '#ffebe9') : 'transparent' }}>
                         {type !== 'insert' ? (
-                            renderContent()
-                        ) : <div className="diff-code-placeholder">&nbsp;</div>}
+                            <div
+                                className="diff-line-content token-container"
+                                ref={contentRef}
+                    style={{
+                        visibility: isHighlighting ? 'hidden' : 'visible',
+                        whiteSpace: 'pre',
+                        overflow: viewType === 'split' ? 'hidden' : 'auto',
+                        ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
+                        ...(style || {})
+                    }}
+                                dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} />
+                        ) : <div className="diff-code-placeholder"> </div>}
                     </div>
                 </td>
 
@@ -524,10 +508,20 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                     </td>
                 )}
                 <td className="diff-code diff-code-right" style={{ width: 'calc(50% - 50px)' }}>
-                    <div className={`diff-code-content diff-code-${type}`}>
+                    <div className={`diff-code-content`} style={{ backgroundColor: type === 'insert' ? (isDarkMode ? '#1a4d1a' : '#e6ffec') : 'transparent' }}>
                         {type !== 'delete' ? (
-                            renderContent()
-                        ) : <div className="diff-code-placeholder">&nbsp;</div>}
+                            <div
+                                className="diff-line-content token-container"
+                                ref={contentRef}
+                                style={{
+                                    visibility: isHighlighting ? 'hidden' : 'visible',
+                                    whiteSpace: 'pre',
+                                    overflow: viewType === 'split' as const ? 'hidden' : 'auto',
+                                    ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
+                                    ...(style || {})
+                                }}
+                                dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} />
+                        ) : <div className="diff-code-placeholder"> </div>}
                     </div>
                 </td>
             </tr>
@@ -546,7 +540,24 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                     {lineNumbers.new}
                 </td>
             )}
-            {renderContent()}
+            <td
+                className={`diff-code diff-code-${type}`}
+                style={{
+                    backgroundColor: type === 'insert' ? (isDarkMode ? '#1a4d1a' : '#e6ffec') :
+                        type === 'delete' ? (isDarkMode ? '#4d1a1a' : '#ffebe9') : 'transparent'
+                }}
+            >
+                <div
+                    className="diff-line-content token-container"
+                    ref={contentRef}
+                    style={{
+                        visibility: isHighlighting ? 'hidden' : 'visible',
+                        whiteSpace: 'pre',
+                                    overflow: viewType === 'split' as const ? 'hidden' : 'auto',
+                        ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
+                        ...(style || {})
+                    }}
+                    dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} /></td>
         </tr>
     );
 }, (prev, next) => {
