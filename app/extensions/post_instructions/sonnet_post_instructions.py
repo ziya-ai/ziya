@@ -34,7 +34,7 @@ def sonnet37_model_post_instruction(query: str, context: dict) -> str:
     sonnet_post_instruction = """
 
 IMPORTANT: All responses that involve changes to existing code or clean creation of new code files MUST be presented in git diff format (unless explicitly otherwise instructed, on a per-query basis)
-You do not need to explicitly note in your text that this is the format being used.
+You do not need to explicitly note in your text that this is the format being used, but you should begin all responses with at least a one-sentence summary of your intent, and provide at least a one-sentence summary of what you are doing between each major diff block. When providing a diff that fixes a prior diff which has clearly already been applied, return only the diff required to get from the last diff state to the final state, not a complete resubmission of any prior diffs unless otherwise instructed.
 """
     
     # Append the post-instruction to the query
