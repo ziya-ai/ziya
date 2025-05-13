@@ -1582,6 +1582,24 @@ const DiffView = React.memo(function DiffView({ diff, viewType, initialDisplayMo
             width: 100% !important;
             border-collapse: collapse !important;
         }
+
+        /* Fix for line number alignment */
+        .diff-gutter-col {
+            width: 50px !important;
+            min-width: 50px !important;
+            max-width: 50px !important;
+            text-align: right !important;
+            padding-right: 10px !important;
+            box-sizing: border-box !important;
+            user-select: none !important;
+        }
+
+        /* Fix for nested tables */
+        .hunk-content-wrapper table {
+            table-layout: fixed !important;
+            width: 100% !important;
+            border-collapse: collapse !important;
+        }
         
         .hunk-status-indicator {
             display: inline-flex !important;
@@ -2897,6 +2915,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
 
         // Save settings to localStorage
         try {
+            // Save settings and update global setting
+            saveDiffSettings(viewType, showLineNumbers);
+            window.diffViewType = viewType;
             localStorage.setItem(`${DIFF_SETTINGS_KEY}_${conversationId}_${elementId}`, JSON.stringify({
                 viewType,
                 showLineNumbers
@@ -2914,11 +2935,6 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             window.diffViewType = viewType;
         }
     }, [token, viewType]);
-
-    // Update settings when viewType or showLineNumbers change
-    useEffect(() => {
-        dispatch({ type: 'SET_VIEW_TYPE', payload: viewType });
-    }, [viewType]);
 
     useEffect(() => {
         dispatch({ type: 'SET_LINE_NUMBERS', payload: showLineNumbers });
