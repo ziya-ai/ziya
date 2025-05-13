@@ -1215,7 +1215,7 @@ const DiffView = React.memo(function DiffView({ diff, viewType, initialDisplayMo
                                 <tr className="hunk-content-wrapper">
                                     <td colSpan={viewType === 'split' ? 4 : 3} style={{
                                         padding: 0,
-                                        border: status ? `1px solid ${isApplied ?
+                                        borderTop: status ? `1px solid ${isApplied ?
                                             (isAlreadyApplied ? '#faad14' : '#52c41a') :
                                             '#ff4d4f'}` : 'none',
                                         borderLeft: status ? `3px solid ${isApplied ?
@@ -1428,6 +1428,24 @@ const DiffView = React.memo(function DiffView({ diff, viewType, initialDisplayMo
         .hunk-content-wrapper {
             margin-bottom: 12px;
             margin-top: 4px;
+        }
+
+        /* Fix for line number alignment */
+        .diff-gutter-col {
+            width: 50px !important;
+            min-width: 50px !important;
+            max-width: 50px !important;
+            text-align: right !important;
+            padding-right: 10px !important;
+            box-sizing: border-box !important;
+            user-select: none !important;
+        }
+
+        /* Fix for nested tables */
+        .hunk-content-wrapper table {
+            table-layout: fixed !important;
+            width: 100% !important;
+            border-collapse: collapse !important;
         }
         
         .hunk-status-indicator {
@@ -2719,6 +2737,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
 
         // Save settings to localStorage
         try {
+            // Save settings and update global setting
+            saveDiffSettings(viewType, showLineNumbers);
+            window.diffViewType = viewType;
             localStorage.setItem(`${DIFF_SETTINGS_KEY}_${conversationId}_${elementId}`, JSON.stringify({
                 viewType,
                 showLineNumbers
@@ -2736,11 +2757,6 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             window.diffViewType = viewType;
         }
     }, [token, viewType]);
-
-    // Update settings when viewType or showLineNumbers change
-    useEffect(() => {
-        dispatch({ type: 'SET_VIEW_TYPE', payload: viewType });
-    }, [viewType]);
 
     useEffect(() => {
         dispatch({ type: 'SET_LINE_NUMBERS', payload: showLineNumbers });
