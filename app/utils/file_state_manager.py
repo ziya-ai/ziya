@@ -26,6 +26,7 @@ class FileStateManager:
         logger.info(f"Initializing conversation {conversation_id} with {len(files)} files")
         
         for file_path, content in files.items():
+            # Split content into lines and initialize state
             lines = content.splitlines()
             self.conversation_states[conversation_id][file_path] = FileState(
                 path=file_path,
@@ -34,6 +35,9 @@ class FileStateManager:
                 original_content=lines.copy(),
                 current_content=lines.copy(),
                 last_seen_content=lines.copy()
+                # Note: line_states is initialized as empty here
+                # New files should have all lines marked as new ('+')
+                # This will be handled in update_file_state
             )
             logger.debug(f"Initialized state for {file_path} with {len(lines)} lines")
     
@@ -84,7 +88,7 @@ class FileStateManager:
         if conversation_id not in self.conversation_states:
             return None
             
-        state = self.conversation_states[conversation_id].get(file_path)
+        state = self.conversation_states.get(conversation_id, {}).get(file_path)
         if not state:
             return None
             
@@ -93,7 +97,7 @@ class FileStateManager:
         
         if current_hash == state.content_hash:
             logger.debug(f"No changes detected for {file_path}")
-            return set()  # No changes
+            return set()  # No changes detected
             
         # Update file state
         changed_lines = self._compute_changes(
@@ -104,7 +108,7 @@ class FileStateManager:
         
         state.current_content = current_lines
         state.content_hash = current_hash
-        logger.info(f"Updated state for {file_path}: {len(changed_lines)} lines changed")
+        logger.info(f"Updated state for {file_path}: {len(changed_lines)} lines changed: {changed_lines}")
 
         state.last_seen_content = current_lines.copy()  # Update last seen content
         
@@ -112,7 +116,7 @@ class FileStateManager:
         for line_num in changed_lines:
             if line_num not in state.line_states:
                 state.line_states[line_num] = '+'  # New line
-            else:
+            elif state.line_states[line_num] != '+':
                 state.line_states[line_num] = '*'  # Modified line
                 
         return changed_lines
@@ -140,16 +144,24 @@ class FileStateManager:
         """Compute changed line numbers"""
         changed_lines = set()
         
+        # If original_content is empty, all current lines are new
+        if not original_content:
+            return set(range(1, len(current_content) + 1))
+            
+        # Compare previous and current content to find changes
         matcher = SequenceMatcher(None, previous_content, current_content)
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag in ('replace', 'insert'):
-                # Add all new/modified line numbers
+            if tag == 'replace':
+                # Modified lines
                 changed_lines.update(range(j1 + 1, j2 + 1))
-                
+            elif tag == 'insert':
+                # New lines
+                changed_lines.update(range(j1 + 1, j2 + 1))
+        
         return changed_lines
 
     def format_context_message(self, conversation_id: str, include_recent: bool = True) -> Tuple[str, str]:
-        """Format context message about file changes"""
+        """Format context message about file changes for the prompt"""
         changes = self.get_file_changes(conversation_id)
         if not changes:
             return "", ""
@@ -189,7 +201,7 @@ class FileStateManager:
         if conversation_id not in self.conversation_states:
             self.initialize_conversation(conversation_id, files)
             return
-            
+        
         for file_path, content in files.items():
             if file_path not in self.conversation_states[conversation_id]:
                 lines = content.splitlines()
@@ -201,4 +213,23 @@ class FileStateManager:
                     current_content=lines.copy(),
                     last_seen_content=lines.copy()
                 )
-                logger.info(f"Added new file to state: {file_path}")
+                
+                # Mark all lines as new for newly added files
+                for i in range(len(lines)):
+                    self.conversation_states[conversation_id][file_path].line_states[i+1] = '+'
+                
+                logger.info(f"Added new file to state: {file_path} with {len(lines)} lines marked as new")
+            else:
+                # For existing files, check if we need to update the state
+                existing_state = self.conversation_states[conversation_id][file_path]
+                current_lines = content.splitlines()
+                current_hash = self._compute_hash(current_lines)
+                
+                # If content has changed, update the state
+                if current_hash != existing_state.content_hash:
+                    changed_lines = self._compute_changes(
+                        existing_state.original_content,
+                        existing_state.current_content,
+                        current_lines
+                    )
+                    logger.info(f"Updated existing file in state: {file_path} with {len(changed_lines)} changed lines")

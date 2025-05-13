@@ -1024,6 +1024,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
             # Get annotated content with change tracking
             logger.info(f"Getting annotated content for {file_path}")
             annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
+            logger.debug(f"First few annotated lines: {annotated_lines[:3] if annotated_lines else []}")
             logger.info(f"Got {len(annotated_lines) if annotated_lines else 0} lines for {file_path}, success={success}")
             if success:
                 # Log a preview of the content
@@ -1085,6 +1086,9 @@ def extract_codebase(x):
     # Initialize or update file states
     if conversation_id not in file_state_manager.conversation_states:
         file_state_manager.initialize_conversation(conversation_id, file_contents)
+        # After initialization, update the file states to ensure all lines are properly marked
+        for file_path, content in file_contents.items():
+            file_state_manager.update_file_state(conversation_id, file_path, content)
 
     # Update any new files that weren't in the initial state
     file_state_manager.update_files_in_state(conversation_id, file_contents)
