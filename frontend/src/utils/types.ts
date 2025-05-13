@@ -9,6 +9,12 @@ export interface Folders {
 
 export type MessageRole = 'human' | 'assistant' | 'system';
 
+export interface ModelChange {
+    from: string;
+    to: string;
+    changeKey?: string;
+}
+
 // Updated Message type to include 'system' role and modelChange property
 export type Message = {
     id?: string;

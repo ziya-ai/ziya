@@ -41,6 +41,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     // Keep track of rendered messages for performance monitoring
     const modelChangeHandlerRef = useRef<((event: CustomEvent) => void) | null>(null);
     const renderedCountRef = useRef(0);
+    const renderedSystemMessagesRef = useRef<Set<string>>(new Set());
+    const processedModelChangesRef = useRef<Set<string>>(new Set());
 
     useEffect(() => {
         console.debug('Conversation messages updated:', {
@@ -79,6 +81,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
             console.log('Conversation received model change event:', event.detail);
             const { previousModel, newModel } = event.detail;
 
+            // Create a unique key for this model change to prevent duplicates
+            const changeKey = `${previousModel}->${newModel}`;
+
+            // Skip if we've already processed this exact change
+            if (processedModelChangesRef.current.has(changeKey)) {
+                console.log('Skipping duplicate model change:', changeKey);
+                return;
+            }
+            processedModelChangesRef.current.add(changeKey);
+
             // Add system message about model change
             if (previousModel && newModel) {
                 addMessageToConversation({
@@ -86,7 +98,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     content: `Model changed from ${previousModel} to ${newModel}`,
                     modelChange: {
                         from: previousModel,
-                        to: newModel
+                        to: newModel,
+                        changeKey: changeKey
                     }
                 }, currentConversationId);
             }
@@ -95,6 +108,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         // Add and remove event listener
         window.addEventListener('modelChanged', handleModelChange as EventListener);
         return () => {
+            // Reset processed changes when component unmounts
+            processedModelChangesRef.current.clear();
+            renderedSystemMessagesRef.current.clear();
             window.removeEventListener('modelChanged', handleModelChange as EventListener);
         };
     }, [currentConversationId, addMessageToConversation]);
@@ -221,11 +237,17 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         (actualIndex === currentMessages.length - 1 ||
                             (hasNextMessage && nextMessage?.role !== 'assistant'));
 
-                    // Debug logging for system messages - moved outside JSX
-                    if (msg.role === 'system') {
+                    // Create a unique key for system messages to prevent duplicate logging
+                    const systemMessageKey = msg.role === 'system' && msg.modelChange ?
+                        `${msg.modelChange.from}->${msg.modelChange.to}` :
+                        msg.content;
+
+                    // Only log system messages once
+                    if (msg.role === 'system' && !renderedSystemMessagesRef.current.has(systemMessageKey)) {
+                        renderedSystemMessagesRef.current.add(systemMessageKey);
                         console.log('Rendering system message:', {
                             content: msg.content,
-                                hasModelChange: Boolean(msg.modelChange),
+                            hasModelChange: Boolean(msg.modelChange),
                             modelChangeFrom: msg.modelChange?.from,
                             modelChangeTo: msg.modelChange?.to,
                             messageIndex: index,
@@ -249,37 +271,39 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 newModel={msg.modelChange.to}
                             />
                         ) : (
-                            // Regular message rendering
-                            <>
-                                {/* Rest of the message rendering logic */}
-
-                                {msg.role === 'human' && (
-                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                        <div className="message-sender">You:</div>
-                                        <div style={{ display: 'flex', gap: '8px' }}>
-                                            {needsResponse && renderRetryButton(actualIndex)}
-                                            <EditSection index={isTopToBottom ? index : currentMessages.length - 1 - index} />
+                            // Skip rendering empty messages entirely
+                            msg.content ? (
+                                // Regular message rendering for non-empty messages
+                                <>
+                                    {msg.role === 'human' && (
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <div className="message-sender">You:</div>
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                {needsResponse && renderRetryButton(actualIndex)}
+                                                <EditSection index={isTopToBottom ? index : currentMessages.length - 1 - index} />
+                                            </div>
                                         </div>
-                                    </div>
-                                )}
+                                    )}
 
-                                {msg.role === 'assistant' && (
-                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                        <div className="message-sender">AI:</div>
-                                        {renderRetryButton(actualIndex)}
-                                    </div>
-                                )}
+                                    {msg.role === 'assistant' && (
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <div className="message-sender">AI:</div>
+                                            {renderRetryButton(actualIndex)}
+                                        </div>
+                                    )}
 
-                                <div className="message-content">
-                                    <Suspense fallback={<div>Loading content...</div>}>
-                                        <MarkdownRenderer
-                                            markdown={msg.content}
-                                            enableCodeApply={enableCodeApply}
-                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                        />
-                                    </Suspense>
-                                </div>
-                            </>
+                                    <div className="message-content">
+                                        <Suspense fallback={<div>Loading content...</div>}>
+                                            <MarkdownRenderer
+                                                markdown={msg.content}
+                                                enableCodeApply={enableCodeApply}
+                                                isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                            />
+                                        </Suspense>
+                                    </div>
+                                    )
+                                </>
+                            ) : null
                         )}
                     </div>;
                 })}

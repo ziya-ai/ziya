@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useLayoutEffect } from 'react';
 import { loadPrismLanguage } from '../utils/prismLoader';
+import { debounce } from '../utils/debounce';
 import { useTheme } from '../context/ThemeContext';
 
 interface DiffLineProps {
@@ -13,6 +14,9 @@ interface DiffLineProps {
     similarity?: number;
     style?: React.CSSProperties;
 }
+
+// Add a cache for whitespace visualization
+const whitespaceCache = new Map<string, string>();
 
 interface WhitespaceMatch {
     index: number;
@@ -160,15 +164,46 @@ const compareLines = (line1: string, line2: string): boolean => {
     return true;
 }
 
-export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, oldLineNumber, newLineNumber, showLineNumbers, viewType, similarity, style }) => {
+export const DiffLine = React.memo(({ content, language, type, oldLineNumber, newLineNumber, showLineNumbers, viewType, similarity, style }: DiffLineProps) => {
+
+    // Memoize line numbers to prevent unnecessary re-renders
+    const lineNumbers = useMemo(() => ({
+        old: oldLineNumber,
+        new: newLineNumber
+    }), [oldLineNumber, newLineNumber]);
+
     const [highlighted, setHighlighted] = useState(content);
     const [isLoading, setIsLoading] = useState(true);
     const { isDarkMode } = useTheme();
+    const [isHighlighting, setIsHighlighting] = useState(true);
     const languageLoadedRef = useRef(false);
     const lastGoodRenderRef = useRef<string | null>(null);
-    const contentRef = useRef<HTMLDivElement | null>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
+    const renderCount = useRef(0);
 
+    // Debug rendering
+    renderCount.current++;
+    console.log(`DiffLine render #${renderCount.current}`, {
+        type,
+        content: content.substring(0, 40)
+    });
+
+    useEffect(() => {
+        console.log('DiffLine mounted');
+        return () => console.log('DiffLine unmounted');
+    }, []);
+
+    // Cache whitespace visualization results
     const visualizeWhitespace = (text: string): string => {
+        // Use cache to avoid repeated processing
+        const cacheKey = `${text}-${type}`;
+        if (whitespaceCache.has(cacheKey)) {
+            return whitespaceCache.get(cacheKey)!;
+        }
+
+        let result = '';
+
+        // For completely empty or whitespace-only lines
         // For completely empty or whitespace-only lines
         if (!text.trim()) {
             const markers = text.replace(/[ \t]/g, c => c === ' ' ? '\u2591' : '→');
@@ -176,7 +211,9 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
             return `<span class="token-line">` +
                 `<span class="ws-marker ${wsClass}">${markers}</span>${text}` +
                 `</span>`;
+            result = `<span class="token-line"><span class="ws-marker ${wsClass}">${markers}</span>${text}</span>`;
         }
+
         // For trailing whitespace
         const match = text.match(/^(.*?)([ \t]+)$/);
         if (match) {
@@ -194,16 +231,24 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 }
             }
             const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
-            return `${baseText}<span class="ws-marker ${wsClass}">${markers}</span>${trailingWs}`;
+            result = `${baseText}<span class="ws-marker ${wsClass}">${markers}</span>${trailingWs}`;
+        } else {
+            result = text;
         }
-        return text;
+
+        // Cache the result
+        whitespaceCache.set(cacheKey, result);
+        return result;
     };
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const highlightCode = async () => {
+            setIsHighlighting(true);
             try {
                 if (!languageLoadedRef.current)
                     await loadPrismLanguage(language);
+                languageLoadedRef.current = true;
+
                 if (!window.Prism || content.length <= 1) return;
 
                 // If already has Prism tokens, use as-is
@@ -381,16 +426,20 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 setIsLoading(false);
             } catch (error) {
                 console.error(`Failed to highlight ${language}:`, error);
-                if (lastGoodRenderRef.current && contentRef.current) {
+                if (lastGoodRenderRef.current && contentRef.current && contentRef.current.innerHTML !== lastGoodRenderRef.current) {
                     contentRef.current.innerHTML = lastGoodRenderRef.current;
                 }
             } finally {
                 setIsLoading(false);
+                setIsHighlighting(false);
             }
         };
 
         highlightCode();
-        return () => { languageLoadedRef.current = false; };
+        return () => {
+            languageLoadedRef.current = false;
+            // Don't clear the cache to preserve results between renders
+        };
     }, [content, language, type, oldLineNumber, newLineNumber]);
 
     // Define base styles that work for both light and dark modes
@@ -439,6 +488,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
                 className="diff-line-content token-container"
                 ref={contentRef}
                 style={{
+                    visibility: isHighlighting ? 'hidden' : 'visible',
                     whiteSpace: 'pre',
                     overflow: viewType === 'split' ? 'hidden' : 'auto',
                     ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
@@ -457,7 +507,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
             <tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
                 {showLineNumbers && (
                     <td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
-                        {oldLineNumber}
+                        {lineNumbers.old}
                     </td>
                 )}
                 <td className="diff-code diff-code-left" style={{ width: 'calc(50% - 50px)' }}>
@@ -470,7 +520,7 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
 
                 {showLineNumbers && (
                     <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
-                        {newLineNumber}
+                        {lineNumbers.new}
                     </td>
                 )}
                 <td className="diff-code diff-code-right" style={{ width: 'calc(50% - 50px)' }}>
@@ -488,15 +538,19 @@ export const DiffLine: React.FC<DiffLineProps> = ({ content, language, type, old
         <tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
             {showLineNumbers && (
                 <td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
-                    {oldLineNumber}
+                    {lineNumbers.old}
                 </td>
             )}
             {showLineNumbers && (
                 <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
-                    {newLineNumber}
+                    {lineNumbers.new}
                 </td>
             )}
             {renderContent()}
         </tr>
     );
-};
+}, (prev, next) => {
+    // Log comparison for debugging
+    const shouldUpdate = prev.content !== next.content || prev.type !== next.type;
+    return !shouldUpdate;
+});

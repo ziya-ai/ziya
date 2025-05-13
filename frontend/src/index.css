@@ -1439,6 +1439,16 @@ body:not(.dark) .token.attr-name {
    fill: #888;
 }
 
+.diff-line {
+  contain: strict;
+  content-visibility: auto;
+}
+
+.diff-line-container {
+  contain: content;
+  position: relative;
+}
+
 /* D3 Error Message */
 .d3-error {
    padding: 16px;

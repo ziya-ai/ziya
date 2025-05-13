@@ -224,7 +224,7 @@ export const App: React.FC = () => {
     // in top-down mode autoscroll to end
     useEffect(() => {
         if (isTopToBottom) {
-            const chatContainer = document.querySelector('.chat-container:not(.streaming)');
+            const chatContainer = document.querySelector('.chat-container');
             if (!chatContainer) return;
             const scrollToBottom = (smooth = false) => {
                 requestAnimationFrame(() => {
@@ -236,13 +236,17 @@ export const App: React.FC = () => {
             };
             // Scroll on initial render and when messages change
 
-            // Skip scrolling if we're streaming to avoid flicker
-            if (!streamingConversations.has(currentConversationId)) {
+            // Only auto-scroll in these specific cases:
+            // 1. Initial render (currentMessages changes)
+            // 2. When streaming is active (to follow the new content)
+            // 3. When a new message is added (streamedContentMap changes)
+            const isStreaming = streamingConversations.has(currentConversationId);
+            if (isStreaming) {
                 scrollToBottom();
+                // Add a small delay for smooth scroll after content renders
+                const timeoutId = setTimeout(() => scrollToBottom(true), 50);
+                return () => clearTimeout(timeoutId);
             }
-            // Add a small delay for smooth scroll after content renders
-            const timeoutId = setTimeout(() => scrollToBottom(true), 50);
-            return () => clearTimeout(timeoutId);
         }
     }, [isTopToBottom, currentMessages, streamedContentMap]);
 

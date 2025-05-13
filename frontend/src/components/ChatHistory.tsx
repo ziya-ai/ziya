@@ -1291,7 +1291,7 @@ export const ChatHistory: React.FC = () => {
                         display: 'flex',
                         border: isDragTarget ? '1px dashed #1890ff' : 'none',
                         alignItems: 'flex-start',
-                        justifyContent: 'space-between',
+                        position: 'relative',
                         backgroundColor: isCurrentConversation ? (isDarkMode ? '#177ddc' : '#e6f7ff') : 'transparent',
                         padding: '4px 8px',
                         borderRadius: '4px',
@@ -1309,7 +1309,7 @@ export const ChatHistory: React.FC = () => {
                         handleConversationClick(conversation.id);
                     }}
                 >
-                    <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ width: 'calc(100% - 40px)', minWidth: 0 }}>
                         {isEditing ? (
                             <Input
                                 defaultValue={conversation.title || ''}
@@ -1338,7 +1338,7 @@ export const ChatHistory: React.FC = () => {
                                 <span style={{
                                     display: 'inline-block',
                                     maxWidth: 'calc(100% - 30px)', // Reserve more space for dropdown
-                                    overflow: 'hidden',
+                                    overflow: 'hidden !important',
                                     textOverflow: 'ellipsis',
                                     whiteSpace: 'nowrap',
                                     verticalAlign: 'middle'
@@ -1355,10 +1355,10 @@ export const ChatHistory: React.FC = () => {
                         )}</div>
                     <div style={{
                         display: 'flex',
-                        alignItems: 'center',
-                        marginLeft: 'auto',
-                        minWidth: '30px',
-                        flexShrink: 0
+                        position: 'absolute',
+                        right: '8px',
+                        top: '4px',
+                        zIndex: 100
                     }}
                     >
                         <Dropdown

@@ -8,9 +8,9 @@ interface ModelChangeNotificationProps {
   key?: string;
 }
 
-const ModelChangeNotification: React.FC<ModelChangeNotificationProps> = memo(({ previousModel, newModel }) => {
+const ModelChangeNotification: React.FC<ModelChangeNotificationProps> = memo(({ previousModel, newModel, changeKey }) => {
   const { isDarkMode } = useTheme();
-  
+
   // Define colors that work well in both light and dark modes
   const styles = {
     container: {
@@ -39,7 +39,7 @@ const ModelChangeNotification: React.FC<ModelChangeNotificationProps> = memo(({ 
       color: isDarkMode ? '#bbdefb' : '#1565c0'
     }
   };
-  
+
   return (
     <div style={styles.container}>
       <span style={styles.icon}>🔄</span>
@@ -49,10 +49,13 @@ const ModelChangeNotification: React.FC<ModelChangeNotificationProps> = memo(({ 
     </div>
   );
 }, (prevProps, nextProps) => {
-  // Only re-render if the models actually change
-  return prevProps.previousModel === nextProps.previousModel && 
-         prevProps.newModel === nextProps.newModel &&
-         prevProps.changeKey === nextProps.changeKey;
+  // Only re-render if the models actually change or if the changeKey is different
+  if (prevProps.changeKey && nextProps.changeKey && prevProps.changeKey !== nextProps.changeKey) {
+    return false; // Different changeKeys mean we should re-render
+  }
+  return prevProps.previousModel === nextProps.previousModel &&
+    prevProps.newModel === nextProps.newModel &&
+    prevProps.changeKey === nextProps.changeKey;
 });
 
 ModelChangeNotification.displayName = 'ModelChangeNotification';

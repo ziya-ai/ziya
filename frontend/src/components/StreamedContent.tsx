@@ -1,6 +1,6 @@
 import React, { useEffect, Suspense, useState, useRef, useCallback, useLayoutEffect, useMemo } from 'react';
 import { useChatContext } from '../context/ChatContext';
-import { Space, Alert } from 'antd';
+import { Space, Alert, Typography } from 'antd';
 import StopStreamButton from './StopStreamButton';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 
@@ -11,6 +11,7 @@ export const StreamedContent: React.FC = () => {
     const [connectionLost, setConnectionLost] = useState<boolean>(false);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const contentRef = useRef<HTMLDivElement>(null);
+    const lastQuestionRef = useRef<string>('');
     const isAutoScrollingRef = useRef<boolean>(false);
     const lastScrollPositionRef = useRef<number>(0);
     const {
@@ -21,13 +22,21 @@ export const StreamedContent: React.FC = () => {
         streamingConversations,
         currentMessages,
         removeStreamingConversation,
-        isTopToBottom
+        isTopToBottom,
+        question,
     } = useChatContext();
 
     const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) || '', [streamedContentMap, currentConversationId]);
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
         streamedContentMap.get(currentConversationId) !== '';
+
+    // Store the last question when streaming starts
+    useEffect(() => {
+        if (streamingConversations.has(currentConversationId)) {
+            lastQuestionRef.current = question;
+        }
+    }, [streamingConversations, currentConversationId, question]);
 
     // Add direct method to stop streaming
     const stopStreaming = useCallback(() => {
@@ -173,9 +182,16 @@ export const StreamedContent: React.FC = () => {
         return contentRect.bottom <= containerRect.bottom + 20; // 20px tolerance
     };
 
-    // Preserve scroll position during streaming updates
+
     // Function to smoothly scroll to keep the streaming content in view
     const scrollToKeepInView = () => {
+        // Debug scroll events
+        const now = Date.now();
+        console.log(`scrollToKeepInView called at ${now % 10000}`, {
+            isAutoScrolling: isAutoScrollingRef.current,
+            isTopToBottom
+        });
+
         if (!contentRef.current || !isAutoScrollingRef.current) return;
 
         const container = contentRef.current.closest('.chat-container');
@@ -237,32 +253,32 @@ export const StreamedContent: React.FC = () => {
         return () => {
             window.removeEventListener('error', handleStreamError);
         };
-    }, [isStreaming, currentConversationId, streamingConversations]);
+    }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
 
     // Set up observer to detect when user is viewing the bottom of content
+    const observerRef = useRef<IntersectionObserver>();
+
     useEffect(() => {
         if (!contentRef.current) return;
 
-        const observer = new IntersectionObserver(
-            (entries) => {
-                for (const entry of entries) {
-                    // If the content is visible and streaming is happening
-                    if (entry.isIntersecting && streamingConversations.has(currentConversationId)) {
-                        isAutoScrollingRef.current = true;
-                    } else {
-                        isAutoScrollingRef.current = false;
-                    }
-                }
-            },
-            { threshold: 0.1 }
-        );
+        if (observerRef.current) {
+            observerRef.current.disconnect();
+        }
 
-        observer.observe(contentRef.current);
+        observerRef.current = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    isAutoScrollingRef.current = true;
+                } else {
+                    isAutoScrollingRef.current = false;
+                }
+            });
+        }, { threshold: 0.1, rootMargin: '0px' });
+
+        observerRef.current.observe(contentRef.current);
 
         return () => {
-            if (contentRef.current) {
-                observer.unobserve(contentRef.current);
-            }
+            observerRef.current?.disconnect();
         };
     }, [currentConversationId, streamingConversations]);
 
@@ -289,7 +305,7 @@ export const StreamedContent: React.FC = () => {
         }
 
         // Set up interval to keep scrolling if needed
-        const scrollInterval = setInterval(scrollToKeepInView, 100);
+        const scrollInterval = setInterval(scrollToKeepInView, 500); // Reduced frequency
 
         return () => clearInterval(scrollInterval);
     }, [currentConversationId, streamingConversations, streamedContentMap]);
@@ -334,6 +350,15 @@ export const StreamedContent: React.FC = () => {
                     <div className="message assistant">
                         {connectionLost && (
                             <ConnectionLostAlert />
+                        )}
+                        {/* Show the human message immediately when streaming starts */}
+                        {streamingConversations.has(currentConversationId) && (
+                            <div className="message human" style={{ marginBottom: '16px' }}>
+                                <div className="message-sender">You:</div>
+                                <div className="message-content">
+                                    <Typography.Paragraph>{lastQuestionRef.current}</Typography.Paragraph>
+                                </div>
+                            </div>
                         )}
                         <div className="message-sender" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <span>AI:</span>

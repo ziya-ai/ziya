@@ -62,6 +62,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             return;
         }
 
+        // Store the question before clearing it
+        const currentQuestion = question;
+
         setQuestion('');
 	setStreamedContentMap(new Map());
 
@@ -74,7 +77,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 	
         // Create new human message
         const newHumanMessage: Message = {
-            content: question,
+            content: currentQuestion,
             role: 'human'
         };
 
@@ -87,7 +90,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         console.log('Added human message:', {
             id: currentConversationId,
             content: newHumanMessage.content,
-            currentMessages: currentMessages.length
+            currentMessages: currentMessages.length + 1 // +1 because we just added a message
         });
 
         // Include the new message in messages for the API
@@ -99,7 +102,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 	    // Get latest messages after state update
             const selectedFiles = convertKeysToStrings(checkedKeys);
             const result = await sendPayload(
-                messagesWithNew,
+                [...currentMessages, newHumanMessage], // Include the new human message
                 question,
                 selectedFiles,
                 targetConversationId,

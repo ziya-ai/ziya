@@ -607,11 +607,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
         window.addEventListener('modelChanged', handleModelChange as EventListener);
 
         return () => {
+            // Reset processed changes when component unmounts
+            processedModelChanges.current.clear();
             window.removeEventListener('modelChanged', handleModelChange as EventListener);
         };
-
-        // Reset processed changes when component unmounts
-        return () => { processedModelChanges.current.clear(); };
     }, [handleModelChange]);
 
     useEffect(() => {
@@ -628,27 +627,32 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
 
     useEffect(() => {
+        let isMounted = true;
+
         const handleStorageChange = async () => {
+            if (!isInitialized || !isMounted) return;
             try {
                 const saved = await db.getConversations();
                 if (saved.length > 0) {
-                    setConversations(prev => {
-                        // Don't update conversations that are being edited
-                        return prev.map(conv => {
-                            const savedConv = saved.find(s => s.id === conv.id);
-                            // Keep our version if we're editing or if our version is newer
-                            return (conv._editInProgress || (conv._version || 0) > (savedConv?._version || 0))
-                                ? conv : (savedConv || conv);
-                        });
-                    });
+                    // Only update if there's an actual difference
+                    const currentStr = JSON.stringify(conversations);
+                    const savedStr = JSON.stringify(saved);
+
+                    if (currentStr !== savedStr) {
+                        setConversations(prev =>
+                            mergeConversations(prev, saved)
+                        );
+                    }
                 }
             } catch (error) {
                 console.error('Error during conversation poll:', error);
             }
 
         };
-        window.addEventListener('storage', handleStorageChange);
+        window.addEventListener('storage', handleStorageChange, { passive: true });
         return () => window.removeEventListener('storage', handleStorageChange);
+
+        return () => { isMounted = false; };
     }, []);
 
     useEffect(() => {
@@ -656,6 +660,28 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setCurrentConversationId(uuidv4());
         }
     }, [currentConversationId]);
+
+    // Add mergeConversations function
+    const mergeConversations = useCallback((local: Conversation[], remote: Conversation[]) => {
+        const merged = new Map<string, Conversation>();
+
+        // Add all local conversations first
+        local.forEach(conv => merged.set(conv.id, conv));
+
+        // Merge remote conversations only if newer
+        remote.forEach(remoteConv => {
+            const localConv = merged.get(remoteConv.id);
+            if (!localConv ||
+                (remoteConv._version || 0) > (localConv._version || 0)) {
+                merged.set(remoteConv.id, {
+                    ...remoteConv,
+                    isActive: localConv?.isActive ?? true // Preserve active status
+                });
+            }
+        });
+
+        return Array.from(merged.values());
+    }, []);
 
     const setDisplayMode = (conversationId: string, mode: 'raw' | 'pretty') => {
         setConversations(prev => {
@@ -710,6 +736,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         isLoadingConversation
     }), [
         question,
+        setQuestion,
         streamedContentMap,
         isStreaming,
         streamingConversations,
@@ -733,6 +760,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setIsStreaming,
         setCurrentConversationId
     ]);
+
+  // Temporary debug command
+  useEffect(() => {
+    (window as any).debugChatContext = () => {
+      console.log('ChatContext State:', { conversations, currentConversationId, streamedContentMap });
+      console.log('Rendering Info:', Array.from(document.querySelectorAll('.diff-view')).map(el => el.id));
+    };
+  }, [conversations, currentConversationId, streamedContentMap]);
 
     return <chatContext.Provider value={value}>{children}</chatContext.Provider>;
 }
