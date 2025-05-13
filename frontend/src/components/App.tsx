@@ -258,7 +258,7 @@ export const App: React.FC = () => {
     // in top-down mode autoscroll to end
     useEffect(() => {
         if (isTopToBottom) {
-            const chatContainer = document.querySelector('.chat-container:not(.streaming)');
+            const chatContainer = document.querySelector('.chat-container');
             if (!chatContainer) return;
 
             const scrollToBottom = (smooth = false) => {
