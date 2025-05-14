@@ -1273,6 +1273,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         const hunkId = hunkIndex + 1;
                         const isApplied = status?.applied;
                         const statusReason = status?.reason || '';
+                        const isAlreadyApplied = status?.alreadyApplied;
 
                         // Add visual indicator for hunk status
                         const hunkStatusIndicator = status && (
@@ -1284,9 +1285,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 marginLeft: '8px'
                             }}>
                                 {isApplied ?
-                                    status?.alreadyApplied ?
+                                    isAlreadyApplied ?
                                         <><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</> :
-                                        <><CheckCircleOutlined /> Applied</> :
+                                        <><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</> :
                                     <><CloseCircleOutlined /> Failed: {statusReason}</>
                                 }
                             </span>
@@ -1294,7 +1295,19 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
                         return (
                             <React.Fragment key={`${fileIndex}-${hunkIndex}`}>
-                                {/* Only show line count if there are lines between hunks */}
+                                {/* Add a hunk header with status-based styling */}
+                                {status && (
+                                    <tr className="hunk-status-header">
+                                        <td colSpan={viewType === 'split' ? 4 : 3} style={{
+                                            padding: 0,
+                                            borderLeft: `3px solid ${isApplied ?
+                                                (isAlreadyApplied ? '#faad14' : '#52c41a') :
+                                                '#ff4d4f'}`,
+                                            backgroundColor: isApplied ?
+                                                (isAlreadyApplied ? 'rgba(250, 173, 20, 0.05)' : 'rgba(82, 196, 26, 0.05)') :
+                                                'rgba(255, 77, 79, 0.05)'
+                                        }}></td>
+                                    </tr>)}
                                 {showEllipsis && (
                                     <tr id={`hunk-${fileIndex}-${hunkIndex}`} data-diff-id={elementId}>
                                         <td
@@ -2503,7 +2516,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             style={{ marginLeft: '8px' }} id={`apply-changes-${buttonId}`}
             icon={<CheckOutlined />}
         >
-            Apply Changes (beta)
+            Apply Changes
         </Button>
     ) : null;
 };
