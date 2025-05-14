@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Tuple
 from itertools import zip_longest
 import re
 import logging
+import difflib
 
 logger = logging.getLogger("ZIYA")
 from ..core.utils import calculate_block_similarity, normalize_escapes
@@ -146,6 +147,28 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         logger.warning(f"Malformed hunk detected: missing old_block or new_lines")
         # Don't mark malformed hunks as already applied
         return False
+    
+    # CRITICAL FIX: First check if the file content at this position matches what we're trying to remove
+    # This is essential to prevent marking a hunk as "already applied" when the file content doesn't match
+    # what we're trying to remove
+    if removed_lines and pos + len(removed_lines) <= len(file_lines):
+        file_slice_for_removed = file_lines[pos:pos+len(removed_lines)]
+        
+        # Normalize both for comparison
+        normalized_file_slice = [normalize_line_for_comparison(line) for line in file_slice_for_removed]
+        normalized_removed_lines = [normalize_line_for_comparison(line) for line in removed_lines]
+        
+        # If the file content doesn't match what we're trying to remove,
+        # then this hunk can't be already applied here
+        if normalized_file_slice != normalized_removed_lines:
+            # Calculate similarity to help with debugging
+            similarity = difflib.SequenceMatcher(None, 
+                                               "\n".join(normalized_file_slice), 
+                                               "\n".join(normalized_removed_lines)).ratio()
+            logger.debug(f"File content doesn't match what we're trying to remove at position {pos} (similarity: {similarity:.2f})")
+            logger.debug(f"File content: {normalized_file_slice}")
+            logger.debug(f"Removed lines: {normalized_removed_lines}")
+            return False
         
     # CRITICAL FIX: Check if the diff header is malformed
     if 'header' in hunk and '@@ -' in hunk['header']:
@@ -176,7 +199,7 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
             normalized_removed_line = normalize_line_for_comparison(removed_lines[0])
             
             # If the file already has the added line (not the removed line)
-            if normalized_file_line == normalized_added_line and normalized_file_line != normalized_removed_line:
+            if normalized_file_line == normalized_added_line:
                 logger.debug(f"Found added line already in file at position {pos}")
                 return True
     

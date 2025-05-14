@@ -1,0 +1,11 @@
+diff --git a/components/DiffView.tsx b/components/DiffView.tsx
+index c9b5c1e..e9d7c1f 100644
+--- a/components/DiffView.tsx
++++ b/components/DiffView.tsx
+@@ -7,7 +7,7 @@ const DiffView = React.memo(function DiffView({ diff, viewType, initialDisplayMo
+             height: auto;
+             overflow: visible !important;
+-            padding-bottom: 4px !important;
++            padding: 0 !important;
+             box-sizing: border-box !important;
+         }

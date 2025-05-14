@@ -1,0 +1,5 @@
+{
+  "description": "Test case for CSS padding property incorrectly marked as already applied using real file",
+  "target_file": "frontend/src/components/MarkdownRenderer.tsx",
+  "expected_to_fail": true
+}

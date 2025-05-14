@@ -818,7 +818,63 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             found_applied_at_any_pos = False
             # Check if this specific hunk is already applied anywhere in the file
             for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
-                if is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=False):
+                # CRITICAL FIX: First check if the target state (new_lines) is already present in the file
+                # This is the most important check - if the target state is already there, we can mark it as already applied
+                if 'new_lines' in hunk and pos + len(hunk.get('new_lines', [])) <= len(original_lines):
+                    # Extract the expected content after applying the hunk
+                    new_lines = hunk.get('new_lines', [])
+                    file_slice = original_lines[pos:pos+len(new_lines)]
+                    
+                    # Normalize both for comparison
+                    normalized_file_slice = [normalize_line_for_comparison(line) for line in file_slice]
+                    normalized_new_lines = [normalize_line_for_comparison(line) for line in new_lines]
+                    
+                    # If the file already contains the target state, mark it as already applied
+                    if normalized_file_slice == normalized_new_lines:
+                        # CRITICAL FIX: Also check if the old_block matches what's in the file
+                        # This prevents marking a hunk as "already applied" when the file has content
+                        # that doesn't match what we're trying to remove
+                        if 'old_block' in hunk:
+                            # Extract the lines we're trying to remove
+                            removed_lines = []
+                            for line in hunk.get('old_block', []):
+                                if line.startswith('-'):
+                                    removed_lines.append(line[1:])
+                            
+                            # If there are lines to remove, check if they match the file content
+                            if removed_lines:
+                                # Check if we have enough lines in the file to compare
+                                if pos + len(removed_lines) <= len(original_lines):
+                                    # Compare the file content with the lines we're trying to remove
+                                    file_slice_for_removed = original_lines[pos:pos+len(removed_lines)]
+                                    
+                                    # Normalize both for comparison
+                                    normalized_file_slice_for_removed = [normalize_line_for_comparison(line) for line in file_slice_for_removed]
+                                    normalized_removed_lines = [normalize_line_for_comparison(line) for line in removed_lines]
+                                    
+                                    # If the file content doesn't match what we're trying to remove,
+                                    # then this hunk can't be already applied here
+                                    if normalized_file_slice_for_removed != normalized_removed_lines:
+                                        # Skip this position - the content doesn't match what we're trying to remove
+                                        logger.debug(f"Skipping position {pos} - file content doesn't match what we're trying to remove")
+                                        continue
+                        
+                        found_applied_at_any_pos = True
+                        # Use the correct hunk ID from the mapping
+                        pipeline_hunk_id = hunk_id_mapping.get(i, original_hunk_id)
+                        already_applied_hunks.append(pipeline_hunk_id)
+                        
+                        # Update the hunk status in the pipeline
+                        pipeline.update_hunk_status(
+                            hunk_id=pipeline_hunk_id,
+                            stage=PipelineStage.DIFFLIB,
+                            status=HunkStatus.ALREADY_APPLIED
+                        )
+                        logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos}")
+                        break
+                
+                # If we haven't found it already applied, use the standard check
+                if not found_applied_at_any_pos and is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=False):
                     found_applied_at_any_pos = True
                     # Use the correct hunk ID from the mapping
                     pipeline_hunk_id = hunk_id_mapping.get(i, original_hunk_id)
@@ -832,8 +888,11 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     )
                     logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos}")
                     break
+            
             if not found_applied_at_any_pos:
                 logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) is not already applied")
+                all_hunks_found_applied = False
+                # Don't break here - continue checking other hunks
                 all_hunks_found_applied = False
                 # Don't break here - continue checking other hunks
                 
