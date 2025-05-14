@@ -39,4 +39,7 @@ const examples: MermaidExample[] = [
     activate Database
     Database-->>API: Return data
     deactivate Database
-    API
+    API-->>Browser: Return JSON
+    deactivate API`
+    }
+];

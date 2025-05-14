@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Button, Modal, Input, Form, Switch, message } from 'antd';
-import { PlusSquareOutlined } from '@ant-design/icons';
+import { FolderAddOutlined } from '@ant-design/icons';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 
@@ -26,12 +26,14 @@ export const FolderButton: React.FC = () => {
   return (
     <>
       <Button
-        icon={<PlusSquareOutlined />}
+        icon={<FolderAddOutlined />}
         onClick={() => setIsModalVisible(true)}
-        type="text"
-        size="small"
-        title="Create new folder"
+        type="primary"
+        size="middle"
         style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '4px',
           color: isDarkMode ? '#ffffff' : undefined
         }}
       />

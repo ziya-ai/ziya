@@ -254,6 +254,7 @@ const DiffControls = memo(({
                             ]}
                             value={viewType}
                             onChange={(value) => {
+                                // Store the view type in window for persistence
                                 window.diffViewType = value as 'unified' | 'split';
                                 onViewTypeChange(value as 'unified' | 'split');
                             }}
@@ -293,6 +294,7 @@ const DiffControls = memo(({
                         }
                     ]}
                     onChange={handleDisplayModeChange}
+                    onClick={() => { window.diffDisplayMode = displayMode === 'pretty' ? 'raw' : 'pretty'; }}
                     size="small"
                     style={{
                         backgroundColor: isDarkMode ? '#141414' : '#f0f0f0',
@@ -417,13 +419,13 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], fileIndex?
     if (file.oldPath || file.newPath) {
         if (file.type === 'rename') {
             const similarityIndex = file.similarity || 100;
-            return `Rename${similarityIndex < 100 ? ' with changes' : ''}: ${file.oldPath} → ${file.newPath} (${similarityIndex}% similar)`;
+            return `Rename${similarityIndex < 100 ? ' with changes' : ''}: ${file.oldPath} -> ${file.newPath} (${similarityIndex}% similar)`;
         } else if (file.type === 'delete') {
             return `Delete: ${file.oldPath}`;
         } else if (file.type === 'add') {
             return `Create: ${file.newPath}`;
         } else if (file.oldPath && file.newPath && file.oldPath !== file.newPath) {
-            return `Rename: ${file.oldPath} → ${file.newPath}`;
+            return `Rename: ${file.oldPath} -> ${file.newPath}`;
         } else {
             return `File: ${file.oldPath || file.newPath}`;
         }
@@ -437,7 +439,7 @@ const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], fileIndex?
         if ((oldPath === null || oldPath === '/dev/null') && newPath) {
             return `Create: ${newPath}`;
         } else if (oldPath && newPath && isRename(oldPath, newPath)) {
-            return `Rename: ${oldPath} → ${newPath}`;
+            return `Rename: ${oldPath} -> ${newPath}`;
         } else if ((oldPath && !newPath) || (oldPath && newPath === '/dev/null')) {
             return `Delete: ${oldPath}`;
         } else if (!oldPath && newPath) {
@@ -828,7 +830,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 applied: status.status === 'succeeded' || status.status === 'already_applied',
                                 alreadyApplied: status.status === 'already_applied',
                                 reason: status.status === 'failed'
-                                    ? `Failed in ${status.stage} stage`
+                                    ? 'Failed in ' + status.stage + ' stage'
                                     : status.status === 'already_applied'
                                         ? 'Already applied'
                                         : 'Successfully applied'
@@ -1113,11 +1115,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                             />
                         </>
                     ) : (
-                        <>
-                            <col className="diff-gutter-col" />
-                            {showLineNumbers && <col className="diff-gutter-col" />}
+                        <React.Fragment>
+                            {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
+                            {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
                             <col style={{ width: 'auto' }} />
-                        </>
+                        </React.Fragment>
                     )}
                 </colgroup>
                 <tbody>
@@ -1398,8 +1400,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         }
         
         .hunk-status-indicator:hover {
-        background-color: ${isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)'};
-
+            background-color: ${isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)'};
             overflow: hidden;
             text-overflow: ellipsis;
             margin-right: 16px;
@@ -1516,7 +1517,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     <div className="diff-content">
                         {renderHunks(
                             file.hunks,
-                            file.type === 'delete' ? file.oldPath : file.newPath || file.oldPath,
+                            file.newPath || file.oldPath,
                             fileIndex,
                         )}
                     </div>
@@ -1604,7 +1605,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         const cleanDiff = (() => {
             console.log('Pre-fetch diff content for file:', filePath);
             // Log the incoming diff content
-            console.log('Raw diff content:', {
+            console.debug('Raw diff content:', {
                 processing: true,
                 elementId: diffElementId,
                 length: diff.length,
@@ -1622,7 +1623,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             // If it's already a raw diff, extract only the relevant file's diff if multipart
             if (diff.startsWith('diff --git')) {
                 const singleFileDiff = extractSingleFileDiff(diff, filePath);
-                console.log('Extracted single file diff:', {
+                console.debug('Extracted single file diff:', {
                     filePath,
                     diffLength: singleFileDiff.length
                 });
@@ -1632,7 +1633,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             // Otherwise extract diff from markdown code block
             const diffMatch = diff.match(/```diff\n([\s\S]*?)```(?:\s|$)/);
             console.log('Diff match result:', {
-                found: !!diffMatch,
+                found: Boolean(diffMatch),
                 groups: diffMatch ? diffMatch.length : 0,
 
                 matchContent: diffMatch ? {
@@ -1860,7 +1861,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                     applied: hunkStatus.status === 'succeeded',
                                     alreadyApplied: hunkStatus.status === 'already_applied',
                                     reason: hunkStatus.status === 'failed'
-                                        ? `Failed in ${hunkStatus.stage} stage`
+                                        ? 'Failed in ' + hunkStatus.stage + ' stage'
                                         : 'Successfully applied'
                                 });
                             } else {
@@ -1931,7 +1932,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             instanceHunkStatusMap.set(hunkKey, {
                                 applied: false,
                                 reason: hunkStatus?.stage
-                                    ? `Failed in ${hunkStatus.stage} stage`
+                                    ? 'Failed in ' + (hunkStatus.stage || 'unknown') + ' stage'
                                     : 'Failed to apply'
                             });
                         });
@@ -2157,7 +2158,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             newMap.set(hunkKey, {
                                 applied: (status as ApiHunkStatus).status === 'succeeded' || (status as ApiHunkStatus).status === 'already_applied',
                                 alreadyApplied: (status as ApiHunkStatus).status === 'already_applied',
-                                reason: (status as ApiHunkStatus).status === 'failed' ? `Failed in ${(status as ApiHunkStatus).stage || 'unknown'} stage` : 'Successfully applied'
+                                reason: (status as ApiHunkStatus).status === 'failed' ? 'Failed in ' + ((status as ApiHunkStatus).stage || 'unknown') + ' stage' : 'Successfully applied'
                             } as HunkStatus);
                             return newMap;
                         });

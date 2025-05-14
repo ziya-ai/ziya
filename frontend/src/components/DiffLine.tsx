@@ -491,7 +491,7 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                                 className="diff-line-content token-container"
                                 ref={contentRef}
                     style={{
-                        visibility: isHighlighting ? 'hidden' : 'visible',
+                        visibility: isHighlighting ? 'hidden' : 'visible', 
                         whiteSpace: 'pre',
                         overflow: viewType === 'split' ? 'hidden' : 'auto',
                         ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
@@ -516,7 +516,7 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                                 style={{
                                     visibility: isHighlighting ? 'hidden' : 'visible',
                                     whiteSpace: 'pre',
-                                    overflow: viewType === 'split' as const ? 'hidden' : 'auto',
+                                    overflow: viewType === 'split' ? 'hidden' : 'auto',
                                     ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
                                     ...(style || {})
                                 }}
@@ -553,7 +553,7 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                     style={{
                         visibility: isHighlighting ? 'hidden' : 'visible',
                         whiteSpace: 'pre',
-                                    overflow: viewType === 'split' as const ? 'hidden' : 'auto',
+                        overflow: viewType === 'split' ? 'hidden' : 'auto',
                         ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
                         ...(style || {})
                     }}
