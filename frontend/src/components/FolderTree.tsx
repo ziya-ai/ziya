@@ -432,7 +432,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         // Get the total tokens for this path directly from the folders data
         // Extract the token count from the title if needed
         let totalTokens = 0;
-
+        
         // Try to get token count from the folders structure
         totalTokens = folders ? getFolderTokenCount(nodePath, folders) : 0;
 
@@ -460,7 +460,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         // Process each child node
         for (const child of node.children) {
             const childPath = child.key as string;
-
+            
             // Case 1: Child is directly selected
             if (checkedKeys.includes(child.key)) {
                 const childTokens = getFolderTokenCount(childPath, folders);
@@ -469,7 +469,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
             }
             // Case 2: Child is a directory that might have selected descendants
             else if (child.children && child.children.length > 0) {
-                // Recursively check this child directory
+                // Recursively check this child directory if folders is defined
                 const childResult = getIncludedTokens(child);
 
                 // Only add if there are included tokens

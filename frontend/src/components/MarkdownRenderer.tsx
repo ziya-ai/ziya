@@ -1,6 +1,6 @@
 import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, useId, useContext, createContext, useDebugValue } from 'react';
 import 'prismjs/themes/prism.css';
-import { Button, message, Radio, Space, Spin, RadioChangeEvent, Tooltip } from 'antd';
+import { Button, message, Radio, Space, Spin, RadioChangeEvent, Tooltip, Segmented } from 'antd';
 import { marked, Tokens } from 'marked';
 import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
@@ -9,7 +9,7 @@ import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import {
-    CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined,
+    CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined, SplitCellsOutlined, BorderlessTableOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, ExclamationCircleOutlined
 } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
@@ -192,75 +192,114 @@ interface DiffControlsProps {
     onDisplayModeChange: (mode: 'raw' | 'pretty') => void;
     onViewTypeChange: (type: 'split' | 'unified') => void;
     onLineNumbersChange: (show: boolean) => void;
+    fileTitle?: string;
 }
 
 const DiffControls = memo(({
     displayMode,
     viewType,
     showLineNumbers,
+    fileTitle,
     onDisplayModeChange,
     onViewTypeChange,
     onLineNumbersChange
 }: DiffControlsProps) => {
     const { isDarkMode } = useTheme();
-    const handleDisplayModeChange = (e: RadioChangeEvent) => {
-        const newMode = e.target.value as DisplayMode;
+    const [isHovered, setIsHovered] = useState(false);
+
+    const handleDisplayModeChange = (value: string | number) => {
+        const newMode = value as DisplayMode;
         onDisplayModeChange(newMode);
     };
 
     return (
-        <div className="diff-view-controls" style={{
-            backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            width: '100%'
-        }}>
-            <div>
-                {displayMode === 'pretty' && (
-                    <Space>
-                        <Radio.Group
+        <div
+            className="diff-view-controls"
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
+            style={{
+                backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                alignItems: 'center',
+                width: '100%',
+                padding: '4px 8px',
+                gap: '8px',
+                borderBottom: `1px solid ${isDarkMode ? '#303030' : '#e8e8e8'}`,
+                opacity: isHovered ? 1 : 0.7,
+                transition: 'opacity 0.3s ease',
+                zIndex: 10
+            }}>
+            <div style={{
+                flex: 1,
+                textAlign: 'left',
+                fontWeight: 'bold',
+                fontSize: '14px',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis'
+            }}>{fileTitle}</div>
+            {displayMode === 'pretty' && (
+                <>
+                    <Tooltip title="View Type">
+                        <Segmented
+                            options={[
+                                {
+                                    value: 'unified',
+                                    icon: <BorderlessTableOutlined />
+                                },
+                                {
+                                    value: 'split',
+                                    icon: <SplitCellsOutlined />
+                                }
+                            ]}
                             value={viewType}
-                            buttonStyle="solid"
+                            onChange={(value) => {
+                                window.diffViewType = value as 'unified' | 'split';
+                                onViewTypeChange(value as 'unified' | 'split');
+                            }}
+                            size="small"
                             style={{
-                                backgroundColor: isDarkMode ? '#141414' : '#ffffff',
-                                color: isDarkMode ? '#ffffff' : '#000000'
+                                backgroundColor: isDarkMode ? '#141414' : '#f0f0f0',
+                                fontSize: '12px'
                             }}
-                            onChange={e => {
-                                window.diffViewType = e.target.value;
-                                onViewTypeChange(e.target.value);
-                            }}
-                        >
-                            <Radio.Button value="unified">Unified View</Radio.Button>
-                            <Radio.Button value="split">Split View</Radio.Button>
-                        </Radio.Group>
-                        <Radio.Group
-                            value={showLineNumbers}
-                            buttonStyle="solid"
+                        />
+                    </Tooltip>
+                    <Tooltip title={showLineNumbers ? "Hide Line Numbers" : "Show Line Numbers"}>
+                        <Button
+                            type={showLineNumbers ? "primary" : "default"}
+                            size="small"
+                            icon={<NumberOutlined />}
+                            onClick={() => onLineNumbersChange(!showLineNumbers)}
                             style={{
-                                backgroundColor: isDarkMode ? '#141414' : '#ffffff',
-                                color: isDarkMode ? '#ffffff' : '#000000'
+                                padding: '0 8px',
+                                minWidth: '32px',
+                                height: '24px'
                             }}
-                            onChange={(e) => onLineNumbersChange(e.target.value)}
-                        >
-                            <Radio.Button value={false}>Hide Line Numbers</Radio.Button>
-                            <Radio.Button value={true}>Show Line Numbers</Radio.Button>
-                        </Radio.Group>
-                    </Space>
-                )}
-            </div>
-            <Radio.Group
-                value={displayMode}
-                buttonStyle="solid"
-                style={{
-                    backgroundColor: isDarkMode ? '#141414' : '#ffffff',
-                    color: isDarkMode ? '#ffffff' : '#000000'
-                }}
-                onChange={handleDisplayModeChange}
-            >
-                <Radio.Button value="pretty">Pretty</Radio.Button>
-                <Radio.Button value="raw">Raw</Radio.Button>
-            </Radio.Group>
+                        />
+                    </Tooltip>
+                </>
+            )}
+            <Tooltip title={displayMode === 'pretty' ? "Switch to Raw View" : "Switch to Pretty View"}>
+                <Segmented
+                    value={displayMode}
+                    options={[
+                        {
+                            value: 'pretty',
+                            icon: <EyeOutlined />
+                        },
+                        {
+                            value: 'raw',
+                            icon: <FileTextOutlined />
+                        }
+                    ]}
+                    onChange={handleDisplayModeChange}
+                    size="small"
+                    style={{
+                        backgroundColor: isDarkMode ? '#141414' : '#f0f0f0',
+                        fontSize: '12px'
+                    }}
+                />
+            </Tooltip>
         </div>
     );
 });
@@ -1100,6 +1139,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         const hunkId = hunkIndex + 1;
                         const isApplied = status?.applied;
                         const statusReason = status?.reason || '';
+                        const isAlreadyApplied = status?.alreadyApplied;
 
                         // Add visual indicator for hunk status
                         const hunkStatusIndicator = status && (
@@ -1111,9 +1151,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 marginLeft: '8px'
                             }}>
                                 {isApplied ?
-                                    status?.alreadyApplied ?
+                                    isAlreadyApplied ?
                                         <><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</> :
-                                        <><CheckCircleOutlined /> Applied</> :
+                                        <><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</> :
                                     <><CloseCircleOutlined /> Failed: {statusReason}</>
                                 }
                             </span>
@@ -1121,7 +1161,19 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
                         return (
                             <React.Fragment key={`${fileIndex}-${hunkIndex}`}>
-                                {/* Only show line count if there are lines between hunks */}
+                                {/* Add a hunk header with status-based styling */}
+                                {status && (
+                                    <tr className="hunk-status-header">
+                                        <td colSpan={viewType === 'split' ? 4 : 3} style={{
+                                            padding: 0,
+                                            borderLeft: `3px solid ${isApplied ?
+                                                (isAlreadyApplied ? '#faad14' : '#52c41a') :
+                                                '#ff4d4f'}`,
+                                            backgroundColor: isApplied ?
+                                                (isAlreadyApplied ? 'rgba(250, 173, 20, 0.05)' : 'rgba(82, 196, 26, 0.05)') :
+                                                'rgba(255, 77, 79, 0.05)'
+                                        }}></td>
+                                    </tr>)}
                                 {showEllipsis && (
                                     <tr id={`hunk-${fileIndex}-${hunkIndex}`} data-diff-id={elementId}>
                                         <td
@@ -1139,7 +1191,23 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                         </td>
                                     </tr>
                                 )}
-                                {renderContent(hunk, filePath, status, fileIndex, hunkIndex)}
+                                <tr className="hunk-content-wrapper">
+                                    <td colSpan={viewType === 'split' ? 4 : 3} style={{
+                                        padding: 0,
+                                        border: status ? `1px solid ${isApplied ?
+                                            (isAlreadyApplied ? '#faad14' : '#52c41a') :
+                                            '#ff4d4f'}` : 'none',
+                                        borderLeft: status ? `3px solid ${isApplied ?
+                                            (isAlreadyApplied ? '#faad14' : '#52c41a') :
+                                            '#ff4d4f'}` : 'none',
+                                        borderRadius: '3px',
+                                        overflow: 'hidden'
+                                    }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse' }}><tbody>
+                                            {renderContent(hunk, filePath, status, fileIndex, hunkIndex)}
+                                        </tbody></table>
+                                    </td>
+                                </tr>
                             </React.Fragment>
                         );
                     })}
@@ -1163,15 +1231,13 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     }
 
 
-    const renderContent = (hunk: any, filePath: string, status?: any, fileIndex?: number, hunkIndex?: number) => {
+    const renderContent = (hunk: any, filePath: string, status?: any, fileIndex?: number, hunkIndex?: number): JSX.Element[] => {
 
         // Add a status row at the top of the hunk if status is available
         const changes = [...(hunk.changes || [])];
 
-        // Add visual styling based on hunk status
-        const rowStyle = status ? {
-            backgroundColor: status.applied ? 'rgba(82, 196, 26, 0.05)' : 'rgba(255, 77, 79, 0.05)'
-        } : {};
+        // Define base style for rows
+        const rowStyle: React.CSSProperties = {};
 
         return hunk.changes && hunk.changes.map((change: any, i: number) => {
             // Apply the status-based styling to each row
@@ -1179,9 +1245,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
             // Add additional styling for specific change types
             if (change.type === 'insert') {
-                style.backgroundColor = status?.applied ? 'rgba(82, 196, 26, 0.1)' : style.backgroundColor;
+                style.backgroundColor = status?.applied ? (status?.alreadyApplied ? 'rgba(250, 173, 20, 0.1)' : 'rgba(82, 196, 26, 0.1)') : style.backgroundColor;
             } else if (change.type === 'delete') {
-                style.backgroundColor = status?.applied ? 'rgba(255, 77, 79, 0.1)' : style.backgroundColor;
+                style.backgroundColor = status?.applied ? (status?.alreadyApplied ? 'rgba(250, 173, 20, 0.1)' : 'rgba(82, 196, 26, 0.1)') : style.backgroundColor;
             }
 
             let oldLine = undefined;
@@ -1257,8 +1323,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const styles = `
         .hunk-status-bar {
             display: flex;
-            align-items: center;
-            flex-wrap: wrap;
+            align-items: flex-start;
+            flex-wrap: wrap; 
+            margin-top: 4px;
             margin: 0 auto 0 0;
             padding: 0 8px;
         }
@@ -1275,11 +1342,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
  
         .diff-header {
             background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
-            border-bottom: 1px solid ${isDarkMode ? '#303030' : '#e1e4e8'};
-            padding: 8px 16px;
+            padding: 0px 16px 12px;
         }
  
         .diff-header-content {
+            margin-top: 4px;
             position: sticky;
             left: 0;
             right: 0;
@@ -1298,6 +1365,45 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             text-overflow: ellipsis;
             margin-right: 16px;
         }
+        
+        .hunk-status-header {
+            height: 0;
+            overflow: hidden;
+        }
+     
+        .hunk-status-bar {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            margin: 0 auto 0 0;
+            padding: 0 8px;
+        }
+        
+        .hunk-content-wrapper {
+            margin-bottom: 12px;
+            margin-top: 4px;
+        }
+        
+        .hunk-status-indicator {
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 28px !important;
+            line-height: 28px !important;
+            vertical-align: middle;
+            margin: 0 2px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .hunk-status-indicator:hover {
+        background-color: ${isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)'};
+
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 16px;
+        }
     `;
 
     const renderFile = (file: any, fileIndex: number) => {
@@ -1312,84 +1418,80 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 }}
             >
                 <div className="diff-header">
-                    <div className="diff-header-content">
-                        <div className="header-left">
-                            <b>{renderFileHeader(file)}</b>
+                    <div className="diff-header-content" style={{ paddingTop: '8px', justifyContent: 'flex-end' }}>
 
-                            {/* Add the hunk status indicators */}
-                            <span className="hunk-status-bar">
-                                {file.hunks.map((hunk, hunkIndex) => {
-                                    // Get the hunk status if available
-                                    // Create a stable key for this hunk
-                                    const hunkKey = `${fileIndex}-${hunkIndex}`;
-                                    const status = instanceHunkStatusMap.get(hunkKey);
-                                    const hunkId = hunkIndex + 1;
-                                    // Use the elementId to make the hunk reference unique across multiple diffs
-                                    const hunkRef = `hunk-${fileIndex}-${hunkIndex}`;
+                        {/* Add the hunk status indicators */}
+                        <span className="hunk-status-bar">
+                            {file.hunks.map((hunk, hunkIndex) => {
+                                // Get the hunk status if available
+                                // Create a stable key for this hunk
+                                const hunkKey = `${fileIndex}-${hunkIndex}`;
+                                const status = instanceHunkStatusMap.get(hunkKey);
+                                const hunkId = hunkIndex + 1;
+                                // Use the elementId to make the hunk reference unique across multiple diffs
+                                const hunkRef = `hunk-${fileIndex}-${hunkIndex}`;
 
-                                    let statusIcon;
-                                    let statusColor;
-                                    let statusTooltip;
+                                let statusIcon;
+                                let statusColor = '#8c8c8c';
+                                let statusTooltip;
 
-                                    if (!status) {
-                                        // Pending status 
-                                        statusIcon = <div className="hunk-status-dot pending" />;
-                                        statusColor = '#8c8c8c';
-                                        statusTooltip = `Hunk #${hunkId}: Pending`;
-                                    } else if (status.applied) {
-                                        if (status.alreadyApplied) {
-                                            // Already applied status
-                                            statusIcon = <CheckCircleOutlined style={{ color: '#faad14' }} />;
-                                            statusColor = '#faad14'; // Yellow/orange for already applied
-                                            statusTooltip = `Hunk #${hunkId}: Already applied`;
-                                        } else {
-                                            // Successfully applied status
-                                            statusIcon = <CheckCircleOutlined style={{ color: '#52c41a' }} />;
-                                            statusColor = '#52c41a'; // Green
-                                            statusTooltip = `Hunk #${hunkId}: Successfully applied`;
-                                        }
+                                if (!status) {
+                                    // Pending status 
+                                    statusIcon = <div className="hunk-status-dot pending" />;
+                                    statusTooltip = `Hunk #${hunkId}: Pending`;
+                                } else if (status.applied) {
+                                    if (status.alreadyApplied) {
+                                        // Already applied status
+                                        statusIcon = <CheckCircleOutlined style={{ color: '#faad14' }} />;
+                                        statusColor = '#faad14'; // Orange for already applied
+                                        statusTooltip = `Hunk #${hunkId}: Already applied`;
                                     } else {
-                                        // Failed status
-                                        statusIcon = <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
-                                        statusColor = '#ff4d4f'; // Red
-                                        statusTooltip = `Hunk #${hunkId}: Failed - ${status.reason}`;
+                                        // Successfully applied status
+                                        statusIcon = <CheckCircleOutlined style={{ color: '#52c41a' }} />;
+                                        statusColor = '#52c41a'; // Green
+                                        statusTooltip = `Hunk #${hunkId}: Successfully applied`;
                                     }
+                                } else {
+                                    // Failed status
+                                    statusIcon = <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
+                                    statusColor = '#ff4d4f'; // Red
+                                    statusTooltip = `Hunk #${hunkId}: Failed - ${status.reason}`;
+                                }
 
-                                    return (
-                                        <Tooltip key={hunkId} title={statusTooltip}>
-                                            <div
-                                                className="hunk-status-indicator"
-                                                style={{
-                                                    display: 'inline-flex',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
-                                                    width: '24px',
-                                                    height: '24px',
-                                                    margin: '0 2px',
-                                                    borderRadius: '4px',
-                                                    backgroundColor: isDarkMode ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.05)',
-                                                    color: statusColor,
-                                                    cursor: 'pointer'
-                                                }}
-                                                onClick={() => {
-                                                    // Create a more specific selector that includes the diff element ID
-                                                    // to ensure we're targeting the correct hunk in the correct diff
-                                                    const diffContainer = document.getElementById(`diff-view-wrapper-${elementId}`);
-                                                    const hunkElement = diffContainer ?
-                                                        diffContainer.querySelector(`#${hunkRef}`) :
-                                                        document.getElementById(hunkRef);
-                                                    if (hunkElement) {
-                                                        hunkElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                                    }
-                                                }}
-                                            >
-                                                {status ? statusIcon : hunkId}
-                                            </div>
-                                        </Tooltip>
-                                    );
-                                })}
-                            </span>
-                        </div>
+                                return (
+                                    <Tooltip key={hunkId} title={statusTooltip}>
+                                        <div
+                                            className="hunk-status-indicator"
+                                            style={{
+                                                display: 'inline-flex',
+                                                height: '28px !important',
+                                                lineHeight: '28px !important',
+                                                verticalAlign: 'middle',
+                                                marginTop: '4px',
+                                                backgroundColor: isDarkMode ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.05)',
+                                                color: statusColor,
+                                                border: `1px solid ${statusColor}`,
+                                                // Add a subtle border to match the hunk styling
+                                                boxShadow: status ? `0 0 0 1px ${statusColor}` : 'none'
+                                            }}
+                                            onClick={() => {
+                                                // Create a more specific selector that includes the diff element ID
+                                                // to ensure we're targeting the correct hunk in the correct diff
+                                                const diffContainer = document.getElementById(`diff-view-wrapper-${elementId}`);
+                                                const hunkElement = diffContainer ?
+                                                    diffContainer.querySelector(`#${hunkRef}`) :
+                                                    document.getElementById(hunkRef);
+                                                if (hunkElement) {
+                                                    hunkElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                                }
+                                            }}
+                                        >
+                                            {status ? statusIcon : hunkId}
+                                        </div>
+                                    </Tooltip>
+                                );
+                            })}
+                        </span>
 
                         <div className="header-right">
                             {!['delete'].includes(file.type) &&
@@ -2085,7 +2187,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             style={{ marginLeft: '8px' }} id={`apply-changes-${buttonId}`}
             icon={<CheckOutlined />}
         >
-            Apply Changes (beta)
+            Apply Changes
         </Button>
     ) : null;
 };
@@ -2335,6 +2437,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
         return (
             <div>
                 <DiffControls
+                    fileTitle={parsedFilesRef.current?.[0] ? renderFileHeader(parsedFilesRef.current[0]) : ''}
                     displayMode={displayMode}
                     viewType={viewType}
                     showLineNumbers={showLineNumbers}
@@ -2363,7 +2466,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
     const elementId = `diff-view-${index || 0}-${diffText.length}`; // Use diffText.length for stability
 
     return (
-        <div>
+        <div id={`diff-view-wrapper-${elementId}`}>
             <DiffControls
                 displayMode={displayMode}
                 viewType={viewType}
@@ -2371,6 +2474,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
                 onDisplayModeChange={setDisplayMode}
                 onViewTypeChange={setViewType}
                 onLineNumbersChange={setShowLineNumbers}
+                fileTitle={parsedFilesRef.current?.[0] ? renderFileHeader(parsedFilesRef.current[0]) : ''}
             />
             <div ref={containerRef} className="diff-container" id={`diff-view-wrapper-${elementId}`}>
                 {(displayMode as DisplayMode) === 'raw' ? (
@@ -2977,7 +3081,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
     // Ref to store the previous set of tokens, useful for certain streaming optimizations or comparisons
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
-    // Track if we're in a streaming response - this is for the overall component
+    // Track if we're in a streaming response - this is for the overall component 
     const isStreamingState = isStreaming;
 
     // Memoize the parsing of markdown into tokens.
@@ -2990,7 +3094,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         try {
             // During streaming, if we already have a diff being rendered, keep it stable
             if (false && (externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
-                const hasDiff = previousTokensRef.current.some(token =>
+                const hasDiff = previousTokensRef.current?.some(token =>
                     token.type === 'code' && (token as TokenWithText).lang === 'diff');
                 if (hasDiff && false) { // Disable this optimization to allow streaming diffs
                     return previousTokensRef.current;
@@ -2999,7 +3103,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Use marked.lexer directly
             const lexedTokens = marked.lexer(markdown, markedOptions);
-            return lexedTokens as (Tokens.Generic | TokenWithText)[]; // Cast for processing
+            return lexedTokens as (Tokens.Generic | TokenWithText)[] || []; // Cast for processing and provide fallback
         } catch (error) {
             console.error("Error lexing markdown:", error);
             // Fallback to rendering the raw markdown in a pre tag on error

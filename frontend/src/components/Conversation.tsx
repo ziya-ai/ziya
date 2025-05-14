@@ -251,7 +251,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             modelChangeFrom: msg.modelChange?.from,
                             modelChangeTo: msg.modelChange?.to,
                             messageIndex: index,
-                            totalMessages: displayMessages.length
+                totalMessages: displayMessages?.length || 0
                         });
                     }
 
