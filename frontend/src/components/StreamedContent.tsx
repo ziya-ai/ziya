@@ -1,4 +1,4 @@
-import React, { useEffect, Suspense, useState, useRef, useCallback, useLayoutEffect, useMemo } from 'react';
+import React, { useEffect, Suspense, useState, useRef, useCallback, useLayoutEffect, useMemo, useTransition } from 'react';
 import { useChatContext } from '../context/ChatContext';
 import { Space, Alert, Typography } from 'antd';
 import StopStreamButton from './StopStreamButton';
@@ -13,6 +13,7 @@ export const StreamedContent: React.FC = () => {
     const contentRef = useRef<HTMLDivElement>(null);
     const lastQuestionRef = useRef<string>('');
     const isAutoScrollingRef = useRef<boolean>(false);
+    const [isPending, startTransition] = useTransition();
     const lastScrollPositionRef = useRef<number>(0);
     const {
         streamedContentMap,
@@ -26,7 +27,8 @@ export const StreamedContent: React.FC = () => {
         question,
     } = useChatContext();
 
-    const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) || '', [streamedContentMap, currentConversationId]);
+    // Use a ref to track the last rendered content to avoid unnecessary re-renders
+    const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) ?? '', [streamedContentMap, currentConversationId]);
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
         streamedContentMap.get(currentConversationId) !== '';
@@ -377,6 +379,7 @@ export const StreamedContent: React.FC = () => {
                                 {error && <ErrorDisplay message={error} />}
                                 {!error && (
                                     <MarkdownRenderer
+                                        key={`stream-${currentConversationId}`}
                                         markdown={streamedContent}
                                         isStreaming={streamingConversations.has(currentConversationId)}
                                         enableCodeApply={enableCodeApply}

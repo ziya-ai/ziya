@@ -1682,7 +1682,7 @@ export const ChatHistory: React.FC = () => {
             document.head.removeChild(styleElement);
             document.head.removeChild(additionalStyle);
         };
-    }, []);
+    }, [isDarkMode]);
 
     return folders.length > 0 ? renderTreeView() : renderListView();
 };

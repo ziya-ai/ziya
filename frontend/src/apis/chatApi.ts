@@ -167,6 +167,8 @@ async function handleStreamError(response: Response): Promise<Error> {
     }
 }
 
+const STREAMING_CHUNK_DELAY = 10; // ms delay between processing chunks to allow rendering
+
 export const sendPayload = async (
     messages: Message[],
     question: string,
@@ -188,10 +190,10 @@ export const sendPayload = async (
     const { signal } = abortController;
 
     let isAborted = false;
-    
+
     // Remove any existing listeners for this conversation ID to prevent duplicates
     document.removeEventListener('abortStream', window[`abortListener_${conversationId}`]);
-    
+
     // Set up abort event listener
     const abortListener = (event: CustomEvent) => {
         if (event.detail.conversationId === conversationId) {
@@ -210,7 +212,7 @@ export const sendPayload = async (
                     // Ignore errors from the abort request
                     console.warn('Error sending abort notification to server:', e);
                 });
-            } catch (e) {}
+            } catch (e) { }
 
             removeStreamingConversation(conversationId);
             setIsStreaming(false);
@@ -552,7 +554,7 @@ export const sendPayload = async (
                 removeStreamingConversation(conversationId);
             }
             return result;
-            
+
         } catch (error) {
             // Type guard for DOMException
             if (error instanceof DOMException && error.name === 'AbortError') {
@@ -560,7 +562,7 @@ export const sendPayload = async (
                 return 'Response generation stopped by user.';
             }
             if (error instanceof DOMException && error.name === 'AbortError') return '';
-            
+
             console.error('Stream processing error in readStream catch block:', { error });
             removeStreamingConversation(conversationId);
             setIsStreaming(false);
@@ -568,7 +570,7 @@ export const sendPayload = async (
         } finally {
             setIsStreaming(false);
             return !errorOccurred && currentContent ? currentContent : '';
-            
+
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);

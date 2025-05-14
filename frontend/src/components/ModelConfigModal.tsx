@@ -264,7 +264,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const effectiveMaxOutput = selectedModelCapabilities?.max_output_tokens || capabilities?.max_output_tokens || outputRange.default;
   const effectiveMaxInput = selectedModelCapabilities?.max_input_tokens || capabilities?.max_input_tokens || inputRange.default;
 
-
+  // Check if thinking mode is supported
   const supportsThinking = capabilities?.supports_thinking || false;
 
   const handleApply = async () => {
@@ -273,7 +273,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
       setIsUpdating(true);
 
       // First update the model if it changed
-      const currentModelIdSafe = typeof modelId === 'object' ? JSON.stringify(modelId) : modelId;
+      const currentModelIdSafe = typeof modelId === 'object' ? JSON.stringify(modelId) : String(modelId);
       if (values.model !== currentModelIdSafe) {
         const success = await onModelChange(values.model);
         if (!success) {
