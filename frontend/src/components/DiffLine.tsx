@@ -111,8 +111,6 @@ const preserveTokens = (content: string, type: 'normal' | 'insert' | 'delete'): 
         })[match] || match);
 
     return content;
-
-
 };
 
 const normalizeCompare = (line: string | null | undefined): string => {
@@ -126,7 +124,7 @@ const normalizeCompare = (line: string | null | undefined): string => {
     content = content.replace(/[\r\n]+$/, '');
 
     return content;
-}
+};
 
 const compareLines = (line1: string, line2: string): boolean => {
     if (!line1?.trim() || !line2?.trim()) return false;
@@ -164,7 +162,17 @@ const compareLines = (line1: string, line2: string): boolean => {
     return true;
 }
 
-export const DiffLine = React.memo(({ content, language, type, oldLineNumber, newLineNumber, showLineNumbers, viewType, similarity, style }: DiffLineProps) => {
+export const DiffLine = React.memo(({ 
+    content,
+    language,
+    type,
+    oldLineNumber,
+    newLineNumber,
+    viewType,
+    showLineNumbers = true,
+    similarity,
+    style
+}: DiffLineProps) => {
 
     // Memoize line numbers to prevent unnecessary re-renders
     const lineNumbers = useMemo(() => ({
@@ -290,7 +298,6 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                 // note that because of some oddity that i haven't tracked down add and delete lines 
                 // are handled differently, and delete comes to us pre-escaped but add doesn't.
                 // getting this to work overall was pretty touchy so i'm not going to replumb it to unify them as this works
-                // const codeToHighlight = code.includes('&') || type === 'delete' ? code : code.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c] || c);
                 const codeToHighlight = code.includes('&') ? code : code;
 
                 // Highlight the code with Prism
@@ -300,13 +307,11 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                 // Apply whitespace visualization after syntax highlighting
                 highlightedCode = visualizeWhitespace(highlightedCode);
 
-
-
                 if (highlightedCode.includes('<span class="token')) {
-                    if (contentRef.current) {
-                        contentRef.current.innerHTML = highlightedCode;
-                        lastGoodRenderRef.current = highlightedCode;
-                    }
+                     if (contentRef.current) {
+                         contentRef.current.innerHTML = highlightedCode;
+                         lastGoodRenderRef.current = highlightedCode;
+                     }
                     setHighlighted(`${highlightedCode}`);
                     return;
                 }
@@ -415,8 +420,8 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
 
                             return;
                         }
-                    }
-                }
+                     }
+                 }
 
                 // Default case: just return highlighted code with marker
                 if (contentRef.current) {
@@ -479,35 +484,32 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
     if (viewType === 'split') {
         return (
             <tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
-                {showLineNumbers && (
-                    <td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}>
-                        {lineNumbers.old}
-                    </td>
-                )}
-                <td className="diff-code diff-code-left" style={{ width: 'calc(50% - 50px)' }}>
+                {/* Always render the gutter columns in split view, regardless of showLineNumbers */}
+                <td className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`} style={{display: showLineNumbers ? 'table-cell' : 'none'}}>
+                    {lineNumbers.old}
+                </td>
+                <td className="diff-code diff-code-left" style={{ width: 'calc(50% - 50px)', position: 'relative' }}>
                     <div className={`diff-code-content`} style={{ backgroundColor: type === 'delete' ? (isDarkMode ? '#4d1a1a' : '#ffebe9') : 'transparent' }}>
                         {type !== 'insert' ? (
                             <div
                                 className="diff-line-content token-container"
                                 ref={contentRef}
-                    style={{
-                        visibility: isHighlighting ? 'hidden' : 'visible', 
-                        whiteSpace: 'pre',
-                        overflow: viewType === 'split' ? 'hidden' : 'auto',
-                        ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
-                        ...(style || {})
-                    }}
+                                style={{
+                                    visibility: isHighlighting ? 'hidden' : 'visible',
+                                    whiteSpace: 'pre',
+                                    overflow: viewType === 'split' ? 'hidden' : 'auto',
+                                    ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
+                                    ...(style || {})
+                                }}
                                 dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} />
-                        ) : <div className="diff-code-placeholder"> </div>}
+                        ) : <div className="diff-code-placeholder"> </div>}
                     </div>
                 </td>
 
-                {showLineNumbers && (
-                    <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}>
-                        {lineNumbers.new}
-                    </td>
-                )}
-                <td className="diff-code diff-code-right" style={{ width: 'calc(50% - 50px)' }}>
+                <td className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`} style={{display: showLineNumbers ? 'table-cell' : 'none'}}>
+                    {lineNumbers.new}
+                </td>
+                <td className="diff-code diff-code-right" style={{ width: 'calc(50% - 50px)', position: 'relative' }}>
                     <div className={`diff-code-content`} style={{ backgroundColor: type === 'insert' ? (isDarkMode ? '#1a4d1a' : '#e6ffec') : 'transparent' }}>
                         {type !== 'delete' ? (
                             <div
@@ -521,13 +523,12 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
                                     ...(style || {})
                                 }}
                                 dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} />
-                        ) : <div className="diff-code-placeholder"> </div>}
+                        ) : <div className="diff-code-placeholder"> </div>}
                     </div>
                 </td>
             </tr>
         );
     }
-
     return (
         <tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
             {showLineNumbers && (
@@ -561,7 +562,9 @@ export const DiffLine = React.memo(({ content, language, type, oldLineNumber, ne
         </tr>
     );
 }, (prev, next) => {
-    // Log comparison for debugging
-    const shouldUpdate = prev.content !== next.content || prev.type !== next.type;
-    return !shouldUpdate;
+    // Only re-render if these props change
+    return prev.content === next.content && 
+           prev.type === next.type &&
+           prev.showLineNumbers === next.showLineNumbers &&
+           prev.viewType === next.viewType;
 });

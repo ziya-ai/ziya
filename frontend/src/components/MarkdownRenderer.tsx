@@ -240,31 +240,6 @@ const DiffControls = memo(({
             }}>{fileTitle}</div>
             {displayMode === 'pretty' && (
                 <>
-                    <Tooltip title="View Type">
-                        <Segmented
-                            options={[
-                                {
-                                    value: 'unified',
-                                    icon: <BorderlessTableOutlined />
-                                },
-                                {
-                                    value: 'split',
-                                    icon: <SplitCellsOutlined />
-                                }
-                            ]}
-                            value={viewType}
-                            onChange={(value) => {
-                                // Store the view type in window for persistence
-                                window.diffViewType = value as 'unified' | 'split';
-                                onViewTypeChange(value as 'unified' | 'split');
-                            }}
-                            size="small"
-                            style={{
-                                backgroundColor: isDarkMode ? '#141414' : '#f0f0f0',
-                                fontSize: '12px'
-                            }}
-                        />
-                    </Tooltip>
                     <Tooltip title={showLineNumbers ? "Hide Line Numbers" : "Show Line Numbers"}>
                         <Button
                             type={showLineNumbers ? "primary" : "default"}
@@ -279,6 +254,27 @@ const DiffControls = memo(({
                         />
                     </Tooltip>
                 </>
+            )}
+            {/* Unified/Split view toggle button - only show in pretty mode */}
+            {displayMode === 'pretty' && (
+                <Tooltip title={viewType === 'unified' ? "Split View" : "Unified View"}>
+                    <Button
+                        type={viewType === 'split' ? "primary" : "default"}
+                        size="small"
+                        icon={<SplitCellsOutlined />}
+                        onClick={() => {
+                            const newViewType = viewType === 'unified' ? 'split' : 'unified';
+                            window.diffViewType = newViewType;
+                            onViewTypeChange(newViewType);
+                        }}
+                        style={{
+                            padding: '0 8px',
+                            minWidth: '32px',
+                            height: '24px',
+                            marginRight: '8px'
+                        }}
+                    />
+                </Tooltip>
             )}
             <Tooltip title={displayMode === 'pretty' ? "Switch to Raw View" : "Switch to Pretty View"}>
                 <Segmented
@@ -1245,7 +1241,22 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             // Apply the status-based styling to each row
             const style = { ...rowStyle };
 
-            // Add additional styling for specific change types
+            // Ensure change has proper line numbers
+            if (!change.oldLineNumber && !change.newLineNumber) {
+                // Calculate line numbers based on hunk start and position in changes array
+                const normalChangesBeforeThis = hunk.changes
+                    .slice(0, i)
+                    .filter(c => c.type === 'normal' || c.type === change.type).length;
+
+                if (change.type === 'normal' || change.type === 'delete') {
+                    change.oldLineNumber = hunk.oldStart + normalChangesBeforeThis;
+                }
+                if (change.type === 'normal' || change.type === 'insert') {
+                    change.newLineNumber = hunk.newStart + normalChangesBeforeThis;
+                }
+            }
+
+            // Add additional styling for specific change types and ensure line numbers are set
             if (change.type === 'insert') {
                 style.backgroundColor = status?.applied ? (status?.alreadyApplied ? 'rgba(250, 173, 20, 0.1)' : 'rgba(82, 196, 26, 0.1)') : style.backgroundColor;
             } else if (change.type === 'delete') {
@@ -1257,6 +1268,15 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
             if (showLineNumbers) {
                 oldLine = (change.type === 'normal' || change.type === 'delete') ? change.oldLineNumber || change.lineNumber : undefined;
+                if (change.type === 'delete' && !oldLine) {
+                    // Ensure delete lines always have an old line number
+                    oldLine = change.lineNumber;
+                }
+
+                if (change.type === 'insert' && !newLine) {
+                    // Ensure insert lines always have a new line number
+                    newLine = change.lineNumber;
+                }
                 newLine = (change.type === 'normal' || change.type === 'insert') ? change.newLineNumber || change.lineNumber : undefined;
             }
 
@@ -1276,6 +1296,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     oldLineNumber={oldLine}
                     newLineNumber={newLine}
                     showLineNumbers={showLineNumbers}
+                    similarity={change.similarity}
                     style={style}
                     {...rowProps}
                 />
@@ -1510,7 +1531,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 </div>
                 <div className="diff-view" style={{
                     position: 'relative',
-                    width: '100%',
+                    width: viewType === 'split' ? 'auto' : '100%',
                     overflowX: 'auto',
                     overflowY: 'hidden'
                 }}>
@@ -2477,7 +2498,14 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
                 onLineNumbersChange={setShowLineNumbers}
                 fileTitle={parsedFilesRef.current?.[0] ? renderFileHeader(parsedFilesRef.current[0]) : ''}
             />
-            <div ref={containerRef} className="diff-container" id={`diff-view-wrapper-${elementId}`}>
+            <div
+                ref={containerRef}
+                className="diff-container"
+                id={`diff-view-wrapper-${elementId}`}
+                style={{
+                    overflowX: viewType === 'split' ? 'auto' : 'hidden',
+                    maxWidth: '100%'
+                }}>
                 {(displayMode as DisplayMode) === 'raw' ? (
                     <pre className="diff-raw-block" style={{
                         padding: '16px',

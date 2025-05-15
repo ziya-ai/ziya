@@ -709,8 +709,8 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     width: 50px !important;
     min-width: 50px !important;
     max-width: 50px !important;
-    padding: 0 8px;
-    text-align: right;
+    padding: 0 8px !important;
+    text-align: right !important;
     position: relative;
     box-sizing: border-box;
     white-space: nowrap;
@@ -720,19 +720,25 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 /* Code cell styles */
 .diff-table.diff-split .diff-code {
-    width: calc(50% - var(--gutter-width, 0px)) !important;
+    width: 50% !important;
+    min-width: 50% !important;
+    max-width: 50% !important;
     -webkit-user-select: text !important;
     -moz-user-select: text !important;
     -ms-user-select: text !important;
     user-select: text !important;
     position: relative;
     z-index: 1;
-    background: inherit;
-    min-width: calc(50% - 50px) !important;
-    max-width: calc(50% - 50px) !important;
-    padding: 0 8px;
-    box-sizing: border-box;
+    padding: 0 8px !important;
+    box-sizing: border-box !important;
     overflow: hidden;
+}
+
+/* Enable horizontal scrolling for split view */
+.diff-table.diff-split .diff-code {
+    overflow-x: auto !important;
+    white-space: pre !important;
+    word-wrap: normal !important;
 }
 
 .diff-table.diff-split .diff-code-right .diff-line-insert {
@@ -1006,6 +1012,14 @@ body:not(.dark) .token.attr-name {
     height: 100%;
     background-color: #2ea043; 
 }
+
+/* Ensure proper scrolling behavior for split view */
+.diff-table.diff-split {
+    width: 100% !important;
+    max-width: none !important;
+    overflow-x: visible !important;
+}
+
 
 .diff-table.diff-split .diff-gutter-col.diff-gutter-new:empty::after,
 .diff-table.diff-split .diff-gutter-col.diff-gutter-new.diff-gutter-delete::after {
