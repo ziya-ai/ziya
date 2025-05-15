@@ -1,6 +1,5 @@
 import React, { useState, useRef, useMemo, useLayoutEffect } from 'react';
 import { loadPrismLanguage } from '../utils/prismLoader';
-import { debounce } from '../utils/debounce';
 import { useTheme } from '../context/ThemeContext';
 
 interface DiffLineProps {
@@ -61,7 +60,6 @@ export const DiffLine = React.memo(({
             return `<span class="token-line">` +
                 `<span class="ws-marker ${wsClass}">${markers}</span>${text}` +
                 `</span>`;
-            result = `<span class="token-line"><span class="ws-marker ${wsClass}">${markers}</span>${text}</span>`;
         }
 
         // For trailing whitespace
