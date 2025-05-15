@@ -1201,7 +1201,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                         borderRadius: '3px',
                                         overflow: 'hidden'
                                     }}>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse' }}><tbody>
+                                        <table className="diff" style={{ width: '100%', borderCollapse: 'collapse' }}><tbody>
                                             {renderContent(hunk, filePath, status, fileIndex, hunkIndex)}
                                         </tbody></table>
                                     </td>

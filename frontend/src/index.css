@@ -13,6 +13,53 @@ body {
   width: 100%;
 }
 
+/* Diff table layout */
+table.diff {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+/* Diff code cells */
+.diff-code {
+  overflow-x: auto;
+  position: relative;
+}
+
+/* Line content with horizontal scrolling */
+.diff-line-content {
+  white-space: pre;
+  min-width: max-content;
+  display: inline-block;
+}
+
+/* Gutter columns */
+.diff-gutter-col {
+  width: 50px;
+  min-width: 50px;
+  max-width: 50px;
+  text-align: right;
+  padding-right: 10px;
+  user-select: none;
+  box-sizing: border-box;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+/* Split view columns */
+.diff-code-left, .diff-code-right {
+  width: 50%;
+  box-sizing: border-box;
+  overflow-x: auto;
+}
+
+/* Token container */
+.token-container {
+  display: inline-block;
+  min-width: 100%;
+}
+
 .app-header {
   position: fixed;
   z-index: 3;
@@ -673,7 +720,6 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     margin-bottom: 1em;
     width: 100%;
     overflow: auto;
-    overflow-x: auto !important;
     padding-bottom: 16px;
 }
 
@@ -685,7 +731,6 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 .diff-table.diff-split {
     table-layout: fixed !important;
     width: 100%;
-    min-width: 0;
     border-collapse: collapse;
     border-spacing: 0;
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
@@ -695,15 +740,6 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     position: relative;
 }
 
-/* Make line numbers non-selectable and non-copyable */
-.no-copy {
-    -webkit-user-select: none !important;
-    -moz-user-select: none !important;
-    -ms-user-select: none !important;
-    user-select: none !important;
-    -webkit-touch-callout: none !important;
-}
-
 /* Column styles */
 .diff-table.diff-split .diff-gutter-col {
     width: 50px !important;
@@ -711,7 +747,9 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     max-width: 50px !important;
     padding: 0 8px !important;
     text-align: right !important;
-    position: relative;
+    position: sticky;
+    left: 0;
+    z-index: 1;
     box-sizing: border-box;
     white-space: nowrap;
     background-color: #f6f8fa;
@@ -721,17 +759,15 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 /* Code cell styles */
 .diff-table.diff-split .diff-code {
     width: 50% !important;
-    min-width: 50% !important;
-    max-width: 50% !important;
     -webkit-user-select: text !important;
     -moz-user-select: text !important;
     -ms-user-select: text !important;
     user-select: text !important;
     position: relative;
-    z-index: 1;
+    z-index: 0;
     padding: 0 8px !important;
     box-sizing: border-box !important;
-    overflow: hidden;
+    overflow-x: auto !important;
 }
 
 /* Enable horizontal scrolling for split view */
