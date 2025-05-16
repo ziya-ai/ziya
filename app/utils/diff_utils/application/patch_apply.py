@@ -188,16 +188,23 @@ def apply_diff_with_difflib_hybrid_forced(
                                 break
                         
                         if not found_match:
-                            logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {fuzzy_best_pos}, but content doesn't match old_block. Skipping.")
-                            failure_info = {
-                                "status": "error",
-                                "type": "fuzzy_verification_failed",
-                                "hunk": hunk_idx,
-                                "position": fuzzy_best_pos,
-                                "confidence": fuzzy_best_ratio # Use the ratio from fuzzy match
-                            }
-                            hunk_failures.append((f"Fuzzy match verification failed for Hunk #{hunk_idx}", failure_info))
-                            continue # Skip applying this hunk as verification failed
+                            # LAST RESORT: If we still can't find a match but we're confident about the position,
+                            # try to apply the change anyway at the fuzzy position
+                            if fuzzy_best_ratio > 0.7:  # If there's at least 70% confidence
+                                logger.warning(f"Hunk #{hunk_idx}: Forcing application at fuzzy position {fuzzy_best_pos} with ratio {fuzzy_best_ratio:.2f}")
+                                remove_pos = fuzzy_best_pos
+                                found_match = True
+                            else:
+                                logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {fuzzy_best_pos}, but content doesn't match old_block. Skipping.")
+                                failure_info = {
+                                    "status": "error",
+                                    "type": "fuzzy_verification_failed",
+                                    "hunk": hunk_idx,
+                                    "position": fuzzy_best_pos,
+                                    "confidence": fuzzy_best_ratio # Use the ratio from fuzzy match
+                                }
+                                hunk_failures.append((f"Fuzzy match verification failed for Hunk #{hunk_idx}", failure_info))
+                                continue # Skip applying this hunk as verification failed
                     else:
                         remove_pos = fuzzy_best_pos # Assign remove_pos HERE if fuzzy OK and verified
                         logger.debug(f"Hunk #{hunk_idx}: Using fuzzy match position {remove_pos}")

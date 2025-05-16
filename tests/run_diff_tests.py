@@ -515,7 +515,7 @@ class DiffRegressionTest(unittest.TestCase):
         self.assertTrue(content_changed, "Content should have changed (diff should be applied)")
         self.assertEqual(result_dict.get('status'), 'success', 
                       f"Status should be success, got {result_dict.get('status')}")
-        self.assertTrue(result_dict.get('details', {}).get('changes_written'), 
+        self.assertTrue(result_dict.get('changes_written'), 
                       f"changes_written should be True")
         
     def test_MRE_css_padding_already_applied(self):
