@@ -273,7 +273,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         ) : (
                             // Skip rendering empty messages entirely
                             msg.content ? (
-                                // Regular message rendering for non-empty messages
+                                // Regular message rendering for messages with content
                                 <>
                                     {msg.role === 'human' && (
                                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -285,7 +285,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                         </div>
                                     )}
 
-                                    {msg.role === 'assistant' && (
+                                    {msg.role === 'assistant' && msg.content && (
                                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                             <div className="message-sender">AI:</div>
                                             {renderRetryButton(actualIndex)}

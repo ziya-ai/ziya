@@ -108,7 +108,7 @@ export const StreamedContent: React.FC = () => {
     const LoadingIndicator = () => (
         <Space>
             <div style={{
-                padding: '20px',
+                padding: '10px 20px',
                 textAlign: 'left',
                 color: 'var(--loading-color, #1890ff)',
                 width: '100%',
@@ -117,16 +117,17 @@ export const StreamedContent: React.FC = () => {
                 alignItems: 'center',
                 order: isTopToBottom ? 0 : -1  // Place at top if bottom-up view
             }} className="loading-indicator">
-                <Space>
-                    <RobotOutlined style={{ fontSize: '24px', animation: 'pulse 2s infinite' }} />
+                <Space align="center">
+                    <div className="message-sender" style={{ marginRight: '8px' }}>AI:</div>
+                    <RobotOutlined style={{ fontSize: '20px', animation: 'pulse 2s infinite' }} />
                     <LoadingOutlined spin />
                     <span style={{
                         animation: 'fadeInOut 2s infinite',
-                        display: 'inline-block',
-                        fontSize: '16px',
-                        marginLeft: '8px',
-                        verticalAlign: 'middle'
+                        verticalAlign: 'middle',
+                        marginLeft: '4px',
+                        display: isTopToBottom ? 'inline-block' : 'none'
                     }}>Processing response...</span>
+
                 </Space>
 
                 {/* Only show stop button here if we don't have content yet */}
@@ -354,7 +355,7 @@ export const StreamedContent: React.FC = () => {
                             <ConnectionLostAlert />
                         )}
                         {/* Show the human message immediately when streaming starts */}
-                        {streamingConversations.has(currentConversationId) && (
+                        {streamingConversations.has(currentConversationId) && lastQuestionRef.current && (
                             <div className="message human" style={{ marginBottom: '16px' }}>
                                 <div className="message-sender">You:</div>
                                 <div className="message-content">

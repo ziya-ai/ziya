@@ -131,11 +131,13 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             // Get the final streamed content
             const finalContent = streamedContentMap.get(currentConversationId) || result;
             if (finalContent) {
+                let isError = false;
                 // Check if result is an error response
                 try {
                     const errorData = JSON.parse(finalContent);
                     if (errorData.error === 'validation_error') {
                         message.error(errorData.detail || 'Selected content is too large. Please reduce the number of files.');
+                        isError = true;
                         return;
                     }
                 } catch (e) { } // Not JSON or not an error response
@@ -143,7 +145,11 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                     content: finalContent,
                     role: 'assistant'
                 };
-                addMessageToConversation(aiMessage, currentConversationId);
+                // Only add the message if it has content and isn't an error
+                if (!isError && finalContent.trim() !== '') {
+                    addMessageToConversation(aiMessage, currentConversationId);
+                }
+                removeStreamingConversation(currentConversationId);
             }
         } catch (error) {
             console.error('Error sending message:', error);
