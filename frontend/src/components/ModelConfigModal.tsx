@@ -111,6 +111,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const [isUpdating, setIsUpdating] = useState(false);
   const [isLoadingCapabilities, setIsLoadingCapabilities] = useState(false);
   const [selectedModelCapabilities, setSelectedModelCapabilities] = useState<ModelCapabilities | null>(capabilities);
+  const capabilitiesCheckedRef = useRef<boolean>(false);
 
   // Debug logging for props and state changes - only when visible and only once
   const propsLoggedRef = useRef(false);
@@ -131,6 +132,294 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
       propsLoggedRef.current = false;
     }
   }, [visible, modelId, displayModelId, capabilities, currentSettings]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
+
+  // Log capabilities when they change
+  useEffect(() => {
+    if (capabilities && !capabilitiesCheckedRef.current) {
+      console.log('ModelConfigModal received capabilities:', capabilities);
+      setSelectedModelCapabilities(capabilities);
+      capabilitiesCheckedRef.current = true;
+    }
+  }, [capabilities]);
 
   // Format model ID for display
   const formatModelId = useCallback((id: string | Record<string, string>): string => {
@@ -417,7 +706,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
           />
         </Form.Item>
 
-        {selectedModelCapabilities?.supports_thinking && (
+        {(selectedModelCapabilities?.supports_thinking || capabilities?.supports_thinking) && (
           <Form.Item label={<span>Thinking Mode <Tooltip title="Makes the model show its reasoning process">
             <InfoCircleOutlined style={{ marginLeft: 5 }} />
           </Tooltip></span>} name="thinking_mode" valuePropName="checked">

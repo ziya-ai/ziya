@@ -149,7 +149,7 @@ const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
                                 )}
 
                             {/* Calculate title length based on container width */}
-                            <div className="chat-history-title" style={{
+                            <div className="chat-history-title" style={{ 
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
                                 whiteSpace: 'nowrap',
@@ -161,7 +161,7 @@ const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
                                 paddingRight: '65px'
                             }}>
                                 {conversation.title}
-                                {streamingConversations.has(conversation.id) && (
+                                {streamingConversations && streamingConversations.has(conversation.id) && (
                                     <div style={{
                                         fontSize: '12px',
                                         color: isDarkMode ? '#177ddc' : '#1890ff',
@@ -1282,7 +1282,6 @@ export const ChatHistory: React.FC = () => {
             const isEditing = editingId === nodeData.conversation?.id;
             const conversation = nodeData.conversation;
             const isCurrentConversation = conversation.id === currentConversationId;
-            const isStreaming = streamingConversations.has(conversation.id);
             const isDragTarget = dropTargetKey === nodeData.key && dragState?.type === 'conversation';
 
             return (
@@ -1345,9 +1344,9 @@ export const ChatHistory: React.FC = () => {
                                 }}>
                                     {nodeData.title}
                                 </span>
-                                {isStreaming && (
+                                {streamingConversations.has(conversation.id) && (
                                     <div style={{ fontSize: '12px', color: isDarkMode ? '#177ddc' : '#1890ff', display: 'flex', alignItems: 'center', marginLeft: '4px' }}>
-                                        <LoadingOutlined />
+                                        <LoadingOutlined style={{ color: isDarkMode ? '#1890ff' : '#1890ff' }} />
                                         <span style={{ marginLeft: '4px' }}>Receiving response...</span>
                                     </div>
                                 )}
@@ -1364,7 +1363,7 @@ export const ChatHistory: React.FC = () => {
                         <Dropdown
                             className="conversation-dropdown"
                             overlay={onConversationContextMenu(conversation)}
-                            trigger={['click']}
+                            trigger={['click']} 
                             placement="bottomRight">
                             <div
                                 onClick={(e) => e.stopPropagation()}
@@ -1468,8 +1467,7 @@ export const ChatHistory: React.FC = () => {
                         />
                         <Dropdown
                             overlay={onFolderContextMenu(folder)}
-                            trigger={['click']}
-                            placement="bottomRight"
+                            trigger={['click']} placement="bottomRight"
                         >
                             <Button
                                 type="text"

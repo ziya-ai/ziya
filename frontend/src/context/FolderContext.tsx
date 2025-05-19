@@ -4,7 +4,7 @@ import { convertToTreeData } from "../utils/folderUtil";
 import { useChatContext } from "./ChatContext";
 import { TreeDataNode } from "antd";
 
-interface FolderContextType {
+export interface FolderContextType {
   folders: Folders | undefined;
   treeData: TreeDataNode[];
   checkedKeys: React.Key[];
@@ -21,7 +21,7 @@ const FolderContext = createContext<FolderContextType | undefined>(undefined);
 
 export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [folders, setFolders] = useState<Folders>();
-  const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
+  const [treeData, setTreeData] = useState<TreeDataNode[]>([]); 
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
     const saved = localStorage.getItem('ZIYA_CHECKED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
@@ -30,7 +30,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const { currentFolderId, folderFileSelections, folders: chatFolders } = useChatContext();
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
-    const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
+    const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS'); 
     return saved ? JSON.parse(saved) : [];
   });
 
@@ -65,7 +65,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   // Save expanded folders whenever they change
   useEffect(() => {
-    localStorage.setItem('ZIYA_EXPANDED_FOLDERS', JSON.stringify(expandedKeys));
+    localStorage.setItem('ZIYA_EXPANDED_FOLDERS', JSON.stringify(Array.from(expandedKeys)));
   }, [expandedKeys]);
 
   // Save checked folders whenever they change
@@ -92,10 +92,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         const response = await fetch('/api/folders');
         if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
-        }
+        } 
         const data = await response.json();
 
         // Log the raw folder structure
+            console.debug('Raw folder structure loaded');
         console.debug('Raw folder structure:', {
           componentsPath: data?.frontend?.src?.components,
           d3Files: Object.keys(data?.frontend?.src?.components?.children || {})
@@ -104,7 +105,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
         // Store the complete folder structure
         setFolders(data);
-
+        
         // Get all available file paths recursively
         const getAllPaths = (obj: any, prefix: string = ''): string[] => {
           return Object.entries(obj).flatMap(([key, value]: [string, any]) => {
@@ -120,7 +121,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           componentFiles: availablePaths.filter(p => p.includes('components/'))
         });
 
-        setTreeData(convertToTreeData(data));
+        // Convert to tree data and set expanded keys for top-level folders
+        const treeNodes = convertToTreeData(data);
+        setTreeData(treeNodes);
+        setExpandedKeys(prev => [...prev, ...treeNodes.map(node => node.key)]);
 
         // Update checked keys to include all available files and maintain selections
         setCheckedKeys(prev => {

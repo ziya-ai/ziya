@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, useId, useContext, createContext, useDebugValue } from 'react';
 import 'prismjs/themes/prism.css';
-import { Button, message, Radio, Space, Spin, RadioChangeEvent, Tooltip, Segmented } from 'antd';
 import { marked, Tokens } from 'marked';
+import { Button, message, Space, Spin, Tooltip } from 'antd';
 import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
@@ -9,7 +9,7 @@ import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import {
-    CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined, SplitCellsOutlined, BorderlessTableOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
+    CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined, SplitCellsOutlined, BorderlessTableOutlined, NumberOutlined, EyeOutlined, FileTextOutlined, CodepenOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, ExclamationCircleOutlined
 } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
@@ -182,7 +182,7 @@ export interface DiffViewProps {
     initialDisplayMode: DisplayMode;
     showLineNumbers: boolean;
     fileIndex?: number;
-    elementId?: string;
+    elementId: string;
 }
 
 interface DiffControlsProps {
@@ -207,7 +207,7 @@ const DiffControls = memo(({
     const { isDarkMode } = useTheme();
     const [isHovered, setIsHovered] = useState(false);
 
-    const handleDisplayModeChange = (value: string | number) => {
+    const handleDisplayModeChange = (value: any) => {
         const newMode = value as DisplayMode;
         onDisplayModeChange(newMode);
     };
@@ -276,25 +276,20 @@ const DiffControls = memo(({
                     />
                 </Tooltip>
             )}
-            <Tooltip title={displayMode === 'pretty' ? "Switch to Raw View" : "Switch to Pretty View"}>
-                <Segmented
-                    value={displayMode}
-                    options={[
-                        {
-                            value: 'pretty',
-                            icon: <EyeOutlined />
-                        },
-                        {
-                            value: 'raw',
-                            icon: <FileTextOutlined />
-                        }
-                    ]}
-                    onChange={handleDisplayModeChange}
-                    onClick={() => { window.diffDisplayMode = displayMode === 'pretty' ? 'raw' : 'pretty'; }}
+            <Tooltip title={displayMode === 'raw' ? "Switch to Pretty View" : "Switch to Raw View"}>
+                <Button
+                    type="default"
                     size="small"
+                    icon={displayMode === 'raw' ? <EyeOutlined /> : <FileTextOutlined />}
+                    onClick={() => {
+                        const newMode = displayMode === 'pretty' ? 'raw' : 'pretty';
+                        window.diffDisplayMode = newMode;
+                        handleDisplayModeChange(newMode);
+                    }}
                     style={{
-                        backgroundColor: isDarkMode ? '#141414' : '#f0f0f0',
-                        fontSize: '12px'
+                        padding: '0 8px',
+                        minWidth: '32px',
+                        height: '24px'
                     }}
                 />
             </Tooltip>
@@ -846,14 +841,26 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     // Listen for window-level hunk status updates with data, but don't update during streaming
     useEffect(() => {
         const handleWindowStatusUpdate = (event: CustomEvent) => {
-            if (event.detail && event.detail.hunkStatuses) {
-                console.log("DiffView received window hunk status update with data:", event.detail);
+            if (!event.detail) return;
+            console.log("DiffView received window hunk status update with data:", event.detail);
 
-                // Check if this update is for our diff element
-                let isForThisDiff = false;
+            // Check if this update is for our diff element
+            let isForThisDiff = false;
+            // First check if the targetDiffElementId matches our diffId
+            if (event.detail.targetDiffElementId === diffId) {
+                isForThisDiff = true;
+                console.log(`Direct match for diffId ${diffId}`);
+            }
 
-                // First check if the targetDiffElementId matches our diffId
-                if (event.detail.targetDiffElementId === diffId) {
+            // Also check if the request ID maps to our diff ID
+            if (event.detail.requestId && diffRequestMap.get(event.detail.requestId) === diffId) {
+                isForThisDiff = true;
+                console.log(`direct match for diffId ${diffId}`);
+
+                // Apply the hunk statuses directly to our component state
+
+                // Also check if the request ID maps to our diff ID
+                if (event.detail.requestId && diffRequestMap.get(event.detail.requestId) === diffId) {
                     isForThisDiff = true;
                     console.log(`direct match for diffId ${diffId}`);
 
@@ -867,7 +874,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
                 // If not a match, skip processing
                 if (!isForThisDiff) {
-                    console.log(`Ignoring event for diff ${event.detail.targetDiffElementId || 'unknown'}, we are ${diffId}`);
+                    console.log(`Ignoring event for diff ${event.detail.targetDiffElementId || event.detail.requestId || 'unknown'}, we are ${diffId}`);
                     return;
                 }
 
@@ -876,25 +883,18 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 const isCompletionEvent = event.detail.isCompletionEvent === true;
                 updateHunkStatuses(event.detail.hunkStatuses || {}, diffId, isCompletionEvent);
 
-                // Also store in global registry
-                if (window.hunkStatusRegistry) {
-                    if (!window.hunkStatusRegistry.has(diffId)) {
-                        window.hunkStatusRegistry.set(diffId, new Map());
-                    }
-                }
-
                 // Force re-render only if not streaming or if this is a completion event
                 if (!isStreamingRef.current || isCompletionEvent) {
                     setStatusUpdateCounter(prev => prev + 1);
                 }
-            }
-        };
+            };
 
-        window.addEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
+            window.addEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
 
-        return () => {
-            window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
-        };
+            return () => {
+                window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
+            };
+        }
     }, [updateHunkStatuses]);
 
 
@@ -1520,7 +1520,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 <ApplyChangesButton
                                     diff={diff}
                                     fileIndex={fileIndex}
-                                    diffElementId={`diff-${fileIndex}`}
+                                    diffElementId={elementId}
                                     filePath={file.newPath || file.oldPath}
                                     setHunkStatuses={setInstanceHunkStatusMap}
                                     enabled={window.enableCodeApply === 'true'}
@@ -1564,7 +1564,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
     const statusUpdateCounterRef = useRef<number>(0);
     const isStreamingRef = useRef<boolean>(false);
+    const stableRequestIdRef = useRef<string>(`req-${diffElementId}-${Date.now()}`);
     const appliedRef = useRef<boolean>(false);
+    const buttonInstanceId = useRef(`button-${diffElementId}-${Date.now()}`).current;
 
     // Track processed request IDs to prevent infinite update loops
     const processedRequestIds = useRef(new Set<string>());
@@ -1620,6 +1622,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const handleApplyChanges = async () => {
         if (appliedRef.current) return;
         appliedRef.current = true;
+
+        // Use our stable request ID for this specific diff application
+        const requestId = `${Date.now()}`;
 
         // Extract the actual diff content
         setIsProcessing(true);
@@ -1682,7 +1687,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         })();
 
         // Log the processed diff content
-        console.log('Processed diff content:', {
+        console.log(`Processed diff content for ${diffElementId}:`, {
             length: cleanDiff.length,
             lines: cleanDiff.split('\n').length,
             firstLine: cleanDiff.split('\n')[0],
@@ -1691,19 +1696,16 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             truncated: cleanDiff.length < diff.length
         });
 
-        // Generate a unique request ID for this specific diff application
-        const requestId = `${diffElementId}-${Date.now()}`;
-
         // Log the actual request body
         const requestBody = JSON.stringify({
             diff: cleanDiff,
             filePath: filePath.trim(),
-            requestId: requestId,
-            elementId: diffElementId
+            requestId: requestId, elementId: diffElementId // Use the full, unique diffElementId
         });
         console.log('Request body:', requestBody);
 
-        console.log(`Applying changes for diff ${diffElementId} with request ID ${requestId}, element ID: ${diffElementId}`);
+
+        console.log(`Applying changes for diff ${diffElementId} with request ID ${requestId}, button instance: ${buttonInstanceId}`);
         const requestBodyParsed = JSON.parse(requestBody);
         console.log('Parsed request body diff length:', requestBodyParsed.diff.split('\n').length);
 
@@ -1712,7 +1714,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             console.log('Request body:', {
                 diff: cleanDiff.substring(0, 100) + '...',
                 filePath: filePath.trim(),
-                requestId: requestId, elementId: diffElementId
+                requestId: requestId, elementId: diffElementId, buttonInstanceId
             });
 
             const response = await fetch('/api/apply-changes', {
@@ -1720,8 +1722,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     diff: cleanDiff,
-                    elementId: diffElementId, // Add the element ID to the request
+                    elementId: diffElementId, // Use the original element ID consistently
                     filePath: filePath.trim(),
+                    buttonInstanceId, // Add the button instance ID for more precise matching
                     requestId: requestId
                 }),
             });
@@ -1742,11 +1745,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 console.log('Response data structure:', {
                     rawData: JSON.stringify(data),
                     status: data.status,
-                    message: data.message,
+                    message: data.message || 'No message provided',
                     requestId: data.request_id,
                     hasRequestId: !!data.request_id,
                     diffElementId: diffElementId,
                     mappingAdded: data.request_id ? diffRequestMap.set(data.request_id, diffElementId) : false,
+                    buttonInstanceId,
                     hasDetails: !!data.details || !!data.hunk_statuses,
                     detailsKeys: data.details ? Object.keys(data.details) : [],
                     succeeded: data.details?.succeeded,
@@ -1757,8 +1761,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 // Store the mapping between request ID and diff element ID
                 if (data.request_id) {
                     diffRequestMap.set(data.request_id, diffElementId);
-                    console.log(`Mapped request ${data.request_id} to diff element ${diffElementId}`);
-                    console.log(`Mapped request ${data.request_id} to diff element ${diffElementId}`);
+                    console.log(`Mapped request ${data.request_id} to diff element ${diffElementId} (button ${buttonInstanceId})`);
                 }
 
                 // Check if ANY hunks succeeded before marking as applied
@@ -2115,63 +2118,74 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
     // Listen for hunk status updates from the server
     useEffect(() => {
-        const handleHunkStatusUpdate = (event: CustomEvent) => {
-            if (!event.detail) return;
+        const handleHunkStatusUpdate = (e: CustomEvent) => {
+            if (!e.detail) return;
 
-            const { requestId, hunkStatuses, filePath: eventFilePath } = event.detail;
+            const eventButtonInstanceId = e.detail.buttonInstanceId;
 
-            // Create a unique key for this event to prevent duplicate processing
-            // Include the target diff element ID in the key
-            const eventKey = `${event.detail.requestId}-${event.detail.targetDiffElementId || 'global'}`;
 
             // Only process events targeted at this specific diff element
-            if (event.detail.targetDiffElementId && event.detail.targetDiffElementId !== diffElementId) {
+            if (e.detail.targetDiffElementId && e.detail.targetDiffElementId !== diffElementId) {
                 return; // Skip events not meant for this instance
             }
+            if (!e.detail) return;
 
+            // Set a timeout to remove this event from the processed set after a short delay
+            const eventKey = `${e.detail.requestId || ''}-${e.detail.targetDiffElementId || ''}`;
+            setTimeout(() => processedWindowEvents.delete(eventKey), 500);
+
+            const targetDiffElementId = diffRequestMap.get(e.detail.requestId);
+            const targetDiffElementIdFromMap = diffRequestMap.get(e.detail.requestId)?.replace(/^diff-/, 'diff-view-');
+            let isRelevantUpdate = false;
+
+            // Create a unique key for this event to prevent duplicate processing
             // Skip if we've already processed this exact event
             if (processedWindowEvents.has(eventKey)) {
                 console.debug(`Skipping already processed window event: ${eventKey}`);
                 return;
             }
 
-            // Mark this event as processed
-            processedWindowEvents.add(eventKey);
+            // Create a unique identifier for this specific button instance
+            const thisButtonId = buttonInstanceId;
 
-            // Set a timeout to remove this event from the processed set after a short delay
-            setTimeout(() => processedWindowEvents.delete(eventKey), 500);
+            // Log the event and our identifiers for debugging
+            console.log(`Checking if update matches our element: target=${e.detail.targetDiffElementId}, ours=${diffElementId}, buttonId=${buttonInstanceId}`);
 
-            const targetDiffElementId = diffRequestMap.get(requestId);
-            const targetDiffElementIdFromMap = diffRequestMap.get(requestId);
-            let isRelevantUpdate = false;
-
-            // First check if this event is explicitly targeted at our element ID
-            if (event.detail.targetDiffElementId === diffElementId) {
+            // Only accept exact matches for our element ID
+            if ((e.detail.targetDiffElementId === diffElementId) &&
+                (!e.detail.filePath || e.detail.filePath === filePath)) {
                 isRelevantUpdate = true;
             }
 
             // Otherwise check if the request ID maps to our element ID via the map
-            else if (targetDiffElementIdFromMap === diffElementId && (!eventFilePath || eventFilePath === filePath)) {
+            else if (targetDiffElementIdFromMap === diffElementId && (!e.detail.filePath || e.detail.filePath === filePath)) {
+                isRelevantUpdate = true;
+            }
+
+            // Check if the button instance ID matches
+            if (eventButtonInstanceId === buttonInstanceId) {
                 isRelevantUpdate = true;
             }
 
             // Log the matching attempt - this helps us debug
-            console.log(`ApplyChangesButton ${diffElementId}: Matching update. Event target: ${event.detail.targetDiffElementId}, Mapped target: ${targetDiffElementIdFromMap}, File: ${eventFilePath}, Match: ${isRelevantUpdate}`);
+            console.log(`ApplyChangesButton ${diffElementId}: Matching update. Event target: ${e.detail.targetDiffElementId}, Mapped target: ${targetDiffElementIdFromMap}, Button: ${eventButtonInstanceId}/${buttonInstanceId}, Match: ${isRelevantUpdate}`);
 
 
             if (!isRelevantUpdate) {
                 // This update is for a different diff element or file, ignore it
-                console.log(`Ignoring update for ${event.detail.targetDiffElementId || 'unknown'} (we are ${diffElementId})`);
+                console.log(`Ignoring update for ${e.detail.targetDiffElementId || 'unknown'} (we are ${diffElementId})`);
                 return; // Exit early if not relevant
             }
 
-            // If we get here, the update is relevant to this component
-            console.log(`Received hunk status update for diff ${diffElementId} (request ${requestId}, file ${eventFilePath || 'unknown'}):`, hunkStatuses);
+            // Mark this event as processed
+            isRelevantUpdate = true;
+
+            console.log(`Received hunk status update for diff ${diffElementId} (request ${e.detail.requestId}, button ${eventButtonInstanceId || 'unknown'}, isRelevant=${isRelevantUpdate}):`, e.detail.hunkStatuses);
 
             // Process and update the status for each hunk
-            if (hunkStatuses) {
-                Object.entries(hunkStatuses).forEach(([hunkId, status]) => {
-                    const hunkIndex = parseInt(hunkId, 10) - 1; // Convert 1-based to 0-based
+            if (e.detail.hunkStatuses && isRelevantUpdate) {
+                Object.entries(e.detail.hunkStatuses).forEach(([hunkId, status]) => {
+                    const hunkIndex = parseInt(hunkId, 10) - 1; // Convert 1-based to 0-based 
                     const hunkKey = `${fileIndex}-${hunkIndex}`;
                     if (typeof setHunkStatuses === 'function') {
                         setHunkStatuses((prev: Map<string, HunkStatus>) => {
@@ -2188,9 +2202,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     statusUpdateCounterRef.current += 1;
                 });
             }
-
-        };
-
+        }
         window.addEventListener('hunkStatusUpdate', handleHunkStatusUpdate as EventListener);
         return () => window.removeEventListener('hunkStatusUpdate', handleHunkStatusUpdate as EventListener);
     }, [diffElementId, filePath, setHunkStatuses, fileIndex]);
@@ -2234,6 +2246,9 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
     const { isStreaming } = useChatContext();
     // Check if we're in a streaming response
     const streamingCheckedRef = useRef(false);
+    // Generate a unique ID once when the component mounts
+    const [diffId] = useState(() =>
+        `diff-${Math.random().toString(36).substring(2, 9)}-${Date.now()}`);
     const [streamingContent, setStreamingContent] = useState<string | null>(null);
     const contentRef = useRef<string | null>(null);
 
@@ -2293,6 +2308,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
             <DiffViewWrapper
                 token={token}
                 index={index}
+                elementId={diffId}
                 enableCodeApply={enableCodeApply}
                 isStreaming={isStreaming}
             />
@@ -2352,10 +2368,12 @@ interface DiffViewWrapperProps {
     token: TokenWithText;
     enableCodeApply: boolean;
     isStreaming?: boolean;
+    forceRender?: boolean;
     index?: number;
+    elementId?: string;
 }
 
-const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapperProps) => {
+const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>('pretty');
@@ -2363,7 +2381,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
     const lastValidDiffRef = useRef<string | null>(null);
     const { isStreaming: isGlobalStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
+    const stableElementIdRef = useRef(elementId);
     const isStreamingRef = useRef<boolean>(false);
+    const streamingContentRef = useRef<string>(token.text || '');
     const parseTimeoutRef = useRef<number | null>(null);
 
     // Track component visibility
@@ -2402,6 +2422,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
     // Update content when token text changes (for streaming)
     useEffect(() => {
         if (isGlobalStreaming) {
+            streamingContentRef.current = token.text || '';
             // Queue the update to allow multiple chunks to arrive
             if (parseTimeoutRef.current) {
                 window.clearTimeout(parseTimeoutRef.current);
@@ -2414,6 +2435,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
             }, 10); // Adjust debounce time as needed
         } else {
             setCurrentContent(token.text || '');
+            streamingContentRef.current = token.text || '';
         }
     }, [token.text, isGlobalStreaming]);
 
@@ -2444,7 +2466,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
     }, [isGlobalStreaming]);
 
     if (!hasText(token)) {
-        return null;
+        return <div>Loading content...</div>;
     }
 
     if (!isCodeToken(token)) {
@@ -2453,7 +2475,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
 
     // If we're streaming and have any parsed files, always show them
     if ((isGlobalStreaming) && parsedFilesRef.current.length > 0) {
-
+        // Keep rendering even when not visible to maintain state
         if (!isVisible) return null; // Don't render if not visible
 
         return (
@@ -2471,12 +2493,12 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
                     {parsedFilesRef.current.map((file, fileIndex) => (
                         <DiffView
                             key={`file-${fileIndex}`}
-                            diff={lastValidDiffRef.current || ''}
+                            diff={streamingContentRef.current || lastValidDiffRef.current || ''}
                             viewType={viewType}
                             initialDisplayMode={displayMode}
                             showLineNumbers={showLineNumbers}
                             fileIndex={fileIndex}
-                            elementId={`diff-${fileIndex}-${index}`}
+                            elementId={`${stableElementIdRef.current}-file-${fileIndex}`}
                         />
                     ))}
                 </div>
@@ -2485,10 +2507,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
     }
 
     const diffText = currentContent; // Use the state variable for streaming support
-    const elementId = `diff-view-${index || 0}-${diffText.length}`; // Use diffText.length for stability
 
     return (
-        <div id={`diff-view-wrapper-${elementId}`}>
+        <div id={`diff-view-wrapper-${stableElementIdRef.current}`}>
             <DiffControls
                 displayMode={displayMode}
                 viewType={viewType}
@@ -2501,7 +2522,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
             <div
                 ref={containerRef}
                 className="diff-container"
-                id={`diff-view-wrapper-${elementId}`}
+                id={`diff-view-wrapper-${stableElementIdRef.current}`}
                 style={{
                     overflowX: viewType === 'split' ? 'auto' : 'hidden',
                     maxWidth: '100%'
@@ -2509,7 +2530,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
                 {(displayMode as DisplayMode) === 'raw' ? (
                     <pre className="diff-raw-block" style={{
                         padding: '16px',
-                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa', // Add theme background
+                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                         color: isDarkMode ? '#e6e6e6' : 'inherit' // Add theme text color
                     }}>
                         <code>{diffText}</code>
@@ -2517,17 +2538,17 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index }: DiffViewWrapper
                 ) : (
                     <DiffView
                         diff={diffText}
-                        viewType={isStreamingRef.current ? 'unified' : viewType}
+                        viewType={viewType}
                         initialDisplayMode={displayMode}
-                        key={elementId}
-                        elementId={elementId}
+                        key={stableElementIdRef.current}
+                        elementId={stableElementIdRef.current!}
                         showLineNumbers={showLineNumbers}
                     />
                 )}
             </div>
         </div>
     );
-}, (prev, next) => prev.token.text === next.token.text && prev.enableCodeApply === next.enableCodeApply);
+}, (prev, next) => !next.forceRender && prev.token.text === next.token.text && prev.enableCodeApply === next.enableCodeApply);
 
 interface CodeBlockProps {
     token: TokenWithText;
@@ -3093,6 +3114,7 @@ interface MarkdownRendererProps {
     markdown: string;
     isStreaming?: boolean;
     enableCodeApply: boolean;
+    forceRender?: boolean;
 }
 
 // Configure marked options
@@ -3102,7 +3124,7 @@ const markedOptions = {
     pedantic: false
 };
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
     const [isPending, startTransition] = useTransition();
@@ -3111,6 +3133,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Ref to store the previous set of tokens, useful for certain streaming optimizations or comparisons
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
     // Track if we're in a streaming response - this is for the overall component 
+    const markdownRef = useRef<string>(markdown);
     const isStreamingState = isStreaming;
 
     // Memoize the parsing of markdown into tokens.
@@ -3121,6 +3144,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
 
         try {
+            markdownRef.current = markdown;
             // During streaming, if we already have a diff being rendered, keep it stable
             if (false && (externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
                 const hasDiff = previousTokensRef.current?.some(token =>
@@ -3135,7 +3159,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             return lexedTokens as (Tokens.Generic | TokenWithText)[] || []; // Cast for processing and provide fallback
         } catch (error) {
             console.error("Error lexing markdown:", error);
-            // Fallback to rendering the raw markdown in a pre tag on error
+            // Fallback to rendering the raw markdown in a code block on error
             return [{ type: 'code', lang: 'text', text: markdown }] as TokenWithText[];
         }
     }, [markdown, externalStreaming, isStreamingState]);
@@ -3169,7 +3193,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Only memoize the rendered content when not streaming or when streaming completes 
     const renderedContent = useMemo(() => {
         return renderTokens(displayTokens, enableCodeApply, isDarkMode);
-    }, [displayTokens, enableCodeApply, isDarkMode]); // Remove isStreamingState from dependencies
+    }, [displayTokens, enableCodeApply, isDarkMode, forceRender]); // Add forceRender to dependencies
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
@@ -3177,7 +3201,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
         <div>{renderedContent}</div>;
 }, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply);
-
+// Note: forceRender prop is intentionally not included in the memo comparison to ensure re-rendering during streaming
 export default MarkdownRenderer;
 
 const cleanDiffContent = (content: string): string => {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Button, Tooltip, message, Form } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
 import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo } from './ModelConfigModal';
@@ -13,7 +13,7 @@ interface ModelConfigButtonProps {
   modelId: string;
 }
 
-export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId }) => {
+export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Element => {
   const [modalVisible, setModalVisible] = useState(false);
   const [settings, setSettings] = useState<ModelSettings>({
     temperature: 0,
@@ -28,6 +28,7 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
   const [displayModelId, setDisplayModelId] = useState<string>('');
   const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
   const [availableModels, setAvailableModels] = useState<ExtendedModelInfo[]>([]);
+  const capabilitiesLoadedRef = useRef<boolean>(false);
   const [form] = Form.useForm();
   const [isPolling, setIsPolling] = useState(false); // Track if we're already polling
 
@@ -40,12 +41,20 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       const response = await fetch('/api/current-model');
       if (!response.ok) {
         throw new Error('Failed to verify current model');
+        return;
       }
       const data = await response.json();
       const actualModelId = data.model_id;
       const actualEndpoint = data.endpoint;
       const actualRegion = data.region;
       const actualDisplayModelId = data.display_model_id;
+
+      // Update capabilities if they exist in the response
+      if (data.capabilities) {
+        console.log("Setting capabilities from current-model response:", data.capabilities);
+        setCapabilities(data.capabilities);
+        capabilitiesLoadedRef.current = true;
+      }
 
       console.log("API response for current model:", data);
       // Handle the case where model_id is an object - convert to string
@@ -118,6 +127,23 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
     }
   }, [modalVisible, isPolling, verifyCurrentModel]);
 
+  // Always fetch capabilities on mount if they haven't been loaded yet
+  useEffect(() => {
+    const ensureCapabilitiesLoaded = async () => {
+      if (!capabilitiesLoadedRef.current && !isPolling) {
+        try {
+          setIsPolling(true);
+          await fetchModelCapabilities();
+          setIsPolling(false);
+        } catch (error) {
+          setIsPolling(false);
+        }
+      }
+    };
+    ensureCapabilitiesLoaded();
+  }, [modalVisible, isPolling, verifyCurrentModel]);
+
+
   // Fetch initial capabilities and settings when modal opens
   useEffect(() => {
     if (modalVisible) {
@@ -148,7 +174,7 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
     fetchModelCapabilities(newModelId, true);
   };
 
-  const fetchModelCapabilities = async (modelId?: string, isModelChange: boolean = false) => {
+  const fetchModelCapabilities = async (specificModelId?: string, isModelChange: boolean = false) => {
     try {
       const url = modelId ?
         `/api/model-capabilities?model=${encodeURIComponent(modelId)}` :
@@ -168,8 +194,11 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
         return null;
       }
 
+
+
       console.log('Fetched capabilities:', data);
       setCapabilities(data);
+      capabilitiesLoadedRef.current = true;
 
       // Update settings with capabilities
       setSettings(prev => ({
@@ -188,16 +217,20 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
         top_k: data.top_k_range?.default || currentFormValues.top_k || 15
       });
 
+
       if (isModelChange) {
         // Update form with new model's default values
-        form.setFieldsValue({
-          model: modelId,
-          temperature: data.temperature_range.default,
-          top_k: data.top_k_range?.default || 15,
-          max_output_tokens: data.max_output_tokens,
-          max_input_tokens: data.token_limit
-        });
+        if (specificModelId) {
+          form.setFieldsValue({
+            model: modelId,
+            temperature: data.temperature_range.default,
+            top_k: data.top_k_range?.default || 15,
+            max_output_tokens: data.max_output_tokens,
+            max_input_tokens: data.token_limit
+          });
+        }
         console.log('Updated form with new model settings');
+        return data;
       }
 
       console.log("Updated form with capabilities:", form.getFieldsValue());
@@ -206,8 +239,11 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
       console.error('Failed to load model capabilities:', error);
       message.error('Failed to load model capabilities');
     }
+    return null;
   };
 
+  // Fetch available models
+  // Fetch available models
   // Fetch available models
   useEffect(() => {
     const fetchAvailableModels = async () => {
@@ -348,24 +384,23 @@ export const ModelConfigButton: React.FC<ModelConfigButtonProps> = ({ modelId })
 
   return (
     <>
-      <Tooltip title="Configure model settings">
-        <Button
-          type="text"
-          icon={<SettingOutlined />}
-          onClick={() => setModalVisible(true)}
-        />
-      </Tooltip>
+      <Button
+        type="text"
+        icon={<SettingOutlined />}
+        onClick={() => setModalVisible(true)}
+      />
+
       <ModelConfigModal
         visible={modalVisible}
         onClose={() => setModalVisible(false)}
         modelId={typeof currentModelId === 'object' ? JSON.stringify(currentModelId) : currentModelId}
         displayModelId={displayModelId}
         capabilities={capabilities}
+        endpoint={endpoint}
+        region={region}
         availableModels={availableModels}
         onModelChange={handleModelChange}
         onSave={handleSaveSettings}
-        endpoint={endpoint}
-        region={region}
         currentSettings={settings}
       />
     </>

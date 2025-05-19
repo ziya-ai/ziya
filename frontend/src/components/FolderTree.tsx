@@ -7,13 +7,14 @@ import { TokenCountDisplay } from "./TokenCountDisplay";
 import union from 'lodash/union';
 import { debounce } from 'lodash';
 import { ChatHistory } from "./ChatHistory";
-import { useTheme } from '../context/ThemeContext';
 import { ModelConfigButton } from './ModelConfigButton';
 import { ReloadOutlined, FolderOutlined, MessageOutlined } from '@ant-design/icons';
-import { FolderButton } from './FolderButton';
 import { convertToTreeData } from '../utils/folderUtil';
-const { TabPane } = Tabs;
+import MUIChatHistory from './MUIChatHistory';
+import { MUIFileExplorer } from './MUIFileExplorer';
+import { useTheme } from '../context/ThemeContext';
 
+const { TabPane } = Tabs;
 const { Search } = Input;
 
 interface FolderTreeProps {
@@ -35,7 +36,8 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         setCheckedKeys,
         expandedKeys,
         setExpandedKeys,
-        getFolderTokenCount
+        getFolderTokenCount,
+        searchValue, setSearchValue
     } = useFolderContext();
 
     // Extract only the specific values needed from ChatContext
@@ -56,14 +58,13 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Add state to track panel width
     const [panelWidth, setPanelWidth] = useState<number>(300);
     const [isRefreshing, setIsRefreshing] = useState(false);
-    const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || DEFAULT_TAB);
     const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
-    const [searchValue, setSearchValue] = useState('');
     const [autoExpandParent, setAutoExpandParent] = useState(true);
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
     // Add ref for the panel element
     const panelRef = useRef<HTMLDivElement>(null);
+    const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || DEFAULT_TAB);
 
     // Add effect to track panel width
     useEffect(() => {
@@ -83,18 +84,6 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         return () => resizeObserver.disconnect();
     }, []);
 
-    const debouncedSearch = useCallback(debounce((value: string) => {
-        if (searchValue) {
-            const { filteredData, expandedKeys } = filterTreeData(treeData, searchValue);
-            setFilteredTreeData(filteredData);
-            setExpandedKeys(expandedKeys);
-        } else {
-            setFilteredTreeData(treeData);
-            setExpandedKeys([]);
-        }
-    }, 300), [treeData]);
-
-    // Save active tab whenever it changes
     useEffect(() => {
         localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
     }, [activeTab]);
@@ -154,6 +143,18 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         window.addEventListener('modelSettingsChanged', handleSettingsChanged);
         return () => window.removeEventListener('modelSettingsChanged', handleSettingsChanged);
     }, [updateModelInfo]);
+
+    const debouncedSearch = useCallback(debounce((value: string) => {
+        if (value) {
+            const { filteredData, expandedKeys } = filterTreeData(treeData, value);
+            setFilteredTreeData(filteredData);
+            setExpandedKeys(expandedKeys);
+            setAutoExpandParent(true);
+        } else {
+            setFilteredTreeData([]);
+            setAutoExpandParent(false);
+        }
+    }, 300), [treeData]);
 
     const refreshFolders = async () => {
         setIsRefreshing(true);
@@ -220,10 +221,10 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         return { filteredData, expandedKeys };
     };
 
-    const onExpand = (keys: React.Key[]) => {
+    const onExpand = useCallback((keys: React.Key[]) => {
         setExpandedKeys(keys);
         setAutoExpandParent(false);
-    };
+    }, [setExpandedKeys]);
 
     // Save folder-specific file selections when they change
     useEffect(() => {
@@ -240,6 +241,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         }
     }, [checkedKeys, currentFolderId, chatFolders, setFolderFileSelections]);
 
+    // Update checked keys when folder changes
     // Update checked keys when folder changes
     useEffect(() => {
         // This is handled in FolderContext now
@@ -300,7 +302,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 );
             }
         },
-        [searchValue, treeData]
+        [treeData]
     );
 
     const getParentKey = (key: React.Key, tree: TreeDataNode[]): React.Key => {
@@ -432,7 +434,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         // Get the total tokens for this path directly from the folders data
         // Extract the token count from the title if needed
         let totalTokens = 0;
-        
+
         // Try to get token count from the folders structure
         totalTokens = folders ? getFolderTokenCount(nodePath, folders) : 0;
 
@@ -460,7 +462,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         // Process each child node
         for (const child of node.children) {
             const childPath = child.key as string;
-            
+
             // Case 1: Child is directly selected
             if (checkedKeys.includes(child.key)) {
                 const childTokens = getFolderTokenCount(childPath, folders);
@@ -565,6 +567,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Memoize the entire tree component to prevent re-renders when typing in chat
     const memoizedTree = useMemo(() => {
         return (
+            { /*
             <Tree
                 checkable
                 onExpand={onExpand}
@@ -583,6 +586,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 }}
                 className={isDarkMode ? 'dark' : ''}
             />
+            */ }
         );
     }, [
         onExpand,
@@ -641,30 +645,45 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                     display: 'flex',
                                     flexDirection: 'column',
                                     height: '100%',
-                                    overflow: 'hidden',
-                                    padding: '0 8px'
+                                    overflow: 'hidden'
                                 }}>
+                                    <Search
+                                        style={{ marginBottom: 8, backgroundColor: isDarkMode ? '#1f1f1f' : undefined }}
+                                        placeholder="Search folders"
+                                        onChange={onSearch}
+                                        value={searchValue}
+                                        allowClear
+                                    />
+                                    <Button
+                                        icon={<ReloadOutlined />}
+                                        onClick={refreshFolders}
+                                        loading={isRefreshing}
+                                        style={{ marginBottom: 8 }}
+                                    >
+                                        Refresh Files
+                                    </Button>
                                     <div style={{
-                                        flex: 1,
-                                        overflowY: 'auto',
-                                        overflowX: 'hidden'
+                                        flex: 1, height: 'calc(100% - 80px)', overflow: 'auto'
                                     }}>
-                                        {memoizedSearch}
-                                        {folders ? (
-                                            <>
-                                                <Button
-                                                    icon={<ReloadOutlined spin={isRefreshing} />}
-                                                    onClick={refreshFolders}
-                                                    style={{ marginBottom: 8 }}
-                                                    loading={isRefreshing}
-                                                >
-                                                    Refresh Files
-                                                </Button>
-                                                {memoizedTree}
-                                            </>
-                                        ) : (
-                                            <div>Loading Folders...</div>
-                                        )}
+                                        <Tree
+                                            checkable
+                                            onExpand={onExpand}
+                                            expandedKeys={expandedKeys}
+                                            autoExpandParent={autoExpandParent}
+                                            onCheck={onCheck}
+                                            checkedKeys={checkedKeys}
+                                            treeData={searchValue ? filteredTreeData : treeData}
+                                            titleRender={memoizedTitleRender}
+                                            style={{
+                                                background: 'transparent',
+                                                color: isDarkMode ? '#ffffff' : '#000000',
+                                                height: 'calc(100% - 40px)',
+                                                overflow: 'auto',
+                                                position: 'relative'
+                                            }}
+                                            className={isDarkMode ? 'dark' : ''}
+                                        />
+                                        <MUIFileExplorer />
                                     </div>
                                 </div>
                             </>
@@ -678,13 +697,10 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                     <MessageOutlined style={{ marginRight: 8 }} />
                                     Chat History
                                 </span>
-                                <div style={{ marginLeft: 'auto', marginRight: '-8px' }}>
-                                    <FolderButton />
-                                </div>
                             </div>
                         ),
-                        children: <ChatHistory />
-                    }
+                        children: <MUIChatHistory /> // This is the MUI version being used
+                    },
                 ]}
             >
                 {activeTab === '2' && <div style={{ display: 'none' }} id="panel-width-tracker" data-width={panelWidth}></div>}
@@ -692,12 +708,10 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
             <div className="model-id-display" style={{
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '0 8px'
             }}>
                 {modelId && <span style={{ flex: 1 }}>Model: {modelDisplayName || modelId}</span>}
                 {modelId && <ModelConfigButton modelId={modelId} />}
             </div>
-        </div>
+        </div >
     );
 }, (prevProps, nextProps) => prevProps.isPanelCollapsed === nextProps.isPanelCollapsed);

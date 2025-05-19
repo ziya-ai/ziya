@@ -26,6 +26,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         streamingConversations,
         currentConversationId,
         setIsStreaming,
+        isStreamingAny,
         setStreamedContentMap,
         isStreaming,
         addMessageToConversation,
@@ -42,6 +43,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     const modelChangeHandlerRef = useRef<((event: CustomEvent) => void) | null>(null);
     const renderedCountRef = useRef(0);
     const renderedSystemMessagesRef = useRef<Set<string>>(new Set());
+    const activeStreamingRef = useRef<Set<string>>(new Set());
     const processedModelChangesRef = useRef<Set<string>>(new Set());
 
     useEffect(() => {
@@ -74,7 +76,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         return () => observer.disconnect();
     }, [currentMessages.length]);
 
-    // Handle model change notifications
+    // Update active streaming conversations reference
     useEffect(() => {
         // Create the handler function
         const handleModelChange = (event: CustomEvent) => {
@@ -251,7 +253,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             modelChangeFrom: msg.modelChange?.from,
                             modelChangeTo: msg.modelChange?.to,
                             messageIndex: index,
-                totalMessages: displayMessages?.length || 0
+                            totalMessages: displayMessages?.length || 0
                         });
                     }
 
@@ -312,4 +314,3 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
 });
 
 export default Conversation;
-

@@ -11,6 +11,7 @@ interface ChatContext {
     streamedContentMap: Map<string, string>;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
+    isStreamingAny: boolean;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
     conversations: Conversation[];
@@ -51,6 +52,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [question, setQuestion] = useState('');
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
+    const [isStreamingAny, setIsStreamingAny] = useState(false);
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [currentResponse, setCurrentResponse] = useState<Message | null>(null);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
@@ -120,6 +122,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             next.add(id);
             setStreamedContentMap(prev => new Map(prev).set(id, ''));
             setIsStreaming(true);
+            setIsStreamingAny(true);
             return next;
         });
     };
@@ -129,17 +132,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setStreamingConversations(prev => {
             const next = new Set(prev);
             next.delete(id);
-            setStreamedContentMap(prev => {
-                const next = new Map(prev);
-                next.delete(id);
-                return next;
-            });
             return next;
+        });
+
+        setStreamedContentMap(prev => {
+            const next = new Map(prev);
+            next.delete(id);
+            return next;
+        });
+
+        // Only set isStreamingAny to false if no conversations are streaming
+        setStreamingConversations(prev => {
+            setIsStreamingAny(prev.size > 1);
+            return prev;
         });
     };
 
     const shouldUpdateState = (newState: Conversation[], force: boolean = false) => {
-        if (force) return true;
 
         const newStateStr = JSON.stringify(newState);
 
@@ -706,6 +715,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         streamedContentMap,
         setStreamedContentMap,
         isStreaming,
+        isStreamingAny,
         streamingConversations,
         addStreamingConversation,
         removeStreamingConversation,
@@ -740,8 +750,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
         streamedContentMap,
         isStreaming,
         streamingConversations,
+        isStreamingAny,
         conversations,
         currentConversationId,
+        currentMessages,
         currentMessages,
         isTopToBottom,
         dbError,
@@ -761,13 +773,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setCurrentConversationId
     ]);
 
-  // Temporary debug command
-  useEffect(() => {
-    (window as any).debugChatContext = () => {
-      console.log('ChatContext State:', { conversations, currentConversationId, streamedContentMap });
-      console.log('Rendering Info:', Array.from(document.querySelectorAll('.diff-view')).map(el => el.id));
-    };
-  }, [conversations, currentConversationId, streamedContentMap]);
+    // Temporary debug command
+    useEffect(() => {
+        (window as any).debugChatContext = () => {
+            console.log('ChatContext State:', { conversations, currentConversationId, streamedContentMap });
+            console.log('Rendering Info:', Array.from(document.querySelectorAll('.diff-view')).map(el => el.id));
+        };
+    }, [conversations, currentConversationId, streamedContentMap]);
 
     return <chatContext.Provider value={value}>{children}</chatContext.Provider>;
 }

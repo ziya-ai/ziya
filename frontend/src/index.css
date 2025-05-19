@@ -115,7 +115,7 @@ body.dark {
   bottom: 0;
   margin: 0;
   overflow: hidden !important;
-  transition: left 0.3s ease;
+  transition: left 0.5s ease-in-out, width 0.5s ease-in-out;
   border: none;
   background-color: inherit;
   will-change: transform;
@@ -142,7 +142,7 @@ body.dark {
   border: 1p solid #ccc;
   border-radius: 6px;
   background-color: inherit;
-  margin: 20px 0;
+  margin: 20px 0 20px 20px;
   margin-left: 20px;
   transition: background-color 0.3s ease, border-color 0.3s ease, left 0.3s ease, width 0.3s ease;
 }
@@ -155,6 +155,7 @@ body.dark {
 .chat-content-stabilizer {
   transform: translateZ(0);  /* Force GPU acceleration */
   backface-visibility: hidden;
+  min-height: 100%;
   perspective: 1000px;
 }
 
@@ -164,6 +165,7 @@ body.dark {
   width: 100%;
   max-width: 100%;
   flex-direction: column;
+  min-height: 100%;
   outline: none;
 }
 
@@ -198,10 +200,11 @@ body.dark {
 .panel-toggle {
   position: fixed;
   left: var(--folder-panel-width);
+  top: calc(var(--header-height) + 50%);
   top: 50%;
   z-index: 3;
   transform: translateY(-50%);
-  transition: left 0.3s ease;
+  transition: left 0.5s ease-in-out, transform 0.5s ease-in-out;
   margin-left: 0;
   border-radius: 4px;
   background: none;
@@ -219,7 +222,7 @@ body.dark {
   content: '';
   position: absolute;
   left: -1px;
-  top: -100vh;
+  top: calc(var(--header-height) +50vh);
   bottom: -100vh;
   width: 2px;
   background-color: #d9d9d9;
@@ -246,6 +249,14 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 .panel-toggle.collapsed {
   left: -1px;
+}
+
+.panel-toggle.collapsed .anticon {
+  transform: rotate(180deg);
+}
+
+.panel-toggle.collapsed .anticon {
+  transform: rotate(180deg);
 }
 
 /* Loading overlay styling */
@@ -479,25 +490,37 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   height: calc(100vh - var(--header-height));
   overflow: hidden;
   padding: 20px;
+  transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
   border-right: 2px solid #e8e8e8;
   flex-direction: column;
   z-index: 2;
   margin-top: 1px;
+  transform: translateX(0);
   display: flex;
   height: 100%;
   overflow-y: auto;
 }
 
 .folder-tree-panel.collapsed {
-  display: none;
+  transform: translateX(-100%);
+  opacity: 0.2;
   width: 0;
   padding: 0;
 }
 
 /* Prevent layout shifts during initial load */
-.folder-tree-panel, .chat-container, .panel-toggle, .panel-resizer {
+.initial-load .folder-tree-panel, 
+.initial-load .chat-container, 
+.initial-load .panel-toggle, 
+.initial-load .panel-resizer {
   transition: none !important;
   animation: none !important;
+}
+/* Add class to enable animations after initial load */
+.animations-enabled .folder-tree-panel,
+.animations-enabled .chat-container,
+.animations-enabled .panel-toggle {
+  transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out, left 0.5s ease-in-out !important;
 }
 
 /* Token display responsive styles */
@@ -1140,6 +1163,15 @@ body:not(.dark) .token.attr-name {
     border-radius: 6px;
 }
 
+/* Dark theme switch styling */
+.dark-theme-switch.ant-switch.ant-switch-checked {
+  background-color: #177ddc;
+}
+ 
+.dark-theme-switch.ant-switch.ant-switch-checked:hover:not(.ant-switch-disabled) {
+  background-color: #1890ff;
+}
+
 /* Diff View */
 .diff-view-controls {
   margin-bottom: 10px;
@@ -1780,6 +1812,16 @@ body:not(.dark) .token.attr-name {
     max-height: 800px !important;
 }
 
+/* MUI Chat History specific styles */
+.chat-history-tree .MuiTreeItem-content {
+  padding: 1px 4px !important;
+  min-height: 24px !important;
+}
+
+/* Override MUI hover styles to prevent underline */
+.chat-history-tree .MuiTypography-root:hover {
+  text-decoration: none !important;
+}
 .mermaid-container svg {
     max-width: 100% !important;
     height: auto !important;

@@ -446,7 +446,7 @@ export const TokenCountDisplay = () => {
                 <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens used`} mouseEnterDelay={0.5}>
                     <div>
                         <Progress
-                            percent={Math.round((combinedTokenCount / tokenLimit) * 100)}
+                            percent={Math.min(100, Math.max(0, Math.round((combinedTokenCount / tokenLimit) * 100)))}
                             size="small"
                             status={getProgressStatus(combinedTokenCount)}
                             showInfo={false}

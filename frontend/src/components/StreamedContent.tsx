@@ -1,4 +1,4 @@
-import React, { useEffect, Suspense, useState, useRef, useCallback, useLayoutEffect, useMemo, useTransition } from 'react';
+import React, { useEffect, Suspense, useState, useRef, useCallback, useLayoutEffect, useMemo, useTransition, useId } from 'react';
 import { useChatContext } from '../context/ChatContext';
 import { Space, Alert, Typography } from 'antd';
 import StopStreamButton from './StopStreamButton';
@@ -13,6 +13,8 @@ export const StreamedContent: React.FC = () => {
     const contentRef = useRef<HTMLDivElement>(null);
     const lastQuestionRef = useRef<string>('');
     const isAutoScrollingRef = useRef<boolean>(false);
+    const [isPendingResponse, setIsPendingResponse] = useState<boolean>(false);
+    const streamingInstanceId = useId();
     const [isPending, startTransition] = useTransition();
     const lastScrollPositionRef = useRef<number>(0);
     const {
@@ -20,6 +22,7 @@ export const StreamedContent: React.FC = () => {
         isStreaming,
         setIsStreaming,
         currentConversationId,
+        isStreamingAny,
         streamingConversations,
         currentMessages,
         removeStreamingConversation,
@@ -29,9 +32,22 @@ export const StreamedContent: React.FC = () => {
 
     // Use a ref to track the last rendered content to avoid unnecessary re-renders
     const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) ?? '', [streamedContentMap, currentConversationId]);
+    const streamedContentRef = useRef<string>(streamedContent);
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
         streamedContentMap.get(currentConversationId) !== '';
+
+    // Track if we're waiting for a response in this conversation
+    useEffect(() => {
+        const isWaitingForResponse = streamingConversations.has(currentConversationId);
+        setIsPendingResponse(isWaitingForResponse);
+        
+        // If we're waiting for a response, ensure isStreaming is true for this conversation
+        if (isWaitingForResponse && !isStreaming) {
+            setIsStreaming(true);
+        }
+        streamedContentRef.current = streamedContent;
+    }, [currentConversationId, streamingConversations, isStreaming, setIsStreaming]);
 
     // Store the last question when streaming starts
     useEffect(() => {
@@ -39,6 +55,12 @@ export const StreamedContent: React.FC = () => {
             lastQuestionRef.current = question;
         }
     }, [streamingConversations, currentConversationId, question]);
+    
+    // Update the ref whenever streamed content changes
+    useEffect(() => {
+        streamedContentRef.current = streamedContent;
+        console.log('Streamed content updated:', streamedContent.substring(0, 100));
+    }, [streamedContent]);
 
     // Add direct method to stop streaming
     const stopStreaming = useCallback(() => {
@@ -345,7 +367,7 @@ export const StreamedContent: React.FC = () => {
         <div style={{
             display: 'flex',
             // In bottom-up view, reverse the order of elements
-            flexDirection: isTopToBottom ? 'column' : 'column-reverse'
+            flexDirection: isTopToBottom ? 'column' : 'column-reverse',
         }}>
             {streamingConversations.has(currentConversationId) &&
                 !currentMessages.some(msg => msg.role === 'assistant' &&
@@ -382,6 +404,7 @@ export const StreamedContent: React.FC = () => {
                                     <MarkdownRenderer
                                         key={`stream-${currentConversationId}`}
                                         markdown={streamedContent}
+                                        forceRender={streamingConversations.has(currentConversationId)}
                                         isStreaming={streamingConversations.has(currentConversationId)}
                                         enableCodeApply={enableCodeApply}
                                     />
@@ -394,7 +417,7 @@ export const StreamedContent: React.FC = () => {
             <div ref={contentRef} style={{ minHeight: '10px' }}></div>
             {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
             {streamingConversations.has(currentConversationId) &&
-                !error && isLoading &&// don't show loading if theres an error
+                !error && (isLoading || isPendingResponse) && // don't show loading if there's an error
                 // Only show loading indicator if we don't have any streamed content yet
                 (!streamedContentMap.has(currentConversationId) ||
                     streamedContentMap.get(currentConversationId) === '') && (

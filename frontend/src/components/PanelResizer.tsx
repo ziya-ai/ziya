@@ -72,8 +72,8 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
         cursor: 'col-resize',
         zIndex: 100,
         backgroundColor: isDragging ? (isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)') : 'transparent',
-        pointerEvents: 'auto',
-        transition: isDragging ? 'none' : 'background-color 0.2s, left 0.3s ease'
+        pointerEvents: isPanelCollapsed ? 'none' : 'auto',
+        transition: isDragging ? 'none' : 'background-color 0.2s, left 0.5s ease-in-out'
       }}
     />
   );

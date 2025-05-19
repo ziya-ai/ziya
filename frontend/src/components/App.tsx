@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, Suspense } from 'react';
-import { FolderTree } from "./FolderTree";
-import { SendChatContainer } from "./SendChatContainer";
+import { FolderTree } from './FolderTree';
+import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
 import { Button, Tooltip, ConfigProvider, theme, message } from "antd";
 import {
@@ -14,6 +14,7 @@ import {
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
 import { DebugControls } from './DebugControls';
+import { MUIFileExplorer } from './MUIFileExplorer';
 import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
 
@@ -21,6 +22,7 @@ import { useChatContext } from '../context/ChatContext';
 const Conversation = React.lazy(() => import("./Conversation"));
 const PrismTest = React.lazy(() => import("./PrismTest"));
 const SyntaxTest = React.lazy(() => import("./SyntaxTest"));
+const MUIChatHistory = React.lazy(() => import("./MUIChatHistory"));
 const ApplyDiffTest = React.lazy(() => import("./ApplyDiffTest"));
 
 // Error boundary component to catch extension context errors
@@ -321,7 +323,7 @@ export const App: React.FC = () => {
                         backgroundColor: isDarkMode ? undefined : (isPanelCollapsed ? '#1890ff' : undefined),
                     }}
                     ghost={!isDarkMode || !isPanelCollapsed}
-                >{isPanelCollapsed ? '›' : '‹'}</Button>
+                >{isPanelCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}</Button>
 
                 <PanelResizer
                     onResize={handlePanelResize}
