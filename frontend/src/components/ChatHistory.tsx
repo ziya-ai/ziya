@@ -152,7 +152,7 @@ const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
                                 )}
 
                             {/* Calculate title length based on container width */}
-                            <div className="chat-history-title" style={{
+                            <div className="chat-history-title" style={{ 
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
                                 whiteSpace: 'nowrap',
@@ -1437,7 +1437,7 @@ export const ChatHistory: React.FC = () => {
                         <Dropdown
                             className="conversation-dropdown"
                             overlay={onConversationContextMenu(conversation)}
-                            trigger={['click']}
+                            trigger={['click']} 
                             placement="bottomRight">
                             <div
                                 onClick={(e) => e.stopPropagation()}

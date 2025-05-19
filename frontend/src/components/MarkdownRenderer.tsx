@@ -1835,9 +1835,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             truncated: cleanDiff.length < diff.length
         });
 
-        // Generate a unique request ID for this specific diff application
-        const requestId = `${diffElementId}-${Date.now()}`;
-
         // Log the actual request body
         const requestBody = JSON.stringify({
             diff: cleanDiff,
@@ -2746,7 +2743,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                 ) : (
                     <DiffView
                         diff={diffText}
-                        viewType={isStreamingRef.current ? 'unified' : viewType}
+                        viewType={viewType}
                         initialDisplayMode={displayMode}
                         key={stableElementIdRef.current}
                         forceRender={isGlobalStreaming} // Force render during streaming
