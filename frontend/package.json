@@ -5,6 +5,12 @@
   "dependencies": {
     "@ant-design/icons": "^5.0.0",
     "@fortawesome/fontawesome-free": "^6.5.2",
+    "@emotion/react": "^11.11.1",
+    "@emotion/styled": "^11.11.0",
+    "@mui/material": "^5.14.5",
+    "@mui/icons-material": "^5.14.5",
+    "@mui/x-tree-view": "^6.0.0",
+    "@mui/lab": "^5.0.0-alpha.139",
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
@@ -21,6 +27,7 @@
     "lodash": "^4.17.21",
     "marked": "^14.1.2",
     "mermaid": "^10.9.0",
+    "react-beautiful-dnd": "^13.1.1",
     "prismjs": "^1.29.0",
     "react": "^18.3.1",
     "react-checkbox-tree": "^1.8.0",
@@ -77,6 +84,7 @@
     ]
   },
   "devDependencies": {
+    "@types/react-beautiful-dnd": "^13.1.4",
     "@babel/plugin-proposal-object-rest-spread": "^7.20.7",
     "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
     "@babel/plugin-transform-object-rest-spread": "^7.20.7",
