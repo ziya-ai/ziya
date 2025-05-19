@@ -401,8 +401,6 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         availableModels={availableModels}
         onModelChange={handleModelChange}
         onSave={handleSaveSettings}
-        endpoint={endpoint}
-        region={region}
         currentSettings={settings}
       />
     </>

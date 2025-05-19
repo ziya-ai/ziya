@@ -233,6 +233,6 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 {modelId && <span style={{ flex: 1 }}>Model: {modelDisplayName || modelId}</span>}
                 {modelId && <ModelConfigButton modelId={modelId} />}
             </div>
-        </div>
+        </div >
     );
 });
