@@ -839,6 +839,7 @@ button[data-tooltip-delay="50"] {
     overflow-x: auto !important;
     white-space: pre !important;
     word-wrap: normal !important;
+    overflow: visible !important;
 }
 
 .diff-table.diff-split .diff-code-right .diff-line-insert {
