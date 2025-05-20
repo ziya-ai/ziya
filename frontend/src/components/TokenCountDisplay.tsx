@@ -156,13 +156,13 @@ export const TokenCountDisplay = () => {
     // Listen for model settings changes
     useEffect(() => {
         const handleModelSettingsChange = async (event: CustomEvent<ModelSettingsEventDetail>) => {
-        console.log('TokenCountDisplay received modelSettingsChanged event:', {
-            eventDetail: event.detail,
-            hasSettings: !!event.detail?.settings,
-            hasCapabilities: !!event.detail?.capabilities, 
-            currentLimits: modelLimits
-        });
-            
+            console.log('TokenCountDisplay received modelSettingsChanged event:', {
+                eventDetail: event.detail,
+                hasSettings: !!event.detail?.settings,
+                hasCapabilities: !!event.detail?.capabilities,
+                currentLimits: modelLimits
+            });
+
             try {
 
                 if (!event.detail) {
@@ -170,10 +170,10 @@ export const TokenCountDisplay = () => {
                     const response = await fetch('/api/current-model');
                     if (!response.ok) throw new Error(`Failed to fetch model settings: ${response.status}`);
                     const data = await response.json();
-                    
+
                     // Use token_limit from capabilities if available, otherwise use max_input_tokens
                     const tokenLimit = data.capabilities?.token_limit || data.settings?.max_input_tokens || 4096;
-                    
+
                     setModelLimits({
                         token_limit: tokenLimit,
                         max_input_tokens: data.settings.max_input_tokens || tokenLimit,
@@ -188,10 +188,10 @@ export const TokenCountDisplay = () => {
                     // Use provided data
                     if (event.detail.settings && event.detail.capabilities) {
                         const { settings, capabilities } = event.detail;
-                        
+
                         // Use token_limit from capabilities if available, otherwise use max_input_tokens
                         const tokenLimit = capabilities.token_limit || settings.max_input_tokens || 4096;
-                        
+
                         const newLimits = {
                             token_limit: tokenLimit,
                             max_input_tokens: settings.max_input_tokens || tokenLimit,
@@ -199,7 +199,7 @@ export const TokenCountDisplay = () => {
                         };
                         console.log('TokenCountDisplay updating limits from event:', newLimits);
                         setModelLimits(newLimits);
-                        
+
                         // Force a re-render by updating state
                         setTotalTokenCount(prev => {
                             console.log('Forcing token count re-render');
@@ -230,7 +230,7 @@ export const TokenCountDisplay = () => {
             // Check if we're in a folder with folder-specific file selections
             const currentFolder = currentFolderId ? chatFolders.find(f => f.id === currentFolderId) : null;
             const usesFolderContext = currentFolder && !currentFolder.useGlobalContext;
-            
+
             // Determine which file selections to use
             let effectiveCheckedKeys = [...checkedKeys];
             if (usesFolderContext) {
@@ -239,9 +239,9 @@ export const TokenCountDisplay = () => {
                     effectiveCheckedKeys = folderSelections;
                 }
             }
-            
+
             // Only recalculate without logging every time
-            
+
             let total = 0;
             const details: { [key: string]: number } = {};
 
@@ -252,7 +252,7 @@ export const TokenCountDisplay = () => {
                     setTokenDetails({});
                     return;
                 }
-                const tokens = getFolderTokenCount(path, folders); 
+                const tokens = getFolderTokenCount(path, folders);
                 if (tokens > 0) {
                     details[path] = tokens;
                     total += tokens;
@@ -260,7 +260,7 @@ export const TokenCountDisplay = () => {
             });
             // Only log token details when debugging specific issues
             // console.debug('Token count details:', details);
-            
+
             setTokenDetails(details);
             setTotalTokenCount(total);
         } else {
@@ -268,6 +268,32 @@ export const TokenCountDisplay = () => {
             setTotalTokenCount(0);
         }
     }, [checkedKeys, folders, getFolderTokenCount, currentFolderId, chatFolders, folderFileSelections]);
+
+    // Recalculate totalTokenCount based on top-level checked keys to avoid inflation
+    useEffect(() => {
+        if (!folders) return;
+
+        const topLevelCheckedKeys = checkedKeys.filter(key => {
+            const path = String(key);
+            const parentPath = path.substring(0, path.lastIndexOf('/'));
+            return !parentPath || !checkedKeys.some(k => String(k) === parentPath);
+        });
+
+        let newTotalTokenCount = 0;
+        const newDetails: { [key: string]: number } = {};
+
+        topLevelCheckedKeys.forEach(key => {
+            const path = String(key);
+            const tokens = getFolderTokenCount(path, folders);
+            if (tokens > 0) {
+                newDetails[path] = tokens; // This detail map might not be perfectly accurate for display now, but sum is.
+                newTotalTokenCount += tokens;
+            }
+        });
+        setTokenDetails(newDetails);
+        setTotalTokenCount(newTotalTokenCount);
+
+    }, [checkedKeys, folders, getFolderTokenCount]);
 
     const getTokenColor = (count: number): string => {
         if (count >= dangerThreshold) return '#ff4d4f';  // Red
@@ -278,17 +304,6 @@ export const TokenCountDisplay = () => {
         color: getTokenColor(count),
         fontWeight: 'bold'
     });
-
-    const calculateTotalTokenCount = (checked: string[]) => {
-        if (!folders) return;
-
-        let totalTokenCount = 0;
-        checked.forEach(item => {
-            const tokenCount = getFolderTokenCount(item, folders);
-            totalTokenCount += tokenCount;
-        });
-        setTotalTokenCount(totalTokenCount);
-    };
 
     const previousMessagesRef = useRef<string>('');
     const hasMessagesChanged = useCallback((messages: Message[]) => {
@@ -330,17 +345,17 @@ export const TokenCountDisplay = () => {
     // update chat tokens only when messages or conversation change
     useEffect(() => {
         // Only log in development mode and not for routine checks
-        if (process.env.NODE_ENV === 'development' && 
+        if (process.env.NODE_ENV === 'development' &&
             (currentMessages.length > 0 || hasMessagesChanged(currentMessages))) {
             console.debug('Conversation or messages changed:', {
                 conversationId: currentConversationId
             });
         }
-        
+
         if (!currentConversationId || currentMessages.length === 0) {
             // Silently reset token count without logging
             setChatTokenCount(0);
-            
+
             lastMessageCount.current = 0;
             lastMessageContent.current = '';
             previousMessagesRef.current = '';

@@ -107,39 +107,40 @@ const CheckboxTreeItem = React.memo<CheckboxTreeItemProps>(({
   const formattedTokenCount = tokenCount.toLocaleString();
   const formattedIncludedTokens = includedTokens.toLocaleString();
 
-  // Extract just the filename without any token count
   const cleanLabel = String(label).replace(/\s*\(\d+(?:,\d+)*\s*(?:tokens)?\)$/, '');
 
   return (
     <StyledTreeItem
       nodeId={nodeId}
       label={
-        <Box sx={{ display: 'flex', alignItems: 'center', p: 0.1, pr: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', p: 0.1, pr: 0, width: '100%' }}>
           <Checkbox
             checked={checked}
             indeterminate={indeterminate}
             onClick={handleCheckboxClick}
             color="primary"
             size="small"
-            sx={{ p: 0.5, mr: 0.5 }}
+            sx={{ p: 0.5, mr: 0.5, color: isDarkMode ? '#90caf9' : undefined }}
           />
-          <Icon color="inherit" sx={{ mr: 0.5, fontSize: 16, visibility: 'visible' }} />
+          <Icon color={isDarkMode ? "inherit" : "action"} sx={{ mr: 0.5, fontSize: 16, visibility: 'visible', color: isDarkMode ? (Icon === FolderIcon ? '#69c0ff' : '#91d5ff') : (Icon === FolderIcon ? 'primary.main' : 'text.secondary') }} />
           <Typography variant="body2" sx={{
             fontWeight: Icon === FolderIcon ? 'bold' : 'normal',
             flexGrow: 1,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
+            whiteSpace: 'nowrap',
+            color: isDarkMode ? 'text.primary' : 'inherit'
           }}>
             {cleanLabel}
           </Typography>
-          {/* Show token count as secondary text only for files */}
           {!Icon.toString().includes('Folder') && tokenCount > 0 && (
             <Typography variant="caption" sx={{
-              color: 'text.secondary',
+              color: isDarkMode ? '#aaa' : 'text.secondary',
               ml: 1,
-              fontSize: '0.65rem',
-              fontWeight: checked ? 'bold' : 'normal'
+              fontSize: '0.7rem',
+              fontFamily: 'monospace',
+              fontWeight: checked ? 'bold' : 'normal',
+              ...(checked && { color: isDarkMode ? 'text.primary' : 'primary.main' })
             }}>
               ({formattedTokenCount})
             </Typography>
@@ -149,16 +150,14 @@ const CheckboxTreeItem = React.memo<CheckboxTreeItemProps>(({
             <Typography
               variant="caption"
               sx={{
-                color: 'text.secondary',
+                color: isDarkMode ? '#aaa' : 'text.secondary',
                 ml: 1,
-                fontSize: '0.65rem'
+                fontSize: '0.7rem',
+                fontFamily: 'monospace',
               }}
             >
-              ({includedTokens > 0 ? (
-                <><span style={{ fontWeight: 'bold' }}>{includedTokens.toLocaleString()}</span>/{totalTokens.toLocaleString()}</>
-              ) : (
-                totalTokens.toLocaleString()
-              )})
+              (<Typography component="span" sx={{ fontWeight: 'bold', color: isDarkMode ? 'text.primary' : 'primary.main' }}>{includedTokens.toLocaleString()}</Typography>
+              /{totalTokens.toLocaleString()})
             </Typography>
           )}
         </Box>
@@ -377,27 +376,35 @@ export const MUIFileExplorer = () => {
     const nodePath = node.key;
     const cacheKey = String(nodePath);
 
-    // Check cache first
     if (tokenCalculationCache.current.has(cacheKey)) {
       return tokenCalculationCache.current.get(cacheKey);
     }
 
-    // Calculate total tokens
-    let totalTokens = getFolderTokenCount(String(nodePath), folders);
+    if (!node.children || node.children.length === 0) { // It's a file
+      const fileTotalTokens = getFolderTokenCount(String(nodePath), folders);
+      const fileIncludedTokens = checkedKeys.includes(nodePath) ? fileTotalTokens : 0;
+      const result = { included: fileIncludedTokens, total: fileTotalTokens };
+      tokenCalculationCache.current.set(cacheKey, result);
+      return result;
+    }
 
-    // Calculate included tokens
-    let includedTokens = 0;
-    if (checkedKeys.includes(nodePath)) {
-      includedTokens = totalTokens;
-    } else if (node.children && node.children.length > 0) {
+    // It's a directory
+    let directoryTotalTokens = 0;
+    let directoryIncludedTokens = 0;
+
+    if (node.children && node.children.length > 0) {
       for (const child of node.children) {
         const childResult = calculateTokens(child, folders);
-        includedTokens += childResult.included;
+        directoryTotalTokens += childResult.total;
+        directoryIncludedTokens += childResult.included;
       }
     }
 
-    // Cache the result
-    const result = { total: totalTokens, included: includedTokens };
+    if (checkedKeys.includes(nodePath)) {
+      directoryIncludedTokens = directoryTotalTokens;
+    }
+
+    const result = { included: directoryIncludedTokens, total: directoryTotalTokens };
     tokenCalculationCache.current.set(String(cacheKey), result);
     return result;
   }, [checkedKeys, getFolderTokenCount]);

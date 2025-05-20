@@ -21,7 +21,7 @@ const FolderContext = createContext<FolderContextType | undefined>(undefined);
 
 export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [folders, setFolders] = useState<Folders>();
-  const [treeData, setTreeData] = useState<TreeDataNode[]>([]); 
+  const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
     const saved = localStorage.getItem('ZIYA_CHECKED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
@@ -30,37 +30,36 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const { currentFolderId, folderFileSelections, folders: chatFolders } = useChatContext();
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
-    const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS'); 
+    const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
   });
 
-  const getFolderTokenCount = (path: string, folderData: Folders): number => {
+  const getFolderTokenCount = (path: string, folderData: Folders | undefined): number => {
+    if (!folderData) {
+      // console.warn(`getFolderTokenCount: folderData is undefined for path "${path}"`);
+      return 0;
+    }
 
     let current: Folders | undefined = folderData;
     const parts = path.split('/');
-    let totalTokens = 0;
 
-    let currentPath = '';
     for (const part of parts) {
       if (!current) {
         break;
       }
       const node = current[part];
       if (node) {
-        if (!node.children) {
-          // It's a file
-          const fileTokens = node.token_count || 0;
-          totalTokens += fileTokens;
-        } else {
-          // It's a directory
-          current = node.children;
+        if (parts.indexOf(part) === parts.length - 1) { // Last part of the path
+          return node.token_count || 0;
         }
+        current = node.children;
       } else {
-        break;
+        // console.warn(`getFolderTokenCount: Path segment "${part}" not found in current node for path "${path}".`);
+        return 0; // Path segment not found
       }
     }
 
-    return totalTokens;
+    return 0;
   };
 
   // Save expanded folders whenever they change
@@ -92,11 +91,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         const response = await fetch('/api/folders');
         if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
-        } 
+        }
         const data = await response.json();
 
         // Log the raw folder structure
-            console.debug('Raw folder structure loaded');
+        console.debug('Raw folder structure loaded');
         console.debug('Raw folder structure:', {
           componentsPath: data?.frontend?.src?.components,
           d3Files: Object.keys(data?.frontend?.src?.components?.children || {})
@@ -105,7 +104,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
         // Store the complete folder structure
         setFolders(data);
-        
+
         // Get all available file paths recursively
         const getAllPaths = (obj: any, prefix: string = ''): string[] => {
           return Object.entries(obj).flatMap(([key, value]: [string, any]) => {

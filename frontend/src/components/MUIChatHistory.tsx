@@ -1192,32 +1192,38 @@ const MUIChatHistory = () => {
       styleEl.id = 'dark-modal-styles';
       styleEl.textContent = `
               .dark-theme-modal .ant-modal-content {
-                background - color: #141414 !important;
+                background-color: #141414 !important;
               color: #ffffff !important;
         }
               .dark-theme-modal .ant-modal-header {
-                background - color: #141414 !important;
+                background-color: #141414 !important;
               border-bottom-color: #303030 !important;
         }
               .dark-theme-modal .ant-modal-title {
                 color: #ffffff !important;
         }
               .dark-theme-modal .ant-btn {
-                color: rgba(255, 255, 255, 0.85) !important;
-              border-color: #434343 !important;
+                 color: rgba(255, 255, 255, 0.85) !important; /* Light text for default buttons */
+                border-color: #434343 !important; /* Dark border for default buttons */
+                background-color: #262626 !important; /* Dark background for default buttons */
         }
+              .dark-theme-modal .ant-btn:hover:not(.ant-btn-primary) {
+                 color: #ffffff !important;
+                 border-color: #535353 !important;
+                 background-color: #303030 !important; /* Slightly lighter on hover */
+         }
               .dark-theme-modal .ant-btn-primary {
-                background - color: #1890ff !important;
-              border-color: #1890ff !important;
-              text-shadow: none !important;
-              color: #ffffff !important;
+                background-color: #1890ff !important;
+               border-color: #1890ff !important;
+               text-shadow: none !important;
+               color: #ffffff !important;
         }
               .dark-theme-modal .ant-modal-body {
-                background - color: #141414 !important;
+                background-color: #141414 !important;
               color: #ffffff !important;
         }
               .dark-theme-modal .ant-modal-footer {
-                border - top - color: #303030 !important;
+                border-top-color: #303030 !important;
               background-color: #141414 !important;
         }
               .dark-theme-modal .ant-modal-close {
@@ -1232,27 +1238,27 @@ const MUIChatHistory = () => {
               background: #177ddc !important;
               border-color: #177ddc !important;
         }
-        .dark-theme-modal .ant-form-item-label > label {
+              .dark-theme-modal .ant-form-item-label > label {
                 color: #ffffff !important;
         }
               .dark-theme-modal .ant-input {
-                background - color: #1f1f1f !important;
+                background-color: #1f1f1f !important;
               color: #ffffff !important;
               border-color: #434343 !important;
         }
               .dark-theme-modal .ant-input-textarea {
-                background - color: #1f1f1f !important;
+                background-color: #1f1f1f !important;
               color: #ffffff !important;
               border-color: #434343 !important;
         }
               .dark-theme-modal .ant-divider {
-                border - color: #303030 !important;
+                border-color: #303030 !important;
         }
               .dark-theme-modal .ant-switch {
-                background - color: rgba(255, 255, 255, 0.25) !important;
+                background-color: rgba(255, 255, 255, 0.25) !important;
         }
               .dark-theme-modal .ant-switch-checked {
-                background - color: #1890ff !important;
+                background-color: #1890ff !important;
         }
               `;
 

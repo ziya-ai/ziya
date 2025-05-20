@@ -620,6 +620,11 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   backface-visibility: hidden;
 }
 
+.ant-tree .ant-tree-treenode {
+  width: 100% !important;
+  display: flex !important;
+}
+
 .ant-tree-node-content-wrapper {
   transform: translateZ(0);
   backface-visibility: hidden;
@@ -644,11 +649,18 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 }
 
 .dark .ant-tree-title {
+  width: 100% !important;
+  display: flex !important;
+  align-items: center;
   color: #ffffff;
 }
 
 /* Tree Component Styling */
 .ant-tree .ant-tree-node-content-wrapper {
+  width: 100% !important;
+  display: flex !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
   color: #000000;
 }
 
