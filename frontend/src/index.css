@@ -14,44 +14,48 @@ body {
 }
 
 /* Diff table layout */
-table.diff {
-  table-layout: fixed;
+table.diff, .diff-table {
+  table-layout: fixed !important;
   width: 100%;
   border-collapse: collapse;
 }
 
 /* Diff code cells */
 .diff-code {
-  overflow-x: auto;
   position: relative;
+  overflow: visible !important;
 }
 
 /* Line content with horizontal scrolling */
 .diff-line-content {
   white-space: pre;
   min-width: max-content;
-  display: inline-block;
+  display: block;
+  overflow: visible !important;
+  width: fit-content;
 }
 
 /* Gutter columns */
 .diff-gutter-col {
   width: 50px;
   min-width: 50px;
-  max-width: 50px;
+/*  max-width: 50px; */
   text-align: right;
   padding-right: 10px;
   user-select: none;
   box-sizing: border-box;
+  overflow-x: auto !important;
   position: sticky;
   left: 0;
   z-index: 1;
 }
 
 /* Split view columns */
-.diff-code-left, .diff-code-right {
+td.diff-code.diff-code-left, 
+td.diff-code.diff-code-right {
   width: 50%;
   box-sizing: border-box;
-  overflow-x: auto;
+  overflow-x: auto !important;
 }
 
 /* Token container */
@@ -777,6 +781,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     white-space: nowrap;
     background-color: #f6f8fa;
     border-right: 1px solid #e1e4e8;
+    overflow-x: visible !important;
 }
 
 /* Code cell styles */
@@ -790,14 +795,9 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     z-index: 0;
     padding: 0 8px !important;
     box-sizing: border-box !important;
-    overflow-x: auto !important;
-}
-
-/* Enable horizontal scrolling for split view */
-.diff-table.diff-split .diff-code {
-    overflow-x: auto !important;
     white-space: pre !important;
     word-wrap: normal !important;
+    overflow: visible !important;
 }
 
 .diff-table.diff-split .diff-code-right .diff-line-insert {
@@ -1185,6 +1185,46 @@ body:not(.dark) .token.attr-name {
   display: flex;
   align-items: center;
   border-bottom: 1px solid #e1e4e8;
+}
+
+/* This is the div wrapping the table in MarkdownRenderer.tsx DiffView */
+/* We only want this to scroll for UNIFIED view. Split view panes scroll themselves. */
+.diff-view.smaller-diff-view.diff-view-unified {
+  overflow-x: hidden !important;
+  overflow-y: hidden;
+  position: relative; /* For sticky elements if any, like headers or line numbers */
+  width: 100%; /* Ensure it takes up available width before scrolling */
+}
+
+/* Styling for the new hunk-level scroll container in UNIFIED view */
+.hunk-scroll-container {
+  overflow-x: auto !important; /* This div scrolls its hunk's table */
+  margin-bottom: 1em; /* Space between hunks */
+  /* border: 1px solid #444; */ /* Optional: for debugging hunk boundaries */
+}
+ 
+/* Table INSIDE a hunk-scroll-container (for UNIFIED view hunks) */
+.hunk-scroll-container > table.diff-table-hunk.diff-table-unified-hunk {
+  table-layout: auto !important; /* Allow content to define table width */
+  width: auto !important; /* Let the table determine its own width based on content */
+  min-width: 100%;
+}
+
+/* UNIFIED VIEW: The single TD containing code must allow its content to overflow. */
+.diff-view.smaller-diff-view.diff-view-unified > table.diff-table > tbody > tr > td.diff-code {
+  width: auto !important; /* Allow cell to expand with content */
+  overflow: visible !important;
+}
+
+/* Specifically for the TD in UNIFIED view, ensure it allows content to overflow */
+.diff-view.diff-view-unified .diff-table td.diff-code {
+  overflow: visible !important;
+}
+
+
+.diff-view.diff-view-split {
+  overflow-x: hidden !important;
+  overflow-y: hidden;
 }
 
 .dark .diff-view-controls {

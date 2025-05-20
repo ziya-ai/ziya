@@ -1082,7 +1082,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     }, [diff, parseError]); // Re-tokenize if diff changes or parseError state changes
 
     const renderHunks = (hunks: any[], filePath: string, fileIndex: number) => {
-        const tableClassName = `diff-table ${viewType === 'split' ? 'diff-split' : ''}`;
+
+        const tableClassName = `diff-table ${viewType === 'split' ? 'diff-table-split' : 'diff-table-unified'}`;
 
         if (!hunks || hunks.length === 0) {
             return <div className="diff-empty-hunks">No changes found in this diff.</div>;
@@ -1199,7 +1200,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                             (isAlreadyApplied ? '#faad14' : '#52c41a') :
                                             '#ff4d4f'}` : 'none',
                                         borderRadius: '3px',
-                                        overflow: 'hidden'
+                                        overflow: 'visible'
                                     }}>
                                         <table className="diff" style={{ width: '100%', borderCollapse: 'collapse' }}><tbody>
                                             {renderContent(hunk, filePath, status, fileIndex, hunkIndex)}
@@ -1429,11 +1430,13 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     `;
 
     const renderFile = (file: any, fileIndex: number) => {
+
+        const tableClassName = `diff-table ${viewType === 'split' ? 'diff-table-split' : 'diff-table-unified'}`;
+
         return (
             <div
-                key={`diff-${fileIndex}`}
-                data-diff-type={file.type}
-                className="diff-view smaller-diff-view"
+                key={`diff-file-${fileIndex}-${elementId}`}
+                className={`diff-view smaller-diff-view ${viewType === 'split' ? 'diff-view-split' : 'diff-view-unified'}`}
                 style={{
                     backgroundColor: currentTheme.content.background,
                     color: currentTheme.content.color
@@ -1529,17 +1532,54 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         </div>
                     </div>
                 </div>
-                <div className="diff-view" style={{
+                <div className="diff-content-wrapper" style={{
                     position: 'relative',
-                    width: viewType === 'split' ? 'auto' : '100%',
-                    overflowX: 'auto',
                     overflowY: 'hidden'
                 }}>
                     <div className="diff-content">
-                        {renderHunks(
-                            file.hunks,
-                            file.newPath || file.oldPath,
-                            fileIndex,
+                        {viewType === 'unified' && file.hunks.map((hunk: ExtendedHunk, hunkIndex: number) => {
+                            const hunkKey = `${fileIndex}-${hunkIndex}`;
+                            const status = instanceHunkStatusMap.get(hunkKey);
+                            // Optional: Render hunk header (e.g., @@ -1,5 +1,7 @@) if desired above the scrollable area
+                            // const hunkHeaderInfo = hunk.content.match(/^(@@.*@@)/)?.[1];
+
+                            return (
+                                <div
+                                    key={`hunk-wrapper-${fileIndex}-${hunkIndex}-${elementId}`}
+                                    className="hunk-scroll-container"
+                                    style={{ overflowX: 'auto', marginBottom: '1em', border: '1px dashed rgba(128,128,128,0.3)' /* For visualizing hunk bounds */ }}
+                                >
+                                    {/* Optional: Hunk Header Display 
+                                    {hunkHeaderInfo && <pre className="hunk-header-display">{hunkHeaderInfo}</pre>}
+                                    */}
+                                    <table className="diff-table diff-table-hunk diff-table-unified-hunk"> {/* New class for hunk-specific table */}
+                                        <colgroup> {/* Define columns for unified hunk table */}
+                                            {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
+                                            {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
+                                            <col style={{ width: 'auto' }} /> {/* Code content column */}
+                                        </colgroup>
+                                        <tbody>
+                                            {/* Render only the changes for THIS hunk */}
+                                            {renderContent(hunk, file.newPath || file.oldPath, status, fileIndex, hunkIndex)}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            );
+                        })}
+
+                        {viewType === 'split' && (
+                            // Split view still uses the original renderHunks which renders a single table for the file
+                            // as its TDs handle their own scrolling.
+                            <table className={tableClassName}>
+                                {/* ... colgroup for split view ... */}
+                                <tbody>
+                                    {renderHunks( // renderHunks for split view will iterate through hunks and create TRs
+                                        file.hunks,
+                                        file.newPath || file.oldPath,
+                                        fileIndex
+                                    )}
+                                </tbody>
+                            </table>
                         )}
                     </div>
                 </div>
@@ -2524,8 +2564,8 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                 className="diff-container"
                 id={`diff-view-wrapper-${stableElementIdRef.current}`}
                 style={{
-                    overflowX: viewType === 'split' ? 'auto' : 'hidden',
-                    maxWidth: '100%'
+                    // overflowX: viewType === 'split' ? 'auto' : 'hidden',
+                    /*                    maxWidth: '100%'     */
                 }}>
                 {(displayMode as DisplayMode) === 'raw' ? (
                     <pre className="diff-raw-block" style={{

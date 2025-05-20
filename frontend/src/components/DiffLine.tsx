@@ -17,7 +17,7 @@ interface DiffLineProps {
 // Add a cache for whitespace visualization
 const whitespaceCache = new Map<string, string>();
 
-export const DiffLine = React.memo(({ 
+export const DiffLine = React.memo(({
     content,
     language,
     type,
@@ -139,10 +139,10 @@ export const DiffLine = React.memo(({
                 highlightedCode = visualizeWhitespace(highlightedCode);
 
                 if (highlightedCode.includes('<span class="token')) {
-                     if (contentRef.current) {
-                         contentRef.current.innerHTML = highlightedCode;
-                         lastGoodRenderRef.current = highlightedCode;
-                     }
+                    if (contentRef.current) {
+                        contentRef.current.innerHTML = highlightedCode;
+                        lastGoodRenderRef.current = highlightedCode;
+                    }
                     setHighlighted(`${highlightedCode}`);
                     return;
                 }
@@ -213,6 +213,8 @@ export const DiffLine = React.memo(({
         visibility: isHighlighting ? 'hidden' : 'visible',
         whiteSpace: 'pre',
         minWidth: 'max-content',
+        display: 'block',
+        overflow: 'visible',
         ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
         ...(style || {})
     };
@@ -221,12 +223,12 @@ export const DiffLine = React.memo(({
         // Calculate column widths
         const gutterWidth = showLineNumbers ? '50px' : '0';
         const codeWidth = `calc(50% - ${showLineNumbers ? '50px' : '0px'})`;
-        
+
         return (
             <tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
                 {/* Left gutter column */}
-                <td 
-                    className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`} 
+                <td
+                    className={`diff-gutter-col diff-gutter-old no-copy ${type === 'delete' ? 'diff-gutter-delete' : ''}`}
                     style={{
                         display: showLineNumbers ? 'table-cell' : 'none',
                         width: gutterWidth,
@@ -236,11 +238,11 @@ export const DiffLine = React.memo(({
                 >
                     {lineNumbers.old}
                 </td>
-                
+
                 {/* Left code column */}
-                <td 
-                    className="diff-code diff-code-left" 
-                    style={{ 
+                <td
+                    className="diff-code diff-code-left"
+                    style={{
                         width: codeWidth,
                         backgroundColor: type === 'delete' ? (isDarkMode ? '#4d1a1a' : '#ffebe9') : 'transparent'
                     }}
@@ -253,10 +255,10 @@ export const DiffLine = React.memo(({
                             dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} />
                     ) : <div className="diff-code-placeholder"> </div>}
                 </td>
-                
+
                 {/* Right gutter column */}
-                <td 
-                    className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`} 
+                <td
+                    className={`diff-gutter-col diff-gutter-new no-copy ${type === 'insert' ? 'diff-gutter-insert' : ''}`}
                     style={{
                         display: showLineNumbers ? 'table-cell' : 'none',
                         width: gutterWidth,
@@ -266,11 +268,11 @@ export const DiffLine = React.memo(({
                 >
                     {lineNumbers.new}
                 </td>
-                
+
                 {/* Right code column */}
-                <td 
-                    className="diff-code diff-code-right" 
-                    style={{ 
+                <td
+                    className="diff-code diff-code-right"
+                    style={{
                         width: codeWidth,
                         backgroundColor: type === 'insert' ? (isDarkMode ? '#1a4d1a' : '#e6ffec') : 'transparent'
                     }}
@@ -286,7 +288,7 @@ export const DiffLine = React.memo(({
             </tr>
         );
     }
-    
+
     // Unified view
     return (
         <tr className={`diff-line diff-line-${type}`} data-testid="diff-line" data-line={String(type === 'delete' ? oldLineNumber || 1 : newLineNumber || 1)}>
@@ -305,7 +307,6 @@ export const DiffLine = React.memo(({
                 style={{
                     backgroundColor: type === 'insert' ? (isDarkMode ? '#1a4d1a' : '#e6ffec') :
                         type === 'delete' ? (isDarkMode ? '#4d1a1a' : '#ffebe9') : 'transparent',
-                    overflowX: 'auto'
                 }}
             >
                 <div
@@ -318,8 +319,8 @@ export const DiffLine = React.memo(({
     );
 }, (prev, next) => {
     // Only re-render if these props change
-    return prev.content === next.content && 
-           prev.type === next.type &&
-           prev.showLineNumbers === next.showLineNumbers &&
-           prev.viewType === next.viewType;
+    return prev.content === next.content &&
+        prev.type === next.type &&
+        prev.showLineNumbers === next.showLineNumbers &&
+        prev.viewType === next.viewType;
 });
