@@ -23,7 +23,7 @@ table.diff, .diff-table {
 /* Diff code cells */
 .diff-code {
   position: relative;
-  overflow: visible !important;
+  overflow: hidden;
 }
 
 /* Line content with horizontal scrolling */
@@ -51,8 +51,8 @@ table.diff, .diff-table {
 }
 
 /* Split view columns */
-td.diff-code.diff-code-left, 
-td.diff-code.diff-code-right {
+div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr > td.diff-code.diff-code-left,
+div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr > td.diff-code.diff-code-right {
   width: 50%;
   box-sizing: border-box;
   overflow-x: auto !important;
@@ -1221,11 +1221,6 @@ body:not(.dark) .token.attr-name {
   overflow: visible !important;
 }
 
-
-.diff-view.diff-view-split {
-  overflow-x: hidden !important;
-  overflow-y: hidden;
-}
 
 .dark .diff-view-controls {
   background-color: #040404;
