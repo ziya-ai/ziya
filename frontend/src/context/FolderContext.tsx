@@ -23,7 +23,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const renderStart = useRef(performance.now());
   const renderCount = useRef(0);
   const [folders, setFolders] = useState<Folders>();
-  const [treeData, setTreeData] = useState<TreeDataNode[]>([]); 
+  const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
     const saved = localStorage.getItem('ZIYA_CHECKED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
@@ -32,7 +32,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const { currentFolderId, folderFileSelections, folders: chatFolders } = useChatContext();
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
-    const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS'); 
+    const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
   });
 
@@ -111,7 +111,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         const response = await fetch('/api/folders');
         if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
-        } 
+        }
         const data = await response.json();
 
         // Log the raw folder structure
@@ -124,7 +124,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
         // Store the complete folder structure
         setFolders(data);
-        
+
         // Get all available file paths recursively
         const getAllPaths = (obj: any, prefix: string = ''): string[] => {
           return Object.entries(obj).flatMap(([key, value]: [string, any]) => {
