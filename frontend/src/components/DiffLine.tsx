@@ -139,10 +139,10 @@ export const DiffLine = React.memo(({
                 highlightedCode = visualizeWhitespace(highlightedCode);
 
                 if (highlightedCode.includes('<span class="token')) {
-                     if (contentRef.current) {
-                         contentRef.current.innerHTML = highlightedCode;
-                         lastGoodRenderRef.current = highlightedCode;
-                     }
+                    if (contentRef.current) {
+                        contentRef.current.innerHTML = highlightedCode;
+                        lastGoodRenderRef.current = highlightedCode;
+                    }
                     setHighlighted(`${highlightedCode}`);
                     return;
                 }
