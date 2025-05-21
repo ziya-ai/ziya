@@ -9,13 +9,13 @@ import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import {
-    CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined, SplitCellsOutlined, BorderlessTableOutlined, NumberOutlined, EyeOutlined, FileTextOutlined, CodepenOutlined,
-    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, ExclamationCircleOutlined
+    CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined, SplitCellsOutlined, BorderlessTableOutlined, NumberOutlined, EyeOutlined, FileTextOutlined, CodepenOutlined, CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, ExclamationCircleOutlined
 } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
 import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
 import type * as PrismType from 'prismjs';
+import { renderFileHeader } from './renderFileHeader';
 
 // Define the status interface
 
@@ -297,153 +297,6 @@ const DiffControls = memo(({
     );
 });
 DiffControls.displayName = 'DiffControls';
-const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], fileIndex?: number): string => {
-
-    // If we have paths in the file object, use them directly
-    if (file.oldPath || file.newPath) {
-        const path = file.newPath || file.oldPath;
-        return `File: ${path}`;
-    }
-
-    // Helper to extract paths from unified diff header
-    const extractPathFromUnifiedHeader = (line: string): string | null => {
-        console.log('Extracting path from header line:', line);
-        // Handle unified diff format (--- a/path or +++ b/path)
-        // Also handle new file format (--- /dev/null or +++ path)
-        const match = line.match(/^(?:---|\+\+\+)\s+(?:(?:[ab]\/)?(.+)|\/dev\/null)$/);
-        if (match) {
-            // If the path is /dev/null, return null
-            if (line.includes('/dev/null')) {
-                return null;
-            }
-            return match[1] || null;
-        }
-        return null;
-    };
-
-    // Helper to extract paths from git diff header
-    const extractPathsFromHeader = (diffHeader: string): [string | null, string | null] => {
-        // First try git diff format
-        const gitMatch = diffHeader.match(/^diff --git a\/(.*?) b\/(.*?)$/);
-        if (gitMatch) {
-            // Check if this is a new file
-            if (gitMatch[1].includes('/dev/null')) {
-                return [null, gitMatch[2]];
-            }
-            // Check if this is a deletion
-            if (gitMatch[2].includes('/dev/null')) {
-                return [gitMatch[1], null];
-            }
-            return [gitMatch[1], gitMatch[2]];
-        }
-
-        // If no git diff header, try to extract from unified diff format
-        const lines = diffHeader.split('\n');
-        let oldPath: string | null = null;
-        let newPath: string | null = null;
-
-        // Check for "new file mode" indicator
-        const isNewFile = lines.some(line => line.includes('new file mode'));
-
-        for (const line of lines) {
-            console.log('Examining line for path:', line);
-            if (line.startsWith('--- ')) {
-                // Handle /dev/null case for new files
-                if (line.startsWith('--- /dev/null')) {
-                    oldPath = null;
-                } else {
-                    oldPath = extractPathFromUnifiedHeader(line);
-                }
-            } else if (line.startsWith('+++ ')) {
-                // Handle /dev/null case for deleted files
-                if (line.startsWith('+++ /dev/null')) {
-                    newPath = null;
-                } else {
-                    newPath = extractPathFromUnifiedHeader(line);
-                }
-            }
-            // Stop looking after we find both paths or hit a hunk header
-            if ((oldPath !== undefined && newPath !== undefined) || line.startsWith('@@ ')) break;
-        }
-
-        // If we found "new file mode" and oldPath is null or /dev/null, mark as new file
-        if (isNewFile || (oldPath === null && newPath !== null) || (oldPath === '/dev/null' && newPath !== null)) {
-            console.log('Detected new file creation:', newPath);
-            return [null, newPath]; // Return null for oldPath to indicate new file
-        }
-
-        console.log('Extracted paths from unified format:', { oldPath, newPath });
-        return [oldPath, newPath];
-    };
-
-    // Try to extract from content if no file header or git header
-    if (file.hunks?.[0]?.content) {
-        // Get all content from all hunks
-        const fullContent = file.hunks.map(h => h.content).join('\n');
-        console.log('Full content:', fullContent)
-
-        const [oldPath, newPath] = extractPathsFromHeader(fullContent);
-        console.log('Extracted paths from content:', { oldPath, newPath });
-
-
-        if (oldPath || newPath) {
-            const path = newPath || oldPath;
-            console.log('Using path:', path);
-            return path ? `File: ${path}` : 'Unknown file operation';
-        }
-
-        // Fallback for any other cases
-        console.log('No file path found in any format');
-        return 'Unknown file operation';
-    };
-
-    // Detect rename by comparing paths in diff header
-    const isRename = (oldPath: string | null, newPath: string | null): boolean => {
-        if (!oldPath || !newPath || oldPath === newPath) {
-            return false;
-        }
-        // Exclude /dev/null paths which indicate add/delete operations
-        return !oldPath.includes('/dev/null') && !newPath.includes('/dev/null');
-    };
-
-    // First try to use the paths from the file object
-    if (file.oldPath || file.newPath) {
-        if (file.type === 'rename') {
-            const similarityIndex = file.similarity || 100;
-            return `Rename${similarityIndex < 100 ? ' with changes' : ''}: ${file.oldPath} -> ${file.newPath} (${similarityIndex}% similar)`;
-        } else if (file.type === 'delete') {
-            return `Delete: ${file.oldPath}`;
-        } else if (file.type === 'add') {
-            return `Create: ${file.newPath}`;
-        } else if (file.oldPath && file.newPath && file.oldPath !== file.newPath) {
-            return `Rename: ${file.oldPath} -> ${file.newPath}`;
-        } else {
-            return `File: ${file.oldPath || file.newPath}`;
-        }
-    }
-
-    // If no paths in file object, try to extract from content
-    if (file.hunks?.[0]?.content) {
-        const [oldPath, newPath] = extractPathsFromHeader(file.hunks[0].content);
-
-        // Handle new file creation: oldPath is null or /dev/null, newPath exists
-        if ((oldPath === null || oldPath === '/dev/null') && newPath) {
-            return `Create: ${newPath}`;
-        } else if (oldPath && newPath && isRename(oldPath, newPath)) {
-            return `Rename: ${oldPath} -> ${newPath}`;
-        } else if ((oldPath && !newPath) || (oldPath && newPath === '/dev/null')) {
-            return `Delete: ${oldPath}`;
-        } else if (!oldPath && newPath) {
-            return `Create: ${newPath}`;
-        } else if (oldPath || newPath) {
-            return `File: ${newPath || oldPath}`;
-        }
-    }
-
-    // Fallback for any other cases
-    return 'Unknown file operation';
-};
-
 
 const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
     // If the diff doesn't contain multiple files, return it as is
@@ -1442,10 +1295,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     color: currentTheme.content.color
                 }}
             >
-                <div className="diff-header">
-                    <div className="diff-header-content" style={{ paddingTop: '8px', justifyContent: 'flex-end' }}>
-
-                        {/* Add the hunk status indicators */}
+                <div className="diff-header" style={{ padding: '8px 16px 12px' }}>
+                    <div className="diff-header-content" style={{ display: 'flex', justifyContent: 'flex-end' }}>
                         <span className="hunk-status-bar">
                             {file.hunks.map((hunk, hunkIndex) => {
                                 // Get the hunk status if available
@@ -1535,31 +1386,109 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 <div className="diff-content-wrapper" style={{
                     position: 'relative',
                     overflowY: 'hidden'
-                }}>
+                }} id={`diff-content-${elementId}`}>
                     <div className="diff-content">
                         {viewType === 'unified' && file.hunks.map((hunk: ExtendedHunk, hunkIndex: number) => {
                             const hunkKey = `${fileIndex}-${hunkIndex}`;
                             const status = instanceHunkStatusMap.get(hunkKey);
-                            // Optional: Render hunk header (e.g., @@ -1,5 +1,7 @@) if desired above the scrollable area
-                            // const hunkHeaderInfo = hunk.content.match(/^(@@.*@@)/)?.[1];
+                            const hunkId = hunkIndex + 1;
+                            const isApplied = status?.applied;
+                            const isAlreadyApplied = status?.alreadyApplied;
+                            const statusReason = status?.reason || '';
+                            
+                            // Create the status indicator component
+                            const hunkStatusIndicator = status && (
+                                <span style={{
+                                    color: isApplied ? (isAlreadyApplied ? '#faad14' : '#52c41a') : '#ff4d4f',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    marginLeft: '8px'
+                                }}>
+                                    {isApplied ?
+                                        isAlreadyApplied ?
+                                            <><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</> :
+                                            <><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</> :
+                                        <><CloseCircleOutlined /> Failed: {statusReason}</>
+                                    }
+                                </span>
+                            );
+                            
+                            // Extract hunk header information
+                            const hunkHeaderInfo = hunk.content?.match(/^(@@.*@@)/)?.[1] || 
+                                `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`;
+                            
+                            // Calculate lines between hunks for ellipsis display
+                            const previousHunk = hunkIndex > 0 ? (file.hunks[hunkIndex - 1] as ExtendedHunk) : null;
+                            const linesBetween = previousHunk ?
+                                hunk.oldStart - (previousHunk.oldStart + previousHunk.oldLines) : 0;
+                            const showEllipsis = displayMode === 'pretty' && previousHunk;
+                            const ellipsisText = linesBetween <= 0 ? '...' :
+                                linesBetween === 1 ? '... (1 line)' : `... (${linesBetween} lines)`;
 
                             return (
                                 <div
                                     key={`hunk-wrapper-${fileIndex}-${hunkIndex}-${elementId}`}
                                     className="hunk-scroll-container"
-                                    style={{ overflowX: 'auto', marginBottom: '1em', border: '1px dashed rgba(128,128,128,0.3)' /* For visualizing hunk bounds */ }}
+                                    style={{ 
+                                        overflowX: 'auto', 
+                                        marginBottom: '1em', 
+                                        border: status ? 
+                                            `1px solid ${isApplied ? (isAlreadyApplied ? '#faad14' : '#52c41a') : '#ff4d4f'}` : 
+                                            '1px dashed rgba(128,128,128,0.3)'
+                                    }}
                                 >
-                                    {/* Optional: Hunk Header Display 
-                                    {hunkHeaderInfo && <pre className="hunk-header-display">{hunkHeaderInfo}</pre>}
-                                    */}
-                                    <table className="diff-table diff-table-hunk diff-table-unified-hunk"> {/* New class for hunk-specific table */}
-                                        <colgroup> {/* Define columns for unified hunk table */}
+                                    {/* Add a status-based styling row if status is available */}
+                                    {status && (
+                                        <div className="hunk-status-header" style={{
+                                            padding: 0,
+                                            borderLeft: `3px solid ${isApplied ?
+                                                (isAlreadyApplied ? '#faad14' : '#52c41a') :
+                                                '#ff4d4f'}`,
+                                            backgroundColor: isApplied ?
+                                                (isAlreadyApplied ? 'rgba(250, 173, 20, 0.05)' : 'rgba(82, 196, 26, 0.05)') :
+                                                'rgba(255, 77, 79, 0.05)'
+                                        }}></div>
+                                    )}
+                                    
+                                    {/* Show ellipsis between hunks with proper jump anchor */}
+                                    {showEllipsis && (
+                                        <div 
+                                            id={`hunk-${fileIndex}-${hunkIndex}`}
+                                            data-diff-id={elementId}
+                                            className="diff-ellipsis"
+                                            style={{
+                                                padding: '4px 8px',
+                                                color: isDarkMode ? '#8b949e' : '#57606a',
+                                                backgroundColor: isDarkMode ? '#161b22' : '#f6f8fa',
+                                                borderBottom: '1px solid ' + (isDarkMode ? '#30363d' : '#d8dee4'),
+                                                fontSize: '12px',
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'center'
+                                            }}
+                                        >
+                                            <span>{ellipsisText}</span>
+                                            {hunkStatusIndicator}
+                                        </div>
+                                    )}
+                                    
+                                    {/* Add jump anchor for first hunk or when no ellipsis */}
+                                    {!showEllipsis && (
+                                        <div 
+                                            id={`hunk-${fileIndex}-${hunkIndex}`}
+                                            data-diff-id={elementId}
+                                            style={{ display: 'none' }}
+                                        ></div>
+                                    )}
+                                    
+                                    <table className="diff-table diff-table-hunk diff-table-unified-hunk">
+                                        <colgroup>
                                             {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
                                             {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
-                                            <col style={{ width: 'auto' }} /> {/* Code content column */}
+                                            <col style={{ width: 'auto' }} />
                                         </colgroup>
                                         <tbody>
-                                            {/* Render only the changes for THIS hunk */}
                                             {renderContent(hunk, file.newPath || file.oldPath, status, fileIndex, hunkIndex)}
                                         </tbody>
                                     </table>
@@ -2521,7 +2450,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
         return (
             <div>
                 <DiffControls
-                    fileTitle={parsedFilesRef.current?.[0] ? renderFileHeader(parsedFilesRef.current[0]) : ''}
+                    fileTitle={parsedFilesRef.current?.[0] ? parsedFilesRef.current[0].oldPath || parsedFilesRef.current[0].newPath || '' : ''}
                     displayMode={displayMode}
                     viewType={viewType}
                     showLineNumbers={showLineNumbers}
@@ -2557,7 +2486,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                 onDisplayModeChange={setDisplayMode}
                 onViewTypeChange={setViewType}
                 onLineNumbersChange={setShowLineNumbers}
-                fileTitle={parsedFilesRef.current?.[0] ? renderFileHeader(parsedFilesRef.current[0]) : ''}
+                fileTitle={parsedFilesRef.current?.[0] ? renderFileHeader(parsedFilesRef.current[0], diffText, 0) : ''}
             />
             <div
                 ref={containerRef}
@@ -2773,9 +2702,27 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' | 'd3' | 'mermaid' 
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
 
-    // 1. Handle Code Blocks with explicit lang tags first
-    if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
+    // 1. Prioritize content-based detection for diffs, regardless of lang tag
+    if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
+        const text = token.text;
+        // Check first few lines for diff markers
+        const linesToCheck = text.split('\n').slice(0, 5);
+        const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
+        const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
+        const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
+        const hasHunkHeader = linesToCheck.some(line => line.trim().startsWith('@@ '));
+        const diffMarkersFound = [hasGitHeader, hasMinusHeader, hasPlusHeader, hasHunkHeader].filter(Boolean).length;
 
+        // More lenient check for diff --git, allowing it not to be the very first thing
+        const containsDiffGit = text.includes('diff --git');
+
+        if (containsDiffGit || diffMarkersFound >= 2) {
+            return 'diff';
+        }
+    }
+
+    // 2. Handle Code Blocks with explicit lang tags
+    if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
         if (lang === 'diff') return 'diff';
         if (lang === 'graphviz' || lang === 'dot') return 'graphviz';
@@ -2857,7 +2804,7 @@ const decodeHtmlEntities = (text: string): string => {
     return textarea.value;
 };
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean): React.ReactNode => {
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false): React.ReactNode => {
 
     return tokens.map((token, index) => {
         // Determine the definitive type for rendering
@@ -2872,6 +2819,15 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     const cleanedDiff = cleanDiffContent(rawDiffText);
                     // Ensure lang is set to 'diff' for the component
                     const diffToken = { ...tokenWithText, text: cleanedDiff, lang: 'diff' };
+                    
+                    // Check if this is a multi-file diff and not already a sub-render
+                    if (!isSubRender) {
+                        const fileDiffs = splitMultiFileDiffs(cleanedDiff);
+                        if (fileDiffs.length > 1) {
+                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode);
+                        }
+                    }
+                    
                     return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
 
                 case 'graphviz':
@@ -3113,8 +3069,8 @@ const splitMultiFileDiffs = (diffText: string): string[] => {
     return fileDiffs;
 };
 
-// Function to handle multi-file diffs
-const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean): JSX.Element => {
+// Function to handle multi-file diffs with proper recursive rendering
+const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean): JSX.Element => {
     // Split the diff into separate file diffs
     const fileDiffs = splitMultiFileDiffs(token.text);
 
@@ -3123,27 +3079,34 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
         return (
             <DiffToken
                 key={index}
-                token={{ ...token, text: token.text.trim() }} // Normalize text
+                token={{ ...token, text: token.text.trim() }}
                 index={index}
                 enableCodeApply={enableCodeApply}
-                isDarkMode={false} // This will be determined inside the component
+                isDarkMode={isDarkMode}
             />
         );
     }
 
-    // Render each file diff separately
+    // Render each file diff as a complete component with its own controls
     return (
         <div key={index} className="multi-file-diff">
             {fileDiffs.map((diffContent, fileIndex) => {
-                const diffToken = { ...token, text: diffContent };
+                // Create a stable key for each file diff
+                const stableKey = `diff-${index}-file-${fileIndex}`;
+                
+                // Wrap each diff in markdown code block syntax for proper rendering
+                const wrappedDiff = `\`\`\`diff\n${diffContent}\n\`\`\``;
+                
                 return (
-                    <DiffToken
-                        key={`${index}-file-${fileIndex}-${Date.now()}`}
-                        token={diffToken}
-                        index={index * 100 + fileIndex} // Ensure unique indices
-                        enableCodeApply={enableCodeApply}
-                        isDarkMode={false} // This will be determined inside the component
-                    />
+                    <div key={stableKey} className="multi-file-diff-container" style={{marginBottom: '20px'}}>
+                        {/* Use a separate MarkdownRenderer instance for each file diff */}
+                        <MarkdownRenderer
+                            markdown={wrappedDiff}
+                            enableCodeApply={enableCodeApply}
+                            forceRender={true}
+                            isSubRender={true}
+                        />
+                    </div>
                 );
             })}
         </div>
@@ -3155,6 +3118,7 @@ interface MarkdownRendererProps {
     isStreaming?: boolean;
     enableCodeApply: boolean;
     forceRender?: boolean;
+    isSubRender?: boolean; // Add flag to prevent infinite recursion
 }
 
 // Configure marked options
@@ -3164,7 +3128,7 @@ const markedOptions = {
     pedantic: false
 };
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
     const [isPending, startTransition] = useTransition();
@@ -3232,12 +3196,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Only memoize the rendered content when not streaming or when streaming completes 
     const renderedContent = useMemo(() => {
-        return renderTokens(displayTokens, enableCodeApply, isDarkMode);
-    }, [displayTokens, enableCodeApply, isDarkMode, forceRender]); // Add forceRender to dependencies
+        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender);
+    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Add isSubRender to dependencies
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
-    return isMultiFileDiff && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
-        renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply) :
+    return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
+        renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode) :
 
         <div>{renderedContent}</div>;
 }, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply);

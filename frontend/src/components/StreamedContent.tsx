@@ -147,7 +147,7 @@ export const StreamedContent: React.FC = () => {
                         animation: 'fadeInOut 2s infinite',
                         verticalAlign: 'middle',
                         marginLeft: '4px',
-                        display: isTopToBottom ? 'inline-block' : 'none'
+                        display: 'inline-block' // Always show when loading indicator is present
                     }}>Processing response...</span>
 
                 </Space>

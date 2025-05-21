@@ -1776,6 +1776,34 @@ body:not(.dark) .token.attr-name {
     scrollbar-width: thin;
 }
 
+/* --- Vertical Indentation Guides for Ant Design Tree (FolderTree) --- */
+ 
+/* Target the <ul> that groups children. This <ul> is inside an <li> (treenode). */
+.folder-tree-panel .ant-tree .ant-tree-treenode ul.ant-tree-child-tree {
+  /*
+    Ant Design's Tree already indents child groups using `ant-tree-indent-unit` spans.
+    We apply the border to the `ul` itself.
+    The `padding-left` on this `ul` then creates space for its direct `li` children
+    to appear to the right of this vertical line.
+  */
+  padding-left: 18px; /* Adjust this: space between the line and child items' content.
+                         Should be enough to clear the child's switcher icon (if any) + desired gap.
+                         AntD switcher is ~24px wide. So 12px (half switcher) + 6px gap = 18px. */
+  position: relative; /* Needed if you wanted to use ::before for more complex lines, but border-left is simpler. */
+  border-left: 1px solid #e0e0e0; /* The vertical line for light mode. */
+}
+ 
+/* Dark mode for the line */
+.dark .folder-tree-panel .ant-tree .ant-tree-treenode ul.ant-tree-child-tree {
+  border-left-color: #606060; /* More visible dark mode line color. #424242 is also an option. */
+}
+ 
+/* Optional: If you were to use showLine prop on Tree and wanted to hide AntD's default lines: */
+/* .folder-tree-panel .ant-tree.ant-tree-show-line .ant-tree-indent-unit::before,
+.folder-tree-panel .ant-tree.ant-tree-show-line .ant-tree-indent-unit::after {
+  display: none !important;
+} */
+
 /* Chat History responsive styles */
 .chat-history-actions {
     display: flex;
