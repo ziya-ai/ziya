@@ -1217,7 +1217,13 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             # First try with the hybrid forced mode
             try:
                 logger.info("Attempting to apply diff with hybrid forced mode")
-                modified_lines = apply_diff_with_difflib_hybrid_forced(file_path, git_diff, original_lines)
+                # Pass the list of hunks to skip to the hybrid forced mode
+                modified_lines = apply_diff_with_difflib_hybrid_forced(
+                    file_path, 
+                    git_diff, 
+                    original_lines,
+                    skip_hunks=hunks_to_skip
+                )
                 modified_content = ''.join(modified_lines)
                 
                 # CRITICAL VERIFICATION: Check if the content actually changed
