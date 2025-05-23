@@ -364,6 +364,18 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         # Parse the dry run output
         dry_run_status = parse_patch_output(patch_result.stdout, patch_result.stderr)
         
+        # Check if any hunks need verification due to "Reversed (or previously applied)" message
+        needs_verification = False
+        for hunk_id, status in dry_run_status.items():
+            if status.get("status") == "needs_verification":
+                needs_verification = True
+                break
+                
+        # If any hunks need verification, we need to do additional checks
+        if needs_verification:
+            logger.info("Detected 'Reversed (or previously applied)' message, performing additional verification")
+            verify_hunks_with_file_content(pipeline, dry_run_status)
+        
         # Check if all changes are already applied
         # We need to check both stdout and stderr for errors
         has_malformed_error = "malformed patch" in patch_result.stderr
@@ -373,7 +385,8 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
             "No file to patch" not in patch_result.stdout and 
             "Reversed (or previously applied)" in patch_result.stdout and
             not has_failure and
-            not has_malformed_error
+            not has_malformed_error and
+            all(status.get("status") == "already_applied" for status in dry_run_status.values())
         )
         
         if already_applied:
@@ -401,6 +414,15 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
                     status=HunkStatus.PENDING  # Will be updated after actual patch
+                )
+            elif status_value == "needs_verification":
+                # After verification, this should have been updated to either succeeded or already_applied
+                # If it's still needs_verification, mark it as failed to try other methods
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.SYSTEM_PATCH,
+                    status=HunkStatus.FAILED,
+                    error_details={"error": "Verification needed but not completed"}
                 )
             else:
                 pipeline.update_hunk_status(
@@ -936,12 +958,34 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             
             return False
         
+        # Filter out hunks that are already marked as applied
+        hunks_to_apply = []
+        hunks_to_skip = []
+        
+        for i, hunk in enumerate(hunks, 1):
+            hunk_id = hunk_id_mapping.get(i, hunk.get('number', i))
+            if hunk_id in pipeline.result.hunks and pipeline.result.hunks[hunk_id].status == HunkStatus.ALREADY_APPLIED:
+                logger.info(f"Skipping hunk #{i} (ID #{hunk_id}) as it's already marked as applied")
+                hunks_to_skip.append(hunk_id)
+            else:
+                hunks_to_apply.append(hunk)
+        
+        if not hunks_to_apply:
+            logger.info("All hunks are already marked as applied, no need to apply diff")
+            return False
+        
         # Apply the diff with difflib
         try:
             # First try with the hybrid forced mode
             try:
                 logger.info("Attempting to apply diff with hybrid forced mode")
-                modified_lines = apply_diff_with_difflib_hybrid_forced(file_path, git_diff, original_lines)
+                # Pass the list of hunks to skip to the hybrid forced mode
+                modified_lines = apply_diff_with_difflib_hybrid_forced(
+                    file_path, 
+                    git_diff, 
+                    original_lines,
+                    skip_hunks=hunks_to_skip
+                )
                 modified_content = ''.join(modified_lines)
                 
                 # CRITICAL VERIFICATION: Check if the content actually changed
@@ -1031,7 +1075,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     logger.info(f"Falling back to regular difflib mode due to: {str(e)}")
                     try:
                         # Use the correct function signature for apply_diff_with_difflib
-                        modified_content = apply_diff_with_difflib(file_path, git_diff)
+                        modified_content = apply_diff_with_difflib(file_path, git_diff, hunks_to_skip)
                         if modified_content is None:
                             logger.error("apply_diff_with_difflib returned None")
                             # Mark all pending hunks as failed
@@ -1215,3 +1259,78 @@ def run_llm_resolver_stage(pipeline: DiffPipeline, file_path: str, git_diff: str
             )
     
     return False
+def verify_hunks_with_file_content(pipeline: DiffPipeline, hunk_status: Dict[int, Dict[str, Any]]) -> None:
+    """
+    Verify hunks that were marked as "needs_verification" by checking the actual file content.
+    
+    Args:
+        pipeline: The pipeline instance
+        hunk_status: Dictionary mapping hunk IDs to status information
+    """
+    from ..validation.validators import is_hunk_already_applied
+    
+    # Read the file content
+    try:
+        with open(pipeline.file_path, 'r', encoding='utf-8') as f:
+            file_content = f.read()
+            file_lines = file_content.splitlines()
+    except FileNotFoundError:
+        logger.warning(f"File not found: {pipeline.file_path}")
+        # Mark all needs_verification hunks as failed
+        for hunk_id, status in hunk_status.items():
+            if status.get("status") == "needs_verification":
+                hunk_status[hunk_id]["status"] = "failed"
+                hunk_status[hunk_id]["error"] = "File not found"
+        return
+        
+    # Parse the hunks from the diff
+    from ..parsing.diff_parser import parse_unified_diff_exact_plus
+    try:
+        hunks = list(parse_unified_diff_exact_plus(pipeline.git_diff, pipeline.file_path))
+    except Exception as e:
+        logger.error(f"Error parsing diff: {str(e)}")
+        # Mark all needs_verification hunks as failed
+        for hunk_id, status in hunk_status.items():
+            if status.get("status") == "needs_verification":
+                hunk_status[hunk_id]["status"] = "failed"
+                hunk_status[hunk_id]["error"] = f"Error parsing diff: {str(e)}"
+        return
+        
+    # Verify each hunk that needs verification
+    for hunk_id, status in hunk_status.items():
+        if status.get("status") == "needs_verification":
+            # Find the corresponding hunk in the parsed hunks
+            hunk = None
+            for h in hunks:
+                if h.get('number') == hunk_id:
+                    hunk = h
+                    break
+                    
+            if not hunk:
+                logger.warning(f"Could not find hunk {hunk_id} in parsed hunks")
+                hunk_status[hunk_id]["status"] = "failed"
+                hunk_status[hunk_id]["error"] = "Could not find hunk in parsed diff"
+                continue
+                
+            # Get the position where the hunk was supposedly applied
+            pos = status.get("position", 0)
+            if pos <= 0:
+                logger.warning(f"Invalid position {pos} for hunk {hunk_id}")
+                hunk_status[hunk_id]["status"] = "failed"
+                hunk_status[hunk_id]["error"] = "Invalid position"
+                continue
+                
+            # Adjust position to 0-based index
+            pos = pos - 1
+                
+            # Check if the hunk is actually already applied at this position
+            is_applied = is_hunk_already_applied(file_lines, hunk, pos)
+            
+            if is_applied:
+                logger.info(f"Verified hunk {hunk_id} is already applied at position {pos}")
+                hunk_status[hunk_id]["status"] = "already_applied"
+            else:
+                logger.info(f"Verified hunk {hunk_id} is NOT already applied at position {pos}")
+                # Mark as failed so it will be tried with other methods
+                hunk_status[hunk_id]["status"] = "failed"
+                hunk_status[hunk_id]["error"] = "Not already applied despite patch command indication"

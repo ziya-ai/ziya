@@ -1,0 +1,23 @@
+diff --git a/frontend/src/components/FolderTree.tsx b/frontend/src/components/FolderTree.tsx
+index 4c4c1f3..5d1c4c6 100644
+--- a/frontend/src/components/FolderTree.tsx
++++ b/frontend/src/components/FolderTree.tsx
+@@ -10,7 +10,6 @@ import { TokenCountDisplay } from "./TokenCountDisplay";
+ import union from 'lodash/union';
+ import { debounce } from 'lodash';
+ import { ChatHistory } from "./ChatHistory";
+-import { FolderButton } from './FolderButton';
+ import { ModelConfigButton } from './ModelConfigButton';
+ import { ReloadOutlined, FolderOutlined, MessageOutlined } from '@ant-design/icons';
+ import { convertToTreeData } from '../utils/folderUtil';
+@@ -609,9 +608,6 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => {
+                                 <span>
+                                     <MessageOutlined style={{ marginRight: 8 }} />
+                                     Chat History
+                                 </span>
+-                                <div style={{ marginLeft: 'auto', marginRight: '-8px' }}>
+-                                    <FolderButton />
+-                                </div>
+                             </div>
+                         ),
+                         children: <MUIChatHistory />

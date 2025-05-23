@@ -653,12 +653,14 @@ def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[st
                 fuzz_match = re.search(r'with fuzz (\d+)', line)
                 fuzz = int(fuzz_match.group(1)) if fuzz_match else 0
 
-                # If the patch was detected as reversed or already applied, mark as already_applied
-                status = "already_applied" if reversed_or_applied else "succeeded"
+                # If the patch was detected as reversed or already applied, we need to be more careful
+                # Don't automatically mark as already_applied - we need to verify the actual file content
+                status = "needs_verification" if reversed_or_applied else "succeeded"
                 hunk_status[current_hunk] = {
                     "status": status,
                     "position": position,
-                    "fuzz": fuzz
+                    "fuzz": fuzz,
+                    "reversed_or_applied_detected": reversed_or_applied
                 }
                 logger.debug(f"Hunk {current_hunk} {status} at position {position}" +
                             (f" with fuzz {fuzz}" if fuzz > 0 else ""))
@@ -700,13 +702,14 @@ def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[st
                 fuzz_match = re.search(r'with fuzz (\d+)', result)
                 fuzz = int(fuzz_match.group(1)) if fuzz_match else 0
 
-                # If the patch was detected as reversed or already applied, mark as already_applied
-                status = "already_applied" if reversed_or_applied else "succeeded"
-                
+                # If the patch was detected as reversed or already applied, we need to be more careful
+                # Don't automatically mark as already_applied - we need to verify the actual file content
+                status = "needs_verification" if reversed_or_applied else "succeeded"
                 hunk_status[hunk_num] = {
                     "status": status,
                     "position": position,
-                    "fuzz": fuzz
+                    "fuzz": fuzz,
+                    "reversed_or_applied_detected": reversed_or_applied
                 }
                 logger.debug(f"Hunk {hunk_num} {status} at position {position}" + 
                             (f" with fuzz {fuzz}" if fuzz > 0 else ""))

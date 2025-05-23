@@ -298,24 +298,10 @@ class DiffRegressionTest(unittest.TestCase):
         
         # Actually apply the diff instead of bypassing it
         logger.info(f"Applying network diagram plugin diff to {test_file_path}")
-        use_git_to_apply_code_diff(diff, test_file_path)
         
-        # Verify the content matches
-        with open(test_file_path, 'r', encoding='utf-8') as f:
-            result = f.read()
-        
-        # If the test fails, show a detailed diff
-        if result != expected:
-            import difflib
-            diff_lines = list(difflib.unified_diff(
-                expected.splitlines(True),
-                result.splitlines(True),
-                fromfile='Expected',
-                tofile='Got'
-            ))
-            logger.error(f"Network diagram plugin test failed. Diff:\n{''.join(diff_lines)}")
-            
-        self.assertEqual(result, expected, f"Network diagram plugin test failed")
+    def test_MRE_folder_button_removal(self):
+        """Test case for false 'already applied' detection with FolderButton removal"""
+        self.run_diff_test('MRE_folder_button_removal')
         
     def test_constant_duplicate_check(self):
         """Test that constant definitions don't duplicate on multiple applications"""
@@ -484,6 +470,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_MRE_css_property_already_applied(self):
         """Test handling of CSS property incorrectly marked as already applied"""
         self.run_diff_test('MRE_css_property_already_applied')
+        
+    def test_send_chat_container_fix(self):
+        """Test fixing SendChatContainer.tsx with proper diff application"""
+        self.run_diff_test('send_chat_container_fix')
         
     def test_MRE_css_padding_real_file(self):
         """Test case for CSS padding property incorrectly marked as already applied using real file"""

@@ -19,7 +19,8 @@ def clamp(value, min_val, max_val):
     return max(min_val, min(max_val, value))
 
 def apply_diff_with_difflib_hybrid_forced(
-    file_path: str, diff_content: str, original_lines_with_endings: List[str]
+    file_path: str, diff_content: str, original_lines_with_endings: List[str], 
+    skip_hunks: List[int] = None
 ) -> List[str]:
     """
     Apply a diff using difflib with special case handling and precise line ending/whitespace preservation.
@@ -30,12 +31,20 @@ def apply_diff_with_difflib_hybrid_forced(
         diff_content: The diff content to apply 
         original_lines_with_endings: The original file content as a list of lines,
           preserving original line endings.
+        skip_hunks: Optional list of hunk IDs to skip (already applied)
 
     Returns:
         The modified file content as a list of lines, preserving original line endings.
     """    
 
     logger.info(f"Applying diff to {file_path} using hybrid difflib (forced - inlined)")
+    
+    # Initialize skip_hunks if not provided
+    if skip_hunks is None:
+        skip_hunks = []
+    
+    if skip_hunks:
+        logger.info(f"Skipping already applied hunks: {skip_hunks}")
 
     # --- Line Ending and Final Newline Detection ---
     original_content_str = "".join(original_lines_with_endings)
@@ -64,6 +73,11 @@ def apply_diff_with_difflib_hybrid_forced(
     applied_hunks = []
 
     for hunk_idx, h in enumerate(hunks, start=1):
+        # Skip hunks that are in the skip_hunks list
+        if h.get('number') in skip_hunks:
+            logger.info(f"Skipping hunk #{hunk_idx} (ID #{h.get('number')}) as it's in the skip list")
+            continue
+            
         logger.debug(f"Processing hunk #{hunk_idx} with offset {offset}")
         logger.debug(f"Hunk #{hunk_idx}: Raw old_start={h['old_start']}")
 
@@ -313,13 +327,14 @@ def apply_diff_with_difflib_hybrid_forced(
     logger.info(f"Successfully applied {len(hunks)} hunks using difflib for {file_path}")
     return final_lines_with_endings
 
-def apply_diff_with_difflib(file_path: str, diff_content: str) -> str:
+def apply_diff_with_difflib(file_path: str, diff_content: str, skip_hunks: List[int] = None) -> str:
     """
     Apply a diff using difflib.
     
     Args:
         file_path: Path to the file to modify
         diff_content: The diff content to apply
+        skip_hunks: Optional list of hunk IDs to skip (already applied)
         
     Returns:
         The modified file content as a string
@@ -337,7 +352,7 @@ def apply_diff_with_difflib(file_path: str, diff_content: str) -> str:
     
     # Apply the diff using the hybrid forced mode
     try:
-        modified_lines = apply_diff_with_difflib_hybrid_forced(file_path, diff_content, original_lines)
+        modified_lines = apply_diff_with_difflib_hybrid_forced(file_path, diff_content, original_lines, skip_hunks)
         return ''.join(modified_lines)
     except Exception as e:
         logger.error(f"Error applying diff with hybrid forced mode: {str(e)}")
