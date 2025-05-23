@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, useId, useContext, createContext, useDebugValue } from 'react';
+import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, useId, useContext, createContext, useDebugValue, forwardRef } from 'react';
 import 'prismjs/themes/prism.css';
 import { marked, Tokens } from 'marked';
 import { Button, message, Space, Spin, Tooltip } from 'antd';
@@ -183,6 +183,7 @@ export interface DiffViewProps {
     showLineNumbers: boolean;
     fileIndex?: number;
     elementId: string;
+    forceRender?: boolean;
 }
 
 interface DiffControlsProps {
@@ -587,6 +588,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty'); // Use window setting
     const diffRef = useRef<string>(diff);
+    const parseInProgressRef = useRef<boolean>(false);
+    const forceRenderRef = useRef<boolean>(false);
+    const componentIdRef = useRef(`diff-${Date.now()}-${Math.random()}`);
 
     // Use a stable ID that doesn't change on re-renders
     const diffIdRef = useRef<string>(elementId || (() => {
@@ -601,6 +605,12 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     useEffect(() => {
         diffRef.current = diff;
     }, [diff]);
+
+    // Force render during streaming
+    useEffect(() => {
+        forceRenderRef.current = isGlobalStreaming;
+        return () => { forceRenderRef.current = false; };
+    }, [isGlobalStreaming]);
 
     // Initialize global registry if needed
     useEffect(() => {
@@ -1395,7 +1405,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                             const isApplied = status?.applied;
                             const isAlreadyApplied = status?.alreadyApplied;
                             const statusReason = status?.reason || '';
-                            
+
                             // Create the status indicator component
                             const hunkStatusIndicator = status && (
                                 <span style={{
@@ -1413,11 +1423,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     }
                                 </span>
                             );
-                            
+
                             // Extract hunk header information
-                            const hunkHeaderInfo = hunk.content?.match(/^(@@.*@@)/)?.[1] || 
+                            const hunkHeaderInfo = hunk.content?.match(/^(@@.*@@)/)?.[1] ||
                                 `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`;
-                            
+
                             // Calculate lines between hunks for ellipsis display
                             const previousHunk = hunkIndex > 0 ? (file.hunks[hunkIndex - 1] as ExtendedHunk) : null;
                             const linesBetween = previousHunk ?
@@ -1430,11 +1440,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 <div
                                     key={`hunk-wrapper-${fileIndex}-${hunkIndex}-${elementId}`}
                                     className="hunk-scroll-container"
-                                    style={{ 
-                                        overflowX: 'auto', 
-                                        marginBottom: '1em', 
-                                        border: status ? 
-                                            `1px solid ${isApplied ? (isAlreadyApplied ? '#faad14' : '#52c41a') : '#ff4d4f'}` : 
+                                    style={{
+                                        overflowX: 'auto',
+                                        marginBottom: '1em',
+                                        border: status ?
+                                            `1px solid ${isApplied ? (isAlreadyApplied ? '#faad14' : '#52c41a') : '#ff4d4f'}` :
                                             '1px dashed rgba(128,128,128,0.3)'
                                     }}
                                 >
@@ -1450,10 +1460,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                                 'rgba(255, 77, 79, 0.05)'
                                         }}></div>
                                     )}
-                                    
+
                                     {/* Show ellipsis between hunks with proper jump anchor */}
                                     {showEllipsis && (
-                                        <div 
+                                        <div
                                             id={`hunk-${fileIndex}-${hunkIndex}`}
                                             data-diff-id={elementId}
                                             className="diff-ellipsis"
@@ -1472,16 +1482,16 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                             {hunkStatusIndicator}
                                         </div>
                                     )}
-                                    
+
                                     {/* Add jump anchor for first hunk or when no ellipsis */}
                                     {!showEllipsis && (
-                                        <div 
+                                        <div
                                             id={`hunk-${fileIndex}-${hunkIndex}`}
                                             data-diff-id={elementId}
                                             style={{ display: 'none' }}
                                         ></div>
                                     )}
-                                    
+
                                     <table className="diff-table diff-table-hunk diff-table-unified-hunk">
                                         <colgroup>
                                             {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
@@ -2346,6 +2356,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
     const [displayMode, setDisplayMode] = useState<DisplayMode>('pretty');
+    const [isVisible, setIsVisible] = useState<boolean>(true);
     const [currentContent, setCurrentContent] = useState<string>(token.text || '');
     const lastValidDiffRef = useRef<string | null>(null);
     const { isStreaming: isGlobalStreaming } = useChatContext();
@@ -2354,15 +2365,13 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     const isStreamingRef = useRef<boolean>(false);
     const streamingContentRef = useRef<string>(token.text || '');
     const parseTimeoutRef = useRef<number | null>(null);
-
     // Track component visibility
-    const [isVisible, setIsVisible] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         const observer = new IntersectionObserver(([entry]) => {
             setIsVisible(entry.isIntersecting);
-        }, { threshold: 0.1 });
+        }, { threshold: 0.01, rootMargin: '200px 0px' });
 
         if (containerRef.current) {
             observer.observe(containerRef.current);
@@ -2445,7 +2454,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     // If we're streaming and have any parsed files, always show them
     if ((isGlobalStreaming) && parsedFilesRef.current.length > 0) {
         // Keep rendering even when not visible to maintain state
-        if (!isVisible) return null; // Don't render if not visible
+        if (!isVisible && !isGlobalStreaming) return null; // Always render during streaming
 
         return (
             <div>
@@ -2510,6 +2519,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                         viewType={viewType}
                         initialDisplayMode={displayMode}
                         key={stableElementIdRef.current}
+                        forceRender={isGlobalStreaming} // Force render during streaming
                         elementId={stableElementIdRef.current!}
                         showLineNumbers={showLineNumbers}
                     />
@@ -2525,13 +2535,15 @@ interface CodeBlockProps {
 }
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
-    const tokenRef = useRef(token);
+    const tokenRef = useRef<TokenWithText>(token);
     const contentRef = useRef<HTMLDivElement>(null);
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
     const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
     const [debugInfo, setDebugInfo] = useState<any>({});
+
+    const { isStreaming: isGlobalStreaming } = useChatContext();
 
     console.debug('CodeBlock rendering:', {
         id: index,
@@ -2562,7 +2574,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     // Store token in ref to avoid unnecessary re-renders
     useEffect(() => {
         tokenRef.current = token;
-        highlightCodeIfNeeded();
+        if (contentRef.current) highlightCodeIfNeeded();
     }, [token]);
 
     useEffect(() => {
@@ -2640,7 +2652,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         // Only update DOM if content has changed
         if (contentRef.current.innerHTML !== highlighted) {
             contentRef.current.innerHTML = highlighted;
-
+            contentRef.current.style.visibility = 'visible';
             // Debug log for streaming updates
             if (content.endsWith('\n') || content.includes('```')) {
                 console.debug('Streaming code update:', {
@@ -2657,6 +2669,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     if (!isLanguageLoaded) {
         return (
             <pre style={{
+                visibility: isGlobalStreaming ? 'visible' : 'hidden',
                 padding: '16px',
                 borderRadius: '6px',
                 overflow: 'auto',
@@ -2677,6 +2690,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                     padding: '16px',
                     borderRadius: '6px',
                     overflow: 'auto',
+                    visibility: 'visible',
                     backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                     border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`
                 }}
@@ -2685,6 +2699,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 <code
                     style={{
                         textShadow: 'none',
+                        visibility: 'visible',
                         color: isDarkMode ? '#e6e6e6' : '#24292e'
                     }}
                     ref={contentRef}
@@ -2819,7 +2834,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     const cleanedDiff = cleanDiffContent(rawDiffText);
                     // Ensure lang is set to 'diff' for the component
                     const diffToken = { ...tokenWithText, text: cleanedDiff, lang: 'diff' };
-                    
+
                     // Check if this is a multi-file diff and not already a sub-render
                     if (!isSubRender) {
                         const fileDiffs = splitMultiFileDiffs(cleanedDiff);
@@ -2827,7 +2842,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode);
                         }
                     }
-                    
+
                     return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
 
                 case 'graphviz':
@@ -3093,12 +3108,12 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
             {fileDiffs.map((diffContent, fileIndex) => {
                 // Create a stable key for each file diff
                 const stableKey = `diff-${index}-file-${fileIndex}`;
-                
+
                 // Wrap each diff in markdown code block syntax for proper rendering
                 const wrappedDiff = `\`\`\`diff\n${diffContent}\n\`\`\``;
-                
+
                 return (
-                    <div key={stableKey} className="multi-file-diff-container" style={{marginBottom: '20px'}}>
+                    <div key={stableKey} className="multi-file-diff-container" style={{ marginBottom: '20px' }}>
                         {/* Use a separate MarkdownRenderer instance for each file diff */}
                         <MarkdownRenderer
                             markdown={wrappedDiff}
@@ -3197,7 +3212,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Only memoize the rendered content when not streaming or when streaming completes 
     const renderedContent = useMemo(() => {
         return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender);
-    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Add isSubRender to dependencies
+    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, isStreamingState]); // Add isStreamingState to dependencies
+
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?

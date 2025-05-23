@@ -1,4 +1,4 @@
-/* Base styles */
+/* Base styles with improved streaming visibility */
 body {
   font-family: Arial, sans-serif;
   margin: 0;
@@ -11,6 +11,13 @@ body {
   overscroll-behavior: none;
   position: fixed;
   width: 100%;
+}
+
+/* Ensure streaming content remains visible */
+.streaming .diff-container,
+.streaming pre,
+.streaming code {
+  visibility: visible !important;
 }
 
 /* Diff table layout */
@@ -62,6 +69,7 @@ div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr 
 .token-container {
   display: inline-block;
   min-width: 100%;
+  visibility: visible !important;
 }
 
 .app-header {
@@ -138,6 +146,7 @@ body.dark {
   height: calc(100vh - var(--header-height) - 30px);
   overflow-y: auto;
   overflow-x: hidden !important;
+  contain: size layout;
   max-width: 100%;
   position: relative;
   left: var(--folder-panel-width);
@@ -154,7 +163,8 @@ body.dark {
 /* Prevent scroll jumps during streaming */
 .chat-container.streaming {
   scroll-behavior: auto !important;
-}
+  contain: size layout style;
+ }
 
 .chat-content-stabilizer {
   transform: translateZ(0);  /* Force GPU acceleration */
@@ -163,6 +173,7 @@ body.dark {
   perspective: 1000px;
 }
 
+
 .chat-content-with-fixed-input {
   border: none;
   display: flex;
@@ -170,6 +181,7 @@ body.dark {
   max-width: 100%;
   flex-direction: column;
   min-height: 100%;
+  contain: layout;
   outline: none;
 }
 
@@ -965,6 +977,15 @@ body:not(.dark) .token.attr-name {
     color: #005cc5;
 }
 
+/* Ensure streaming content remains visible */
+.streaming .diff-view,
+.streaming .diff-container,
+.streaming pre,
+.streaming code,
+.streaming .token-container {
+  visibility: visible !important;
+}
+
 /* General Diff-mode styling improvements */
 .diff-table {
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
@@ -976,6 +997,7 @@ body:not(.dark) .token.attr-name {
     -moz-user-select: text;
     table-layout: fixed !important;
     transform: translateZ(0);
+    contain: layout style;
     will-change: transform;
 }
 
@@ -987,10 +1009,12 @@ body:not(.dark) .token.attr-name {
     -moz-user-select: text !important;
     -ms-user-select: text !important;
     user-select: text !important;
+    contain: layout;
 }
 
 .diff-code-content {
     padding: 1px 0;
+    contain: layout;
 }
 
 .dark .diff-table {
@@ -1015,6 +1039,7 @@ body:not(.dark) .token.attr-name {
 /* Dark mode syntax highlighting Prism overrides */
 .dark .token.comment,
 .dark .token.prolog,
+.streaming .token,
 .dark .token.doctype,
 .dark .token.cdata {
     color: #8b949e;

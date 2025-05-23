@@ -17,6 +17,7 @@ import { DebugControls } from './DebugControls';
 import { MUIFileExplorer } from './MUIFileExplorer';
 import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
+import { StreamingContentManager } from './StreamingContentManager';
 
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
@@ -84,6 +85,7 @@ class LayoutErrorBoundary extends React.Component<{ children: React.ReactNode },
         return this.state.hasError ? <div className="layout-error"><h3>Layout Error Detected</h3><Button onClick={this.resetLayout} icon={<SettingOutlined />}>Reset Layout</Button></div> : this.props.children;
     }
 }
+
 
 const PANEL_COLLAPSED_KEY = 'ZIYA_PANEL_COLLAPSED';
 const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
