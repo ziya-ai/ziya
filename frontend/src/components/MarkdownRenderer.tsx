@@ -2579,13 +2579,12 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     }, []);
 
     // Track component visibility
-    const [isVisible, setIsVisible] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         const observer = new IntersectionObserver(([entry]) => {
             setIsVisible(entry.isIntersecting);
-        }, { threshold: 0.1 });
+        }, { threshold: 0.01, rootMargin: '200px 0px' });
 
         if (containerRef.current) {
             observer.observe(containerRef.current);
