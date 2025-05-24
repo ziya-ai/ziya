@@ -732,7 +732,13 @@ class ConversationDB implements DB {
             const store = tx.objectStore('folders');
             const request = store.put(folder);
 
-            request.onsuccess = () => resolve();
+            request.onsuccess = () => {
+                // signal other tabs that folder data has changed
+                try {
+                    localStorage.setItem('ziyaDbLastFolderUpdate', Date.now().toString());
+                } catch (e) { console.warn("Could not signal folder update via localStorage", e); }
+                resolve();
+            };
             request.onerror = () => reject(request.error);
             tx.oncomplete = () => resolve();
         });
@@ -746,6 +752,18 @@ class ConversationDB implements DB {
             const tx = this.db!.transaction('folders', 'readwrite');
             const store = tx.objectStore('folders');
             await store.delete(id);
+            const request = store.delete(id);
+
+            await new Promise<void>((resolve, reject) => { // Wrap in promise for async/await
+                request.onsuccess = () => {
+                    // Signal other tabs that folder data has changed
+                    try {
+                        localStorage.setItem('ziyaDbLastFolderUpdate', Date.now().toString());
+                    } catch (e) { console.warn("Could not signal folder update via localStorage", e); }
+                    resolve();
+                };
+                request.onerror = () => reject(request.error);
+            });
 
             console.log(`Folder ${id} deleted from database`);
         } catch (error) {

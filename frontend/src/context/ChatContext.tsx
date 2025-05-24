@@ -693,6 +693,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         );
                     }
                 }
+                // Also fetch and update folders
+                const savedFolders = await db.getFolders();
+                // Check >= 0 to handle empty state correctly, and ensure it's an array
+                if (Array.isArray(savedFolders) && savedFolders.length >= 0) {
+                    const currentFoldersStr = JSON.stringify(folders); // 'folders' is the state for folders
+                    const savedFoldersStr = JSON.stringify(savedFolders);
+                    if (currentFoldersStr !== savedFoldersStr) {
+                        setFolders(savedFolders); // 'setFolders' is the state setter for folders
+                    }
+                }
             } catch (error) {
                 console.error('Error during conversation poll:', error);
             }
@@ -705,7 +715,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             isMounted = false;
             window.removeEventListener('storage', handleStorageChange);
         };
-    }, [isInitialized, conversations, mergeConversations, setConversations]);
+    }, [isInitialized, conversations, folders, mergeConversations, setConversations, setFolders]); // Added folders and setFolders
 
 
     useEffect(() => {
