@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, Suspense } from 'react';
+import React, { useState, useRef, useEffect, Suspense, useCallback } from 'react';
 import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
@@ -103,7 +103,9 @@ export const App: React.FC = () => {
         const minWidth = 200;
         return isNaN(width) || width <= 0 ? 300 : Math.max(minWidth, width);
     };
-    const { streamingConversations, currentConversationId, isStreaming } = useChatContext();
+    const { streamingConversations, currentConversationId, isStreaming,
+        userHasScrolled, setUserHasScrolled } = useChatContext();
+    const lastScrollPositionRef = useRef<number>(0);
     const [panelWidth, setPanelWidth] = useState(() => {
         const saved = localStorage.getItem(PANEL_WIDTH_KEY);
         return saved ? parseInt(saved, 10) : 300; // Default width: 300px
@@ -121,6 +123,32 @@ export const App: React.FC = () => {
             handlePanelResize(panelWidth);
         }, 300);
     }, []);
+
+    // Add scroll event listener to detect manual scrolling
+    useEffect(() => {
+        const chatContainer = document.querySelector('.chat-container');
+        if (!chatContainer) return;
+
+        const handleScroll = () => {
+            const { scrollTop, scrollHeight, clientHeight } = chatContainer as HTMLElement;
+            const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
+
+            // If user scrolls to bottom, reset userHasScrolled to false to re-enable auto-scrolling
+            if (isAtBottom && userHasScrolled) {
+                setUserHasScrolled(false);
+                return;
+            }
+            
+            // If we're not at the bottom and the scroll position changed significantly, mark as user scrolled
+            if (!isAtBottom && Math.abs(scrollTop - lastScrollPositionRef.current) > 10) {
+                setUserHasScrolled(true);
+            }
+            lastScrollPositionRef.current = scrollTop;
+        };
+
+        chatContainer.addEventListener('scroll', handleScroll);
+        return () => chatContainer.removeEventListener('scroll', handleScroll);
+    }, [setUserHasScrolled]);
 
     const handleNewChat = async () => {
         try {
@@ -230,20 +258,18 @@ export const App: React.FC = () => {
         if (isTopToBottom) {
             const chatContainer = document.querySelector('.chat-container');
             if (!chatContainer) return;
+
             const scrollToBottom = (smooth = false) => {
+                if (userHasScrolled) return;
+
                 requestAnimationFrame(() => {
-                    chatContainer.scrollTo({
+                    (chatContainer as Element).scrollTo({
                         top: chatContainer.scrollHeight,
                         behavior: smooth ? 'smooth' : 'auto'
                     });
                 });
             };
-            // Scroll on initial render and when messages change
-
-            // Only auto-scroll in these specific cases:
-            // 1. Initial render (currentMessages changes)
-            // 2. When streaming is active (to follow the new content)
-            // 3. When a new message is added (streamedContentMap changes)
+            // Only auto-scroll when streaming is active and user hasn't scrolled up
             const isStreaming = streamingConversations.has(currentConversationId);
             if (isStreaming) {
                 scrollToBottom();
@@ -252,7 +278,7 @@ export const App: React.FC = () => {
                 return () => clearTimeout(timeoutId);
             }
         }
-    }, [isTopToBottom, currentMessages, streamedContentMap]);
+    }, [isTopToBottom, currentMessages, streamedContentMap, userHasScrolled, streamingConversations, currentConversationId]);
 
     const toggleDirection = () => {
         setIsTopToBottom(prev => !prev);

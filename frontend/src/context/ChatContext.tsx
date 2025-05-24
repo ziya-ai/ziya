@@ -29,6 +29,8 @@ interface ChatContext {
     dbError: string | null;
     setIsTopToBottom: Dispatch<SetStateAction<boolean>>;
     scrollToBottom: () => void;
+    userHasScrolled: boolean;
+    setUserHasScrolled: Dispatch<SetStateAction<boolean>>;
     folders: ConversationFolder[];
     setFolders: Dispatch<SetStateAction<ConversationFolder[]>>;
     currentFolderId: string | null;
@@ -63,6 +65,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isTopToBottom, setIsTopToBottom] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
     const lastSavedState = useRef<string>('');
+    const [userHasScrolled, setUserHasScrolled] = useState(false);
     const [folders, setFolders] = useState<ConversationFolder[]>([]);
     const [dbError, setDbError] = useState<string | null>(null);
     const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -74,11 +77,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const pendingSave = useRef<NodeJS.Timeout | null>(null);
     const messageUpdateCount = useRef(0);
 
+    // Modified scrollToBottom function to respect user scroll
     const scrollToBottom = () => {
         const chatContainer = document.querySelector('.chat-container');
-        if (chatContainer && isTopToBottom) {
+        if (chatContainer && isTopToBottom && !userHasScrolled) {
             requestAnimationFrame(() => {
                 chatContainer.scrollTop = chatContainer.scrollHeight;
+
+                // Reset user scroll state when we're no longer streaming
+                if (!isStreamingAny) {
+                    setTimeout(() => {
+                        setUserHasScrolled(false);
+                    }, 100);
+                }
             });
         }
     };
@@ -731,6 +742,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         isTopToBottom,
         setIsTopToBottom,
         scrollToBottom,
+        userHasScrolled,
+        setUserHasScrolled,
         folders,
         setFolders,
         currentFolderId,
@@ -765,6 +778,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         isLoadingConversation,
         // Include setDisplayMode in the dependency array
         setQuestion,
+        userHasScrolled,
         setStreamedContentMap,
         addStreamingConversation,
         removeStreamingConversation,

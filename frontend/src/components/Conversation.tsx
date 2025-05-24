@@ -30,6 +30,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         setStreamedContentMap,
         isStreaming,
         addMessageToConversation,
+        userHasScrolled,
         removeStreamingConversation
     } = useChatContext();
 
@@ -45,6 +46,18 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     const renderedSystemMessagesRef = useRef<Set<string>>(new Set());
     const activeStreamingRef = useRef<Set<string>>(new Set());
     const processedModelChangesRef = useRef<Set<string>>(new Set());
+
+    // Effect to handle scrolling when messages change
+    useEffect(() => {
+        // Only scroll if we're not streaming or user hasn't manually scrolled
+        if (!isStreaming && !userHasScrolled) {
+            const chatContainer = document.querySelector('.chat-container');
+            if (chatContainer && isTopToBottom) {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+    }, [currentMessages.length, isStreaming, userHasScrolled, isTopToBottom]);
+
 
     useEffect(() => {
         console.debug('Conversation messages updated:', {

@@ -30,6 +30,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         streamingConversations,
         addStreamingConversation,
         removeStreamingConversation,
+        setUserHasScrolled
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();
@@ -67,6 +68,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
         setQuestion('');
         setStreamedContentMap(new Map());
+
+        // Reset user scroll state when sending a new message
+        setUserHasScrolled(false);
 
         // Debug log the selected files state
         console.log('Current file selection state:', {

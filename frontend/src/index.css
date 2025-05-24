@@ -1236,7 +1236,7 @@ body:not(.dark) .token.attr-name {
 /* Styling for the new hunk-level scroll container in UNIFIED view */
 .hunk-scroll-container {
   overflow-x: auto !important; /* This div scrolls its hunk's table */
-  margin-bottom: 1em; /* Space between hunks */
+  margin-bottom: 0; /* No margin needed as ellipsis divs provide separation */
   /* border: 1px solid #444; */ /* Optional: for debugging hunk boundaries */
 }
  

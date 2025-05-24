@@ -1448,6 +1448,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                             '1px dashed rgba(128,128,128,0.3)'
                                     }}
                                 >
+                                    {/* Add a hidden ellipsis for the first hunk to ensure status has a place to go */}
+                                    {hunkIndex === 0 && (
+                                        <div id={`hunk-${fileIndex}-${hunkIndex}`} data-diff-id={elementId} className="diff-ellipsis" style={{ display: 'none' }}></div>
+                                    )}
+
                                     {/* Add a status-based styling row if status is available */}
                                     {status && (
                                         <div className="hunk-status-header" style={{

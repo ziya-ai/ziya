@@ -1,4 +1,4 @@
-import React, { useEffect, Suspense, useState, useRef, useCallback, useLayoutEffect, useMemo, useTransition, useId } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo, useTransition, useId, Suspense } from 'react';
 import { useChatContext } from '../context/ChatContext';
 import { Space, Alert, Typography } from 'antd';
 import StopStreamButton from './StopStreamButton';
@@ -25,8 +25,11 @@ export const StreamedContent: React.FC = () => {
         isStreamingAny,
         streamingConversations,
         currentMessages,
+        userHasScrolled,
+        setUserHasScrolled,
         removeStreamingConversation,
         isTopToBottom,
+        scrollToBottom,
         question,
     } = useChatContext();
 
@@ -41,7 +44,7 @@ export const StreamedContent: React.FC = () => {
     useEffect(() => {
         const isWaitingForResponse = streamingConversations.has(currentConversationId);
         setIsPendingResponse(isWaitingForResponse);
-        
+
         // If we're waiting for a response, ensure isStreaming is true for this conversation
         if (isWaitingForResponse && !isStreaming) {
             setIsStreaming(true);
@@ -55,7 +58,7 @@ export const StreamedContent: React.FC = () => {
             lastQuestionRef.current = question;
         }
     }, [streamingConversations, currentConversationId, question]);
-    
+
     // Update the ref whenever streamed content changes
     useEffect(() => {
         streamedContentRef.current = streamedContent;
@@ -140,7 +143,7 @@ export const StreamedContent: React.FC = () => {
                 order: isTopToBottom ? 0 : -1  // Place at top if bottom-up view
             }} className="loading-indicator">
                 <Space align="center">
-                    <div className="message-sender" style={{ marginRight: '8px' }}>AI:</div>
+                    <div className="ressage-sender" style={{ marginRight: '8px' }}>AI:</div>
                     <RobotOutlined style={{ fontSize: '20px', animation: 'pulse 2s infinite' }} />
                     <LoadingOutlined spin />
                     <span style={{
@@ -192,7 +195,12 @@ export const StreamedContent: React.FC = () => {
         if (!contentRef.current) return false;
 
         const container = contentRef.current.closest('.chat-container');
-        if (!container) return true; // Default to true if we can't determine
+        if (!container) return true;
+
+        // If we're at the bottom, reset userHasScrolled to re-enable auto-scrolling
+        if (Math.abs(container.scrollHeight - container.scrollTop - container.clientHeight) < 20) {
+            setUserHasScrolled(false);
+        }
 
         const containerRect = container.getBoundingClientRect();
         const contentRect = contentRef.current.getBoundingClientRect();
@@ -211,13 +219,14 @@ export const StreamedContent: React.FC = () => {
     // Function to smoothly scroll to keep the streaming content in view
     const scrollToKeepInView = () => {
         // Debug scroll events
-        const now = Date.now();
+        /*const now = Date.now();
         console.log(`scrollToKeepInView called at ${now % 10000}`, {
             isAutoScrolling: isAutoScrollingRef.current,
             isTopToBottom
-        });
+        });*/
 
-        if (!contentRef.current || !isAutoScrollingRef.current) return;
+        // Don't auto-scroll if user has manually scrolled up
+        if (!contentRef.current || !isAutoScrollingRef.current || userHasScrolled) return;
 
         const container = contentRef.current.closest('.chat-container');
         if (!container) return;
@@ -293,7 +302,7 @@ export const StreamedContent: React.FC = () => {
         observerRef.current = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
-                    isAutoScrollingRef.current = true;
+                    isAutoScrollingRef.current = !userHasScrolled;
                 } else {
                     isAutoScrollingRef.current = false;
                 }
@@ -325,7 +334,7 @@ export const StreamedContent: React.FC = () => {
         if (!streamingConversations.has(currentConversationId)) return;
 
         // Check if we should start auto-scrolling
-        if (contentRef.current && isViewingBottom()) {
+        if (contentRef.current && isViewingBottom() && !userHasScrolled) {
             isAutoScrollingRef.current = true;
         }
 
@@ -333,7 +342,7 @@ export const StreamedContent: React.FC = () => {
         const scrollInterval = setInterval(scrollToKeepInView, 500); // Reduced frequency
 
         return () => clearInterval(scrollInterval);
-    }, [currentConversationId, streamingConversations, streamedContentMap]);
+    }, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
 
     // Add a separate effect to handle scroll position restoration
     useEffect(() => {
