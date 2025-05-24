@@ -13,8 +13,7 @@ import difflib
 import logging
 from app.utils.code_util import use_git_to_apply_code_diff, PatchApplicationError
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging - will be adjusted based on command line arguments
 logger = logging.getLogger(__name__)
 
 class DiffRegressionTest(unittest.TestCase):
@@ -1123,22 +1122,34 @@ if __name__ == '__main__':
                       help='Set the log level')
     parser.add_argument('--force-difflib', action='store_true',
                       help='Bypass system patch and use difflib directly')
-    parser.add_argument('--multi-entry', action='store_true',
+    parser.add_argument('--multi', action='store_true',
                       help='Run all tests in both normal and force-difflib modes with comparison table')
     parser.add_argument('--compare-with-previous', action='store_true',
                       help='Compare current test results with previous run and show changes')
     parser.add_argument('--save-results', action='store_true',
                       help='Save test results for future comparison')
+    parser.add_argument('--quiet', action='store_true',
+                      help='Suppress all logging output except final test results')
     args = parser.parse_args()
  
-    os.environ['ZIYA_LOG_LEVEL'] = args.log_level
+    # Configure logging based on arguments
+    if args.quiet:
+        # Suppress all logging except critical errors
+        logging.basicConfig(level=logging.CRITICAL)
+        # Also suppress logging from other modules
+        for logger_name in logging.root.manager.loggerDict:
+            logging.getLogger(logger_name).setLevel(logging.CRITICAL)
+    else:
+        # Use the specified log level
+        logging.basicConfig(level=getattr(logging, args.log_level))
+        os.environ['ZIYA_LOG_LEVEL'] = args.log_level
  
     # If --show-cases is specified, print test case details and exit
     if args.show_cases:
         print_test_case_details(args.test_filter)
         sys.exit(0)
 
-    if args.multi_entry:
+    if args.multi:
         # Run tests in both modes and show comparison table
         print("\n" + "=" * 80)
         print("Running tests in normal mode...")
