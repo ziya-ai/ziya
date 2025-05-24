@@ -64,12 +64,20 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   // Save expanded folders whenever they change
   useEffect(() => {
-    localStorage.setItem('ZIYA_EXPANDED_FOLDERS', JSON.stringify(Array.from(expandedKeys)));
+    try {
+      localStorage.setItem('ZIYA_EXPANDED_FOLDERS', JSON.stringify(Array.from(expandedKeys)));
+    } catch (error) {
+      console.warn('Failed to save expanded folders to localStorage (QuotaExceeded?):', error);
+    }
   }, [expandedKeys]);
 
   // Save checked folders whenever they change
   useEffect(() => {
-    localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(checkedKeys));
+    try {
+      localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(checkedKeys));
+    } catch (error) {
+      console.warn('Failed to save checked folders to localStorage (QuotaExceeded?):', error);
+    }
   }, [checkedKeys]);
 
   // Update checked keys when folder changes if folder has specific file selections
