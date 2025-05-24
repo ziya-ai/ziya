@@ -576,40 +576,49 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, []);
 
+    // frontend/src/context/ChatContext.tsx
     const deleteFolder = useCallback(async (id: string): Promise<void> => {
         try {
-            // Find all conversations in this folder
-            const conversationsInFolder = conversations.filter(c => c.folderId === id);
+            // Get the most up-to-date list of conversations from the DB or state.
+            // To be safest, especially if other operations might be happening,
+            // it's better to work with the data that will be persisted.
+            const currentConversationsFromDB = await db.getConversations();
+            const updatedConversationsForDB = currentConversationsFromDB.map(conv =>
+                conv.folderId === id ? { ...conv, isActive: false, _version: Date.now() } : conv
+            );
 
-            // Mark all conversations in this folder as inactive
-            setConversations(prev => prev.map(c =>
-                c.folderId === id ? { ...c, isActive: false, _version: Date.now() } : c
+            // Save the entire updated list to the database once
+            await db.saveConversations(updatedConversationsForDB);
+
+            // Now update the React state based on the successfully persisted changes
+            setConversations(prevConvs => prevConvs.map(conv =>
+                conv.folderId === id ? { ...conv, isActive: false, _version: Date.now() } : conv
             ));
 
-            // Update conversations in database to mark them as inactive
-            for (const conv of conversationsInFolder) {
-                const updatedConv = { ...conv, isActive: false, _version: Date.now() };
-                await db.saveConversations([updatedConv]);
-            }
-
-            // Log the deletion
-            console.log(`Deleted folder ${id} with ${conversationsInFolder.length} conversations`);
-
-            // Delete the folder
+            // Delete the folder metadata from the database
             await db.deleteFolder(id);
 
-            // Update folders state
-            setFolders(prev => prev.filter(f => f.id !== id));
+            // Update folders state in React
+            setFolders(prevFolders => prevFolders.filter(f => f.id !== id));
 
-            // If current folder is deleted, set current folder to null
+            // If the currently active folder is the one being deleted, reset it
             if (currentFolderId === id) {
                 setCurrentFolderId(null);
             }
+
+            const numAffectedConversations = updatedConversationsForDB.filter(c => c.folderId === id && !currentConversationsFromDB.find(oc => oc.id === c.id)?.isActive).length;
+            message.success(`Folder deleted and ${numAffectedConversations} conversations marked inactive.`);
+
         } catch (error) {
             console.error('Error deleting folder:', error);
-            throw error;
+            message.error('Failed to delete folder. Please try again.');
+            // Potentially re-fetch state from DB to ensure consistency if partial failure
+            const freshConversations = await db.getConversations();
+            setConversations(freshConversations);
+            const freshFolders = await db.getFolders();
+            setFolders(freshFolders);
         }
-    }, [conversations, currentFolderId]);
+    }, [currentFolderId, setConversations, setFolders, setCurrentFolderId]); // Removed 'conversations' from deps, relies on fetching fresh from DB
 
     const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
         try {
