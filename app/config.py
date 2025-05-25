@@ -11,7 +11,7 @@ DEFAULT_PORT = 8000
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
-    "bedrock": "sonnet3.7",
+    "bedrock": "sonnet4.0",
     "google": "gemini-pro"
 }
 
@@ -19,6 +19,7 @@ DEFAULT_MODELS = {
 MODEL_DEFAULT_REGIONS = {
     "sonnet3.7": "eu-west-1",  # Default to EU for sonnet3.7
     # Add more model-specific defaults as needed
+    "sonnet4.0": "us-east-1",
 }
 
 # Default region when not specified
@@ -160,6 +161,18 @@ ENDPOINT_DEFAULTS = {
 # Model-specific configs that override endpoint defaults
 MODEL_CONFIGS = {
     "bedrock": {
+        "sonnet4.0": {
+            "model_id": {
+                "us": "us.anthropic.claude-sonnet-4-20250514-v1:0"
+            },
+            "token_limit": 200000,  # Total context window size
+            "max_output_tokens": 64000,  # Maximum output tokens
+            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,  # Override global default
+            "family": "claude",
+            "region": "us-east-1"  # Model-specific region preference
+        },
         "sonnet3.7": {
             "model_id": {
                 "eu": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0" 
@@ -186,13 +199,20 @@ MODEL_CONFIGS = {
             },
             "family": "claude"
         },
-        "opus": {
+        "opus3": {
             "model_id": {
                 "us": "us.anthropic.claude-3-opus-20240229-v1:0",
                 # Only available in US regions currently
             },
             "family": "claude"
         }, 
+        "opus4": {
+            "model_id": {
+                "us": "us.anthropic.claude-opus-4-20250514-v1:0",
+                # Only available in US regions currently
+            },
+            "family": "claude"
+        },
         "sonnet": {
             "model_id": {
                 "us": "us.anthropic.claude-3-sonnet-20240229-v1:0",
@@ -255,7 +275,7 @@ MODEL_CONFIGS = {
             "convert_system_message_to_human": True,
         },
         "gemini-flash": {
-            "model_id": "gemini-2.5-flash-preview-04-17",
+            "model_id": "gemini-2.5-flash-preview-05-20",
             "token_limit": 1048576,
             "family": "gemini-flash",
             "max_output_tokens": 65535,
