@@ -439,13 +439,46 @@ export const mermaidPlugin: D3RenderPlugin = {
                 applyCustomStyles(svgElement);
             }
 
+            // Helper function to apply custom styles from the diagram definition
+            const applyCustomStyles = (svgElement: SVGElement) => {
+                // Process all style directives in the SVG
+                const styleElements = svgElement.querySelectorAll('style');
+                styleElements.forEach(styleEl => {
+                    // Extract class names and their style definitions
+                    const styleText = styleEl.textContent || '';
+                    const styleRules = styleText.match(/\.(\w+)\s*{([^}]*)}/g) || [];
+
+                    styleRules.forEach(rule => {
+                        // Apply these styles directly to the elements with matching classes
+                        const classMatch = rule.match(/\.(\w+)\s*{/);
+                        const styleMatch = rule.match(/{([^}]*)}/);
+
+                        if (classMatch && styleMatch) {
+                            const className = classMatch[1];
+                            const styles = styleMatch[1].trim();
+
+                            // Find elements with this class and apply styles directly
+                            svgElement.querySelectorAll(`.${className}`).forEach(el => {
+                                // Parse individual style properties
+                                styles.split(';').forEach(style => {
+                                    const [prop, value] = style.split(':').map(s => s.trim());
+                                    if (prop && value) {
+                                        (el as SVGElement).style.setProperty(prop, value);
+                                    }
+                                });
+                            });
+                        }
+                    });
+                });
+            };
+
             // Enhance dark theme visibility for specific elements
             if (isDarkMode && svgElement) {
                 requestAnimationFrame(() => {
                     // Enhance specific elements that might still have poor contrast
                     svgElement.querySelectorAll('.edgePath path').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5');
+                        el.setAttribute('stroke-width', '1.5px');
                     });
 
                     // Fix for arrow markers in dark mode
@@ -457,7 +490,7 @@ export const mermaidPlugin: D3RenderPlugin = {
                     // Fix for all SVG paths and lines
                     svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5');
+                        el.setAttribute('stroke-width', '1.5px');
                     });
 
                     // Text on darker backgrounds should be black for contrast
@@ -472,7 +505,7 @@ export const mermaidPlugin: D3RenderPlugin = {
 
                     svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5');
+                        el.setAttribute('stroke-width', '1.5px');
                     });
 
                     svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
@@ -484,7 +517,13 @@ export const mermaidPlugin: D3RenderPlugin = {
                         el.setAttribute('stroke', '#81a1c1');
                         el.setAttribute('fill', '#4c566a');
                     });
+
+                    // Apply custom styles from the diagram definition
+                    applyCustomStyles(svgElement);
                 });
+            } else {
+                // Even in light mode, apply custom styles
+                applyCustomStyles(svgElement);
             }
 
             // Wait for next frame to ensure SVG is rendered
