@@ -149,6 +149,7 @@ interface ChatTreeItemProps {
   onCompress: (id: string) => void;
   onMove: (id: string, folderId: string | null) => void;
   onOpenMoveMenu?: (id: string, anchorEl: HTMLElement) => void;
+  onCreateSubfolder?: (id: string) => void;
   isEditing?: boolean;
   editValue?: string;
   onEditChange?: (value: string) => void;
@@ -186,6 +187,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onCompress,
     onMove,
     onOpenMoveMenu,
+    onCreateSubfolder,
     isEditing = false,
     editValue = '',
     isDragging = false, // True if this item is being dragged
@@ -321,7 +323,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                       nodeId={nodeId}
                       onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress}
                       onOpenMoveMenu={onOpenMoveMenu} // Pass the handler
-                      onConfigure={onConfigure} onPin={onPin} isPinned={isPinned}
+                      onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
                     />}
                     trigger={['click']}
                     placement="bottomRight"
@@ -348,7 +350,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
   );
 });
 
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onOpenMoveMenu, onConfigure, onPin, isPinned }) => {
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onOpenMoveMenu, onConfigure, onPin, isPinned, onCreateSubfolder }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -373,8 +375,15 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
   } else { // isFolder
     items.push(
       { key: 'edit', label: 'Rename', icon: <EditOutlined />, onClick: (e) => handleAntAction(onEdit, e.domEvent) },
+      { key: 'new-subfolder', label: 'New Subfolder', icon: <CreateNewFolderIcon />, onClick: (e) => handleAntAction(onCreateSubfolder, e.domEvent) },
       { key: 'configure', label: 'Configuration', icon: <AntSettingOutlined />, onClick: (e) => handleAntAction(onConfigure, e.domEvent) },
       { key: 'pin', label: isPinned ? 'Unpin' : 'Pin to Top', icon: <AntPushpinOutlined />, onClick: (e) => handleAntAction(onPin, e.domEvent) },
+      {
+        key: 'move', label: 'Move to', icon: <AntFolderOutlined />, onClick: (e) => {
+          e.domEvent.stopPropagation();
+          onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement);
+        }
+      },
       { type: 'divider' as const },
       { key: 'delete', label: 'Delete', icon: <DeleteOutlined />, onClick: (e) => handleAntAction(onDelete, e.domEvent), danger: true }
     );
@@ -389,14 +398,32 @@ const MoveToFolderMenu = ({
   onClose,
   folders,
   onMove,
-  nodeId
+  nodeId,
+  onMoveFolder
 }) => {
+  const isMovingFolder = nodeId && !nodeId.startsWith('conv-');
+
+  // Helper function to check if a folder is a descendant of another
+  const isDescendantFolder = (folderId: string, potentialAncestorId: string): boolean => {
+    if (folderId === potentialAncestorId) return true;
+
+    const folder = folders.find(f => f.id === folderId);
+    if (!folder || !folder.parentId) return false;
+
+    return isDescendantFolder(folder.parentId, potentialAncestorId);
+  };
+
   // Group folders by parent ID
   const foldersByParent = useMemo(() => {
     const map = new Map();
     map.set(null, []); // Root level folders
 
     folders.forEach(folder => {
+      // Skip the folder being moved and its descendants when moving a folder
+      if (isMovingFolder && (folder.id === nodeId || isDescendantFolder(folder.id, nodeId))) {
+        return;
+      }
+
       const parentId = folder.parentId || null;
       if (!map.has(parentId)) {
         map.set(parentId, []);
@@ -405,7 +432,7 @@ const MoveToFolderMenu = ({
     });
 
     return map;
-  }, [folders]);
+  }, [folders, nodeId, isMovingFolder]);
 
   // Recursive function to render folder menu items
   const renderFolderItems = (parentId = null, level = 0) => {
@@ -416,7 +443,13 @@ const MoveToFolderMenu = ({
         <MenuItem
           onClick={(e) => {
             e.stopPropagation();
-            onMove(nodeId, folder.id);
+            if (isMovingFolder) {
+              // Handle folder move
+              onMoveFolder(nodeId, folder.id);
+            } else {
+              // Handle conversation move
+              onMove(nodeId, folder.id);
+            }
             onClose();
           }}
           sx={{ pl: 2 + level * 2 }}
@@ -445,7 +478,15 @@ const MoveToFolderMenu = ({
         horizontal: 'right',
       }}
     >
-      <MenuItem onClick={(e) => { e.stopPropagation(); onMove(nodeId, null); onClose(); }}>
+      <MenuItem onClick={(e) => {
+        e.stopPropagation();
+        if (isMovingFolder) {
+          onMoveFolder(nodeId, null);
+        } else {
+          onMove(nodeId, null);
+        }
+        onClose();
+      }}>
         <ListItemIcon><FolderIcon fontSize="small" /></ListItemIcon>
         <ListItemText>Root</ListItemText>
       </MenuItem>
@@ -555,6 +596,44 @@ const MUIChatHistory = () => {
     });
   };
 
+  // Handle moving a folder
+  const handleMoveFolder = async (folderId: string, targetParentId: string | null) => {
+    try {
+      const folder = folders.find(f => f.id === folderId);
+      if (!folder) return;
+
+      // Prevent moving a folder into itself or its descendants
+      if (targetParentId === folderId) {
+        message.error("Cannot move a folder into itself");
+        return;
+      }
+
+      const isDescendant = (checkId: string, ancestorId: string): boolean => {
+        if (checkId === ancestorId) return true;
+        const checkFolder = folders.find(f => f.id === checkId);
+        if (!checkFolder || !checkFolder.parentId) return false;
+        return isDescendant(checkFolder.parentId, ancestorId);
+      };
+
+      if (targetParentId && isDescendant(targetParentId, folderId)) {
+        message.error("Cannot move a folder into one of its descendants");
+        return;
+      }
+
+      // Update the folder's parent
+      const updatedFolder = {
+        ...folder,
+        parentId: targetParentId
+      };
+
+      await updateFolder(updatedFolder);
+      message.success('Folder moved successfully');
+    } catch (error) {
+      message.error('Failed to move folder');
+      console.error('Move folder error:', error);
+    }
+  };
+
   // Handle edit actions
   const handleEdit = (id: string) => {
     if (id.startsWith('conv-')) {
@@ -602,10 +681,36 @@ const MUIChatHistory = () => {
 
   // Handle adding a new chat to a folder
   const handleAddChat = async (folderId: string) => {
-    await setCurrentFolderId(folderId);
-    setIsLoading(true);
-    await startNewChat(folderId);
-    setIsLoading(false);
+    try {
+      console.log('Adding new chat to folder:', folderId);
+
+      // Ensure the folder is expanded before creating the chat
+      if (!expandedNodes.includes(folderId)) {
+        setExpandedNodes(prev => [...prev, folderId]);
+      }
+
+      // Also expand any parent folders
+      const expandParentFolders = (targetFolderId: string) => {
+        const folder = folders.find(f => f.id === targetFolderId);
+        if (folder?.parentId) {
+          const parentId = folder.parentId;
+          if (!expandedNodes.includes(parentId)) {
+            setExpandedNodes(prev => [...prev, parentId]);
+          }
+          expandParentFolders(parentId); // Recursively expand parents
+        }
+      };
+      expandParentFolders(folderId);
+
+      await setCurrentFolderId(folderId);
+      setIsLoading(true);
+      await startNewChat(folderId);
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Error creating new chat in folder:', error);
+      message.error('Failed to create new chat');
+      setIsLoading(false);
+    }
   };
 
   // Add the missing handleEditChange function
@@ -623,9 +728,14 @@ const MUIChatHistory = () => {
     if (id.startsWith('conv-')) {
       const conversationId = id.substring(5);
       try {
-        // Update state first
+        // Update state first - no timestamp update for rename
         const updatedConversations = conversations.map(conv =>
-          conv.id === conversationId ? { ...conv, title: newValue } : conv
+          conv.id === conversationId ? {
+            ...conv,
+            title: newValue,
+            // Keep original lastAccessedAt - renaming shouldn't affect sort order
+            _version: Date.now() // Only update version for sync purposes
+          } : conv
         );
 
         // Persist to IndexedDB before updating state
@@ -648,7 +758,8 @@ const MUIChatHistory = () => {
         // Update the folder name
         const updatedFolder = {
           ...folder,
-          name: newValue
+          name: newValue,
+          updatedAt: Date.now()
         };
 
         // Save to database
@@ -1010,6 +1121,32 @@ const MUIChatHistory = () => {
   // Handle configuring a folder
   const handleConfigureFolder = (folderId: string) => showFolderConfigDialog(folderId);
 
+  // Handle creating a subfolder
+  const handleCreateSubfolder = async (parentFolderId: string) => {
+    try {
+      // Create a new subfolder with default name and settings
+      const createdFolderId = await createFolder('New Folder', parentFolderId);
+      const newFolderId = String(createdFolderId);
+
+      // Ensure parent folder is expanded to show the new subfolder
+      if (!expandedNodes.includes(parentFolderId)) {
+        setExpandedNodes(prev => [...prev, parentFolderId]);
+      }
+
+      message.success('New folder created successfully');
+
+      // start editing the folder name immediately
+      if (newFolderId) {
+        setTimeout(() => {
+          setEditingId(newFolderId);
+          setEditValue('New Folder');
+        }, 100);
+      }
+    } catch (error) {
+      console.error('Error creating subfolder:', error);
+      message.error('Failed to create subfolder');
+    }
+  };
 
   // Handle conversation click
   const handleConversationClick = useCallback(async (conversationId: string) => {
@@ -1083,7 +1220,8 @@ const MUIChatHistory = () => {
         folder: folder, // Keep the original folder object
         conversationCount: 0,
         isPinned: pinnedFolders.has(folder.id),
-        lastActivityTime: folder.updatedAt || folder.createdAt || 0 // Initialize with folder's own time
+        lastActivityTime: 0, // Will be calculated from conversations
+        createdAt: folder.createdAt || 0 // Use creation time as fallback
       });
     })
 
@@ -1099,9 +1237,11 @@ const MUIChatHistory = () => {
         });
         folderNode.conversationCount++;
 
-        const convTime = conv.lastAccessedAt || 0;
-        if (convTime > folderNode.lastActivityTime) {
-          folderNode.lastActivityTime = convTime;
+        // Only update folder's lastActivityTime if conversation has actual activity
+        // Use lastAccessedAt only if it's greater than 0 (indicating actual access)
+        const convActivityTime = conv.lastAccessedAt || 0;
+        if (convActivityTime > 0 && convActivityTime > folderNode.lastActivityTime) {
+          folderNode.lastActivityTime = convActivityTime;
         }
       }
 
@@ -1153,14 +1293,28 @@ const MUIChatHistory = () => {
 
         // Sort folders by last activity time (most recent first)
         if (a.folder && b.folder) {
-          return b.lastActivityTime - a.lastActivityTime;
+          const aTime = a.lastActivityTime > 0 ? a.lastActivityTime : a.createdAt;
+          const bTime = b.lastActivityTime > 0 ? b.lastActivityTime : b.createdAt;
+          return bTime - aTime;
         }
 
         // Sort conversations by last accessed time (most recent first)
         if (!a.folder && !b.folder) {
-          const aTime = a.conversation?.lastAccessedAt ?? 0;
-          const bTime = b.conversation?.lastAccessedAt ?? 0;
-          return bTime - aTime;
+          const aActivityTime = a.conversation?.lastAccessedAt ?? 0;
+          const bActivityTime = b.conversation?.lastAccessedAt ?? 0;
+
+          // If both have activity time, sort by that
+          if (aActivityTime > 0 && bActivityTime > 0) {
+            return bActivityTime - aActivityTime;
+          }
+
+          // If only one has activity time, it comes first
+          if (aActivityTime > 0 && bActivityTime === 0) return -1;
+          if (bActivityTime > 0 && aActivityTime === 0) return 1;
+
+          // If neither has activity time, sort by creation time (ID-based for now)
+          // This keeps newly created conversations in a stable order without jumping to top
+          return a.conversation?.id?.localeCompare(b.conversation?.id) || 0;
         }
 
         return 0;
@@ -1384,6 +1538,12 @@ const MUIChatHistory = () => {
           } else {
             // Create new folder
             const newFolderId = await createFolder(values.name, currentFolderId);
+
+            // Ensure parent folder is expanded when creating a subfolder
+            if (currentFolderId && !expandedNodes.includes(currentFolderId)) {
+              setExpandedNodes(prev => [...prev, currentFolderId]);
+            }
+
             const updatedFolder = {
               id: newFolderId,
               name: values.name,
@@ -1417,8 +1577,30 @@ const MUIChatHistory = () => {
   };
 
   // Handle creating a new folder
-  const handleCreateNewFolder = () => {
-    showFolderConfigDialog();
+  const handleCreateNewFolder = async () => {
+    try {
+      // Create a new folder with default name and settings at root level
+      const createdFolderId = await createFolder('New Folder', currentFolderId);
+      const newFolderId = String(createdFolderId);
+
+      // Ensure parent folder is expanded if creating a subfolder
+      if (currentFolderId && !expandedNodes.includes(currentFolderId)) {
+        setExpandedNodes(prev => [...prev, currentFolderId]);
+      }
+
+      message.success('New folder created successfully');
+
+      // Start editing the folder name immediately
+      if (newFolderId) {
+        setTimeout(() => {
+          setEditingId(newFolderId);
+          setEditValue('New Folder');
+        }, 100);
+      }
+    } catch (error) {
+      console.error('Error creating folder:', error);
+      message.error('Failed to create folder');
+    }
   };
 
   // Render the tree recursively
@@ -1467,6 +1649,7 @@ const MUIChatHistory = () => {
           onCompress={handleCompressConversation}
           onMove={handleMoveConversation}
           onOpenMoveMenu={handleOpenMoveMenu}
+          onCreateSubfolder={handleCreateSubfolder}
           isEditing={isEditing}
           editValue={editValue}
           onEditChange={handleEditChange}
@@ -1493,87 +1676,84 @@ const MUIChatHistory = () => {
     <Box sx={{
       height: '100%',
       display: 'flex',
-      flexDirection: 'column',
-      position: 'relative',
-      p: 1
+      justifyContent: 'center',
+      alignItems: 'center'
     }}>
-      <Box sx={{
-        position: 'absolute',
-        top: 0, left: 0, right: 0, bottom: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        backgroundColor: 'rgba(0,0,0,0.1)', zIndex: 10
-      }}>
-        <Spin />
-      </Box>
+      <Spin size="large" />
     </Box>
   ) : (
-    <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
-      {(() => {
-
-
-        const treeViewStyles = {
-          height: '100%',
-          overflowY: 'auto' as const,
-          '& .MuiTreeItem-root': {
-            '&.Mui-selected > .MuiTreeItem-content': {
-              bgcolor: isDarkMode ? '#177ddc' : '#e6f7ff',
-              color: isDarkMode ? '#ffffff' : 'inherit',
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* Tree View - now takes full height */}
+      <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
+        {(() => {
+          const treeViewStyles = {
+            height: '100%',
+            overflowY: 'auto' as const,
+            '& .MuiTreeItem-root': {
+              '&.Mui-selected > .MuiTreeItem-content': {
+                bgcolor: isDarkMode ? '#177ddc' : '#e6f7ff',
+                color: isDarkMode ? '#ffffff' : 'inherit',
+              },
+              '&.drag-over > .MuiTreeItem-content': {
+                backgroundColor: isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)',
+                border: isDarkMode ? '1px dashed #177ddc' : '1px dashed #1890ff'
+              }
             },
-            '&.drag-over > .MuiTreeItem-content': {
-              backgroundColor: isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)',
-              border: isDarkMode ? '1px dashed #177ddc' : '1px dashed #1890ff'
+            // Additional styles for drag and drop
+            '& .MuiTreeItem-root.drag-over': {
+              backgroundColor: 'rgba(24, 144, 255, 0.1)'
+            },
+            // Reduce spacing between tree items
+            '& .MuiTreeItem-content': {
+              padding: '0px 8px',
+              minHeight: '20px'
             }
-          },
-          // Additional styles for drag and drop
-          '& .MuiTreeItem-root.drag-over': {
-            backgroundColor: 'rgba(24, 144, 255, 0.1)'
-          },
-          // Reduce spacing between tree items
-          '& .MuiTreeItem-content': {
-            padding: '0px 8px',
-            minHeight: '20px'
-          }
-        };
+          };
 
-        return (
-          <TreeView
-            aria-label="chat history"
-            sx={treeViewStyles}
-            defaultCollapseIcon={<ArrowDropDownIcon />}
-            defaultExpandIcon={<ArrowRightIcon />}
-            defaultEndIcon={<div style={{ width: 24 }} />}
-            expanded={expandedNodes.map(String)}
-            selected={currentConversationId ? 'conv-' + currentConversationId : currentFolderId || ''}
-            onNodeToggle={handleNodeToggle}
-            onNodeSelect={handleTreeNodeSelect}
-            className="chat-history-tree"
-          >
-            {renderTree(treeData)}
-          </TreeView>
-        );
-      })()}
+          return (
+            <TreeView
+              aria-label="chat history"
+              sx={treeViewStyles}
+              defaultCollapseIcon={<ArrowDropDownIcon />}
+              defaultExpandIcon={<ArrowRightIcon />}
+              defaultEndIcon={<div style={{ width: 24 }} />}
+              expanded={expandedNodes.map(String)}
+              selected={currentConversationId ? 'conv-' + currentConversationId : currentFolderId || ''}
+              onNodeToggle={handleNodeToggle}
+              onNodeSelect={handleTreeNodeSelect}
+              className="chat-history-tree"
+            >
+              {renderTree(treeData)}
+            </TreeView>
+          );
+        })()}
+      </Box>
 
       {/* Export/Import buttons */}
       <Box sx={{
         display: 'flex',
-        justifyContent: 'space-between',
+        justifyContent: 'flex-end',
         p: 2,
         borderTop: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8'
       }}>
-        <Button
-          variant="outlined"
-          startIcon={<DownloadIcon />}
-          onClick={handleExportConversations}
-        >
-          Export
-        </Button>
-        <Button
-          variant="outlined"
-          startIcon={<UploadIcon />}
-          onClick={handleImportConversations}
-        >
-          Import
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportConversations}
+            size="small"
+          >
+            Export
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<UploadIcon />}
+            onClick={handleImportConversations}
+            size="small"
+          >
+            Import
+          </Button>
+        </Box>
       </Box>
 
       {/* Render the move menu */}
@@ -1583,25 +1763,10 @@ const MUIChatHistory = () => {
         onClose={handleCloseMoveMenu}
         folders={folders}
         onMove={handleMoveConversation}
+        onMoveFolder={handleMoveFolder}
         nodeId={moveToMenuState.nodeId}
       />
-
-      {/* Floating action button for creating new folders */}
-      <Fab
-        color="primary"
-        size="small"
-        aria-label="add folder"
-        onClick={handleCreateNewFolder}
-        sx={{
-          position: 'absolute',
-          bottom: 70,
-          right: 16,
-        }}
-      >
-        <CreateNewFolderIcon />
-      </Fab>
-
-    </Box >
+    </Box>
   );
 };
 

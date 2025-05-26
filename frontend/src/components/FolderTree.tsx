@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
-import { Input, Tabs, Tree, TreeDataNode, Button, message } from 'antd';
+import { Input, Tabs, Tree, TreeDataNode, Button, message, Tooltip } from 'antd';
 import { useFolderContext } from '../context/FolderContext';
 import { Folders } from '../utils/types';
 import { useChatContext } from '../context/ChatContext';
@@ -8,7 +8,7 @@ import { FolderOutlined, FileOutlined } from '@ant-design/icons'; // Import icon
 import { debounce } from 'lodash';
 import { ChatHistory } from "./ChatHistory";
 import { ModelConfigButton } from './ModelConfigButton';
-import { ReloadOutlined, MessageOutlined } from '@ant-design/icons';
+import { ReloadOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons';
 import { convertToTreeData } from '../utils/folderUtil';
 import MUIChatHistory from './MUIChatHistory';
 import { MUIFileExplorer } from './MUIFileExplorer';
@@ -43,6 +43,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Extract only the specific values needed from ChatContext
     // to prevent unnecessary re-renders
     const [modelId, setModelId] = useState<string>('');
+    const { startNewChat, createFolder } = useChatContext();
     const { isDarkMode } = useTheme();
 
     // Use a more selective approach to extract only what we need from ChatContext
@@ -406,6 +407,107 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         return dirNode.token_count || 0;
     }, [getFolderTokenCount, calculateTokens, checkedKeys]);
 
+    // Handle creating a new folder
+    const handleCreateNewFolder = async () => {
+        try {
+            // Use the currently selected folder as parent, or null for root level
+            const parentFolderId = currentFolderId || null;
+            console.log('Creating new folder with parent:', parentFolderId);
+            // If creating in a parent folder, ensure it's expanded
+            if (parentFolderId && !expandedKeys.includes(parentFolderId)) {
+                setExpandedKeys(prev => [...prev, parentFolderId]);
+            }
+            const newFolderId: string = await createFolder('New Folder', parentFolderId);
+            message.success('Folder created successfully');
+            
+            // Note: FolderTree doesn't have inline editing, so we just create the folder
+            // Users can rename it later via the context menu
+        } catch (error) {
+            console.error('Error creating folder:', error);
+            message.error('Failed to create folder');
+        }
+    };
+
+    const handleCreateNewChat = async () => {
+        try {
+            // Use the currently selected folder ID, or null for root level
+            const targetFolderId = currentFolderId || null;
+            console.log('Creating new chat in folder:', targetFolderId);
+
+            // If creating in a folder, ensure it's expanded
+            if (targetFolderId && !expandedKeys.includes(targetFolderId)) {
+                setExpandedKeys(prev => [...prev, targetFolderId]);
+            }
+
+            await startNewChat(targetFolderId);
+        } catch (error) {
+            console.error('Error creating new chat:', error);
+            message.error('Failed to create new chat');
+        }
+    };
+
+    // Add effect to position buttons when Chat History tab is active
+    useEffect(() => {
+        if (activeTab === '2') {
+            // Add the buttons to the tab bar after render
+            setTimeout(() => {
+                const tabBar = document.querySelector('.ant-tabs-nav');
+                const chatHistoryTab = document.querySelector('[data-node-key="2"]');
+                if (tabBar && chatHistoryTab && !document.getElementById('chat-history-actions')) {
+                    const actionsDiv = document.createElement('div');
+                    actionsDiv.id = 'chat-history-actions';
+                    actionsDiv.style.cssText = `
+                        position: absolute;
+                        right: 8px;
+                        top: 50%;
+                        transform: translateY(-50%);
+                        display: flex;
+                        gap: 2px;
+                        z-index: 10;
+                    `;
+
+                    // Create buttons
+                    const folderBtn = document.createElement('button');
+                    folderBtn.innerHTML = '<span class="anticon anticon-folder"><svg viewBox="64 64 896 896" focusable="false" data-icon="folder" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M880 298.4H521L403.7 186.2a8.15 8.15 0 00-5.5-2.2H144c-17.7 0-32 14.3-32 32v592c0 17.7 14.3 32 32 32h736c17.7 0 32-14.3 32-32V330.4c0-17.7-14.3-32-32-32z"></path></svg></span>';
+                    folderBtn.className = 'ant-btn ant-btn-text ant-btn-sm';
+                    folderBtn.style.cssText = 'min-width: 24px; padding: 0 4px;';
+                    folderBtn.title = `New Folder${currentFolderId ? ' in current folder' : ' at root level'}`;
+                    folderBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        handleCreateNewFolder();
+                    };
+
+                    const chatBtn = document.createElement('button');
+                    chatBtn.innerHTML = '<span class="anticon anticon-plus"><svg viewBox="64 64 896 896" focusable="false" data-icon="plus" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M482 152h60q8 0 8 8v704q0 8-8 8h-60q-8 0-8-8V160q0-8 8-8z"></path><path d="M176 474h672q8 0 8 8v60q0 8-8 8H176q-8 0-8-8v-60q0-8 8-8z"></path></svg></span>';
+                    chatBtn.className = 'ant-btn ant-btn-text ant-btn-sm';
+                    chatBtn.style.cssText = 'min-width: 24px; padding: 0 4px;';
+                    chatBtn.title = `New Chat${currentFolderId ? ' in current folder' : ' at root level'}`;
+                    chatBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        handleCreateNewChat();
+                    };
+
+                    actionsDiv.appendChild(folderBtn);
+                    actionsDiv.appendChild(chatBtn);
+                    tabBar.appendChild(actionsDiv);
+                }
+            }, 0);
+        } else {
+            // Remove buttons when not on Chat History tab
+            const existingActions = document.getElementById('chat-history-actions');
+            if (existingActions) {
+                existingActions.remove();
+            }
+        }
+
+        return () => {
+            const existingActions = document.getElementById('chat-history-actions');
+            if (existingActions) {
+                existingActions.remove();
+            }
+        };
+    }, [activeTab, currentFolderId]);
+
     // Original implementation with improved debugging
     const getIncludedTokens = useCallback((node: TreeDataNode): { included: number, total: number } => {
         if (!folders) return { included: 0, total: 0 };
@@ -670,12 +772,10 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     {
                         key: '2',
                         label: (
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                                <span>
-                                    <MessageOutlined style={{ marginRight: 8 }} />
-                                    Chat History
-                                </span>
-                            </div>
+                            <span>
+                                <MessageOutlined style={{ marginRight: 8 }} />
+                                Chat History
+                            </span>
                         ),
                         children: <MUIChatHistory /> // This is the MUI version being used
                     },

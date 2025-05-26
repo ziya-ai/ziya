@@ -1913,9 +1913,48 @@ body:not(.dark) .token.attr-name {
 }
 
 /* MUI Chat History specific styles */
+
+/* Remove ALL default padding from the TreeView root */
+.chat-history-tree.MuiTreeView-root {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+ 
+/* Remove padding from root tree items - push chevrons to the left edge */
+.chat-history-tree .MuiTreeItem-root {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+}
+ 
+/* Remove padding from content wrapper - chevrons should be at left edge */
 .chat-history-tree .MuiTreeItem-content {
-  padding: 1px 4px !important;
+  padding: 1px 4px 1px 0 !important;
   min-height: 24px !important;
+  margin-left: 0 !important;
+}
+
+/* Remove any default indentation from icon container */
+.chat-history-tree .MuiTreeItem-iconContainer {
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+  margin-right: 2px !important; /* Minimal space between chevron and content */
+}
+
+/* vertical span expansion lines for folders */
+.chat-history-tree .MuiTreeItem-group {
+  margin-left: 8px !important; 
+  padding-left: 0px !important; 
+}
+
+/* Shift nested content even more left */
+.chat-history-tree .MuiTreeItem-group .MuiTreeItem-content {
+  margin-left: 0px !important; /* Pull nested content further left */
+  padding-left: 8px !important;
+}
+ 
+/* Reduce icon container spacing */
+.chat-history-tree .MuiTreeItem-iconContainer {
+  margin-right: 2px !important; /* Reduce space between chevron and content */
 }
 
 /* Override MUI hover styles to prevent underline */
