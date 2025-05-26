@@ -334,6 +334,19 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   </Dropdown>
                 </Box>
               </Box>
+            )}
+            {isStreaming && (
+              <Box sx={{
+                display: 'flex',
+                alignItems: 'center',
+                mt: 0.5,
+                color: isDarkMode ? '#4cc9f0' : '#1890ff'
+              }}>
+                <SpinningSync sx={{ fontSize: '12px', mr: 0.5 }} />
+                <Typography variant="caption" sx={{ fontSize: '11px' }}>
+                  Receiving response...
+                </Typography>
+              </Box>
             )}</Box>
         </div>}
       draggable={true} // Make the TreeItem itself draggable
@@ -1613,7 +1626,13 @@ const MUIChatHistory = () => {
       const isCurrentItem = isFolder
         ? node.id === currentFolderId
         : node.id.startsWith('conv-') && node.id.substring(5) === currentConversationId;
-      const hasUnreadResponse = !isFolder && node.id.startsWith('conv-') && node.conversation?.hasUnreadResponse;
+      const hasUnreadResponse = !isFolder && node.id.startsWith('conv-') &&
+        node.conversation?.hasUnreadResponse && node.id.substring(5) !== currentConversationId;
+
+      // Fix streaming detection - ensure we're checking the actual conversation ID
+      const conversationId = !isFolder && node.id.startsWith('conv-') ? node.id.substring(5) : null;
+      const isStreamingConv = conversationId && streamingConversations.has(conversationId);
+
       const conversationCount = isFolder ? node.conversationCount : 0;
       const isEditing = editingId === (isFolder ? node.id : node.id.substring(5));
       const isBeingDragged = draggedNodeId === nodeId;
@@ -1637,7 +1656,7 @@ const MUIChatHistory = () => {
           isFolder={isFolder}
           isPinned={isPinned}
           isCurrentItem={isCurrentItem}
-          isStreaming={!isFolder && node.id.startsWith('conv-') && streamingConversations.has(node.id.substring(5))}
+          isStreaming={isStreamingConv}
           hasUnreadResponse={hasUnreadResponse}
           conversationCount={conversationCount}
           onEdit={handleEdit}
