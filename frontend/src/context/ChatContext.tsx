@@ -488,7 +488,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
 
             const numAffectedConversations = updatedConversationsForDB.filter(c => c.folderId === id && !currentConversationsFromDB.find(oc => oc.id === c.id)?.isActive).length;
-            message.success(`Folder deleted and ${numAffectedConversations} conversations marked inactive.`);
+            console.log(`Folder deleted and ${numAffectedConversations} conversations marked inactive.`);
 
         } catch (error) {
             console.error('Error deleting folder:', error);

@@ -1,8 +1,11 @@
 import * as Viz from '@viz-js/viz';
 import { D3RenderPlugin } from '../../types/d3';
+import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 
 export interface GraphvizSpec {
     type: 'graphviz';
+    isStreaming?: boolean;
+    forceRender?: boolean;
     definition: string;
 }
 
@@ -23,8 +26,22 @@ export const graphvizPlugin: D3RenderPlugin = {
     name: 'graphviz-renderer',
     priority: 5,
     canHandle: isGraphvizSpec,
+
+    // Helper to check if a graphviz definition is complete
+    isDefinitionComplete: (definition: string): boolean => {
+        if (!definition || definition.trim().length === 0) return false;
+
+        // Check for balanced braces which is a good indicator of completeness
+        const openBraces = definition.split('{').length - 1;
+        const closeBraces = definition.split('}').length - 1;
+
+        // A complete definition should have balanced braces and end with a closing brace
+        return openBraces === closeBraces && openBraces > 0 && definition.includes('}');
+    },
+
     render: async (container: HTMLElement, d3: any, spec: GraphvizSpec, isDarkMode: boolean) => {
         try {
+            const hasExistingContent = container.querySelector('svg') !== null;
             // Show loading spinner immediately
             container.innerHTML = `
                 <div style="
@@ -58,10 +75,37 @@ export const graphvizPlugin: D3RenderPlugin = {
                     }
                 </style>
             `;
-            
+
+            // If we're streaming and the definition is incomplete, show a waiting message
+            if (spec.isStreaming && !spec.forceRender) {
+                const isComplete = isDiagramDefinitionComplete(spec.definition, 'graphviz');
+                const timestamp = Date.now();
+                console.log(`[${timestamp}] Graphviz streaming check:`, {
+                    isComplete,
+                    definitionLength: spec.definition.length,
+                    definitionPreview: spec.definition.substring(0, 50),
+                    definitionEnd: spec.definition.substring(spec.definition.length - 20)
+                });
+
+                if (!isComplete) {
+                    container.innerHTML = `
+                        <div style="text-align: center; padding: 20px; background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; border: 1px dashed #ccc; border-radius: 4px;">
+                            <p>Waiting for complete Graphviz definition...</p>
+                        </div>
+                    `;
+                    return; // Exit early and wait for complete definition
+                }
+
+                // If we already have content and we're streaming, don't show errors
+                if (hasExistingContent && spec.isStreaming) {
+                    return; // Keep existing content during streaming if definition is incomplete
+                }
+            }
+            console.log(`Rendering Graphviz diagram with ${spec.definition.length} chars`);
+
             // Store the current theme for this container
             containerThemes.set(container, isDarkMode);
-            
+
             // Enhanced theme colors with better contrast
             const themeColors = {
                 light: {
@@ -86,7 +130,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                     labelText: '#ffffff',           // White text for labels
                     clusterBg: '#1a1a2e',           // Dark cluster background
                     clusterBorder: '#4cc9f0',       // Bright cluster border
-                    
+
                     // Alternative node colors for variety
                     nodeColors: [
                         '#4361ee',                  // Royal blue
@@ -101,17 +145,17 @@ export const graphvizPlugin: D3RenderPlugin = {
             };
 
             const colors = isDarkMode ? themeColors.dark : themeColors.light;
-            
+
             const vizInstance = await Viz.instance();
-            
+
             // Add theme attributes to dot with more styling options
             let themedDot = spec.definition;
-            
+
             // Only add theme attributes if the graph has a proper structure
             if (spec.definition.match(/^(\s*(?:di)?graph\s+[^{]*{)/)) {
                 // Set default text color based on page mode
                 const defaultTextColor = isDarkMode ? '#ffffff' : '#000000';
-                
+
                 themedDot = spec.definition.replace(
                     /^(\s*(?:di)?graph\s+[^{]*{)/,
                     `$1
@@ -120,7 +164,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                     edge [color="${colors.edgeColor}", fontcolor="${defaultTextColor}", penwidth=1.5];
                     graph [fontcolor="${defaultTextColor}", color="${colors.clusterBorder}", fontname="Arial"];`
                 );
-                
+
                 // Handle graph label if present
                 const labelMatch = spec.definition.match(/\s+label\s*=\s*"([^"]+)"/);
                 if (labelMatch) {
@@ -136,25 +180,25 @@ export const graphvizPlugin: D3RenderPlugin = {
 
             // Apply theme to SVG elements with more specific styling
             const elements = element.getElementsByTagName('*');
-            
+
             // For dark mode, prepare to assign different colors to nodes
             let nodeIndex = 0;
             const nodeColors = isDarkMode ? themeColors.dark.nodeColors : [];
-            
+
             // First pass: Apply colors to nodes and collect background colors
             const nodeBackgroundColors = new Map(); // Map to store node background colors
             const clusterBackgroundColors = new Map(); // Map to store cluster background colors
-            
+
             // First identify all clusters and their background colors
             for (let i = 0; i < elements.length; i++) {
                 const el = elements[i];
-                
+
                 // Identify cluster backgrounds
                 if (el.tagName === 'polygon' && el.parentElement && el.parentElement.classList.contains('cluster')) {
                     const originalFill = el.getAttribute('fill');
                     if (originalFill) {
                         clusterBackgroundColors.set(el.parentElement, originalFill);
-                        
+
                         // In dark mode, override light cluster backgrounds
                         if (isDarkMode) {
                             // Check if this is a light color that needs to be darkened
@@ -163,7 +207,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                                 const darkColor = getDarkVersionOfColor(originalFill);
                                 el.setAttribute('fill', darkColor);
                                 el.setAttribute('stroke', colors.clusterBorder);
-                                
+
                                 // Store the fact that we changed this color
                                 el.setAttribute('data-original-fill', originalFill);
                                 el.setAttribute('data-darkened', 'true');
@@ -172,11 +216,11 @@ export const graphvizPlugin: D3RenderPlugin = {
                     }
                 }
             }
-            
+
             // Then process nodes
             for (let i = 0; i < elements.length; i++) {
                 const el = elements[i];
-                
+
                 if (el.tagName === 'ellipse' || el.tagName === 'polygon') {
                     // Node shapes
                     if (el.getAttribute('fill') !== 'none') {
@@ -186,28 +230,28 @@ export const graphvizPlugin: D3RenderPlugin = {
                             // Store the element and its original fill color
                             nodeBackgroundColors.set(el, originalFill);
                         }
-                        
+
                         // In dark mode, handle node colors
                         if (isDarkMode) {
                             // Check if this is a light color that needs to be darkened
                             if (originalFill && isLightColor(originalFill)) {
                                 // For white or very light colors, use our node colors
-                                if (originalFill.toLowerCase() === '#ffffff' || 
+                                if (originalFill.toLowerCase() === '#ffffff' ||
                                     originalFill.toLowerCase() === 'white' ||
                                     getBrightness(originalFill) > 0.9) {
-                                    
+
                                     if (nodeColors.length > 0) {
                                         const colorIndex = nodeIndex % nodeColors.length;
                                         el.setAttribute('fill', nodeColors[colorIndex]);
-                                        
+
                                         // Store the fact that we changed this color
                                         el.setAttribute('data-original-fill', originalFill);
                                         el.setAttribute('data-darkened', 'true');
-                                        
+
                                         nodeIndex++;
                                     } else {
                                         el.setAttribute('fill', colors.nodeFill);
-                                        
+
                                         // Store the fact that we changed this color
                                         el.setAttribute('data-original-fill', originalFill);
                                         el.setAttribute('data-darkened', 'true');
@@ -216,13 +260,13 @@ export const graphvizPlugin: D3RenderPlugin = {
                                     // For other light colors, darken them
                                     const darkColor = getDarkVersionOfColor(originalFill);
                                     el.setAttribute('fill', darkColor);
-                                    
+
                                     // Store the fact that we changed this color
                                     el.setAttribute('data-original-fill', originalFill);
                                     el.setAttribute('data-darkened', 'true');
                                 }
                             }
-                            
+
                             // Set border color
                             el.setAttribute('stroke', colors.nodeBorder);
                             el.setAttribute('stroke-width', '1.5');
@@ -230,34 +274,34 @@ export const graphvizPlugin: D3RenderPlugin = {
                     }
                 }
             }
-            
+
             // Second pass: Apply text colors based on their parent node colors
             // and ensure edges are visible against backgrounds
             for (let i = 0; i < elements.length; i++) {
                 const el = elements[i];
-                
+
                 if (el.tagName === 'text') {
                     // Default text color based on page mode
                     // Use the opposite of the page background for maximum visibility
                     const defaultTextColor = isDarkMode ? '#ffffff' : '#000000';
                     el.setAttribute('fill', defaultTextColor);
-                    
+
                     // For node labels, ensure text is readable against node background
                     const parent = el.parentElement;
                     if (parent) {
                         // Find the node shape element (ellipse, polygon) in the parent
                         const nodeShape = parent.querySelector('ellipse, polygon');
-                        
+
                         if (nodeShape) {
                             // Get the current fill color of the node
                             const currentFill = nodeShape.getAttribute('fill');
-                            
+
                             // If we have a background color, set text color based on its brightness
                             if (currentFill) {
                                 const isLightBackground = isLightColor(currentFill);
                                 el.setAttribute('fill', isLightBackground ? '#000000' : '#ffffff');
                             }
-                            
+
                             // Add debug attributes
                             el.setAttribute('data-bg-color', currentFill || 'unknown');
                             el.setAttribute('data-is-light', isLightColor(currentFill || '') ? 'true' : 'false');
@@ -279,7 +323,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                             el.setAttribute('fill', defaultTextColor);
                         }
                     }
-                    
+
                     // Special case for graph labels (which might not have a direct node parent)
                     if (parent && parent.classList.contains('graph')) {
                         // Graph labels should match the default text color for the page mode
@@ -298,10 +342,10 @@ export const graphvizPlugin: D3RenderPlugin = {
                     el.setAttribute('stroke', colors.edgeColor);
                 }
             }
-            
+
             // Clear container and append SVG
             container.innerHTML = '';
-            
+
             // Create wrapper div similar to mermaid plugin
             const wrapper = document.createElement('div');
             wrapper.className = 'graphviz-wrapper';
@@ -313,10 +357,10 @@ export const graphvizPlugin: D3RenderPlugin = {
                 display: flex;
                 justify-content: center;
             `;
-            
+
             // Add the SVG to the wrapper
             wrapper.appendChild(element);
-            
+
             // Add wrapper to container
             container.appendChild(wrapper);
 
@@ -333,7 +377,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                 const svgGraphics = element as unknown as SVGGraphicsElement;
                 let width = 600;
                 let height = 400;
-                
+
                 try {
                     // Try to get the bounding box
                     const bbox = svgGraphics.getBBox();
@@ -342,10 +386,10 @@ export const graphvizPlugin: D3RenderPlugin = {
                 } catch (e) {
                     console.warn('Could not get SVG dimensions, using defaults', e);
                 }
-                
+
                 // Create a new SVG with proper XML declaration and doctype
                 const svgData = new XMLSerializer().serializeToString(element);
-                
+
                 // Create an HTML document that will display the SVG responsively
                 const htmlContent = `
                 <!DOCTYPE html>
@@ -468,23 +512,23 @@ export const graphvizPlugin: D3RenderPlugin = {
                 </body>
                 </html>
                 `;
-                
+
                 // Create a blob with the HTML content
                 const blob = new Blob([htmlContent], { type: 'text/html' });
                 const url = URL.createObjectURL(blob);
-                
+
                 // Open in a new window with specific dimensions
                 const popupWindow = window.open(
-                    url, 
-                    'GraphvizDiagram', 
+                    url,
+                    'GraphvizDiagram',
                     `width=${width},height=${height},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no`
                 );
-                
+
                 // Focus the new window
                 if (popupWindow) {
                     popupWindow.focus();
                 }
-                
+
                 // Clean up the URL object after a delay
                 setTimeout(() => URL.revokeObjectURL(url), 10000);
             };
@@ -497,16 +541,16 @@ export const graphvizPlugin: D3RenderPlugin = {
             saveButton.onclick = () => {
                 // Create a new SVG with proper XML declaration and doctype
                 const svgData = new XMLSerializer().serializeToString(element);
-                
+
                 // Create a properly formatted SVG document with XML declaration
                 const svgDoc = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 ${svgData}`;
-                
+
                 // Create a blob with the SVG content
                 const blob = new Blob([svgDoc], { type: 'image/svg+xml' });
                 const url = URL.createObjectURL(blob);
-                
+
                 // Create a download link
                 const link = document.createElement('a');
                 link.href = url;
@@ -514,7 +558,7 @@ ${svgData}`;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
-                
+
                 // Clean up the URL object after a delay
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
             };
@@ -546,7 +590,7 @@ ${svgData}`;
 
             // Add actions container before the wrapper
             container.insertBefore(actionsContainer, wrapper);
-            
+
             // Add a theme button to manually re-render with the opposite theme
             const themeButton = document.createElement('button');
             themeButton.innerHTML = isDarkMode ? '☀️ Light' : '🌙 Dark';
@@ -558,7 +602,10 @@ ${svgData}`;
             actionsContainer.appendChild(themeButton);
         } catch (error) {
             console.error('Graphviz rendering error:', error);
-            container.innerHTML = `
+
+            // Only show error if we're not streaming or if we have no existing content
+            if (!spec.isStreaming || !container.querySelector('svg')) {
+                container.innerHTML = `
                 <div class="graphviz-error">
                     <strong>Graphviz Error:</strong>
                     <pre>${error instanceof Error ? error.message : 'Unknown error'}</pre>
@@ -568,6 +615,7 @@ ${svgData}`;
                     </details>
                 </div>
             `;
+            }
         }
     }
 };
@@ -578,22 +626,22 @@ function isLightColor(color: string): boolean {
     if (!color || color === 'transparent' || color === 'none') {
         return false;
     }
-    
+
     // Handle specific named colors that we know are light
     const lightNamedColors = [
         'white', 'lightblue', 'lightgreen', 'lightgrey', 'lightgray', 'pink',
         '#aed6f1', '#d4e6f1', '#d5f5e3', '#f5f5f5', '#e6e6e6', '#f0f0f0',
         '#ffffff', '#f8f9fa', '#e9ecef', '#dee2e6', '#ced4da', '#adb5bd'
     ];
-    
+
     // Case-insensitive check for light named colors
     if (lightNamedColors.some(c => c.toLowerCase() === color.toLowerCase())) {
         return true;
     }
-    
+
     // Get brightness value
     const brightness = getBrightness(color);
-    
+
     // More conservative threshold - if in doubt, assume it's light
     // This ensures we don't put white text on ambiguous backgrounds
     return brightness > 0.5;
@@ -603,7 +651,7 @@ function isLightColor(color: string): boolean {
 function getBrightness(color: string): number {
     // Convert hex or named colors to RGB
     let r, g, b;
-    
+
     if (color.startsWith('#')) {
         // Handle hex colors
         const hex = color.substring(1);
@@ -631,7 +679,7 @@ function getBrightness(color: string): number {
         // Can't parse, assume dark
         return 0;
     }
-    
+
     // Calculate perceived brightness using the formula:
     // (0.299*R + 0.587*G + 0.114*B)
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
@@ -648,16 +696,16 @@ function getDarkVersionOfColor(color: string): string {
         'lightgray': '#4c566a',
         'pink': '#b48ead'
     };
-    
+
     // Check if we have a direct mapping
     if (colorMap[color.toLowerCase()]) {
         return colorMap[color.toLowerCase()];
     }
-    
+
     // Otherwise, try to darken the color
     try {
         let r, g, b;
-        
+
         if (color.startsWith('#')) {
             // Handle hex colors
             const hex = color.substring(1);
@@ -683,12 +731,12 @@ function getDarkVersionOfColor(color: string): string {
         } else {
             return '#2e3440'; // Default dark color
         }
-        
+
         // Darken the color by reducing each component by 60%
         r = Math.max(Math.floor(r * 0.4), 0);
         g = Math.max(Math.floor(g * 0.4), 0);
         b = Math.max(Math.floor(b * 0.4), 0);
-        
+
         // Convert back to hex
         return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
     } catch (e) {

@@ -3,6 +3,7 @@
 /* Add smooth transitions for theme changes */
 .mermaid-container svg {
     transition: background-color 0.3s ease;
+    max-width: 100% !important;
 }
 
 .mermaid-container svg text,
@@ -11,6 +12,12 @@
 .mermaid-container svg polygon,
 .mermaid-container svg circle {
     transition: fill 0.3s ease, stroke 0.3s ease;
+}
+
+/* Ensure custom styles from the diagram are preserved */
+.mermaid-container svg [style],
+.mermaid-wrapper svg [style] {
+    transition: none !important;
 }
 
 /* Enhance visibility in dark mode */
@@ -35,7 +42,7 @@
 /* Text on darker backgrounds should be black for contrast */
 .dark .mermaid-container .node .label text,
 .dark .mermaid-container .cluster .label text {
-    fill: #000000 !important;
+    fill: #000000;
     color: #000000 !important;
 }
 
@@ -47,10 +54,10 @@
 }
 
 /* Node styling */
-.dark .mermaid-container .node rect,
-.dark .mermaid-container .node circle,
-.dark .mermaid-container .node polygon,
-.dark .mermaid-container .node path {
+.dark .mermaid-container .node rect:not([style*="fill:"]),
+.dark .mermaid-container .node circle:not([style*="fill:"]),
+.dark .mermaid-container .node polygon:not([style*="fill:"]),
+.dark .mermaid-container .node path:not([style*="fill:"]) {
     stroke: #81a1c1 !important;
     fill: #5e81ac !important;
 }

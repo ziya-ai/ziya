@@ -3,6 +3,7 @@ import { D3RenderPlugin } from '../../types/d3';
 import { PictureOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Spin } from 'antd'; // For loading indicator
 import initMermaidSupport from './mermaidEnhancer';
+import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 
 // Add mermaid to window for TypeScript
 declare global {
@@ -14,6 +15,8 @@ declare global {
 // Define the specification for Mermaid diagrams
 export interface MermaidSpec {
     type: 'mermaid';
+    isStreaming?: boolean;
+    forceRender?: boolean;
     definition: string;
     theme?: 'default' | 'dark' | 'neutral' | 'forest'; // Optional theme override
 }
@@ -46,7 +49,34 @@ export const mermaidPlugin: D3RenderPlugin = {
         return isMermaidSpec(spec);
     },
 
+    // Helper to check if a mermaid definition is complete
+    isDefinitionComplete: (definition: string): boolean => {
+        if (!definition || definition.trim().length === 0) return false;
+
+        // Check for basic completeness indicators
+        const lines = definition.trim().split('\n');
+        if (lines.length < 2) return false;
+
+        const firstLine = lines[0].trim().toLowerCase();
+
+        // Check for specific diagram types
+        if (firstLine.startsWith('graph') || firstLine.startsWith('flowchart')) {
+            // For flowcharts, check for balanced braces
+            const openBraces = definition.split('{').length - 1;
+            const closeBraces = definition.split('}').length - 1;
+            return openBraces === closeBraces && openBraces > 0;
+        }
+
+        // For other diagram types, check if there are at least a few lines
+        // and the definition doesn't end with an incomplete code block
+        return lines.length >= 3 && !definition.endsWith('```');
+    },
+
+
     render: async (container: HTMLElement, d3: any, spec: MermaidSpec, isDarkMode: boolean): Promise<void> => {
+        console.log(`🎯 MERMAID PLUGIN RENDER CALLED with spec:`, spec);
+        console.log(`Mermaid plugin render called with spec type: ${spec.type}, definition length: ${spec.definition.length}`);
+        let renderSuccessful = false;
         try {
             container.innerHTML = '';
 
@@ -80,6 +110,27 @@ export const mermaidPlugin: D3RenderPlugin = {
             `;
 
             container.appendChild(loadingSpinner);
+
+            // If we're streaming and the definition is incomplete, show a waiting message
+            if (spec.isStreaming && !spec.forceRender) {
+                const isComplete = isDiagramDefinitionComplete(spec.definition, 'mermaid');
+                const timestamp = Date.now();
+                console.log(`[${timestamp}] Mermaid streaming check:`, {
+                    isComplete,
+                    definitionLength: spec.definition.length,
+                    definitionPreview: spec.definition.substring(0, 50),
+                    definitionEnd: spec.definition.substring(spec.definition.length - 20)
+                });
+
+                if (!isComplete) {
+                    loadingSpinner.innerHTML = `
+                        <div style="text-align: center; padding: 20px; background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; border: 1px dashed #ccc; border-radius: 4px;">
+                            <p>Waiting for complete diagram definition...</p>
+                        </div>
+                    `;
+                    return; // Exit early and wait for complete definition
+                }
+            }
 
             // Initialize mermaid with graph-specific settings
 
@@ -125,6 +176,7 @@ export const mermaidPlugin: D3RenderPlugin = {
                     if (line.match(/^\s*id:/i)) {
                         line = line.replace(/id:\s*([^,]+)/, 'id: "$1"');
                     }
+                    console.log(`Rendering Mermaid diagram with ${spec.definition.length} chars`);
 
                     // Fix text format
                     if (line.match(/^\s*text:/i)) {
@@ -237,19 +289,32 @@ export const mermaidPlugin: D3RenderPlugin = {
 
             // Render the diagram
             const mermaidId = `mermaid-${Date.now()}-${Math.random().toString(16).substring(2)}`;
-            const { svg } = await mermaid.render(mermaidId, processedDefinition);
+            console.log(`Attempting to render mermaid with ID: ${mermaidId}`);
+
+            let svg: string;
+            try {
+                const result = await mermaid.render(mermaidId, processedDefinition);
+                svg = result.svg;
+                renderSuccessful = true;
+                console.log(`Mermaid render successful, got SVG of length: ${svg.length}`);
+
+                renderSuccessful = true;
+                // Check if we got a valid SVG
+                if (!svg || svg.trim() === '') {
+                    throw new Error('Failed to get SVG element');
+                }
+
+                // Check if the SVG contains an error message
+                if (svg.includes('syntax error') || svg.includes('Parse error')) {
+                    throw new Error('Mermaid syntax error in diagram');
+                }
+            } catch (renderError) {
+                console.error('Error rendering mermaid diagram:', renderError);
+                throw renderError;
+            }
 
             // Add the animation keyframes if they don't exist yet
-            // Check if we got a valid SVG
-            if (!svg || svg.trim() === '') {
-                throw new Error('Failed to get SVG element');
-            }
-
-            // Check if the SVG contains an error message
-            if (svg.includes('syntax error') || svg.includes('Parse error')) {
-                throw new Error('Mermaid syntax error in diagram');
-            }
-            else if (!document.querySelector('#mermaid-spinner-keyframes')) {
+            if (!document.querySelector('#mermaid-spinner-keyframes')) {
                 const keyframes = document.createElement('style');
                 keyframes.id = 'mermaid-spinner-keyframes';
                 keyframes.textContent = `
@@ -279,11 +344,46 @@ export const mermaidPlugin: D3RenderPlugin = {
             // Add wrapper to container
             container.appendChild(wrapper);
 
+            if (!renderSuccessful) return;
+
             // Get the SVG element after it's in the DOM
             const svgElement = wrapper.querySelector('svg');
             if (!svgElement) {
-                throw new Error('Failed to get SVG element');
+                throw new Error('Failed to get SVG element after rendering');
             }
+
+            // Helper function to apply custom styles from the diagram definition
+            const applyCustomStyles = (svgElement: SVGElement) => {
+                // Process all style directives in the SVG
+                const styleElements = svgElement.querySelectorAll('style');
+                styleElements.forEach(styleEl => {
+                    // Extract class names and their style definitions
+                    const styleText = styleEl.textContent || '';
+                    const styleRules = styleText.match(/\.(\w+)\s*{([^}]*)}/g) || [];
+
+                    styleRules.forEach(rule => {
+                        // Apply these styles directly to the elements with matching classes
+                        const classMatch = rule.match(/\.(\w+)\s*{/);
+                        const styleMatch = rule.match(/{([^}]*)}/);
+
+                        if (classMatch && styleMatch) {
+                            const className = classMatch[1];
+                            const styles = styleMatch[1].trim();
+
+                            // Find elements with this class and apply styles directly
+                            svgElement.querySelectorAll(`.${className}`).forEach(el => {
+                                // Parse individual style properties
+                                styles.split(';').forEach(style => {
+                                    const [prop, value] = style.split(':').map(s => s.trim());
+                                    if (prop && value) {
+                                        (el as SVGElement).style.setProperty(prop, value);
+                                    }
+                                });
+                            });
+                        }
+                    });
+                });
+            };
 
             // Enhance dark theme visibility for specific elements
             if (isDarkMode && svgElement) {
@@ -291,7 +391,7 @@ export const mermaidPlugin: D3RenderPlugin = {
                     // Enhance specific elements that might still have poor contrast
                     svgElement.querySelectorAll('.edgePath path').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5');
+                        el.setAttribute('stroke-width', '1.5px');
                     });
 
                     // Fix for arrow markers in dark mode
@@ -303,7 +403,7 @@ export const mermaidPlugin: D3RenderPlugin = {
                     // Fix for all SVG paths and lines
                     svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5');
+                        el.setAttribute('stroke-width', '1.5px');
                     });
 
                     // Text on darker backgrounds should be black for contrast
@@ -318,7 +418,7 @@ export const mermaidPlugin: D3RenderPlugin = {
 
                     svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5');
+                        el.setAttribute('stroke-width', '1.5px');
                     });
 
                     svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
@@ -330,7 +430,13 @@ export const mermaidPlugin: D3RenderPlugin = {
                         el.setAttribute('stroke', '#81a1c1');
                         el.setAttribute('fill', '#4c566a');
                     });
+
+                    // Apply custom styles from the diagram definition
+                    applyCustomStyles(svgElement);
                 });
+            } else {
+                // Even in light mode, apply custom styles
+                applyCustomStyles(svgElement);
             }
 
             // Wait for next frame to ensure SVG is rendered
@@ -351,7 +457,7 @@ export const mermaidPlugin: D3RenderPlugin = {
                 svgElement.style.transformOrigin = 'center center';
                 svgElement.style.width = '100%';
                 svgElement.style.height = 'auto';
-                
+
                 // Override any existing transform scale in the SVG's style attribute
                 const svgStyleAttr = svgElement.getAttribute('style') || '';
                 if (svgStyleAttr.includes('transform: scale')) {
@@ -612,7 +718,7 @@ ${svgData}`;
                 container.innerHTML = '';
             }
 
-            container.innerHTML = `
+            if (!spec.isStreaming || spec.forceRender) container.innerHTML = `
                 <div class="mermaid-error">
                     <strong>Mermaid Error:</strong>
                     <p>There was an error rendering the diagram. This is often due to syntax issues in the Mermaid definition.</p>

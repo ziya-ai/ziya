@@ -427,7 +427,7 @@ export const StreamedContent: React.FC = () => {
             {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
             {streamingConversations.has(currentConversationId) &&
                 !error && (isLoading || isPendingResponse) && // don't show loading if there's an error
-                // Only show loading indicator if we don't have any streamed content yet
+                // Only show loading indicator if we don't have any streamed content yet and haven't started rendering
                 (!streamedContentMap.has(currentConversationId) ||
                     streamedContentMap.get(currentConversationId) === '') && (
                     <LoadingIndicator />

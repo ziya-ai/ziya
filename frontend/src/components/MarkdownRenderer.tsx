@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, useId, useContext, createContext, useDebugValue, forwardRef } from 'react';
 import 'prismjs/themes/prism.css';
 import { marked, Tokens } from 'marked';
-import { Button, message, Space, Spin, Tooltip } from 'antd';
+import { Alert, Button, message, Space, Spin, Tooltip } from 'antd';
 import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
@@ -16,6 +16,8 @@ import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
 import type * as PrismType from 'prismjs';
 import { renderFileHeader } from './renderFileHeader';
+import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
+import { FileOperationRenderer } from './FileOperationRenderer';
 
 // Define the status interface
 
@@ -2716,7 +2718,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 };
 
 // Define the possible determined types
-type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' | 'd3' | 'mermaid' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' | 'br' | 'list_item' | 'unknown';
+type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' | 'd3' | 'mermaid' | 'file-operation' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' | 'br' | 'list_item' | 'unknown';
 
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
@@ -2744,10 +2746,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     // 2. Handle Code Blocks with explicit lang tags
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
+        if (lang === 'mermaid') return 'mermaid';  // Check mermaid FIRST
         if (lang === 'diff') return 'diff';
         if (lang === 'graphviz' || lang === 'dot') return 'graphviz';
         if (lang === 'vega-lite') return 'vega-lite';
-        if (lang === 'mermaid') return 'mermaid';
         if (lang === 'd3') return 'd3';
         // If it has a specific lang tag but isn't special, it's 'code'
         return 'code';
@@ -2764,6 +2766,11 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             return 'diff';
         }
 
+        // Check for file operations (apply blocks)
+        if (text.includes('<apply>') && text.includes('</apply>')) {
+            return 'file-operation';
+        }
+
         // Strict Graphviz check
         // Look for 'digraph' or 'graph' followed by an identifier and '{'
         // Allows for optional whitespace and comments before the opening brace
@@ -2773,8 +2780,9 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             return 'graphviz';
         }
         // Fallback for simpler cases (might be less reliable)
-        if (trimmedText.startsWith('digraph') || trimmedText.startsWith('graph')) {
-            console.log(">>> Content matched as Graphviz (simple prefix)");
+        if (trimmedText.startsWith('digraph') ||
+            (trimmedText.startsWith('graph') && trimmedText.match(/^graph\s+\w*\s*\{/))) {
+            console.log(">>> Content matched as Graphviz (specific check)");
             return 'graphviz';
         }
         // Check for diff content more robustly within the first few lines
@@ -2824,7 +2832,7 @@ const decodeHtmlEntities = (text: string): string => {
     return textarea.value;
 };
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false): React.ReactNode => {
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
 
     return tokens.map((token, index) => {
         // Determine the definitive type for rendering
@@ -2850,6 +2858,23 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
 
+                case 'file-operation':
+                    console.log(`>>> Rendering as File Operation`);
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+
+                    const safetyResult = renderFileOperationSafely(tokenWithText.text);
+                    if (safetyResult.shouldRender) {
+                        return (
+                            <FileOperationRenderer
+                                key={index}
+                                content={tokenWithText.text}
+                                enableApply={enableCodeApply}
+                            />
+                        );
+                    }
+                    // Fall through to code block if invalid
+                    return <CodeBlock token={{ ...tokenWithText, text: safetyResult.safeContent, lang: 'xml' }} index={index} />;
+
                 case 'graphviz':
                     console.log(`>>> Rendering as Graphviz (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
@@ -2857,24 +2882,37 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         <D3Renderer
                             spec={{
                                 type: 'graphviz',
-                                definition: token.text
+                                isStreaming: isStreaming,
+                                definition: token.text,
+                                isMarkdownBlockClosed: true,
+                                timestamp: Date.now(), // Add timestamp to force re-renders
+                                forceRender: true // Force render even if incomplete
                             }}
-                            type="d3"
+                            type="d3" isStreaming={isStreaming}
                         />
                     );
                 case 'mermaid':
                     console.log(`>>> Rendering as Mermaid (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    console.log(`🎯 CREATING MERMAID SPEC:`, { text: tokenWithText.text.substring(0, 100) });
                     // Pass the definition directly to D3Renderer, which will use the mermaidPlugin
-                    // We need a spec object that the mermaidPlugin can handle
-                    const mermaidSpec = { type: 'mermaid', definition: tokenWithText.text };
-                    return <D3Renderer key={index} spec={mermaidSpec} type="d3" />;
+                    // We need a spec object that the mermaidPlugin can handle with streaming flag
+                    const mermaidSpec = {
+                        type: 'mermaid',
+                        definition: tokenWithText.text,
+                        isStreaming: isStreaming,
+                        isMarkdownBlockClosed: true,
+                        timestamp: Date.now(), // Add timestamp to force re-renders
+                        forceRender: true // Force render even if incomplete
+                    };
+                    console.log(`🎯 CALLING D3RENDERER WITH MERMAID SPEC:`, mermaidSpec);
+                    return <D3Renderer key={index} spec={mermaidSpec} type="d3" isStreaming={isStreaming} />;
                 case 'vega-lite':
                     console.log(`>>> Rendering as VegaLite (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText)) return null;
                     return (
                         <div key={index} className="vega-lite-container">
-                            <D3Renderer spec={tokenWithText.text} type="vega-lite" />
+                            <D3Renderer spec={tokenWithText.text} type="vega-lite" isStreaming={isStreaming} />
                         </div>
                     );
 
@@ -2882,12 +2920,43 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     console.log(`>>> Rendering as D3 (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText)) return null;
                     return (
-                        <D3Renderer key={index} spec={tokenWithText.text} type="d3" />
+                        <D3Renderer key={index} spec={tokenWithText.text} type="d3" isStreaming={isStreaming} />
                     );
 
                 case 'code':
                     console.log(`>>> Rendering as CodeBlock (lang: ${(token as any).lang})`);
                     if (!isCodeToken(tokenWithText)) return null; // Type guard
+
+                    // Check for file operations first
+                    if (detectFileOperationSyntax(tokenWithText.text)) {
+                        const safetyResult = renderFileOperationSafely(tokenWithText.text);
+
+                        if (safetyResult.shouldRender) {
+                            return (
+                                <FileOperationRenderer
+                                    key={index}
+                                    content={tokenWithText.text}
+                                    enableApply={enableCodeApply}
+                                />
+                            );
+                        } else {
+                            // Render as safe code block with warnings
+                            return (
+                                <div key={index}>
+                                    {safetyResult.warnings.length > 0 && (
+                                        <Alert
+                                            type="warning"
+                                            message="File Operation Warnings"
+                                            description={safetyResult.warnings.join(', ')}
+                                            style={{ marginBottom: 8 }}
+                                        />
+                                    )}
+                                    <CodeBlock token={{ ...tokenWithText, text: safetyResult.safeContent }} index={index} />
+                                </div>
+                            );
+                        }
+                    }
+
                     const rawCodeText = decodeHtmlEntities(tokenWithText.text || '');
                     // Pass the original lang tag (or plaintext) for highlighting
                     const codeToken = { ...tokenWithText, text: rawCodeText, lang: tokenWithText.lang || 'plaintext' };
@@ -2975,7 +3044,36 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'html':
                     if (!hasText(tokenWithText)) return null;                    // Be cautious with dangerouslySetInnerHTML
-                    return <div key={index} dangerouslySetInnerHTML={{ __html: decodeHtmlEntities(tokenWithText.text) }} />;
+
+                    // List of known/safe HTML tags that we want to actually render as HTML
+                    const knownHtmlTags = [
+                        'div', 'span', 'p', 'br', 'hr', 'strong', 'em', 'b', 'i', 'u', 's',
+                        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                        'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+                        'table', 'thead', 'tbody', 'tr', 'th', 'td',
+                        'a', 'img', 'video', 'audio',
+                        'blockquote', 'pre', 'code',
+                        'details', 'summary'
+                    ];
+
+                    // Check if the HTML content contains only known tags
+                    const htmlContent = tokenWithText.text;
+                    const tagMatches = htmlContent.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g);
+
+                    if (tagMatches) {
+                        const hasUnknownTags = tagMatches.some(tag => {
+                            const tagName = tag.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)/)?.[1]?.toLowerCase();
+                            return tagName && !knownHtmlTags.includes(tagName);
+                        });
+
+                        if (hasUnknownTags) {
+                            // If there are unknown tags, render as literal text
+                            return <span key={index}>{htmlContent}</span>;
+                        }
+                    }
+
+                    // If all tags are known, render as HTML
+                    return <div key={index} dangerouslySetInnerHTML={{ __html: decodeHtmlEntities(htmlContent) }} />;
 
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
@@ -3124,6 +3222,7 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
                             markdown={wrappedDiff}
                             enableCodeApply={enableCodeApply}
                             forceRender={true}
+                            // isMarkdownBlockClosed will be true by default for sub-renders if they get a complete diff
                             isSubRender={true}
                         />
                     </div>
@@ -3216,7 +3315,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Only memoize the rendered content when not streaming or when streaming completes 
     const renderedContent = useMemo(() => {
-        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender);
+        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming);
     }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, isStreamingState]); // Add isStreamingState to dependencies
 
 
