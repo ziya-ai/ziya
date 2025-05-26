@@ -149,7 +149,7 @@ const ChatHistoryItem: React.FC<ChatHistoryItemProps> = memo(({
                                 )}
 
                             {/* Calculate title length based on container width */}
-                            <div className="chat-history-title" style={{ 
+                            <div className="chat-history-title" style={{
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
                                 whiteSpace: 'nowrap',
@@ -317,8 +317,8 @@ export const ChatHistory: React.FC = () => {
                 conversationCount: 0,
                 isFolder: true,
                 isPinned: pinnedFolders.has(folder.id),
-                lastActivityTime: 0 // Will be updated with conversation times
-
+                lastActivityTime: 0, // Will be updated with conversation times
+                createdAt: folder.createdAt || 0 // Use creation time as fallback
             });
         });
 
@@ -343,10 +343,11 @@ export const ChatHistory: React.FC = () => {
                 const folderNode = folderMap.get(conv.folderId);
                 folderNode.conversationCount++;
 
-                // Update folder's last activity time if this conversation is more recent
-                const convTime = conv.lastAccessedAt || 0;
-                if (convTime > folderNode.lastActivityTime) {
-                    folderNode.lastActivityTime = convTime;
+                // Only update folder's lastActivityTime if conversation has actual activity
+                // Use lastAccessedAt only if it's greater than 0 (indicating actual access)
+                const convActivityTime = conv.lastAccessedAt || 0;
+                if (convActivityTime > 0 && convActivityTime > folderNode.lastActivityTime) {
+                    folderNode.lastActivityTime = convActivityTime;
                 }
             }
 
@@ -380,14 +381,28 @@ export const ChatHistory: React.FC = () => {
 
                 // Sort folders by last activity time (most recent first)
                 if (!a.isLeaf && !b.isLeaf) {
-                    return b.lastActivityTime - a.lastActivityTime;
+                    const aTime = a.lastActivityTime > 0 ? a.lastActivityTime : a.createdAt;
+                    const bTime = b.lastActivityTime > 0 ? b.lastActivityTime : b.createdAt;
+                    return bTime - aTime;
                 }
 
                 // Sort conversations by last accessed time (most recent first)
                 if (a.isLeaf && b.isLeaf) {
-                    const aTime = a.conversation?.lastAccessedAt ?? 0;
-                    const bTime = b.conversation?.lastAccessedAt ?? 0;
-                    return bTime - aTime;
+                    const aActivityTime = a.conversation?.lastAccessedAt ?? 0;
+                    const bActivityTime = b.conversation?.lastAccessedAt ?? 0;
+
+                    // If both have activity time, sort by that
+                    if (aActivityTime > 0 && bActivityTime > 0) {
+                        return bActivityTime - aActivityTime;
+                    }
+
+                    // If only one has activity time, it comes first
+                    if (aActivityTime > 0 && bActivityTime === 0) return -1;
+                    if (bActivityTime > 0 && aActivityTime === 0) return 1;
+
+                    // If neither has activity time, sort by creation time (ID-based for now)
+                    // This keeps newly created conversations in a stable order without jumping to top
+                    return a.conversation?.id?.localeCompare(b.conversation?.id) || 0;
                 }
 
                 return 0;
@@ -693,10 +708,11 @@ export const ChatHistory: React.FC = () => {
             const folder = folders.find(f => f.id === folderId);
             if (!folder) return;
 
-            // Update the folder name
+            // Update the folder name - leave activity time
             const updatedFolder = {
                 ...folder,
-                name: newName
+                name: newName,
+                updatedAt: Date.now() // Only update the config change timestamp
             };
 
             // Save to database
@@ -909,9 +925,14 @@ export const ChatHistory: React.FC = () => {
 
     const handleTitleChange = async (conversationId: string, newTitle: string) => {
         try {
-            // Update state first
+            // Update state first - do not update access time for rename
             const updatedConversations = conversations.map(conv =>
-                conv.id === conversationId ? { ...conv, title: newTitle } : conv
+                conv.id === conversationId ? {
+                    ...conv,
+                    title: newTitle,
+                    // Keep original lastAccessedAt - renaming shouldn't affect sort order
+                    _version: Date.now() // Only update version for sync purposes
+                } : conv
             );
 
             // Persist to IndexedDB before updating state
@@ -1363,7 +1384,7 @@ export const ChatHistory: React.FC = () => {
                         <Dropdown
                             className="conversation-dropdown"
                             overlay={onConversationContextMenu(conversation)}
-                            trigger={['click']} 
+                            trigger={['click']}
                             placement="bottomRight">
                             <div
                                 onClick={(e) => e.stopPropagation()}
