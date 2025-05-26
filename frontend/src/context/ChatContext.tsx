@@ -386,8 +386,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const loadConversation = async (conversationId: string) => {
         setIsLoadingConversation(true);
         try {
+            // Don't remove streaming for the conversation we're switching away from
             // First update conversations in memory
-            removeStreamingConversation(currentConversationId);
             // Mark current conversation as read
             setConversations(prevConversations => {
                 const updatedConversations = prevConversations.map(conv =>
@@ -412,6 +412,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (conversation && conversation.folderId !== undefined) {
                 setCurrentFolderId(conversation.folderId);
             }
+            // Only clear streaming content map for conversations that are no longer streaming
+            setStreamedContentMap(prev => {
+                const next = new Map(prev);
+                // Keep streaming content for active streaming conversations
+                return next;
+            });
             console.log('Current conversation changed:', {
                 from: currentConversationId,
                 to: conversationId,

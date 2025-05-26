@@ -16,6 +16,7 @@ export const StreamedContent: React.FC = () => {
     const [isPendingResponse, setIsPendingResponse] = useState<boolean>(false);
     const streamingInstanceId = useId();
     const [isPending, startTransition] = useTransition();
+    const [hasShownContent, setHasShownContent] = useState<boolean>(false);
     const lastScrollPositionRef = useRef<number>(0);
     const {
         streamedContentMap,
@@ -36,6 +37,7 @@ export const StreamedContent: React.FC = () => {
     // Use a ref to track the last rendered content to avoid unnecessary re-renders
     const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) ?? '', [streamedContentMap, currentConversationId]);
     const streamedContentRef = useRef<string>(streamedContent);
+    const currentConversationRef = useRef<string>(currentConversationId);
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
         streamedContentMap.get(currentConversationId) !== '';
@@ -51,6 +53,22 @@ export const StreamedContent: React.FC = () => {
         }
         streamedContentRef.current = streamedContent;
     }, [currentConversationId, streamingConversations, isStreaming, setIsStreaming]);
+
+    // Track conversation changes and reset content visibility state
+    useEffect(() => {
+        if (currentConversationRef.current !== currentConversationId) {
+            currentConversationRef.current = currentConversationId;
+            // Reset the content shown flag when switching conversations
+            setHasShownContent(false);
+        }
+    }, [currentConversationId]);
+
+    // Track when we've shown content for this conversation
+    useEffect(() => {
+        if (hasStreamedContent && !hasShownContent) {
+            setHasShownContent(true);
+        }
+    }, [hasStreamedContent, hasShownContent]);
 
     // Store the last question when streaming starts
     useEffect(() => {
@@ -380,7 +398,8 @@ export const StreamedContent: React.FC = () => {
         }}>
             {streamingConversations.has(currentConversationId) &&
                 !currentMessages.some(msg => msg.role === 'assistant' &&
-                    msg.content === streamedContentMap.get(currentConversationId)) && (
+                    msg.content === streamedContentMap.get(currentConversationId)) &&
+                (hasStreamedContent || !hasShownContent) && (
                     <div className="message assistant">
                         {connectionLost && (
                             <ConnectionLostAlert />

@@ -31,7 +31,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         isStreaming,
         addMessageToConversation,
         userHasScrolled,
-        removeStreamingConversation
+        removeStreamingConversation,
+        streamedContentMap
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();
@@ -46,6 +47,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     const renderedSystemMessagesRef = useRef<Set<string>>(new Set());
     const activeStreamingRef = useRef<Set<string>>(new Set());
     const processedModelChangesRef = useRef<Set<string>>(new Set());
+
+    // Track which conversations have received streaming content
+    const conversationHasStreamedContent = useCallback((conversationId: string) => {
+        return streamedContentMap.has(conversationId) &&
+            streamedContentMap.get(conversationId) !== '';
+    }, [streamedContentMap]);
 
     // Effect to handle scrolling when messages change
     useEffect(() => {
@@ -150,12 +157,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         const nextIndex = index + 1;
         const nextMessage = nextIndex < currentMessages.length ? currentMessages[nextIndex] : null;
         const hasNextMessage = nextIndex < currentMessages.length;
+        const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+        const hasStreamingContent = conversationHasStreamedContent(currentConversationId);
 
         // Show retry if this is a human message and either:
         // 1. It's the last message, or
         // 2. The next message isn't from the assistant
+        // But don't show if we're currently streaming or have streaming content for this conversation
         return message?.role === 'human' &&
-            !streamingConversations.has(currentConversationId) &&
+            !isCurrentlyStreaming &&
+            !hasStreamingContent &&
             (isLastMessage ||
                 (hasNextMessage && nextMessage?.role !== 'assistant'));
     };
@@ -247,8 +258,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     const nextActualIndex = actualIndex + 1;
                     const hasNextMessage = nextActualIndex < currentMessages.length;
                     const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
+                    const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+                    const hasStreamingContent = conversationHasStreamedContent(currentConversationId);
+
                     const needsResponse = msg.role === 'human' &&
-                        !streamingConversations.has(currentConversationId) &&
+                        !isCurrentlyStreaming &&
+                        !hasStreamingContent &&
                         (actualIndex === currentMessages.length - 1 ||
                             (hasNextMessage && nextMessage?.role !== 'assistant'));
 
