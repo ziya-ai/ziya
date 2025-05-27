@@ -3053,11 +3053,27 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         'table', 'thead', 'tbody', 'tr', 'th', 'td',
                         'a', 'img', 'video', 'audio',
                         'blockquote', 'pre', 'code',
-                        'details', 'summary'
+                        'details', 'summary',
+                        'math', 'mi', 'mo', 'mn', 'mrow', 'mfrac', 'msup', 'msub', 'msubsup', 'msqrt', 'mroot'
+
                     ];
 
                     // Check if the HTML content contains only known tags
                     const htmlContent = tokenWithText.text;
+
+                    // Check if this is a MathML element and render it inline
+                    if (htmlContent.match(/^<(math|mi|mo|mn|mrow|mfrac|msup|msub|msubsup|msqrt|mroot)/)) {
+                        const mathWithNamespace = htmlContent.includes('xmlns=')
+                            ? htmlContent
+                            : htmlContent.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
+                        return <span key={index} dangerouslySetInnerHTML={{ __html: mathWithNamespace }} />;
+                    }
+
+                    // Check if this is a wrapped MathML block
+                    if (htmlContent.includes('class="mathml-block"')) {
+                        return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
+                    }
+
                     const tagMatches = htmlContent.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g);
 
                     if (tagMatches) {
@@ -3278,8 +3294,26 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             }
 
             // Use marked.lexer directly
-            const lexedTokens = marked.lexer(markdown, markedOptions);
-            return lexedTokens as (Tokens.Generic | TokenWithText)[] || []; // Cast for processing and provide fallback
+            let processedMarkdown = markdown;
+
+            // Pre-process MathML blocks to prevent fragmentation
+            const mathMLRegex = /<math[^>]*>[\s\S]*?<\/math>/gi;
+            const mathMLBlocks = processedMarkdown.match(mathMLRegex);
+
+            if (mathMLBlocks) {
+                mathMLBlocks.forEach((mathBlock, index) => {
+                    // Add namespace if missing and wrap in a way that preserves it as a single token
+                    const mathWithNamespace = mathBlock.includes('xmlns=')
+                        ? mathBlock
+                        : mathBlock.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
+
+                    // Replace with a placeholder that won't be fragmented
+                    processedMarkdown = processedMarkdown.replace(mathBlock, `<div class="mathml-block">${mathWithNamespace}</div>`);
+                });
+            }
+
+            const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
+            return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
         } catch (error) {
             console.error("Error lexing markdown:", error);
             // Fallback to rendering the raw markdown in a code block on error
