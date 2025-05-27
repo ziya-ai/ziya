@@ -5,6 +5,7 @@ from ..core.exceptions import PatchApplicationError
 from ..core.config import get_max_offset, get_confidence_threshold
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from ..validation.validators import normalize_line_for_comparison
+from ..validation.duplicate_detector import verify_no_duplicates
 from .fuzzy_match import find_best_chunk_position
 
 # Configure logging
@@ -52,6 +53,7 @@ def apply_diff_with_difflib_hybrid_forced(
     lf_count = original_content_str.count('\n') - crlf_count
     dominant_ending = '\r\n' if crlf_count >= lf_count else '\n'
     original_had_final_newline = original_content_str.endswith(('\n', '\r\n'))
+    
     logger.debug(f"Detected dominant line ending: {repr(dominant_ending)}")
     logger.debug(f"Original file had final newline: {original_had_final_newline}")
 
@@ -257,6 +259,31 @@ def apply_diff_with_difflib_hybrid_forced(
         logger.debug(f"Hunk #{hunk_idx}: Slice to remove: {repr(final_lines_with_endings[remove_pos:end_remove_pos])}")
         logger.debug(f"Hunk #{hunk_idx}: Lines to insert: {repr(new_lines_with_endings)}")
 
+        # --- Duplication Safety Check ---
+        # Create a preview of what the content would look like after applying the hunk
+        preview_lines = final_lines_with_endings.copy()
+        preview_lines[remove_pos:end_remove_pos] = new_lines_with_endings
+        preview_content = ''.join(preview_lines)
+        original_content = ''.join(final_lines_with_endings)
+        
+        # Check for unexpected duplicates
+        is_safe, duplicate_details = verify_no_duplicates(original_content, preview_content, remove_pos)
+        if not is_safe:
+            logger.warning(f"Hunk #{hunk_idx}: Detected unexpected duplicates that would be created by applying this hunk")
+            logger.warning(f"Duplicate details: {duplicate_details}")
+            
+            # Add to failures and skip this hunk
+            failure_info = {
+                "status": "error",
+                "type": "unexpected_duplicates",
+                "hunk": hunk_idx,
+                "position": remove_pos,
+                "duplicate_details": duplicate_details
+            }
+            hunk_failures.append((f"Unexpected duplicates detected for Hunk #{hunk_idx}", failure_info))
+            continue
+
+        # --- Apply the hunk (only if duplication check passes) ---
         final_lines_with_endings[remove_pos:end_remove_pos] = new_lines_with_endings
 
         # --- Update Offset ---
@@ -292,7 +319,14 @@ def apply_diff_with_difflib_hybrid_forced(
         if last_diff_line.startswith('+'):
             diff_likely_added_final_line = True
  
+    # Determine if the final file should have a newline at the end
+    # If the last hunk has a "No newline at end of file" marker, respect that
     should_have_final_newline = original_had_final_newline or diff_likely_added_final_line
+    
+    # Check if the last hunk has a missing newline marker
+    if last_hunk and last_hunk.get('missing_newline'):
+        logger.debug("Last hunk has missing newline marker, ensuring no final newline")
+        should_have_final_newline = False
  
     # 3. Ensure correct final newline state and remove trailing blank lines
     if normalized_content_str: # Only process if not empty

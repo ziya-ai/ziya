@@ -193,6 +193,14 @@ CRITICAL: When suggesting changes:
 
 NEVER provide code changes as plain code blocks unless specifically asked; ALWAYS use the git diff format.
 
+CRITICAL: HANDLING MISSING CONTEXT:
+When you need to modify a file that isn't fully visible in the conversation context:
+1. Ask for the specific file content first with "CONTEXT NEEDED: [filename]"
+2. Only suggest changes after seeing the actual file
+3. Request clarification instead of making assumptions about file structure or content
+4. Never generate diffs for files you haven't seen
+5. Clearly indicate when you need more information before proceeding
+
 When presenting multiple diffs in a numbered list:
 1. Start each list item with the number and a period (e.g., "1. ")
 2. Add a brief description of the change

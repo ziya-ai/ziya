@@ -41,9 +41,12 @@ class ZiyaChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
                 chunk_content = chunk.content
                 content_repr = repr(chunk_content)
 
-            logger.debug(f"[WRAPPER DEBUG] Chunk Type: {chunk_type}")
-            logger.debug(f"[WRAPPER DEBUG] Chunk Repr: {chunk_repr}")
-            logger.debug(f"[WRAPPER DEBUG] Extracted Content Repr: {content_repr}")
+            # FIXME: line end detection on gemini consistently has issues with +add lines joining prior lines
+            # I'm keeoing this debug stuff in here until we resolve it, but disabling for now.
+
+            #logger.debug(f"[WRAPPER DEBUG] Chunk Type: {chunk_type}")
+            #logger.debug(f"[WRAPPER DEBUG] Chunk Repr: {chunk_repr}")
+            #logger.debug(f"[WRAPPER DEBUG] Extracted Content Repr: {content_repr}")
             # --- End Debugging ---
 
             # --- Potential Fix (Optional - Apply if logging confirms missing newline) ---

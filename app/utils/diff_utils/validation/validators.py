@@ -148,7 +148,9 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         # Don't mark malformed hunks as already applied
         return False
     
-    # CRITICAL FIX: First check if the file content at this position matches what we're trying to remove
+    # ENHANCED VERIFICATION: Perform more strict checking for already applied hunks
+    
+    # 1. First check if the file content at this position matches what we're trying to remove
     # This is essential to prevent marking a hunk as "already applied" when the file content doesn't match
     # what we're trying to remove
     if removed_lines and pos + len(removed_lines) <= len(file_lines):
@@ -170,7 +172,7 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
             logger.debug(f"Removed lines: {normalized_removed_lines}")
             return False
         
-    # CRITICAL FIX: Check if the diff header is malformed
+    # 2. Check if the diff header is malformed
     if 'header' in hunk and '@@ -' in hunk['header']:
         # Check if the header has proper line numbers
         header_match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk['header'])
@@ -179,31 +181,17 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
             # Don't mark hunks with malformed headers as already applied
             return False
     
-    # If there are no actual changes (no removed or added lines), it's a no-op
+    # 3. If there are no actual changes (no removed or added lines), it's a no-op
     if not removed_lines and not added_lines:
         logger.debug("No actual changes in hunk (no removed or added lines)")
         return True
     
-    # If this is a completely new file or section, it can't be already applied
+    # 4. If this is a completely new file or section, it can't be already applied
     if all(line.startswith('+') for line in hunk.get('old_block', [])):
         logger.debug("Hunk is adding completely new content, can't be already applied")
         return False
     
-    # If this is a simple replacement (one line removed, one line added)
-    # Check if the added line is already in the file at this position
-    if len(removed_lines) == 1 and len(added_lines) == 1:
-        if pos < len(file_lines):
-            # Use our enhanced normalization for better comparison
-            normalized_file_line = normalize_line_for_comparison(file_lines[pos])
-            normalized_added_line = normalize_line_for_comparison(added_lines[0])
-            normalized_removed_line = normalize_line_for_comparison(removed_lines[0])
-            
-            # If the file already has the added line (not the removed line)
-            if normalized_file_line == normalized_added_line:
-                logger.debug(f"Found added line already in file at position {pos}")
-                return True
-    
-    # Check if the file content at this position matches what we expect after applying the hunk
+    # 5. Check if the file content at this position matches what we expect after applying the hunk
     if len(available_lines) >= len(hunk.get('new_lines', [])):
         # Extract the expected content after applying the hunk
         expected_lines = hunk.get('new_lines', [])
@@ -217,31 +205,6 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         
         # Check if the available lines match the expected lines
         if len(available_lines) >= len(expected_lines):
-            # Check for added lines that don't exist in the file
-            # This is critical for detecting hunks that add new content
-            if len(hunk.get('new_block', [])) > len(hunk.get('old_block', [])):
-                # Count the number of added lines in the hunk
-                added_line_count = sum(1 for line in hunk.get('new_block', []) if line.startswith('+'))
-                
-                # If the hunk adds lines, we need to check if those lines exist in the file
-                if added_line_count > 0:
-                    # Extract just the added lines from the hunk
-                    added_content = [line[1:] for line in hunk.get('new_block', []) if line.startswith('+')]
-                    
-                    # Check if each added line exists in the available lines
-                    for added_line in added_content:
-                        normalized_added = normalize_line_for_comparison(added_line)
-                        found = False
-                        for file_line in available_lines:
-                            if normalize_line_for_comparison(file_line) == normalized_added:
-                                found = True
-                                break
-                        
-                        if not found:
-                            # If any added line is not found, the hunk is not applied
-                            logger.debug(f"Added line not found in file: {added_line}")
-                            return False
-            
             # Now check for exact match of expected content
             exact_match = True
             for i, expected_line in enumerate(expected_lines):
@@ -257,7 +220,6 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                     # If normalized versions don't match, it's definitely not applied
                     exact_match = False
                     break
-                # else: both normalized and raw lines match for this line, continue checking next line
             
             if exact_match:
                 logger.debug(f"Exact match of expected content found at position {pos}")

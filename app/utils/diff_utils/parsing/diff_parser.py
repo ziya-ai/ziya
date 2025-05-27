@@ -316,7 +316,12 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                     text = line[1:].rstrip('\r\n')
                     current_hunk['new_lines'].append(text)
                     current_hunk['old_block'].append(text)
-                # Skip lines starting with '\'
+                elif line.startswith('\\'):
+                    # Handle "No newline at end of file" marker
+                    if "No newline at end of file" in line:
+                        current_hunk['missing_newline'] = True
+                        logger.debug(f"Found 'No newline at end of file' marker in hunk {current_hunk['number']}")
+                # Skip other lines starting with '\'
             
             # Always increment the counter inside the hunk processing
             i += 1

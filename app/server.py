@@ -1150,17 +1150,28 @@ def get_available_models():
                 # Use the first region's model ID as a representative
                 representative_id = next(iter(model_id.values()))
                 display_name = f"{name} ({representative_id})"
+                
+                # Add region information if available
+                if "region" in config:
+                    preferred_region = config["region"]
+                    display_name = f"{name} ({representative_id}, {preferred_region})"
             else:
                 display_name = f"{name} ({model_id})"
                 
+            # Always include all models regardless of region
             models.append({
                 "id": name,  # Use the alias as the ID for consistency
                 "name": name,
                 "alias": name,
-                "display_name": display_name
+                "display_name": display_name,
+                "preferred_region": config.get("region", None)  # Include preferred region if available
             })
+            
+        # Log the models being returned
+        logger.info(f"Available models: {json.dumps(models)}")
         return models
     except Exception as e:
+        logger.error(f"Error getting available models: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1803,6 +1814,21 @@ async def update_model_settings(settings: ModelSettingsRequest):
         
         # Store original model config values for reference
         original_config_values = model_config.copy()
+        
+        # Check if we need to switch regions based on model-specific region preference
+        new_model = getattr(settings, "model", None)
+        if new_model and new_model != model_name:
+            # Get the new model's configuration
+            new_model_config = ModelManager.get_model_config(endpoint, new_model)
+            
+            # Check if the new model has a preferred region
+            if "region" in new_model_config:
+                preferred_region = new_model_config["region"]
+                logger.info(f"Model {new_model} has preferred region: {preferred_region}")
+                
+                # Set the AWS_REGION environment variable to the preferred region
+                os.environ["AWS_REGION"] = preferred_region
+                logger.info(f"Switched region to {preferred_region} for model {new_model}")
 
         # Store all settings in environment variables with ZIYA_ prefix
         for key, value in settings.dict().items():
