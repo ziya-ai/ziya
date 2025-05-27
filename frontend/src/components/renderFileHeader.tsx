@@ -1,7 +1,7 @@
 import { parseDiff } from 'react-diff-view';
 
 // Debug flag to control logging
-const DEBUG_RENDER_FILE_HEADER = true; // Set to true for debugging+
+const DEBUG_RENDER_FILE_HEADER = false; // Set to true for debugging
 export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], originalDiffSegment?: string, fileIndex?: number): string => {
     if (DEBUG_RENDER_FILE_HEADER) {
         console.log('[renderFileHeader] Input:', {
@@ -10,6 +10,26 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
             fileIndex
         });
     }
+
+    // Quick extraction for streaming scenarios - prioritize speed over completeness
+    const quickExtractFilename = (diffStr: string): string | null => {
+        if (!diffStr) return null;
+        
+        const lines = diffStr.split('\n');
+        for (const line of lines) {
+            if (line.startsWith('diff --git')) {
+                const match = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                if (match) return match[2] || match[1];
+            }
+            if (line.startsWith('+++ b/')) {
+                return line.substring(6);
+            }
+            if (line.startsWith('--- a/') && !line.includes('/dev/null')) {
+                return line.substring(6);
+            }
+        }
+        return null;
+    };
 
     // Helper to extract paths from unified diff header
     const extractPathFromUnifiedHeader = (line: string): string | null => {
@@ -83,6 +103,14 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
     const newP = file.newPath;
     if (DEBUG_RENDER_FILE_HEADER) {
         console.log('[renderFileHeader] Parsed file object properties:', { type, oldP, newP, similarity: file.similarity });
+    }
+
+    // Quick filename extraction for streaming scenarios
+    if (originalDiffSegment && (!oldP && !newP)) {
+        const quickFilename = quickExtractFilename(originalDiffSegment);
+        if (quickFilename) {
+            return `File: ${quickFilename}`;
+        }
     }
 
     // Try to extract file path from the original diff segment if we have it

@@ -581,6 +581,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         return plugin?.name === 'graphviz-renderer';
     }, [spec]);
 
+    // Determine if it's specifically a Vega-Lite render
+    const isVegaLiteRender = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return plugin?.name === 'vega-lite-renderer';
+    }, [spec]);
+
     // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams
     useEffect(() => {
         // Only run this effect when theme changes and we have a Mermaid or Graphviz diagram
@@ -659,6 +665,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const outerContainerStyle: CSSProperties = {
         position: 'relative',
         width: '100%',
+        maxWidth: isVegaLiteRender ? '100%' : undefined,
         height: 'auto',
         display: 'block',
         overflow: 'visible',
@@ -666,6 +673,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         padding: 0,
         boxSizing: 'border-box',
         // Reserve space based on estimated size to prevent layout shifts
+        ...(isVegaLiteRender ? {
+            // Specific styles for Vega-Lite
+            resize: 'horizontal' as const,
+        } : {}),
         ...(reservedSize && !hasSuccessfulRenderRef.current ? {
             minHeight: `${reservedSize.height}px`,
             minWidth: `${Math.min(reservedSize.width, 800)}px` // Cap width to prevent horizontal overflow
@@ -963,6 +974,8 @@ ${svgData}`;
                     className={`d3-container ${isMermaidRender ? 'mermaid-container' : ''}`}
                     style={{
                         ...containerStyles,
+                        height: isVegaLiteRender ? 'auto' : containerStyles.height,
+                        overflow: isVegaLiteRender ? 'visible' : 'auto',
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
@@ -975,11 +988,13 @@ ${svgData}`;
                 <div
                     ref={vegaContainerRef}
                     id="vega-container"
+                    className="vega-lite-container"
                     style={{
+                        width: '100%',
+                        maxWidth: '100%',
                         display: !isD3Render ? 'block' : 'none',
                         position: 'relative',
-                        width: '100%',
-                        height: height || '100%'
+                        height: isVegaLiteRender ? 'auto' : (height || '100%')
                     }}
                 >
                     {(isLoading || !spec) && !renderingStarted && (

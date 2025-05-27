@@ -1,6 +1,84 @@
 /**
- * Utility functions for working with diagram definitions
+ * Utility functions for diagram completion detection
  */
+
+export type DiagramType = 'mermaid' | 'graphviz' | 'vega-lite' | 'unknown';
+
+/**
+ * Detect the type of diagram from content
+ */
+export function detectDiagramType(content: string): DiagramType {
+  const trimmed = content.trim().toLowerCase();
+
+  // Mermaid detection
+  if (trimmed.startsWith('graph') ||
+    trimmed.startsWith('flowchart') ||
+    trimmed.startsWith('sequencediagram') ||
+    trimmed.startsWith('classDiagram') ||
+    trimmed.startsWith('stateDiagram') ||
+    trimmed.startsWith('erDiagram') ||
+    trimmed.startsWith('journey') ||
+    trimmed.startsWith('gantt') ||
+    trimmed.startsWith('pie') ||
+    trimmed.startsWith('gitgraph')) {
+    return 'mermaid';
+  }
+
+  // Graphviz detection
+  if (trimmed.match(/^\s*(?:strict\s+)?(digraph|graph)\s+\w*\s*\{/)) {
+    return 'graphviz';
+  }
+
+  // Vega-Lite detection
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.$schema?.includes('vega-lite') ||
+        (parsed.mark && parsed.encoding) ||
+        (parsed.data && (parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat))) {
+        return 'vega-lite';
+      }
+    }
+  } catch {
+    // Not valid JSON, continue
+  }
+
+  return 'unknown';
+}
+
+/**
+ * Check if a diagram definition is complete enough to render
+ */
+export function isDiagramDefinitionComplete(definition: string, type?: DiagramType | string): boolean {
+  if (!definition || definition.trim().length === 0) return false;
+
+  const detectedType = type || detectDiagramType(definition);
+
+  switch (detectedType) {
+    case 'mermaid':
+      return isMermaidDefinitionComplete(definition);
+    case 'graphviz':
+    case 'dot':
+      return isGraphvizDefinitionComplete(definition);
+    case 'vega-lite':
+      return isVegaLiteDefinitionComplete(definition);
+    default:
+      return true; // Assume complete for unknown types
+  }
+}
+
+function isVegaLiteDefinitionComplete(definition: string): boolean {
+  try {
+    const parsed = JSON.parse(definition);
+    if (!parsed || typeof parsed !== 'object') return false;
+
+    const hasData = parsed.data !== undefined;
+    const hasVisualization = parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat;
+    return hasData && hasVisualization;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Checks if a Mermaid diagram definition is complete enough to render
@@ -81,27 +159,4 @@ export function isGraphvizDefinitionComplete(definition: string): boolean {
   // A complete graphviz definition must start correctly, have at least one pair of braces,
   // have balanced braces, and end with a closing brace.
   return openBraces > 0 && openBraces === closeBraces && trimmedDef.endsWith('}');
-}
-
-/**
- * Checks if any diagram definition is complete based on its type
- * @param definition The diagram definition string
- * @param type The type of diagram ('mermaid', 'graphviz', etc.)
- * @returns boolean indicating if the definition is complete
- */
-export function isDiagramDefinitionComplete(definition: string, type: string): boolean {
-  if (!definition) return false;
-
-  switch (type.toLowerCase()) {
-    case 'mermaid':
-      return isMermaidDefinitionComplete(definition);
-
-    case 'graphviz':
-    case 'dot':
-      return isGraphvizDefinitionComplete(definition);
-
-    default:
-      // For unknown types, assume complete if not empty
-      return definition.trim().length > 0;
-  }
 }

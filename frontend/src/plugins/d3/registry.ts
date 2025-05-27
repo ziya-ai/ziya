@@ -3,13 +3,15 @@ import { networkDiagramPlugin } from './networkDiagram';
 import { basicChartPlugin } from './basicChart';
 import { mermaidPlugin } from './mermaidPlugin';
 import { graphvizPlugin } from './graphvizPlugin';
+import { vegaLitePlugin } from './vegaLitePlugin';
 
 // Registry for D3 visualization plugins
 const pluginRegistry: D3RenderPlugin[] = [
     networkDiagramPlugin,
     basicChartPlugin,
     mermaidPlugin,
-    graphvizPlugin
+    graphvizPlugin,
+    vegaLitePlugin
     // Add more plugins here as needed
 ];
 pluginRegistry.forEach(plugin => {

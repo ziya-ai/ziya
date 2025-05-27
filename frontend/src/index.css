@@ -1549,8 +1549,39 @@ body:not(.dark) .token.attr-name {
    pointer-events: none;
 }
 
+/* Vega-Lite visualization styles */
+.vega-lite-container {
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100% !important;
+    overflow-x: auto;
+    overflow-y: visible;
+}
+ 
+.vega-lite-container canvas,
+.vega-lite-container svg {
+    max-width: 100% !important;
+    width: 100% !important;
+    height: auto !important;
+}
+ 
+/* Ensure Vega-Lite embeds are responsive */
+.vega-lite-container .vega-embed {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: fit-content !important;
+    overflow: visible !important;
+}
+ 
+.vega-lite-container .vega-embed > div {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+}
+
 /* D3 Visualization Styles */
-.d3-container {
+.d3-container:not(.d3-container .d3-container) {
    margin: 1em 0;
    border-radius: 6px;
    overflow: auto;
@@ -1561,6 +1592,19 @@ body:not(.dark) .token.attr-name {
    min-height: 50px;
    max-width: 100%;
    position: relative; /* Needed for positioning the button */
+}
+
+/* Vega-Lite containers should be able to expand */
+.d3-container:has(.vega-lite-container) {
+   height: auto !important;
+   overflow: visible !important;
+}
+
+/* Nested d3-containers should not have margins/padding */
+.d3-container .d3-container {
+   margin: 0;
+   padding: 0;
+   border-radius: 0;
 }
 
 .dark .d3-container {

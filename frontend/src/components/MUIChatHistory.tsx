@@ -154,18 +154,13 @@ interface ChatTreeItemProps {
   editValue?: string;
   onEditChange?: (value: string) => void;
   children?: React.ReactNode;
-  draggable?: boolean;
-  isDragging?: boolean;
-  isDropTarget?: boolean;
-  onDragStart?: (event: React.DragEvent) => void;
-  onDragOver?: (event: React.DragEvent) => void;
-  onDragEnd?: (event: React.DragEvent) => void;
-  onDragLeave?: (event: React.DragEvent) => void;
-  onDrop?: (event: React.DragEvent) => void;
   isDragOver?: boolean;
   className?: string;
   onEditSubmit: (id: string, value: string) => void;
   style?: React.CSSProperties;
+  onDragStart?: (event: React.DragEvent) => void;
+  onDragOver?: (event: React.DragEvent) => void;
+  onDrop?: (event: React.DragEvent) => void;
 }
 
 const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
@@ -190,14 +185,13 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onCreateSubfolder,
     isEditing = false,
     editValue = '',
-    isDragging = false, // True if this item is being dragged
-    isDropTarget = false, // True if this item is a potential drop target
-    // DND event handlers to be spread to the root TreeItem
-    onDragStart, onDragOver, onDragEnd, onDragLeave, onDrop,
     onEditChange,
     onEditSubmit,
     className,
     style,
+    onDragStart,
+    onDragOver,
+    onDrop,
     ...other
   } = props;
 
@@ -235,8 +229,6 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
   };
 
   let itemClassName = className || '';
-  if (isDropTarget) itemClassName += ' drag-over';
-  if (isDragging) itemClassName += ' dragging';
 
   return (
     <StyledTreeItem
@@ -244,7 +236,36 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
       style={style}
       nodeId={nodeId}
       label={
-        <div style={{ width: '100%' }}> {/* Label content itself is not draggable */}
+        <div
+          style={{ width: '100%' }}
+          onMouseDown={(e) => {
+            // Prevent TreeView from handling the mouse down event
+            e.stopPropagation();
+          }}
+          draggable={true}
+          onDragStart={(e) => {
+            e.stopPropagation();
+            // Set drag data
+            const dragData = { nodeId, nodeType: isFolder ? 'folder' : 'conversation' };
+            e.dataTransfer.setData('application/ziya-node', JSON.stringify(dragData));
+            e.dataTransfer.effectAllowed = 'move';
+
+            // Create a custom drag image
+            e.dataTransfer.setDragImage(e.currentTarget, 10, 10);
+
+            // Add visual feedback
+            if (e.currentTarget instanceof HTMLElement) {
+              e.currentTarget.style.opacity = '0.4';
+            }
+          }}
+          onDragEnd={(e) => {
+            e.stopPropagation();
+            // Reset visual feedback
+            if (e.currentTarget instanceof HTMLElement) {
+              e.currentTarget.style.opacity = '1';
+            }
+          }}
+        >
           <Box // This Box is for the entire label content layout
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
@@ -349,13 +370,11 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
               </Box>
             )}</Box>
         </div>}
-      draggable={true} // Make the TreeItem itself draggable
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
       {...other} // Spread any other props like children  
+      draggable={true}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
     >
       {/* Menu is always rendered but its 'open' state and 'key' control its behavior */}
       {props.children}
@@ -536,12 +555,8 @@ const MUIChatHistory = () => {
   const [pinnedFolders, setPinnedFolders] = useState<Set<string>>(new Set());
   const [newFolderDialogOpen, setNewFolderDialogOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
-  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
-  const [dragOverNodeId, setDragOverNodeId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const isDraggingRef = useRef<boolean>(false);
   const initialExpandedRef = useRef<boolean>(false);
-  const DRAG_DATA_KEY = 'application/ziya-node';
   const [folderConfigForm] = Form.useForm();
 
   const [moveToMenuState, setMoveToMenuState] =
@@ -787,171 +802,6 @@ const MUIChatHistory = () => {
         console.error('Error saving folder name:', error);
         message.error('Failed to save folder name');
       }
-    }
-  };
-
-
-  // Enhanced drag and drop functionality
-  // This function is called when a drag operation starts
-  const handleDragStart = (event: React.DragEvent, nodeId: string) => {
-    console.log('Drag start:', nodeId);
-    event.stopPropagation();
-    isDraggingRef.current = true;
-    setDraggedNodeId(nodeId);
-
-
-    // Determine node type (conversation or folder)
-    const nodeType = nodeId.startsWith('conv-') ? 'conversation' : 'folder';
-
-    // Set drag data
-    const dragData: DragData = { nodeId, nodeType };
-    event.dataTransfer.setData(DRAG_DATA_KEY, JSON.stringify(dragData));
-    event.dataTransfer.setData('text/plain', nodeId); // Fallback
-    event.dataTransfer.setDragImage(event.currentTarget, 20, 20);
-    event.dataTransfer.effectAllowed = 'all';
-
-    // Add visual feedback
-    // Add visual feedback
-    if (event.currentTarget instanceof HTMLElement) {
-      event.currentTarget.style.opacity = '0.4';
-    }
-
-    event.stopPropagation();
-  };
-
-
-  // This function is called when a drag operation ends
-  const handleDragEnd = (event: React.DragEvent) => {
-    console.log('Drag end');
-    event.preventDefault();
-    isDraggingRef.current = false;
-    setDraggedNodeId(null);
-    setDragOverNodeId(null);
-
-    // Reset opacity on the dragged element
-    if (event.currentTarget instanceof HTMLElement) {
-      event.currentTarget.style.opacity = '1';
-    }
-  };
-
-
-  // This function is called when an item is dragged over a potential drop target
-  const handleDragOver = (event: React.DragEvent, nodeId: string) => {
-    console.log('Drag over:', nodeId);
-    // Prevent default to allow drop
-    if (!event) return;
-    event.preventDefault();
-    event.stopPropagation();
-
-    // Set the drop effect
-    event.dataTransfer.dropEffect = 'move';
-
-    // Update UI to show drop target
-    setDragOverNodeId(nodeId);
-  };
-
-
-  // Clear drag state when leaving a drop target
-  const handleDragLeave = (event: React.DragEvent) => {
-    console.log('Drag leave');
-    if (!event) return;
-    event.preventDefault();
-    setDragOverNodeId(null);
-  };
-
-  // This function is called when an item is dropped on a valid drop target
-  const handleDrop = async (event: React.DragEvent, targetNodeId: string) => {
-    console.log('Drop on:', targetNodeId);
-    event.preventDefault();
-    if (!event) return;
-    event.stopPropagation();
-
-
-    // Reset drag state
-    isDraggingRef.current = false;
-    setDragOverNodeId(null);
-    const sourceNodeId = draggedNodeId || event.dataTransfer.getData('text/plain');
-    setDraggedNodeId(null);
-    if (!sourceNodeId || sourceNodeId === targetNodeId) return;
-    setDragOverNodeId(null);
-
-    try {
-      console.log(`Dropping ${sourceNodeId} onto ${targetNodeId}`);
-
-      // Handle conversation drop
-      if (sourceNodeId.startsWith('conv-')) {
-        const conversationId = sourceNodeId.substring(5);
-
-        // Determine target folder
-        let targetFolderId: string | null = null;
-
-        if (targetNodeId.startsWith('conv-')) {
-          // Dropped on another conversation - use its folder
-          const targetConversation = conversations.find(c => c.id === targetNodeId.substring(5));
-          if (targetConversation) {
-            targetFolderId = targetConversation.folderId || null;
-          }
-        } else {
-          // Dropped on a folder
-          targetFolderId = targetNodeId;
-        }
-
-        // Move the conversation to the target folder
-        await moveConversationToFolder(conversationId, targetFolderId);
-        message.success('Conversation moved successfully');
-      }
-      // Handle folder drop
-      else {
-        const sourceFolderId = sourceNodeId;
-        const folder = folders.find(f => f.id === sourceFolderId);
-
-        if (!folder) return;
-
-        // Determine target parent folder
-        let targetParentId: string | null = null;
-
-        if (targetNodeId.startsWith('conv-')) {
-          // Dropped on a conversation - use its folder
-          const targetConversation = conversations.find(c => c.id === targetNodeId.substring(5));
-          if (targetConversation) {
-            targetParentId = targetConversation.folderId || null;
-          }
-        } else {
-          // Dropped on a folder - make it a child of that folder
-          targetParentId = targetNodeId;
-
-          // Prevent dropping a folder onto itself
-          if (targetParentId === sourceFolderId) {
-            return;
-          }
-
-          // Prevent dropping a folder into one of its descendants
-          const isDescendant = (folderId: string, potentialAncestorId: string): boolean => {
-            if (folderId === potentialAncestorId) return true;
-
-            const folder = folders.find(f => f.id === folderId);
-            if (!folder || !folder.parentId) return false;
-
-            return isDescendant(folder.parentId, potentialAncestorId);
-          };
-
-          if (isDescendant(targetParentId, sourceFolderId)) {
-            notification.error({
-              message: 'Invalid Move',
-              description: 'Cannot move a folder into one of its descendants'
-            });
-            return;
-          }
-        }
-
-        // Update the folder's parent
-        await updateFolder({ ...folder, parentId: targetParentId });
-        message.success('Folder moved successfully');
-      }
-    } catch (error) {
-      message.error('Failed to move item');
-      console.error('Move error:', error);
-      setDraggedNodeId(null);
     }
   };
 
@@ -1348,6 +1198,45 @@ const MUIChatHistory = () => {
     return sortRecursive(rootItems);
   }, [folders, conversations, pinnedFolders]);
 
+  // Handle drag and drop using MUI TreeView's built-in functionality
+  const handleDragStart = (event: React.DragEvent, nodeId: string) => {
+    console.log('Drag started:', nodeId);
+    const nodeType = nodeId.startsWith('conv-') ? 'conversation' : 'folder';
+    const dragData = { nodeId, nodeType };
+    event.dataTransfer.setData('application/json', JSON.stringify(dragData));
+  };
+
+  const handleDragOver = (event: React.DragEvent, nodeId: string) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = async (event: React.DragEvent, nodeId: string) => {
+    event.preventDefault();
+
+    try {
+      const dragDataStr = event.dataTransfer.getData('application/json');
+      if (!dragDataStr) return;
+
+      const { nodeId: sourceNodeId, nodeType } = JSON.parse(dragDataStr);
+
+      if (sourceNodeId === nodeId) return; // Can't drop on itself
+
+      console.log(`Dropping ${sourceNodeId} onto ${nodeId}`);
+
+      if (nodeType === 'conversation') {
+        const targetFolderId = nodeId.startsWith('conv-') ? null : nodeId;
+        await handleMoveConversation(sourceNodeId, targetFolderId);
+      } else if (nodeType === 'folder') {
+        const targetParentId = nodeId.startsWith('conv-') ? null : nodeId;
+        await handleMoveFolder(sourceNodeId, targetParentId);
+      }
+    } catch (error) {
+      console.error('Drop error:', error);
+      message.error('Failed to move item');
+    }
+  };
+
   // Create a unified folder configuration dialog that works for both creation and editing
   const showFolderConfigDialog = (folderId?: string) => {
     const isEditing = !!folderId;
@@ -1635,22 +1524,11 @@ const MUIChatHistory = () => {
 
       const conversationCount = isFolder ? node.conversationCount : 0;
       const isEditing = editingId === (isFolder ? node.id : node.id.substring(5));
-      const isBeingDragged = draggedNodeId === nodeId;
-      const isDropTarget = dragOverNodeId === nodeId;
-      const isDraggedOver = dragOverNodeId === nodeId;
 
       // Add draggable attribute to enable drag and drop
       return (
         <ChatTreeItem
           key={nodeId}
-          draggable={true}
-          onDragStart={(e) => { console.log('Tree item drag start', nodeId); handleDragStart(e, nodeId); }}
-          onDragEnd={(e) => { console.log('Tree item drag end', nodeId); handleDragEnd(e); }}
-          onDragOver={(e) => { console.log('Tree item drag over', nodeId); handleDragOver(e, nodeId); }}
-          onDragLeave={(e) => { console.log('Tree item drag leave', nodeId); handleDragLeave(e); }}
-          onDrop={(e) => { console.log('Tree item drop', nodeId); handleDrop(e, nodeId); }}
-          isDragging={isBeingDragged}
-          isDropTarget={isDropTarget}
           nodeId={nodeId}
           labelText={labelText}
           isFolder={isFolder}
@@ -1673,23 +1551,16 @@ const MUIChatHistory = () => {
           editValue={editValue}
           onEditChange={handleEditChange}
           onEditSubmit={handleEditSubmit}
+          // Add drag and drop props
+          onDragStart={(e) => handleDragStart(e, nodeId)}
+          onDragOver={(e) => handleDragOver(e, nodeId)}
+          onDrop={(e) => handleDrop(e, nodeId)}
         >
           {isFolder && node.children && node.children.length > 0 ? renderTree(node.children) : null}
         </ChatTreeItem>
       );
     });
   };
-
-  // Add debugging to check if drag events are being fired
-  useEffect(() => {
-    const debugDragEvents = (e: DragEvent) => {
-      console.log(`Global drag event: ${e.type}`, e);
-    };
-    const style = document.createElement('style');
-    style.textContent = `.MuiTreeItem-content [draggable=true] {cursor: grab !important; } .MuiTreeItem-content [draggable=true]:active {cursor: grabbing !important; } .draggable-element {cursor: grab !important; -webkit-user-drag: element; }`;
-    document.head.appendChild(style);
-    return () => { document.head.removeChild(style); };
-  }, []);
 
   return isLoading && !currentConversationId ? (
     <Box sx={{
@@ -1718,11 +1589,6 @@ const MUIChatHistory = () => {
                 border: isDarkMode ? '1px dashed #177ddc' : '1px dashed #1890ff'
               }
             },
-            // Additional styles for drag and drop
-            '& .MuiTreeItem-root.drag-over': {
-              backgroundColor: 'rgba(24, 144, 255, 0.1)'
-            },
-            // Reduce spacing between tree items
             '& .MuiTreeItem-content': {
               padding: '0px 8px',
               minHeight: '20px'
@@ -1740,6 +1606,8 @@ const MUIChatHistory = () => {
               selected={currentConversationId ? 'conv-' + currentConversationId : currentFolderId || ''}
               onNodeToggle={handleNodeToggle}
               onNodeSelect={handleTreeNodeSelect}
+              // Disable TreeView's built-in selection behavior during drag
+              disableSelection={false}
               className="chat-history-tree"
             >
               {renderTree(treeData)}

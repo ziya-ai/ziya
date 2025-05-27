@@ -2368,12 +2368,39 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     const lastValidDiffRef = useRef<string | null>(null);
     const { isStreaming: isGlobalStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
+    const initialFileTitleRef = useRef<string | null>(null);
     const stableElementIdRef = useRef(elementId);
     const isStreamingRef = useRef<boolean>(false);
     const streamingContentRef = useRef<string>(token.text || '');
     const parseTimeoutRef = useRef<number | null>(null);
     // Track component visibility
     const containerRef = useRef<HTMLDivElement>(null);
+
+    // Extract file title early from the diff content, even during streaming
+    const extractFileTitle = useCallback((diffContent: string): string => {
+        if (!diffContent) return '';
+
+        const lines = diffContent.split('\n');
+
+        // Look for git diff header
+        for (const line of lines) {
+            if (line.startsWith('diff --git')) {
+                const match = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                if (match) {
+                    return match[2] || match[1]; // Prefer new path, fallback to old path
+                }
+            }
+            // Look for unified diff headers
+            if (line.startsWith('+++ b/')) {
+                return line.substring(6);
+            }
+            if (line.startsWith('--- a/')) {
+                return line.substring(6);
+            }
+        }
+
+        return 'Unknown file';
+    }, []);
 
     useEffect(() => {
         const observer = new IntersectionObserver(([entry]) => {
@@ -2444,6 +2471,19 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
         }
     }, [currentContent]);
 
+    // Get file title immediately, even during streaming
+    const fileTitle = useMemo(() => {
+        const extractedTitle = extractFileTitle(currentContent);
+
+        // Store the first non-empty title we extract
+        if (extractedTitle && extractedTitle !== 'Unknown file' && !initialFileTitleRef.current) {
+            initialFileTitleRef.current = extractedTitle;
+        }
+
+        // During streaming, use the initial title if current extraction fails
+        return (isGlobalStreaming && initialFileTitleRef.current) ? initialFileTitleRef.current : extractedTitle;
+    }, [currentContent, extractFileTitle, isGlobalStreaming]);
+
     // Track streaming state in a ref to avoid re-renders
     useEffect(() => {
         isStreamingRef.current = isGlobalStreaming;
@@ -2502,7 +2542,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                 onDisplayModeChange={setDisplayMode}
                 onViewTypeChange={setViewType}
                 onLineNumbersChange={setShowLineNumbers}
-                fileTitle={parsedFilesRef.current?.[0] ? renderFileHeader(parsedFilesRef.current[0], diffText, 0) : ''}
+                fileTitle={fileTitle}
             />
             <div
                 ref={containerRef}
@@ -2746,9 +2786,28 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     // 2. Handle Code Blocks with explicit lang tags
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
+
+        // Check for JSON code blocks that might contain Vega-Lite specs
+        if (lang === 'json' && 'text' in token && typeof token.text === 'string') {
+            const text = token.text.trim();
+            if (text.startsWith('{') && (text.includes('"$schema"') || text.includes('"mark"'))) {
+                try {
+                    const parsed = JSON.parse(text);
+                    if (parsed.$schema?.includes('vega-lite') ||
+                        (parsed.mark && (parsed.encoding || parsed.data)) ||
+                        (parsed.data && (parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat))) {
+                        return 'vega-lite';
+                    }
+                } catch (error) {
+                    // Not valid JSON, continue with other checks
+                }
+            }
+        }
+
         if (lang === 'mermaid') return 'mermaid';  // Check mermaid FIRST
         if (lang === 'diff') return 'diff';
         if (lang === 'graphviz' || lang === 'dot') return 'graphviz';
+        if (lang === 'vega-lite' || lang === 'vegalite') return 'vega-lite';
         if (lang === 'vega-lite') return 'vega-lite';
         if (lang === 'd3') return 'd3';
         // If it has a specific lang tag but isn't special, it's 'code'
@@ -2760,9 +2819,24 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         const text = token.text;
         const trimmedText = text.trim();
 
+        // Check for Vega-Lite JSON specifications with better error handling
+        if (trimmedText.startsWith('{')) {
+            try {
+                const parsed = JSON.parse(trimmedText);
+                // Check for Vega-Lite schema or typical Vega-Lite structure
+                if (parsed.$schema?.includes('vega-lite') ||
+                    (parsed.mark && (parsed.encoding || parsed.data)) ||
+                    (parsed.data && (parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat))) {
+                    return 'vega-lite';
+                }
+            } catch (error) {
+                // Not valid JSON, continue with other checks
+                console.debug("JSON parse failed for potential Vega-Lite:", error);
+            }
+        }
+
         // Check if this is a diff block by looking for diff marker
         if (text.startsWith('diff') || text.includes('\ndiff')) {
-            console.log(">>> Content matched as Diff (diff marker)");
             return 'diff';
         }
 
@@ -2776,13 +2850,11 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // Allows for optional whitespace and comments before the opening brace
         const graphvizRegex = /^\s*(?:strict\s+)?(digraph|graph)\s+\w*\s*\{/i;
         if (graphvizRegex.test(trimmedText)) {
-            console.log(">>> Content matched as Graphviz (strict regex)");
             return 'graphviz';
         }
         // Fallback for simpler cases (might be less reliable)
         if (trimmedText.startsWith('digraph') ||
             (trimmedText.startsWith('graph') && trimmedText.match(/^graph\s+\w*\s*\{/))) {
-            console.log(">>> Content matched as Graphviz (specific check)");
             return 'graphviz';
         }
         // Check for diff content more robustly within the first few lines
@@ -2798,7 +2870,6 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         if (diffMarkersFound >= 2) {
             // Log which condition matched for debugging
             const matchReason = `${hasGitHeader ? 'git ' : ''}${hasMinusHeader ? '--- ' : ''}${hasPlusHeader ? '+++ ' : ''}${hasHunkHeader ? '@@ ' : ''}`.trim();
-            console.log(`>>> Content matched as Diff (reason: ${matchReason})`);
             return 'diff';
         }
         // If no special content detected, treat as generic code
@@ -2859,7 +2930,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
 
                 case 'file-operation':
-                    console.log(`>>> Rendering as File Operation`);
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
 
                     const safetyResult = renderFileOperationSafely(tokenWithText.text);
@@ -2876,7 +2946,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     return <CodeBlock token={{ ...tokenWithText, text: safetyResult.safeContent, lang: 'xml' }} index={index} />;
 
                 case 'graphviz':
-                    console.log(`>>> Rendering as Graphviz (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
                     return (
                         <D3Renderer
@@ -2892,7 +2961,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         />
                     );
                 case 'mermaid':
-                    console.log(`>>> Rendering as Mermaid (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
                     console.log(`🎯 CREATING MERMAID SPEC:`, { text: tokenWithText.text.substring(0, 100) });
                     // Pass the definition directly to D3Renderer, which will use the mermaidPlugin
@@ -2908,23 +2976,47 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     console.log(`🎯 CALLING D3RENDERER WITH MERMAID SPEC:`, mermaidSpec);
                     return <D3Renderer key={index} spec={mermaidSpec} type="d3" isStreaming={isStreaming} />;
                 case 'vega-lite':
-                    console.log(`>>> Rendering as VegaLite (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText)) return null;
+
+                    let vegaLiteSpec: any;
+                    try {
+                        // Parse the JSON specification
+                        const parsedSpec = JSON.parse(tokenWithText.text);
+
+                        // Create the spec object for D3Renderer
+                        vegaLiteSpec = {
+                            type: 'vega-lite',
+                            ...parsedSpec,  // Spread the parsed JSON
+                            isStreaming: isStreaming,
+                            forceRender: true
+                        };
+
+                    } catch (error) {
+                        // If parsing fails, treat as definition string
+                        vegaLiteSpec = {
+                            type: 'vega-lite',
+                            definition: tokenWithText.text,
+                            isStreaming: isStreaming,
+                            forceRender: true
+                        };
+                    }
+
                     return (
-                        <div key={index} className="vega-lite-container">
-                            <D3Renderer spec={tokenWithText.text} type="vega-lite" isStreaming={isStreaming} />
-                        </div>
+                        <D3Renderer
+                            key={index}
+                            spec={vegaLiteSpec}
+                            type="d3"
+                            isStreaming={isStreaming}
+                        />
                     );
 
                 case 'd3':
-                    console.log(`>>> Rendering as D3 (lang: ${(token as any).lang})`);
                     if (!hasText(tokenWithText)) return null;
                     return (
                         <D3Renderer key={index} spec={tokenWithText.text} type="d3" isStreaming={isStreaming} />
                     );
 
                 case 'code':
-                    console.log(`>>> Rendering as CodeBlock (lang: ${(token as any).lang})`);
                     if (!isCodeToken(tokenWithText)) return null; // Type guard
 
                     // Check for file operations first
@@ -3295,6 +3387,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Use marked.lexer directly
             let processedMarkdown = markdown;
+
+            // Debug the lexer output
+            // const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
 
             // Pre-process MathML blocks to prevent fragmentation
             const mathMLRegex = /<math[^>]*>[\s\S]*?<\/math>/gi;

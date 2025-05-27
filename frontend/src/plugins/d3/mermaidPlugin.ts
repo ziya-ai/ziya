@@ -507,25 +507,48 @@ export const mermaidPlugin: D3RenderPlugin = {
                     <meta charset="UTF-8">
                     <title>Mermaid Diagram</title>
                     <style>
+                        :root {
+                            --bg-color: #f8f9fa;
+                            --text-color: #212529;
+                            --toolbar-bg: #f1f3f5;
+                            --toolbar-border: #dee2e6;
+                            --button-bg: #4361ee;
+                            --button-hover: #3a0ca3;
+                        }
+                        
+                        [data-theme="dark"] {
+                            --bg-color: #212529;
+                            --text-color: #f8f9fa;
+                            --toolbar-bg: #343a40;
+                            --toolbar-border: #495057;
+                            --button-bg: #4361ee;
+                            --button-hover: #5a72f0;
+                        }
+                        
                         body {
                             margin: 0;
                             padding: 0;
                             display: flex;
                             flex-direction: column;
                             height: 100vh;
-                            background-color: #f8f9fa;
+                            background-color: var(--bg-color);
+                            color: var(--text-color);
                             font-family: system-ui, -apple-system, sans-serif;
+                            transition: background-color 0.3s ease, color 0.3s ease;
                         }
+                        
                         .toolbar {
-                            background-color: #f1f3f5;
-                            border-bottom: 1px solid #dee2e6;
+                            background-color: var(--toolbar-bg);
+                            border-bottom: 1px solid var(--toolbar-border);
                             padding: 8px;
                             display: flex;
                             justify-content: space-between;
                             align-items: center;
+                            transition: background-color 0.3s ease, border-color 0.3s ease;
                         }
+                        
                         .toolbar button {
-                            background-color: #4361ee;
+                            background-color: var(--button-bg);
                             color: white;
                             border: none;
                             border-radius: 4px;
@@ -533,10 +556,26 @@ export const mermaidPlugin: D3RenderPlugin = {
                             cursor: pointer;
                             margin-right: 8px;
                             font-size: 14px;
+                            transition: background-color 0.3s ease;
                         }
+                        
                         .toolbar button:hover {
-                            background-color: #3a0ca3;
+                            background-color: var(--button-hover);
                         }
+                        
+                        .theme-toggle {
+                            background-color: transparent;
+                            border: 1px solid var(--text-color);
+                            color: var(--text-color);
+                            padding: 4px 8px;
+                            font-size: 12px;
+                        }
+                        
+                        .theme-toggle:hover {
+                            background-color: var(--text-color);
+                            color: var(--bg-color);
+                        }
+                        
                         .container {
                             flex: 1;
                             display: flex;
@@ -545,30 +584,23 @@ export const mermaidPlugin: D3RenderPlugin = {
                             overflow: auto;
                             padding: 20px;
                         }
+                        
                         svg {
                             max-width: 100%;
                             max-height: 100%;
                             height: auto;
                             width: auto;
-                        }
-                        @media (prefers-color-scheme: dark) {
-                            body {
-                                background-color: #212529;
-                                color: #f8f9fa;
-                            }
-                            .toolbar {
-                                background-color: #343a40;
-                                border-bottom: 1px solid #495057;
-                            }
+                            transition: all 0.3s ease;
                         }
                     </style>
                 </head>
-                <body>
+                <body data-theme="light">
                     <div class="toolbar">
                         <div>
                             <button onclick="zoomIn()">Zoom In</button>
                             <button onclick="zoomOut()">Zoom Out</button>
                             <button onclick="resetZoom()">Reset</button>
+                            <button class="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
                         </div>
                         <div>
                             <button onclick="downloadSvg()">Download SVG</button>
@@ -580,6 +612,7 @@ export const mermaidPlugin: D3RenderPlugin = {
                     <script>
                         const svg = document.querySelector('svg');
                         let currentScale = 1;
+                        let isDarkMode = false;
                         
                         // Make sure SVG is responsive
                         svg.setAttribute('width', '100%');
@@ -603,6 +636,108 @@ export const mermaidPlugin: D3RenderPlugin = {
                             svg.style.transform = 'scale(1)';
                         }
                         
+                        function toggleTheme() {
+                            isDarkMode = !isDarkMode;
+                            const body = document.body;
+                            const themeButton = document.querySelector('.theme-toggle');
+                            
+                            if (isDarkMode) {
+                                body.setAttribute('data-theme', 'dark');
+                                themeButton.textContent = '☀️ Light';
+                            } else {
+                                body.setAttribute('data-theme', 'light');
+                                themeButton.textContent = '🌙 Dark';
+                            }
+                            
+                            // Re-render Mermaid diagram with new theme
+                            reRenderMermaidDiagram();
+                        }
+                        
+                        function reRenderMermaidDiagram() {
+                            const svgContainer = document.getElementById('svg-container');
+                            const currentSvg = svgContainer.querySelector('svg');
+                            
+                            if (!currentSvg) return;
+                            
+                            // Apply Mermaid-specific theme styling
+                            applyMermaidTheme(currentSvg, isDarkMode);
+                        }
+                        
+                        function applyMermaidTheme(svgElement, isDark) {
+                            const darkTheme = {
+                                primaryColor: '#88c0d0',
+                                primaryTextColor: '#ffffff',
+                                primaryBorderColor: '#88c0d0',
+                                lineColor: '#88c0d0',
+                                secondaryColor: '#5e81ac',
+                                tertiaryColor: '#2e3440',
+                                textColor: '#eceff4',
+                                mainBkg: '#3b4252',
+                                secondBkg: '#434c5e',
+                                nodeBorder: '#88c0d0',
+                                edgeLabelBackground: '#4c566a',
+                                altBackground: '#2e3440',
+                                nodeBkg: '#3b4252',
+                                clusterBkg: '#2e3440'
+                            };
+                            
+                            const lightTheme = {
+                                primaryColor: '#1890ff',
+                                primaryTextColor: '#000000',
+                                primaryBorderColor: '#1890ff',
+                                lineColor: '#333333',
+                                secondaryColor: '#f0f0f0',
+                                tertiaryColor: '#ffffff',
+                                textColor: '#333333',
+                                mainBkg: '#ffffff',
+                                secondBkg: '#f8f9fa',
+                                nodeBorder: '#cccccc',
+                                edgeLabelBackground: '#ffffff',
+                                altBackground: '#f5f5f5',
+                                nodeBkg: '#ffffff',
+                                clusterBkg: '#f8f9fa'
+                            };
+                            
+                            const colors = isDark ? darkTheme : lightTheme;
+                            
+                            // Apply theme to Mermaid elements
+                            svgElement.querySelectorAll('.edgePath path').forEach(el => {
+                                el.setAttribute('stroke', colors.lineColor);
+                                el.setAttribute('stroke-width', '1.5px');
+                            });
+                            
+                            svgElement.querySelectorAll('defs marker path').forEach(el => {
+                                el.setAttribute('stroke', colors.lineColor);
+                                el.setAttribute('fill', colors.lineColor);
+                            });
+                            
+                            svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
+                                el.setAttribute('stroke', colors.nodeBorder);
+                                el.setAttribute('fill', colors.nodeBkg);
+                            });
+                            
+                            svgElement.querySelectorAll('.cluster rect').forEach(el => {
+                                el.setAttribute('stroke', colors.nodeBorder);
+                                el.setAttribute('fill', colors.clusterBkg);
+                            });
+                            
+                            // Text styling - node labels should contrast with node background
+                            svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
+                                el.setAttribute('fill', isDark ? '#000000' : '#333333');
+                            });
+                            
+                            // Edge labels and other text should use theme text color
+                            svgElement.querySelectorAll('.edgeLabel text, text:not(.node .label text):not(.cluster .label text)').forEach(el => {
+                                el.setAttribute('fill', colors.textColor);
+                            });
+                            
+                            // Flow chart links
+                            svgElement.querySelectorAll('.flowchart-link, path.path, path.messageText').forEach(el => {
+                                el.setAttribute('stroke', colors.lineColor);
+                                el.setAttribute('stroke-width', '1.5px');
+                            });
+                        }
+                        
                         function downloadSvg() {
                             const svgData = new XMLSerializer().serializeToString(svg);
                             const svgBlob = new Blob([svgData], {type: 'image/svg+xml'});
@@ -610,12 +745,17 @@ export const mermaidPlugin: D3RenderPlugin = {
                             
                             const link = document.createElement('a');
                             link.href = url;
-                            link.download = 'mermaid-diagram.svg';
+                            link.download = 'mermaid-diagram-${Date.now()}.svg';
                             document.body.appendChild(link);
                             link.click();
                             document.body.removeChild(link);
                             
                             setTimeout(() => URL.revokeObjectURL(url), 1000);
+                        }
+                        
+                        // Initialize theme based on system preference
+                        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                            toggleTheme();
                         }
                     </script>
                 </body>
