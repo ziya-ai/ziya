@@ -678,6 +678,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         return plugin?.name === 'graphviz-renderer';
     }, [spec]);
 
+    // Determine if it's specifically a Vega-Lite render
+    const isVegaLiteRender = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return plugin?.name === 'vega-lite-renderer';
+    }, [spec]);
+
     // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams
     useEffect(() => {
         // Only run this effect when theme changes and we have a Mermaid or Graphviz diagram
