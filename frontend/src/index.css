@@ -600,7 +600,17 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 .folder-tree-panel .ant-tabs-nav {
   margin-top: -8px;
+  margin-bottom: -2px;
   top: 0;
+}
+
+/* Fast tooltips for action buttons */
+[data-tooltip-delay="50"]:hover::after {
+    animation-delay: 50ms !important;
+}
+ 
+button[data-tooltip-delay="50"] {
+    --tooltip-delay: 50ms;
 }
 
 .dark .ant-tabs {

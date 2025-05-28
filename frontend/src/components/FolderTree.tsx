@@ -457,13 +457,15 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     const actionsDiv = document.createElement('div');
                     actionsDiv.id = 'chat-history-actions';
                     actionsDiv.style.cssText = `
-                        position: absolute;
-                        right: 8px;
-                        top: 50%;
-                        transform: translateY(-50%);
+                        position: relative;
+                        right: 0;
+                        top: 0;
                         display: flex;
+                        justify-content: flex-end;
                         gap: 2px;
                         z-index: 10;
+                        padding: 4px 8px;
+                        border-bottom: 1px solid ${isDarkMode ? '#303030' : '#e8e8e8'};
                     `;
 
                     // Create buttons
@@ -471,6 +473,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     folderBtn.innerHTML = '<span class="anticon anticon-folder"><svg viewBox="64 64 896 896" focusable="false" data-icon="folder" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M880 298.4H521L403.7 186.2a8.15 8.15 0 00-5.5-2.2H144c-17.7 0-32 14.3-32 32v592c0 17.7 14.3 32 32 32h736c17.7 0 32-14.3 32-32V330.4c0-17.7-14.3-32-32-32z"></path></svg></span>';
                     folderBtn.className = 'ant-btn ant-btn-text ant-btn-sm';
                     folderBtn.style.cssText = 'min-width: 24px; padding: 0 4px;';
+                    folderBtn.setAttribute('data-tooltip-delay', '50');
                     folderBtn.title = `New Folder${currentFolderId ? ' in current folder' : ' at root level'}`;
                     folderBtn.onclick = (e) => {
                         e.stopPropagation();
@@ -481,6 +484,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     chatBtn.innerHTML = '<span class="anticon anticon-plus"><svg viewBox="64 64 896 896" focusable="false" data-icon="plus" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M482 152h60q8 0 8 8v704q0 8-8 8h-60q-8 0-8-8V160q0-8 8-8z"></path><path d="M176 474h672q8 0 8 8v60q0 8-8 8H176q-8 0-8-8v-60q0-8 8-8z"></path></svg></span>';
                     chatBtn.className = 'ant-btn ant-btn-text ant-btn-sm';
                     chatBtn.style.cssText = 'min-width: 24px; padding: 0 4px;';
+                    chatBtn.setAttribute('data-tooltip-delay', '50');
                     chatBtn.title = `New Chat${currentFolderId ? ' in current folder' : ' at root level'}`;
                     chatBtn.onclick = (e) => {
                         e.stopPropagation();
@@ -489,7 +493,12 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
 
                     actionsDiv.appendChild(folderBtn);
                     actionsDiv.appendChild(chatBtn);
-                    tabBar.appendChild(actionsDiv);
+                    
+                    // Insert after the tab bar instead of inside it
+                    const tabsContainer = tabBar.parentElement;
+                    if (tabsContainer) {
+                        tabsContainer.insertBefore(actionsDiv, tabBar.nextSibling);
+                    }
                 }
             }, 0);
         } else {
