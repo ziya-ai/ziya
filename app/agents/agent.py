@@ -3,32 +3,6 @@ import os.path
 import re
 import sys
 from typing import Dict, List, Tuple, Set, Union, Optional, Any, cast
-
-def _extract_content(x: Any) -> str:
-    """Extract content from various response formats."""
-    # If x has a content attribute (standard case)
-    if hasattr(x, 'content'):
-        return str(x.content)
-        
-    # If x is a list of dicts with text field (Nova-Lite case)
-    if isinstance(x, list) and x:
-        if isinstance(x[0], dict) and 'text' in x[0]:
-            return str(x[0]['text'])
-        # Combine all text fields if multiple chunks
-        texts = []
-        for chunk in x:
-            if isinstance(chunk, dict) and 'text' in chunk:
-                texts.append(str(chunk['text']))
-        if texts:
-            return ' '.join(texts)
-            
-    # If x is a dict with text field
-    if isinstance(x, dict) and 'text' in x:
-        return str(x['text'])
-        
-    # Last resort: convert to string
-    return str(x)
-
 import json
 import time
 import botocore
@@ -68,7 +42,7 @@ from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_
 from app.agents.models import ModelManager
 from app.middleware import RequestSizeMiddleware
 from app.utils.sanitizer_util import clean_backtick_sequences
-from app.utils.context_enhancer import initialize_ast_context, enhance_query_context
+from app.utils.context_enhancer import enhance_context_with_ast, get_ast_indexing_status
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file
@@ -977,41 +951,6 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     # Initialize AST capabilities if enabled
     ast_context = ""
     ast_token_count = 0
-    if os.environ.get("ZIYA_ENABLE_AST") == "true":
-        try:
-            logger.info("AST initialization requested via ZIYA_ENABLE_AST=true")
-            codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
-            logger.info(f"Using codebase directory: {codebase_dir}")
-            
-            ignored_patterns = get_ignored_patterns(codebase_dir)
-            logger.info(f"Using ignored patterns: {ignored_patterns}")
-            
-            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
-            logger.info(f"Using max depth: {max_depth}")
-            
-            # Import the initialize_ast_context function
-            from app.utils.context_enhancer import initialize_ast_context
-            
-            # Show progress indicator
-            print("\nInitializing AST-based code understanding...")
-            
-            # Initialize AST
-            ast_init_result = initialize_ast_context(codebase_dir, ignored_patterns, max_depth)
-            
-            # Log the result
-            if ast_init_result.get("initialized", False):
-                logger.info(f"AST initialization successful: {ast_init_result.get('files_processed', 0)} files processed")
-                print(f"✅ AST initialization complete: {ast_init_result.get('files_processed', 0)} files processed")
-                ast_token_count = ast_init_result.get("token_count", 0)
-                print(f"   AST context size: {ast_token_count} tokens\n")
-            else:
-                logger.warning(f"AST initialization failed: {ast_init_result.get('reason', 'Unknown reason')}")
-                print("⚠️ AST initialization failed\n")
-        except Exception as e:
-            print(f"⚠️ Failed to initialize AST capabilities: {e}\n")
-            logger.error(f"Failed to initialize AST capabilities: {e}")
-            import traceback
-            logger.error(f"AST initialization traceback: {traceback.format_exc()}")
 
     user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
     for file_path in files:
@@ -1097,6 +1036,13 @@ def extract_codebase(x):
     overall_changes, recent_changes = file_state_manager.format_context_message(conversation_id)
 
     codebase = get_combined_docs_from_files(files, conversation_id)
+
+    # Enhance with AST context if available
+    question = x.get("question", "")
+    if question:
+        codebase = enhance_context_with_ast(question, {"codebase": codebase}).get("codebase", codebase)
+        logger.info("Enhanced codebase context with AST information")
+
     logger.info(f"Changes detected - Overall: {bool(overall_changes)}, Recent: {bool(recent_changes)}")
 
     result = []
@@ -1204,7 +1150,14 @@ def create_agent_chain(chat_model: BaseChatModel):
     # Add AST context enhancement if enabled
     if ast_enabled:
         logger.info("Adding AST context to agent chain input mapping")
-        input_mapping["ast_context"] = lambda x: enhance_query_context(x["question"])
+        def get_ast_context_for_prompt(x):
+            from app.utils.context_enhancer import get_ast_context
+            if get_ast_context:
+                ast_context = get_ast_context()
+                logger.info(f"Retrieved AST context: {len(ast_context) if ast_context else 0} chars")
+                return ast_context or ""
+            return ""
+        input_mapping["ast_context"] = get_ast_context_for_prompt
         logger.info(f"AST context lambda added to input mapping: {input_mapping.get('ast_context')}")
     else:
         logger.info("AST context not added to agent chain (disabled)")

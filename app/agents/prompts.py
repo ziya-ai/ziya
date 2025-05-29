@@ -22,6 +22,7 @@ try:
         AST_CONTEXT = get_ast_context()
         AST_TOKEN_COUNT = get_ast_token_count()
         logger.info(f"AST capabilities available. Context size: {AST_TOKEN_COUNT} tokens")
+        logger.info(f"AST context preview: {AST_CONTEXT[:200]}...")
     else:
         logger.info("AST capabilities not initialized.")
 except ImportError:

@@ -24,6 +24,7 @@ const Conversation = React.lazy(() => import("./Conversation"));
 const PrismTest = React.lazy(() => import("./PrismTest"));
 const SyntaxTest = React.lazy(() => import("./SyntaxTest"));
 const MUIChatHistory = React.lazy(() => import("./MUIChatHistory"));
+const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
 const ApplyDiffTest = React.lazy(() => import("./ApplyDiffTest"));
 
 // Error boundary component to catch extension context errors
@@ -412,6 +413,9 @@ export const App: React.FC = () => {
                         </div>
                     </div>
                 </div>
+                <Suspense fallback={null}>
+                    <AstStatusIndicator />
+                </Suspense>
 
             </ConfigProvider>
         </ExtensionErrorBoundary>

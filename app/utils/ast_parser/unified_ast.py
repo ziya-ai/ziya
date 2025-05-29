@@ -8,6 +8,9 @@ allowing consistent handling of code structures across different programming lan
 import json
 from typing import Dict, List, Optional, Any, Tuple, Set
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 class SourceLocation:
     """Represents a location in source code."""
@@ -236,10 +239,14 @@ class UnifiedAST:
         Args:
             other: Another UnifiedAST to merge
         """
+        logger.debug(f"Merging AST: current has {len(self.nodes)} nodes, other has {len(other.nodes)} nodes")
+        
         # Add nodes from other AST
         for node_id, node in other.nodes.items():
             if node_id not in self.nodes:
                 self.nodes[node_id] = node
+        
+        logger.debug(f"After node merge: {len(self.nodes)} total nodes")
         
         # Add edges from other AST
         for edge in other.edges:

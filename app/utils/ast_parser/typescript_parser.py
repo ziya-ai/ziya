@@ -8,11 +8,15 @@ converting TypeScript's AST to Ziya's unified AST format.
 import json
 import subprocess
 import os
+import shutil
 import tempfile
 from typing import Dict, List, Optional, Any, Tuple
+import logging
 
 from .registry import ASTParserPlugin
 from .unified_ast import UnifiedAST, SourceLocation
+
+logger = logging.getLogger(__name__)
 
 
 class TypeScriptASTParser(ASTParserPlugin):
@@ -20,14 +24,26 @@ class TypeScriptASTParser(ASTParserPlugin):
     
     def __init__(self):
         """Initialize the TypeScript parser."""
-        super().__init__(file_extensions=['.ts', '.tsx', '.js', '.jsx'])
+        super().__init__()
         self._ensure_parser_script()
+    
+    @classmethod
+    def get_file_extensions(cls):
+        return ['.ts', '.tsx', '.js', '.jsx']
     
     def _ensure_parser_script(self):
         """Ensure the TypeScript parser script exists."""
         # Create a directory for the parser script if it doesn't exist
         parser_dir = os.path.join(os.path.dirname(__file__), 'ts_parser')
         os.makedirs(parser_dir, exist_ok=True)
+        
+        # Check if Node.js is available
+        if not shutil.which('node'):
+            raise RuntimeError("Node.js is required for TypeScript parsing but is not installed")
+        
+        # Check if npm is available
+        if not shutil.which('npm'):
+            raise RuntimeError("npm is required for TypeScript parsing but is not installed")
         
         # Create the parser script
         parser_script_path = os.path.join(parser_dir, 'parse_typescript.js')
@@ -215,6 +231,22 @@ console.log(JSON.stringify(ast));
   }
 }
                 """)
+
+    # Install TypeScript dependency if not already installed
+        node_modules_path = os.path.join(parser_dir, 'node_modules')
+        if not os.path.exists(node_modules_path):
+            try:
+                # Run npm install in the parser directory
+                result = subprocess.run(
+                    ['npm', 'install'],
+                    cwd=parser_dir,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                print(f"Installed TypeScript dependencies: {result.stdout}")
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(f"Failed to install TypeScript dependencies: {e.stderr}")
     
     def parse(self, file_path: str, file_content: str) -> Dict[str, Any]:
         """
@@ -234,6 +266,7 @@ console.log(JSON.stringify(ast));
         
         try:
             # Run the TypeScript parser script
+            logger.debug(f"Parsing TypeScript file: {file_path}")
             parser_script_path = os.path.join(os.path.dirname(__file__), 'ts_parser', 'parse_typescript.js')
             result = subprocess.run(
                 ['node', parser_script_path, temp_file_path],
@@ -242,8 +275,15 @@ console.log(JSON.stringify(ast));
                 check=True
             )
             
+
             # Parse the JSON output
-            return json.loads(result.stdout)
+            parsed_result = json.loads(result.stdout)
+            logger.debug(f"Successfully parsed TypeScript file: {file_path}")
+            
+            # Debug: log the structure of the parsed result
+            logger.debug(f"Parsed AST keys: {list(parsed_result.keys())}")
+            logger.debug(f"Children count: {len(parsed_result.get('children', []))}")
+            return parsed_result
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Error parsing TypeScript file: {e.stderr}")
         except json.JSONDecodeError as e:
@@ -264,8 +304,9 @@ console.log(JSON.stringify(ast));
             UnifiedAST representation
         """
         converter = TypeScriptASTConverter(file_path)
-        return converter.convert(native_ast)
-
+        unified_ast = converter.convert(native_ast)
+        logger.debug(f"TypeScript converter created {len(unified_ast.nodes)} nodes for {file_path}")
+        return unified_ast
 
 class TypeScriptASTConverter:
     """Converter from TypeScript AST to unified AST."""
@@ -299,6 +340,8 @@ class TypeScriptASTConverter:
             Unified AST
         """
         self.process_node(node)
+        logger.debug(f"After process_node call: {len(self.unified_ast.nodes)} nodes created")
+        logger.debug(f"TypeScript AST conversion complete: {len(self.unified_ast.nodes)} nodes, {len(self.unified_ast.edges)} edges")
         return self.unified_ast
     
     def process_node(self, node: Dict[str, Any], parent_id: Optional[str] = None) -> Optional[str]:
@@ -312,25 +355,58 @@ class TypeScriptASTConverter:
         Returns:
             Node ID in the unified AST or None
         """
+        try:
+            return self._process_node_impl(node, parent_id)
+        except Exception as e:
+            logger.error(f"Exception in process_node for {node.get('kind', 'unknown')}: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return None
+    
+    def _process_node_impl(self, node: Dict[str, Any], parent_id: Optional[str] = None) -> Optional[str]:
         node_type = node.get('type', node.get('kind', 'unknown'))
+        # Use kind if type is not available (common for TypeScript AST nodes)
+        if node_type == 'unknown' and 'kind' in node:
+            node_type = node['kind']
         name = node.get('name', '')
-        
+
         # Skip nodes without position information
         if 'pos' not in node:
-            return None
-        
+            logger.debug(f"Node without position: {node_type}, processing children anyway")
+            logger.debug(f"Node has 'pos' key: {'pos' in node}")
+
+            # Special case: if this is SourceFile, we need to handle it specially
+            if node_type == 'SourceFile':
+                logger.debug(f"SourceFile detected without pos, continuing to process")
+                # Continue to SourceFile processing below
+            else:
+                # For other nodes without position, just process children
+                for child in node.get('children', []):
+                    self.process_node(child, parent_id)
+                return None
+            
         # Create source location
-        pos = node['pos']
-        source_location = SourceLocation(
-            file_path=self.file_path,
-            start_line=pos.get('startLine', 1),
-            start_column=pos.get('startColumn', 1),
-            end_line=pos.get('endLine', 1),
-            end_column=pos.get('endColumn', 1)
-        )
+        if 'pos' in node:
+            pos = node['pos']
+            source_location = SourceLocation(
+                file_path=self.file_path,
+                start_line=pos.get('startLine', 1),
+                start_column=pos.get('startColumn', 1),
+                end_line=pos.get('endLine', 1),
+                end_column=pos.get('endColumn', 1)
+            )
+        else:
+            # Default source location for nodes without position (like SourceFile)
+            logger.debug(f"Using default source location for {node_type}")
+            source_location = SourceLocation(
+                file_path=self.file_path,
+                start_line=1, start_column=1,
+                end_line=1000, end_column=1  # Placeholder for whole file
+            )
         
         # Process different node types
         if node_type == 'SourceFile':
+            logger.debug(f"Processing SourceFile node type")
             # Create module node
             module_name = os.path.basename(self.file_path)
             node_id = self.unified_ast.add_node(
@@ -338,14 +414,16 @@ class TypeScriptASTConverter:
                 name=module_name,
                 source_location=source_location,
                 attributes={
-                    'isDeclarationFile': node.get('isDeclarationFile', False),
-                    'languageVariant': node.get('languageVariant', 'Standard')
+                    'isDeclarationFile': node.get('isDeclarationFile', False)
                 }
             )
             
+            logger.debug(f"Created SourceFile node with ID: {node_id}")
             # Process children
+            logger.debug(f"SourceFile has {len(node.get('children', []))} children to process")
             self.scope_stack.append(node_id)
             for child in node.get('children', []):
+                logger.debug(f"Processing SourceFile child: {child.get('kind', child.get('type', 'unknown'))}")
                 self.process_node(child, node_id)
             self.scope_stack.pop()
             
@@ -553,6 +631,194 @@ class TypeScriptASTConverter:
                     self.unified_ast.add_edge(node_id, child_id, 'contains')
             
             return node_id
+
+        elif node_type in ['FunctionDeclaration', 'MethodDeclaration', 'ArrowFunction']:
+            # Create function node for various function types
+            func_name = name or 'anonymous'
+            attributes = {
+                'parameters': node.get('parameters', []),
+                'returnType': node.get('returnType'),
+                'isArrow': node_type == 'ArrowFunction'
+            }
+            
+            node_id = self.unified_ast.add_node(
+                node_type='function',
+                name=func_name,
+                source_location=source_location,
+                attributes=attributes
+            )
+            
+            # Add to current scope
+            if parent_id:
+                self.unified_ast.add_edge(parent_id, node_id, 'contains')
+            
+            # Add to definitions
+            if name:
+                self.definitions[name] = node_id
+            
+            # Process children
+            for child in node.get('children', []):
+                child_id = self.process_node(child, node_id)
+                if child_id:
+                    self.unified_ast.add_edge(node_id, child_id, 'contains')
+            
+            return node_id
+            
+        elif node_type in ['VariableDeclaration', 'VariableStatement']:
+            # Create variable node
+            var_name = name or 'variable'
+            attributes = {
+                'variableType': node.get('variableType'),
+                'kind': node.get('kind', 'var')
+            }
+            
+            node_id = self.unified_ast.add_node(
+                node_type='variable',
+                name=var_name,
+                source_location=source_location,
+                attributes=attributes
+            )
+            
+            # Add to current scope
+            if parent_id:
+                self.unified_ast.add_edge(parent_id, node_id, 'contains')
+            
+            # Add to definitions
+            if name:
+                self.definitions[name] = node_id
+            
+            return node_id
+            
+        elif node_type in ['JsxElement', 'JsxSelfClosingElement']:
+            # Create JSX element node
+            element_name = self._extract_jsx_element_name(node)
+            attributes = {
+                'jsx_type': node_type,
+                'attributes': self._extract_jsx_attributes(node)
+            }
+            
+            node_id = self.unified_ast.add_node(
+                node_type='jsx_element',
+                name=element_name,
+                source_location=source_location,
+                attributes=attributes
+            )
+            
+            # Add to current scope
+            if parent_id:
+                self.unified_ast.add_edge(parent_id, node_id, 'contains')
+            
+            # Process children
+            for child in node.get('children', []):
+                child_id = self.process_node(child, node_id)
+                if child_id:
+                    self.unified_ast.add_edge(node_id, child_id, 'contains')
+            
+            return node_id
+            
+        elif node_type in ['InterfaceDeclaration']:
+            # Create interface node
+            interface_name = name or 'unnamed_interface'
+            attributes = {
+                'extends': node.get('extends', []),
+                'members': []
+            }
+            
+            node_id = self.unified_ast.add_node(
+                node_type='interface',
+                name=interface_name,
+                source_location=source_location,
+                attributes=attributes
+            )
+            
+            # Add to current scope
+            if parent_id:
+                self.unified_ast.add_edge(parent_id, node_id, 'contains')
+            
+            # Add to definitions
+            if name:
+                self.definitions[name] = node_id
+            
+            # Process children
+            for child in node.get('children', []):
+                child_id = self.process_node(child, node_id)
+                if child_id:
+                    self.unified_ast.add_edge(node_id, child_id, 'contains')
+            
+            return node_id
+            
+        elif node_type in ['PropertySignature', 'PropertyDeclaration']:
+            # Create property node
+            prop_name = name or 'unnamed_property'
+            attributes = {
+                'propertyType': node.get('type'),
+                'optional': node.get('optional', False)
+            }
+            
+            node_id = self.unified_ast.add_node(
+                node_type='property',
+                name=prop_name,
+                source_location=source_location,
+                attributes=attributes
+            )
+            
+            # Add to current scope
+            if parent_id:
+                self.unified_ast.add_edge(parent_id, node_id, 'contains')
+            
+            return node_id
+            
+        elif node_type in ['InterfaceDeclaration']:
+            # Create interface node
+            interface_name = name or 'unnamed_interface'
+            attributes = {
+                'extends': node.get('extends', []),
+                'members': []
+            }
+            
+            node_id = self.unified_ast.add_node(
+                node_type='interface',
+                name=interface_name,
+                source_location=source_location,
+                attributes=attributes
+            )
+            
+            # Add to current scope
+            if parent_id:
+                self.unified_ast.add_edge(parent_id, node_id, 'contains')
+            
+            # Add to definitions
+            if name:
+                self.definitions[name] = node_id
+            
+            # Process children
+            for child in node.get('children', []):
+                child_id = self.process_node(child, node_id)
+                if child_id:
+                    self.unified_ast.add_edge(node_id, child_id, 'contains')
+            
+            return node_id
+            
+        elif node_type in ['PropertySignature', 'PropertyDeclaration']:
+            # Create property node
+            prop_name = name or 'unnamed_property'
+            attributes = {
+                'propertyType': node.get('type'),
+                'optional': node.get('optional', False)
+            }
+            
+            node_id = self.unified_ast.add_node(
+                node_type='property',
+                name=prop_name,
+                source_location=source_location,
+                attributes=attributes
+            )
+            
+            # Add to current scope
+            if parent_id:
+                self.unified_ast.add_edge(parent_id, node_id, 'contains')
+            
+            return node_id
             
         else:
             # Process other node types generically
@@ -560,4 +826,34 @@ class TypeScriptASTConverter:
             for child in node.get('children', []):
                 self.process_node(child, parent_id)
             
+            # Log if we're skipping nodes that might be important
+            if node.get('name') or len(node.get('children', [])) > 0:
+                logger.debug(f"Skipped TypeScript node with name/children: {node_type}, name={node.get('name')}, children={len(node.get('children', []))}")
+
             return None
+
+    def _extract_jsx_element_name(self, node: Dict[str, Any]) -> str:
+        """Extract the element name from a JSX node."""
+        # Look for opening element or self-closing element
+        for child in node.get('children', []):
+            if child.get('kind') in ['JsxOpeningElement', 'JsxSelfClosingElement']:
+                # Find the tag name
+                for grandchild in child.get('children', []):
+                    if grandchild.get('kind') == 'Identifier':
+                        return grandchild.get('name', 'unknown')
+        
+        # Fallback: look for direct identifier
+        if 'name' in node:
+            return node['name']
+        
+        return 'jsx_element'
+    
+    def _extract_jsx_attributes(self, node: Dict[str, Any]) -> List[str]:
+        """Extract attribute names from a JSX node."""
+        attributes = []
+        for child in node.get('children', []):
+            if child.get('kind') == 'JsxAttributes':
+                for attr_child in child.get('children', []):
+                    if attr_child.get('kind') == 'JsxAttribute' and 'name' in attr_child:
+                        attributes.append(attr_child['name'])
+        return attributes

@@ -71,6 +71,8 @@ def parse_arguments():
                         help="List all supported endpoints and their available models")
     parser.add_argument("--ast", action="store_true",
                         help="Enable AST-based code understanding capabilities")
+    parser.add_argument("--ast-resolution", choices=['minimal', 'medium', 'detailed', 'comprehensive'], 
+                       default='medium', help="AST context resolution level (default: medium)")
     return parser.parse_args()
 
 
@@ -146,6 +148,7 @@ def setup_environment(args):
     # Enable AST capabilities if requested
     if args.ast:
         os.environ["ZIYA_ENABLE_AST"] = "true"
+        os.environ["ZIYA_AST_RESOLUTION"] = args.ast_resolution
         
     # Set model parameter environment variables if provided
     if args.temperature is not None:
@@ -166,6 +169,7 @@ def setup_environment(args):
     if args.ast:
         os.environ["ZIYA_ENABLE_AST"] = "true"
         logger.info("AST-based code understanding enabled")
+        logger.info(f"AST resolution level: {args.ast_resolution}")
         os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
         logger.info(f"Using max depth for AST: {args.max_depth}")
 

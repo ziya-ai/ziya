@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 class ASTParserPlugin:
     """Base class for AST parser plugins."""
     
+    def __init__(self):
+        """Initialize the parser plugin."""
+        pass
+    
     @classmethod
     def get_file_extensions(cls) -> List[str]:
         """
@@ -62,9 +66,6 @@ class ParserRegistry:
     def register_parser(self, parser_class: Type[ASTParserPlugin]) -> None:
         """
         Register a parser class.
-        
-        Args:
-            parser_class: Parser class to register
         """
         try:
             # Get file extensions from the parser class
@@ -76,8 +77,6 @@ class ParserRegistry:
             # Map extensions to the parser class
             for ext in extensions:
                 self.extension_map[ext] = parser_class
-                
-            logger.info(f"Registered parser {parser_class.__name__} for extensions: {extensions}")
         except Exception as e:
             logger.error(f"Failed to register parser {parser_class.__name__}: {e}")
     

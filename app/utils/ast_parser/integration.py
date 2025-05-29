@@ -8,7 +8,7 @@ import os
 import json
 import logging
 import importlib.util
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from app.utils.logging_utils import logger
 
@@ -17,6 +17,7 @@ _enhancer = None
 _ast_context = ""
 _ast_token_count = 0
 _ast_initialized = False
+_resolution_estimates = {}
 
 
 def check_dependencies() -> bool:
@@ -36,7 +37,7 @@ def check_dependencies() -> bool:
     return True
 
 
-def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[List[str]] = None, 
+def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[List[Tuple[str, str]]] = None, 
                               max_depth: int = 15) -> Dict[str, Any]:
     """
     Initialize AST capabilities for the given codebase.
@@ -49,7 +50,7 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
     Returns:
         Dict containing initialization results
     """
-    global _enhancer, _ast_context, _ast_token_count, _ast_initialized
+    global _enhancer, _ast_context, _ast_token_count, _ast_initialized, _resolution_estimates
     
     logger.info(f"initialize_ast_capabilities called with codebase_path={codebase_path}, max_depth={max_depth}")
     
@@ -65,32 +66,34 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
     
     try:
         # Import ZiyaASTEnhancer here to avoid circular imports
-        logger.info("Importing ZiyaASTEnhancer...")
         from .ziya_ast_enhancer import ZiyaASTEnhancer
         
         # Create enhancer if not already created
-        if _enhancer is None:
-            logger.info("Creating new ZiyaASTEnhancer instance")
-            _enhancer = ZiyaASTEnhancer()
-        else:
-            logger.info("Using existing ZiyaASTEnhancer instance")
+        # Create the enhancer
+        ast_resolution = os.environ.get("ZIYA_AST_RESOLUTION", "medium")
+        enhancer = ZiyaASTEnhancer(ast_resolution=ast_resolution)
         
-        # Process codebase
-        logger.info(f"Processing codebase at {codebase_path}")
-        result = _enhancer.process_codebase(codebase_path, exclude_patterns, max_depth)
-        logger.info(f"Codebase processing result: {result}")
+        # Set the global enhancer variable
+        _enhancer = enhancer
+        
+        # Process the codebase
+        result = _enhancer.process_codebase(codebase_path, exclude_patterns or [], max_depth)
+        
+        # Calculate resolution estimates
+        logger.info("Calculating AST resolution estimates...")
+        _resolution_estimates = _enhancer.calculate_resolution_estimates()
         
         # Store context and token count
         if "ast_context" in result:
             _ast_context = result["ast_context"]
-            logger.info(f"AST context set, length: {len(_ast_context)}")
+            # Calculate token count if not provided
+            if "token_count" not in result and _ast_context:
+                result["token_count"] = len(_ast_context) // 4  # Rough estimate
         if "token_count" in result:
             _ast_token_count = result["token_count"]
-            logger.info(f"AST token count set: {_ast_token_count}")
         
         # Mark as initialized
         _ast_initialized = True
-        logger.info("AST capabilities marked as initialized")
         
         # Return a properly formatted result dictionary
         return {
@@ -100,6 +103,7 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
             "ast_context": result.get("ast_context", "")
         }
         
+        logger.info(f"AST initialization returning: files_processed={result.get('files_processed', 0)}, token_count={result.get('token_count', 0)}")
     except Exception as e:
         logger.error(f"Error initializing AST capabilities: {str(e)}")
         import traceback
@@ -108,24 +112,9 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
             "initialized": False,
             "error": str(e),
             "files_processed": 0,
-            "token_count": 0
-        }
-        
-        # Mark as initialized
-        _ast_initialized = True
-        
-        return result
-    except Exception as e:
-        logger.error(f"Failed to initialize AST capabilities: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {
-            "error": str(e),
-            "files_processed": 0,
             "ast_context": "",
             "token_count": 0
         }
-
 
 def is_ast_available() -> bool:
     """
@@ -155,6 +144,49 @@ def get_ast_token_count() -> int:
         AST context token count
     """
     return _ast_token_count
+
+
+def get_resolution_estimates() -> Dict[str, Dict[str, Any]]:
+    """
+    Get the AST resolution estimates.
+    
+    Returns:
+        Dictionary mapping resolution levels to their estimated sizes
+    """
+    return _resolution_estimates
+
+
+def change_ast_resolution(new_resolution: str) -> None:
+    """
+    Change the AST resolution and re-index the codebase.
+    
+    Args:
+        new_resolution: New resolution level
+    """
+    global _enhancer, _ast_context, _ast_token_count, _resolution_estimates
+    
+    if not _enhancer:
+        logger.error("AST enhancer not initialized")
+        return
+    
+    try:
+        logger.info(f"Changing AST resolution to: {new_resolution}")
+        
+        # Update the enhancer's resolution
+        _enhancer.ast_resolution = new_resolution
+        
+        # Regenerate context with new resolution
+        new_context = _enhancer.generate_ast_context()
+        new_token_count = len(new_context) // 4
+        
+        # Update global variables
+        _ast_context = new_context
+        _ast_token_count = new_token_count
+        
+        logger.info(f"AST resolution changed successfully. New token count: {new_token_count}")
+    except Exception as e:
+        logger.error(f"Error changing AST resolution: {e}")
+        raise
 
 
 def enhance_query_context(query: str, file_context: Optional[str] = None) -> Dict[str, Any]:

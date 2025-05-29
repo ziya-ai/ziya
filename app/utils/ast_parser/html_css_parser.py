@@ -24,7 +24,11 @@ class HTMLCSSParser(ASTParserPlugin):
     
     def __init__(self):
         """Initialize the HTML/CSS parser."""
-        super().__init__(file_extensions=['.html', '.htm', '.css'])
+        pass
+    
+    @classmethod
+    def get_file_extensions(cls):
+        return ['.html', '.htm', '.css']
     
     def parse(self, file_path: str, file_content: str) -> Dict[str, Any]:
         """

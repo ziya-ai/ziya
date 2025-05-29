@@ -9,6 +9,7 @@ import fnmatch
 import importlib.util
 import sys
 from typing import Dict, Any, Optional
+import threading
 
 from app.utils.logging_utils import logger
 
@@ -27,6 +28,25 @@ logger.info(f"html5lib available: {html5lib_available}")
 logger.info(f"All AST dependencies available: {ast_deps_available}")
 
 # Import AST capabilities if available
+AST_AVAILABLE = False
+initialize_ast_capabilities = None
+is_ast_available = None
+get_ast_context = None
+get_ast_token_count = None
+enhance_query_context = None
+
+# AST indexing status tracking
+_ast_indexing_status = {
+    'is_indexing': False,
+    'completion_percentage': 0,
+    'is_complete': False,
+    'indexed_files': 0,
+    'total_files': 0,
+    'elapsed_seconds': None,
+    'error': None,
+    'enabled': False
+}
+
 try:
     if ast_deps_available:
         logger.info("Attempting to import AST parser modules...")
@@ -37,8 +57,6 @@ try:
             get_ast_token_count,
             enhance_query_context as enhance_context
         )
-        # Create an alias for backward compatibility
-        initialize_ast = initialize_ast_capabilities
         AST_AVAILABLE = True
         logger.info("Successfully imported AST parser modules")
     else:
@@ -51,10 +69,6 @@ except ImportError as e:
     logger.warning(f"AST import traceback: {traceback.format_exc()}")
 
 # Track AST initialization status
-_ast_initialized = False
-_ast_files_processed = 0
-_ast_tokens_count = 0
-
 def is_ast_enabled() -> bool:
     """
     Check if AST capabilities are enabled in the current environment.
@@ -64,6 +78,97 @@ def is_ast_enabled() -> bool:
     """
     env_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
     return env_enabled and AST_AVAILABLE
+
+
+def initialize_ast_if_enabled():
+    """Initialize AST capabilities if enabled via environment variable."""
+    global _ast_indexing_status
+    
+    if not is_ast_enabled():
+        logger.info("AST capabilities not enabled or not available")
+        return
+    
+    logger.info("AST capabilities enabled, starting initialization...")
+    
+    # Update status to indicate indexing has started
+    global _ast_indexing_status
+    _ast_indexing_status.update({
+        'is_indexing': True,
+        'enabled': True,
+        'completion_percentage': 0,
+        'is_complete': False,
+        'error': None
+    })
+    
+    def _initialize_ast():
+        """Background thread function to initialize AST."""
+        try:
+            global _ast_indexing_status
+            codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+            
+            # Get exclude patterns
+            exclude_patterns = []
+            # Get gitignore patterns from the directory utilities
+            from app.utils.directory_util import get_ignored_patterns
+            gitignore_patterns = get_ignored_patterns(codebase_dir)
+            
+            # Add additional common patterns that might not be in .gitignore
+            additional_excludes = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
+            if additional_excludes:
+                additional_patterns = [p.strip() for p in additional_excludes.split(',') if p.strip()]
+                gitignore_patterns.extend([(p, 'additional') for p in additional_patterns])
+            
+            logger.info(f"Starting AST initialization for {codebase_dir} with max_depth={max_depth}")
+            
+            # Update status to show we're starting
+            _ast_indexing_status.update({
+                'is_indexing': True,
+                'completion_percentage': 5,
+                'total_files': 0  # Will be updated as we discover files
+            })
+            
+            # Initialize AST capabilities
+            result = initialize_ast_capabilities(codebase_dir, gitignore_patterns, max_depth)
+            
+            # Update status based on result
+            if result and result.get("files_processed", 0) > 0:
+                _ast_indexing_status.update({
+                    'enabled': True,
+                    'is_indexing': False,
+                    'completion_percentage': 100,
+                    'is_complete': True,
+                    'indexed_files': result.get("files_processed", 0),
+                    'total_files': result.get("files_processed", 0),
+                    'error': None
+                })
+                logger.info(f"AST initialization complete: {result.get('files_processed', 0)} files processed")
+            else:
+                error_msg = result.get("error", "No files processed") if result else "Unknown error during AST initialization"
+                logger.error(f"AST initialization failed: {error_msg}")
+                raise Exception(error_msg)
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize AST capabilities: {str(e)}")
+            _ast_indexing_status.update({
+                'enabled': True,  # Still enabled, just failed
+                'is_indexing': False,
+                'completion_percentage': 0,
+                'is_complete': False,
+                'error': str(e)
+            })
+    
+    # Start AST initialization in background thread
+    ast_thread = threading.Thread(target=_initialize_ast, daemon=True)
+    ast_thread.start()
+    logger.info("AST initialization started in background thread")
+
+
+def get_ast_indexing_status() -> Dict[str, Any]:
+    """Get the current AST indexing status."""
+    status_copy = _ast_indexing_status.copy()
+    status_copy['enabled'] = is_ast_enabled()
+    return status_copy
 
 
 def initialize_ast_context(codebase_path: str, exclude_patterns: list, max_depth: int) -> Dict[str, Any]:
@@ -78,7 +183,6 @@ def initialize_ast_context(codebase_path: str, exclude_patterns: list, max_depth
     Returns:
         Dict with initialization results
     """
-    global _ast_initialized, _ast_files_processed, _ast_tokens_count
     
     logger.info(f"initialize_ast_context called with codebase_path={codebase_path}, max_depth={max_depth}")
     logger.info(f"AST enabled: {is_ast_enabled()}, AST available: {AST_AVAILABLE}")
@@ -100,37 +204,16 @@ def initialize_ast_context(codebase_path: str, exclude_patterns: list, max_depth
     try:
         # Initialize AST capabilities
         logger.info(f"Initializing AST capabilities for {codebase_path}")
-        
-        # Check if initialize_ast is defined
-        if 'initialize_ast' not in globals():
-            logger.error("initialize_ast function not found in globals")
-            return {
-                "initialized": False,
-                "reason": "initialize_ast function not found"
-            }
-        
-        # Print all available globals for debugging
-        logger.info(f"Available globals: {[name for name in globals() if not name.startswith('_')]}")
-        
-        # Call initialize_ast with detailed logging
-        logger.info("Calling initialize_ast function...")
-        
-        # Direct call to initialize_ast_capabilities to avoid any alias issues
-        from app.utils.ast_parser import initialize_ast_capabilities
         result = initialize_ast_capabilities(codebase_path, exclude_patterns, max_depth)
         logger.info(f"initialize_ast_capabilities returned: {result}")
         
         # Update status
         if result and "files_processed" in result:
-            _ast_initialized = True
-            _ast_files_processed = result.get("files_processed", 0)
-            _ast_tokens_count = result.get("token_count", 0)
-            
-            logger.info(f"AST initialization successful: {_ast_files_processed} files processed, {_ast_tokens_count} tokens")
+            logger.info(f"AST initialization successful: {result.get('files_processed', 0)} files processed, {result.get('token_count', 0)} tokens")
             return {
                 "initialized": True,
-                "files_processed": _ast_files_processed,
-                "token_count": _ast_tokens_count
+                "files_processed": result.get("files_processed", 0),
+                "token_count": result.get("token_count", 0)
             }
         else:
             error_msg = result.get("error", "Unknown error") if result else "No result returned"
@@ -156,34 +239,9 @@ def get_ast_indexing_status() -> Dict[str, Any]:
     Returns:
         Dictionary with indexing status information
     """
-    if not is_ast_enabled():
-        return {
-            "enabled": False,
-            "initialized": False,
-            "reason": "AST capabilities not enabled"
-        }
-    
-    if not AST_AVAILABLE:
-        return {
-            "enabled": True,
-            "initialized": False,
-            "reason": "AST capabilities not available"
-        }
-    
-    if not _ast_initialized:
-        return {
-            "enabled": True,
-            "initialized": False,
-            "reason": "AST not initialized yet"
-        }
-    
-    return {
-        "enabled": True,
-        "initialized": True,
-        "files_processed": _ast_files_processed,
-        "token_count": _ast_token_count
-    }
-
+    status_copy = _ast_indexing_status.copy()
+    status_copy['enabled'] = is_ast_enabled()
+    return status_copy
 
 def enhance_query_context(query: str, file_context: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -196,14 +254,14 @@ def enhance_query_context(query: str, file_context: Optional[str] = None) -> Dic
     Returns:
         Enhanced context information
     """
-    if not os.environ.get("ZIYA_ENABLE_AST") == "true":
+    if not is_ast_enabled():
         return {}
     
     if not AST_AVAILABLE or not is_ast_available():
         return {}
     
     try:
-        return enhance_context(query, file_context)
+        return enhance_query_context(query, file_context)
     except Exception as e:
         logger.error(f"Error enhancing context: {e}")
         return {}
@@ -220,15 +278,21 @@ def enhance_context_with_ast(query: str, context: Dict[str, Any]) -> Dict[str, A
     Returns:
         Enhanced context
     """
-    if not is_ast_enabled() or not _ast_initialized:
+    if not is_ast_enabled():
         return context
     
     try:
         # Get AST context
-        ast_context = get_ast_context()
+        if get_ast_context:
+            ast_context = get_ast_context()
+        else:
+            logger.warning("get_ast_context function not available")
+            return context
+            
         if ast_context:
             context["ast_context"] = ast_context
-            context["ast_token_count"] = get_ast_token_count()
+            context["ast_token_count"] = get_ast_token_count() if get_ast_token_count else 0
+            logger.info(f"Added AST context: {len(ast_context)} chars, {context['ast_token_count']} tokens")
     except Exception as e:
         logger.error(f"Error enhancing context with AST: {e}")
     

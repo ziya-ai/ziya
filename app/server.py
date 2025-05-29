@@ -55,6 +55,7 @@ from app.utils.error_handlers import (
 from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
 from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware
+from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
 
 # Dictionary to track active streaming tasks
@@ -115,6 +116,9 @@ app.add_middleware(HunkStatusMiddleware)
 # Import and include AST routes
 from app.routes.ast_routes import router as ast_router
 app.include_router(ast_router)
+
+# Initialize AST capabilities if enabled
+initialize_ast_if_enabled()
 
 # Dictionary to track active WebSocket connections
 active_websockets = set()
@@ -409,6 +413,13 @@ async def stream_chunks(body):
         messages.append(HumanMessage(content=modified_question))
         
         # Stream directly from the model
+        
+        # Enhance context with AST if available
+        from app.utils.context_enhancer import enhance_context_with_ast
+        enhanced_context = enhance_context_with_ast(question, {"codebase": "current"})
+        if enhanced_context.get("ast_context"):
+            logger.info(f"Enhanced context with AST: {len(enhanced_context['ast_context'])} chars")
+        
         chunk_count = 0
         full_response = ""
 
@@ -2101,5 +2112,3 @@ async def apply_changes(request: ApplyChangesRequest):
                 'message': f"Unexpected error: {error_msg}"
             }
         )
-
-
