@@ -203,7 +203,7 @@ export const TokenCountDisplay = memo(() => {
         handleAstResolutionChange(key);
     };
 
-    const handleAstResolutionChange = async (newResolution: string) => {
+    const handleAstResolutionChange = useCallback(async (newResolution: string) => {
         setAstResolutionLoading(true);
         console.log('AST resolution change requested:', newResolution);
         try {
@@ -212,7 +212,7 @@ export const TokenCountDisplay = memo(() => {
                 setAstTokenCount(astResolutions[newResolution].token_count);
                 setCurrentAstResolution(newResolution);
             }
-            
+
             // Call the API to change resolution and trigger re-indexing
             const response = await fetch('/api/ast/change-resolution', {
                 method: 'POST',
@@ -221,7 +221,7 @@ export const TokenCountDisplay = memo(() => {
                 },
                 body: JSON.stringify({ resolution: newResolution }),
             });
-            
+
             if (response.ok) {
                 message.success(`AST resolution changed to ${newResolution}. Re-indexing in progress.`);
             } else {
@@ -236,13 +236,12 @@ export const TokenCountDisplay = memo(() => {
         } finally {
             setAstResolutionLoading(false);
         }
-    };
-
+    }, [astResolutions, currentAstResolution]);
     // Create menu items for AST resolution dropdown
     const astMenuItems = useMemo(() => {
         console.log('Creating AST resolution menu, resolutions:', astResolutions);
         if (Object.keys(astResolutions).length === 0) return [];
-        
+
         return Object.entries(astResolutions).map(([key, data]: [string, any]) => ({
             key,
             label: (
@@ -254,7 +253,7 @@ export const TokenCountDisplay = memo(() => {
                 </span>
             ),
         }));
-    }, [astResolutions]);
+    }, [astResolutions, handleAstResolutionChange]);
 
     const handleMenuClick = ({ key }: { key: string }) => {
         console.log('Menu item clicked:', key);
