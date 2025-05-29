@@ -3,6 +3,7 @@ import { useChatContext } from '../context/ChatContext';
 import { Space, Alert, Typography } from 'antd';
 import StopStreamButton from './StopStreamButton';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
+import { useQuestionContext } from '../context/QuestionContext';
 
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
@@ -11,7 +12,6 @@ export const StreamedContent: React.FC = () => {
     const [connectionLost, setConnectionLost] = useState<boolean>(false);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const contentRef = useRef<HTMLDivElement>(null);
-    const lastQuestionRef = useRef<string>('');
     const isAutoScrollingRef = useRef<boolean>(false);
     const [isPendingResponse, setIsPendingResponse] = useState<boolean>(false);
     const streamingInstanceId = useId();
@@ -28,11 +28,11 @@ export const StreamedContent: React.FC = () => {
         currentMessages,
         userHasScrolled,
         setUserHasScrolled,
-        removeStreamingConversation,
         isTopToBottom,
-        scrollToBottom,
-        question,
+        removeStreamingConversation,
     } = useChatContext();
+
+    const { question } = useQuestionContext();
 
     // Use a ref to track the last rendered content to avoid unnecessary re-renders
     const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) ?? '', [streamedContentMap, currentConversationId]);
@@ -70,12 +70,6 @@ export const StreamedContent: React.FC = () => {
         }
     }, [hasStreamedContent, hasShownContent]);
 
-    // Store the last question when streaming starts
-    useEffect(() => {
-        if (streamingConversations.has(currentConversationId)) {
-            lastQuestionRef.current = question;
-        }
-    }, [streamingConversations, currentConversationId, question]);
 
     // Update the ref whenever streamed content changes
     useEffect(() => {
@@ -405,11 +399,11 @@ export const StreamedContent: React.FC = () => {
                             <ConnectionLostAlert />
                         )}
                         {/* Show the human message immediately when streaming starts */}
-                        {streamingConversations.has(currentConversationId) && lastQuestionRef.current && (
+                        {streamingConversations.has(currentConversationId) && question && (
                             <div className="message human" style={{ marginBottom: '16px' }}>
                                 <div className="message-sender">You:</div>
                                 <div className="message-content">
-                                    <Typography.Paragraph>{lastQuestionRef.current}</Typography.Paragraph>
+                                    <Typography.Paragraph>{question}</Typography.Paragraph>
                                 </div>
                             </div>
                         )}

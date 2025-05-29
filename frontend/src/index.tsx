@@ -10,6 +10,7 @@ import {Debug} from "./components/Debug";
 import {ChatProvider} from "./context/ChatContext";
 import {FolderProvider} from "./context/FolderContext";
 import {ThemeProvider} from "./context/ThemeContext";
+import {QuestionProvider} from "./context/QuestionContext";
 
 // hide unhandled promise rejections from making console spam
 window.addEventListener('unhandledrejection', (event) => {
@@ -30,15 +31,17 @@ root.render(
         <ThemeProvider>
             <ChatProvider>
                 <FolderProvider>
-		<BrowserRouter>
-                      <Routes>
-                          <Route path="/" element={<App />} />
-                          <Route
-                              path="/debug"
-                              element={<Debug />}
-                          />
-                      </Routes>
-                  </BrowserRouter>
+                    <QuestionProvider>
+                        <BrowserRouter>
+                            <Routes>
+                                <Route path="/" element={<App />} />
+                                <Route
+                                    path="/debug"
+                                    element={<Debug />}
+                                />
+                            </Routes>
+                        </BrowserRouter>
+                    </QuestionProvider>
                 </FolderProvider>
             </ChatProvider>
         </ThemeProvider>

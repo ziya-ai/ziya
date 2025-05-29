@@ -1,4 +1,4 @@
-import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
+import React, { createContext, ReactNode, useContext, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
 import { Folders } from "../utils/types";
 import { convertToTreeData } from "../utils/folderUtil";
 import { useChatContext } from "./ChatContext";
@@ -20,6 +20,8 @@ export interface FolderContextType {
 const FolderContext = createContext<FolderContextType | undefined>(undefined);
 
 export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const renderStart = useRef(performance.now());
+  const renderCount = useRef(0);
   const [folders, setFolders] = useState<Folders>();
   const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
@@ -32,6 +34,16 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
     const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
+  });
+
+  // Monitor FolderProvider render performance
+  useLayoutEffect(() => {
+    renderCount.current++;
+    const renderTime = performance.now() - renderStart.current;
+    if (renderTime > 5 || renderCount.current % 30 === 0) {
+      console.log(`📊 FolderProvider render #${renderCount.current}: ${renderTime.toFixed(2)}ms`);
+    }
+    renderStart.current = performance.now();
   });
 
   const getFolderTokenCount = (path: string, folderData: Folders | undefined): number => {
@@ -172,25 +184,27 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         console.error('Error fetching folders:', error);
       }
     };
-    fetchFolders();
-  }, []);
+        fetchFolders();
+    }, []);
 
-  return (
-    <FolderContext.Provider value={{
-      folders,
-      getFolderTokenCount,
-      setTreeData,
-      treeData,
-      checkedKeys,
-      setCheckedKeys,
-      searchValue,
-      setSearchValue,
-      expandedKeys,
-      setExpandedKeys
-    }}>
-      {children}
-    </FolderContext.Provider>
-  );
+    const contextValue = useMemo(() => ({
+        folders,
+        getFolderTokenCount,
+        setTreeData,
+        treeData,
+        checkedKeys,
+        setCheckedKeys,
+        searchValue,
+        setSearchValue,
+        expandedKeys,
+        setExpandedKeys
+    }), [folders, treeData, checkedKeys, searchValue, expandedKeys]);
+
+    return (
+        <FolderContext.Provider value={contextValue}>
+            {children}
+        </FolderContext.Provider>
+    );
 };
 
 export const useFolderContext = () => {

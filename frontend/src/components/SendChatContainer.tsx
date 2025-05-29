@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, memo, useState, useCallback } from "react";
+import React, { useEffect, useRef, memo, useState, useCallback, useMemo, useLayoutEffect } from "react";
 import { useChatContext } from '../context/ChatContext';
 import { sendPayload } from "../apis/chatApi";
 import { Message } from "../utils/types";
@@ -6,6 +6,8 @@ import { convertKeysToStrings } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
 import { Button, Input, message, Tooltip } from 'antd';
 import { SendOutlined } from "@ant-design/icons";
+import { usePerformanceMonitor } from './PerformanceMonitor';
+import { useQuestionContext } from '../context/QuestionContext';
 
 const { TextArea } = Input;
 
@@ -17,9 +19,9 @@ interface SendChatContainerProps {
 }
 
 export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed = false, empty = false }) => {
+    // Remove heavy performance monitoring during input
+
     const {
-        question,
-        setQuestion,
         isStreaming,
         setIsStreaming,
         addMessageToConversation,
@@ -35,18 +37,66 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
     const { checkedKeys } = useFolderContext();
     const textareaRef = useRef<any>(null);
+    const inputChangeTimeoutRef = useRef<NodeJS.Timeout>();
+    const [isProcessing, setIsProcessing] = useState(false);
 
-    useEffect(() => {
+    const { question, setQuestion } = useQuestionContext();
+
+    // Focus management
+    useLayoutEffect(() => {
         if (question === '' && textareaRef.current) {
             textareaRef.current.focus();
         }
     }, [question]);
 
-    const [isProcessing, setIsProcessing] = useState(false);
+    // Optimized input handler with debouncing for performance monitoring
     const handleQuestionChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-        setQuestion(e.target.value);
+        const inputStart = performance.now();
+        const newValue = e.target.value;
+
+        // Update immediately for responsive UI
+        setQuestion(newValue);
+
+        // Clear any existing timeout for debounced operations
+        if (inputChangeTimeoutRef.current) {
+            clearTimeout(inputChangeTimeoutRef.current);
+        }
+
+        // Debounce expensive operations (like token counting)
+        inputChangeTimeoutRef.current = setTimeout(() => {
+            // Any expensive operations that don't need to happen on every keystroke
+            // can be moved here
+        }, 300);
+
+        // Monitor input performance
+        const inputTime = performance.now() - inputStart;
+        if (inputTime > 5) {
+            console.warn(`🐌 Input change slow: ${inputTime.toFixed(2)}ms for ${newValue.length} chars`);
+        }
     }, [setQuestion]);
-    const isDisabled = isQuestionEmpty(question) || streamingConversations.has(currentConversationId);
+    
+    // Cleanup timeout on unmount
+    useEffect(() => {
+        return () => {
+            if (inputChangeTimeoutRef.current) {
+                clearTimeout(inputChangeTimeoutRef.current);
+            }
+        };
+    }, []);
+
+    const isDisabled = useMemo(() =>
+        isQuestionEmpty(question) || streamingConversations.has(currentConversationId),
+        [question, streamingConversations, currentConversationId]
+    );
+
+    const buttonTitle = useMemo(() =>
+        streamingConversations.has(currentConversationId)
+            ? "Waiting for AI response..."
+            : currentMessages[currentMessages.length - 1]?.role === 'human'
+                ? "AI response may have failed - click Send to retry"
+                : "Send message",
+        [streamingConversations, currentConversationId, currentMessages]
+    );
 
     const handleSendPayload = async (isRetry: boolean = false, retryContent?: string) => {
 
@@ -199,13 +249,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 disabled={isDisabled}
                 icon={<SendOutlined />}
                 style={{ marginLeft: '10px' }}
-                title={
-                    streamingConversations.has(currentConversationId)
-                        ? "Waiting for AI response..."
-                        : currentMessages[currentMessages.length - 1]?.role === 'human'
-                            ? "AI response may have failed - click Send to retry"
-                            : "Send message"
-                }
+                title={buttonTitle}
             >
                 {streamingConversations.has(currentConversationId) ? 'Sending...' : 'Send'}
             </Button>

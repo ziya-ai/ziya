@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
 import { Folders, Message } from '../utils/types';
 import { useFolderContext } from "../context/FolderContext";
 import { Tooltip, Spin, Progress, Typography, message, ProgressProps, Dropdown } from "antd";
@@ -30,7 +30,7 @@ const getTokenCount = async (text: string): Promise<number> => {
     }
 };
 
-export const TokenCountDisplay = () => {
+export const TokenCountDisplay = memo(() => {
     const [containerWidth, setContainerWidth] = useState(0);
 
     const { folders, checkedKeys, getFolderTokenCount } = useFolderContext();
@@ -55,21 +55,25 @@ export const TokenCountDisplay = () => {
     const [astResolutionLoading, setAstResolutionLoading] = useState(false);
 
     const tokenLimit = modelLimits.max_input_tokens || modelLimits.token_limit || 4096;
-    const warningThreshold = Math.floor(tokenLimit * 0.7);
-    const dangerThreshold = Math.floor(tokenLimit * 0.9);
+    const warningThreshold = useMemo(() => Math.floor(tokenLimit * 0.7), [tokenLimit]);
+    const dangerThreshold = useMemo(() => Math.floor(tokenLimit * 0.9), [tokenLimit]);
 
     // Create ref outside of the effect
     const fetchAttemptedRef = useRef(false);
 
     // Check if AST is enabled
     useEffect(() => {
+        let isMounted = true;
         const fetchAstResolutions = async () => {
             try {
                 const response = await fetch('/api/ast/resolutions');
                 if (response.ok) {
                     const data = await response.json();
-                    setAstResolutions(data.resolutions || {});
-                    setCurrentAstResolution(data.current_resolution || 'medium');
+                    if (isMounted) {
+                        console.log('Fetched AST resolutions:', data.resolutions);
+                        setAstResolutions(data.resolutions || {});
+                        setCurrentAstResolution(data.current_resolution || 'medium');
+                    }
                 }
             } catch (error) {
                 console.debug('Could not fetch AST resolutions:', error);
@@ -81,12 +85,14 @@ export const TokenCountDisplay = () => {
                 const response = await fetch('/api/ast/status');
                 if (response.ok) {
                     const data = await response.json();
-                    setAstEnabled(data.enabled === true);
-                    if (data.enabled === true && data.token_count !== undefined) {
-                        setAstTokenCount(data.token_count);
+                    if (isMounted) {
+                        setAstEnabled(data.enabled === true);
+                        if (data.enabled === true && data.token_count !== undefined) {
+                            setAstTokenCount(data.token_count);
 
-                        // Fetch resolution options
-                        fetchAstResolutions();
+                            // Fetch resolution options
+                            fetchAstResolutions();
+                        }
                     }
 
                     // If AST is indexing, set up polling to check for completion
@@ -96,7 +102,7 @@ export const TokenCountDisplay = () => {
                                 const pollResponse = await fetch('/api/ast/status');
                                 if (pollResponse.ok) {
                                     const pollData = await pollResponse.json();
-                                    if (pollData.token_count !== undefined) {
+                                    if (isMounted && pollData.token_count !== undefined) {
                                         setAstTokenCount(pollData.token_count);
                                     }
                                     // Stop polling when indexing is complete
@@ -116,14 +122,16 @@ export const TokenCountDisplay = () => {
                 }
             } catch (error) {
                 console.debug('Could not determine AST status:', error);
-                setAstEnabled(false);
+                if (isMounted) {
+                    setAstEnabled(false);
+                }
             }
         };
 
         checkAstEnabled();
     }, []);
 
-    const handleAstResolutionChange = async (newResolution: string) => {
+    const handleAstResolutionChange = useCallback(async (newResolution: string) => {
         setAstResolutionLoading(true);
         console.log('AST resolution change requested:', newResolution);
         try {
@@ -132,7 +140,7 @@ export const TokenCountDisplay = () => {
                 setAstTokenCount(astResolutions[newResolution].token_count);
                 setCurrentAstResolution(newResolution);
             }
-            
+
             // Call the API to change resolution and trigger re-indexing
             const response = await fetch('/api/ast/change-resolution', {
                 method: 'POST',
@@ -141,7 +149,7 @@ export const TokenCountDisplay = () => {
                 },
                 body: JSON.stringify({ resolution: newResolution }),
             });
-            
+
             if (response.ok) {
                 message.success(`AST resolution changed to ${newResolution}. Re-indexing in progress.`);
             } else {
@@ -156,13 +164,12 @@ export const TokenCountDisplay = () => {
         } finally {
             setAstResolutionLoading(false);
         }
-    };
-
+    }, [astResolutions, currentAstResolution]);
     // Create menu items for AST resolution dropdown
     const astMenuItems = useMemo(() => {
         console.log('Creating AST resolution menu, resolutions:', astResolutions);
         if (Object.keys(astResolutions).length === 0) return [];
-        
+
         return Object.entries(astResolutions).map(([key, data]: [string, any]) => ({
             key,
             label: (
@@ -174,7 +181,7 @@ export const TokenCountDisplay = () => {
                 </span>
             ),
         }));
-    }, [astResolutions]);
+    }, [astResolutions, handleAstResolutionChange]);
 
     const handleMenuClick = ({ key }: { key: string }) => {
         console.log('Menu item clicked:', key);
@@ -332,7 +339,9 @@ export const TokenCountDisplay = () => {
     const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0);
 
     // only calculate tokens when checked files change
-    useEffect(() => {
+    const tokenCalculationEffect = useCallback(() => {
+        if (!folders) return;
+
         if (folders && checkedKeys.length > 0) {
             // Check if we're in a folder with folder-specific file selections
             const currentFolder = currentFolderId ? chatFolders.find(f => f.id === currentFolderId) : null;
@@ -375,6 +384,10 @@ export const TokenCountDisplay = () => {
             setTotalTokenCount(0);
         }
     }, [checkedKeys, folders, getFolderTokenCount, currentFolderId, chatFolders, folderFileSelections]);
+
+    useEffect(() => {
+        tokenCalculationEffect();
+    }, [tokenCalculationEffect]);
 
     // Recalculate totalTokenCount based on top-level checked keys to avoid inflation
     useEffect(() => {
@@ -542,16 +555,16 @@ export const TokenCountDisplay = () => {
 
     // Only show the total if we have meaningful token counts
     const hasTokens = totalTokenCount > 0 || chatTokenCount > 0 || (astEnabled && astTokenCount > 0);
-    
+
     if (hasTokens) {
         tokenItems.push(
-        <Tooltip key="total" title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`}>
-            <span>Total: <span style={getTokenStyle(combinedTokenCount)}>
-                {showDetailedTotal
-                    ? `${combinedTokenCount.toLocaleString()} / ${tokenLimit.toLocaleString()} (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`
-                    : combinedTokenCount.toLocaleString()}</span></span>
-        </Tooltip>
-    );
+            <Tooltip key="total" title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`}>
+                <span>Total: <span style={getTokenStyle(combinedTokenCount)}>
+                    {showDetailedTotal
+                        ? `${combinedTokenCount.toLocaleString()} / ${tokenLimit.toLocaleString()} (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`
+                        : combinedTokenCount.toLocaleString()}</span></span>
+            </Tooltip>
+        );
     }
 
     const tokenDisplay = useMemo(() => (
@@ -624,4 +637,4 @@ export const TokenCountDisplay = () => {
             </div>
         </div>
     );
-};
+});

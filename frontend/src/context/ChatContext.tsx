@@ -1,4 +1,4 @@
-import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo } from 'react';
+import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo, memo, useLayoutEffect } from 'react';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
@@ -6,8 +6,6 @@ import { debounce } from '../utils/debounce';
 import { Modal, message } from 'antd';
 import { performEmergencyRecovery } from '../utils/emergencyRecovery';
 interface ChatContext {
-    question: string;
-    setQuestion: (q: string) => void;
     streamedContentMap: Map<string, string>;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
@@ -51,7 +49,8 @@ interface ChatProviderProps {
 }
 
 export function ChatProvider({ children }: ChatProviderProps) {
-    const [question, setQuestion] = useState('');
+    const renderStart = useRef(performance.now());
+    const renderCount = useRef(0);
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
     const [isStreamingAny, setIsStreamingAny] = useState(false);
@@ -76,6 +75,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const contentRef = useRef<HTMLDivElement>(null);
     const pendingSave = useRef<NodeJS.Timeout | null>(null);
     const messageUpdateCount = useRef(0);
+    const conversationsRef = useRef(conversations);
+    const streamingConversationsRef = useRef(streamingConversations);
+
+    // Monitor ChatProvider render performance
+    useLayoutEffect(() => {
+        renderCount.current++;
+        const renderTime = performance.now() - renderStart.current;
+        if (renderTime > 10 || renderCount.current % 20 === 0) {
+            console.log(`📊 ChatProvider render #${renderCount.current}: ${renderTime.toFixed(2)}ms`);
+        }
+        renderStart.current = performance.now();
+    });
 
     // Modified scrollToBottom function to respect user scroll
     const scrollToBottom = () => {
@@ -93,6 +104,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
             });
         }
     };
+
+    useEffect(() => {
+        conversationsRef.current = conversations;
+        streamingConversationsRef.current = streamingConversations;
+    }, [conversations, streamingConversations]);
 
     // Add a resize observer effect to monitor panel width changes
     useEffect(() => {
@@ -126,7 +142,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         return () => window.removeEventListener('folderPanelResize', handlePanelResize as EventListener);
     }, []);
 
-    const addStreamingConversation = (id: string) => {
+    const addStreamingConversation = useCallback((id: string) => {
         setStreamingConversations(prev => {
             const next = new Set(prev);
             console.log('Adding to streaming set:', { id, currentSet: Array.from(prev) });
@@ -136,9 +152,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsStreamingAny(true);
             return next;
         });
-    };
+    }, []);
 
-    const removeStreamingConversation = (id: string) => {
+    const removeStreamingConversation = useCallback((id: string) => {
         console.log('Removing from streaming set:', { id, currentSet: Array.from(streamingConversations) });
         setStreamingConversations(prev => {
             const next = new Set(prev);
@@ -157,7 +173,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsStreamingAny(prev.size > 1);
             return prev;
         });
-    };
+    }, [streamingConversations]);
 
     const shouldUpdateState = (newState: Conversation[], force: boolean = false) => {
 
@@ -195,7 +211,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }, 1000);
     }, []);
 
-    const addMessageToConversation = (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
+    const addMessageToConversation = useCallback((message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
         const conversationId = targetConversationId || currentConversationId;
         if (!conversationId) return;
 
@@ -265,7 +281,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             return updatedConversations;
         });
-    };
+    }, [currentConversationId, currentFolderId, folderPanelWidth, conversations]);
 
     // Add a function to handle model change notifications
     const handleModelChange = useCallback((event: CustomEvent) => {
@@ -339,7 +355,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, [currentFolderId]);
 
-    const startNewChat = (specificFolderId?: string | null) => {
+    const startNewChat = useCallback((specificFolderId?: string | null) => {
         return new Promise<void>((resolve, reject) => {
             try {
                 const newId = uuidv4();
@@ -381,9 +397,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 reject(error);
             }
         });
-    };
+    }, [currentConversationId, currentFolderId, conversations]);
 
-    const loadConversation = async (conversationId: string) => {
+    const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
         try {
             // Don't remove streaming for the conversation we're switching away from
@@ -428,7 +444,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsLoadingConversation(false);
         }
         setStreamedContentMap(new Map());
-    };
+    }, [currentConversationId, conversations, streamingConversations, streamedContentMap]);
 
     // Folder management functions
     const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
@@ -730,7 +746,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, [currentConversationId]);
 
-    const setDisplayMode = (conversationId: string, mode: 'raw' | 'pretty') => {
+    const setDisplayMode = useCallback((conversationId: string, mode: 'raw' | 'pretty') => {
         setConversations(prev => {
             const updated = prev.map(conv => {
                 if (conv.id === conversationId) {
@@ -745,11 +761,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             db.saveConversations(updated).catch(console.error);
             return updated;
         });
-    };
+    }, []);
 
     const value = useMemo(() => ({
-        question,
-        setQuestion,
         streamedContentMap,
         setStreamedContentMap,
         isStreaming,
@@ -785,33 +799,40 @@ export function ChatProvider({ children }: ChatProviderProps) {
         dbError,
         isLoadingConversation
     }), [
-        question,
-        setQuestion,
         streamedContentMap,
-        isStreaming,
-        streamingConversations,
-        isStreamingAny,
-        conversations,
-        currentConversationId,
-        currentMessages,
-        currentMessages,
-        isTopToBottom,
-        dbError,
-        currentFolderId,
-        createFolder,
-        updateFolder,
-        deleteFolder,
-        moveConversationToFolder,
-        isLoadingConversation,
-        // Include setDisplayMode in the dependency array
-        setQuestion,
-        userHasScrolled,
         setStreamedContentMap,
+        isStreaming,
+        isStreamingAny,
+        streamingConversations,
         addStreamingConversation,
         removeStreamingConversation,
         setConversations,
         setIsStreaming,
-        setCurrentConversationId
+        conversations,
+        currentConversationId,
+        currentMessages,
+        setCurrentConversationId,
+        addMessageToConversation,
+        loadConversation,
+        startNewChat,
+        isTopToBottom,
+        setIsTopToBottom,
+        scrollToBottom,
+        userHasScrolled,
+        setUserHasScrolled,
+        folders,
+        setFolders,
+        currentFolderId,
+        setCurrentFolderId,
+        folderFileSelections,
+        setFolderFileSelections,
+        createFolder,
+        updateFolder,
+        deleteFolder,
+        setDisplayMode,
+        moveConversationToFolder,
+        dbError,
+        isLoadingConversation
     ]);
 
     // Temporary debug command

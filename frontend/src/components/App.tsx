@@ -18,6 +18,7 @@ import { MUIFileExplorer } from './MUIFileExplorer';
 import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
 import { StreamingContentManager } from './StreamingContentManager';
+import { ProfilerWrapper } from './ProfilerWrapper';
 
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
@@ -330,6 +331,7 @@ export const App: React.FC = () => {
 
     return (
         <ExtensionErrorBoundary>
+            <ProfilerWrapper id="App">
             <ConfigProvider
                 theme={{
                     algorithm: themeAlgorithm,
@@ -418,6 +420,7 @@ export const App: React.FC = () => {
                 </Suspense>
 
             </ConfigProvider>
+            </ProfilerWrapper>
         </ExtensionErrorBoundary>
     );
 };
