@@ -12,7 +12,6 @@ export const StreamedContent: React.FC = () => {
     const [connectionLost, setConnectionLost] = useState<boolean>(false);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const contentRef = useRef<HTMLDivElement>(null);
-    const lastQuestionRef = useRef<string>('');
     const isAutoScrollingRef = useRef<boolean>(false);
     const [isPendingResponse, setIsPendingResponse] = useState<boolean>(false);
     const streamingInstanceId = useId();
