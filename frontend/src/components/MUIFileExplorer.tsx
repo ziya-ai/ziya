@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { useFolderContext } from '../context/FolderContext';
 import { useTheme } from '../context/ThemeContext';
 import { Folders } from '../utils/types';
@@ -6,13 +6,7 @@ import { debounce } from 'lodash';
 import { message } from 'antd';
 import { convertToTreeData } from '../utils/folderUtil';
 
-
 // MUI imports
-import { styled } from '@mui/material/styles';
-import { TreeDataNode } from 'antd';
-import Box from '@mui/material/Box';
-import { TreeView } from '@mui/x-tree-view/TreeView';
-import { TreeItem, TreeItemProps } from '@mui/x-tree-view/TreeItem';
 import Typography from '@mui/material/Typography';
 import Checkbox from '@mui/material/Checkbox';
 import TextField from '@mui/material/TextField';
@@ -21,6 +15,8 @@ import IconButton from '@mui/material/IconButton';
 import InputAdornment from '@mui/material/InputAdornment';
 import LinearProgress from '@mui/material/LinearProgress';
 import Tooltip from '@mui/material/Tooltip';
+import Box from '@mui/material/Box';
+import Collapse from '@mui/material/Collapse';
 
 // MUI icons
 import FolderIcon from '@mui/icons-material/Folder';
@@ -30,153 +26,16 @@ import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import ClearIcon from '@mui/icons-material/Clear';
-import MoreVert from '@mui/icons-material/MoreVert';
-
-// Custom styled TreeItem with connected lines
-const StyledTreeItem = styled((props: TreeItemProps) => (
-  <TreeItem {...props} />
-))(({ theme }) => ({
-  '& .MuiTreeItem-iconContainer': {
-    '& .MuiSvgIcon-root': {
-      opacity: 0.3,
-    },
-    marginLeft: 4,
-    paddingLeft: 16,
-    borderLeft: `1px dashed ${theme.palette.mode === 'light' ? '#d9d9d9' : '#303030'}`,
-  },
-  '& .MuiTreeItem-content': {
-    display: 'flex',
-    padding: '1px 2px',
-    borderRadius: '4px',
-    transition: 'background-color 0.2s',
-    '&:hover': {
-      backgroundColor: theme.palette.mode === 'light' ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.04)'
-    }
-  },
-  // Reduce spacing between items
-  '& .MuiTreeItem-root': {
-    margin: '0 0 0 0',
-    padding: 0,
-    minHeight: 'auto',
-  },
-  '& .MuiTreeItem-group': {
-    marginLeft: 15,
-    paddingLeft: 18,
-    borderLeft: `1px dashed ${theme.palette.mode === 'light' ? '#d9d9d9' : '#303030'}`,
-  }
-}));
-
-interface CheckboxTreeItemProps {
-  nodeId: string;
-  label: string;  // This property is used in the component
-  checked: boolean;
-  indeterminate: boolean;
-  onCheckboxClick: (nodeId: string, checked: boolean) => void;
-  includedTokens?: number;
-  totalTokens?: number;
-  tokenCount?: number;
-  icon: React.ElementType;
-  isDragging?: boolean;
-  children?: React.ReactNode;
-  hasChildren?: boolean;
-}
-
-const CheckboxTreeItem = React.memo<CheckboxTreeItemProps>(({
-  nodeId,
-  label,
-  checked,
-  indeterminate,
-  tokenCount = 0,
-  onCheckboxClick,
-  includedTokens = 0,
-  totalTokens = 0,
-  icon: Icon,
-  isDragging = false,
-  children,
-  hasChildren = false,
-  ...other
-}) => {
-  const { isDarkMode } = useTheme();
-
-  const handleCheckboxClick = (event) => {
-    event.stopPropagation();
-    onCheckboxClick(nodeId, !checked);
-  };
-
-  // Format token count for display
-  const formattedTokenCount = tokenCount.toLocaleString();
-  const formattedIncludedTokens = includedTokens.toLocaleString();
-
-  const cleanLabel = String(label).replace(/\s*\(\d+(?:,\d+)*\s*(?:tokens)?\)$/, '');
-
-  return (
-    <StyledTreeItem
-      nodeId={nodeId}
-      label={
-        <Box sx={{ display: 'flex', alignItems: 'center', p: 0.1, pr: 0, width: '100%' }}>
-          <Checkbox
-            checked={checked}
-            indeterminate={indeterminate}
-            onClick={handleCheckboxClick}
-            color="primary"
-            size="small"
-            sx={{ p: 0.5, mr: 0.5, color: isDarkMode ? '#90caf9' : undefined }}
-          />
-          <Icon color={isDarkMode ? "inherit" : "action"} sx={{ mr: 0.5, fontSize: 16, visibility: 'visible', color: isDarkMode ? (Icon === FolderIcon ? '#69c0ff' : '#91d5ff') : (Icon === FolderIcon ? 'primary.main' : 'text.secondary') }} />
-          <Typography variant="body2" sx={{
-            fontWeight: Icon === FolderIcon ? 'bold' : 'normal',
-            flexGrow: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            color: isDarkMode ? 'text.primary' : 'inherit'
-          }}>
-            {cleanLabel}
-          </Typography>
-          {!Icon.toString().includes('Folder') && tokenCount > 0 && (
-            <Typography variant="caption" sx={{
-              color: isDarkMode ? '#aaa' : 'text.secondary',
-              ml: 1,
-              fontSize: '0.7rem',
-              fontFamily: 'monospace',
-              fontWeight: checked ? 'bold' : 'normal',
-              ...(checked && { color: isDarkMode ? 'text.primary' : 'primary.main' })
-            }}>
-              ({formattedTokenCount})
-            </Typography>
-          )}
-          {/* Show token display for folders in the main flow */}
-          {Icon.toString().includes('Folder') && totalTokens > 0 && (
-            <Typography
-              variant="caption"
-              sx={{
-                color: isDarkMode ? '#aaa' : 'text.secondary',
-                ml: 1,
-                fontSize: '0.7rem',
-                fontFamily: 'monospace',
-              }}
-            >
-              (<Typography component="span" sx={{ fontWeight: 'bold', color: isDarkMode ? 'text.primary' : 'primary.main' }}>{includedTokens.toLocaleString()}</Typography>
-              /{totalTokens.toLocaleString()})
-            </Typography>
-          )}
-        </Box>
-      }
-      {...other}
-    />
-  );
-});
-
 export const MUIFileExplorer = () => {
   const {
     treeData,
     setTreeData,
+    folders,
     checkedKeys,
     setCheckedKeys,
     expandedKeys,
     setExpandedKeys,
     getFolderTokenCount,
-    folders
   } = useFolderContext();
 
   const { isDarkMode } = useTheme();
@@ -188,26 +47,198 @@ export const MUIFileExplorer = () => {
   // Cache for token calculations
   const tokenCalculationCache = useRef(new Map());
 
-  // Debug logging for tree data
-  useEffect(() => {
-    console.log('Tree data updated:', { nodeCount: treeData.length });
-    console.log('Expanded keys:', expandedKeys);
-  }, [treeData, expandedKeys]);
+  // Helper function to determine if a node has children
+  const nodeHasChildren = (node: any): boolean => {
+    return !!(node && node.children && Array.isArray(node.children) && node.children.length > 0);
+  };
+
+  // Use the same tree data as the Ant Design version for consistency
+  const muiTreeData = useMemo(() => {
+    console.log('MUI Using treeData from context:', {
+      nodeCount: treeData.length,
+      treeDataExists: !!treeData,
+      hasChildren: treeData.filter(node => node.children && node.children.length > 0).length,
+      sampleNode: treeData[0],
+      sampleNodeChildren: treeData[0]?.children?.length || 0
+    });
+
+    // Debug the structure of the first few nodes
+    console.log('MUI First 3 tree nodes:', treeData.slice(0, 3).map(node => ({
+      key: node.key,
+      title: node.title,
+      hasChildren: !!(node.children && node.children.length > 0),
+      childCount: node.children ? node.children.length : 0
+    })));
+
+    // Debug log for specific folders we know should have children
+    const frontendNode = treeData.find(node => node.key === 'frontend');
+    if (frontendNode) {
+      console.log('MUI Frontend node structure:', {
+        key: frontendNode.key,
+        hasChildren: !!(frontendNode.children && frontendNode.children.length > 0),
+        childCount: frontendNode.children ? frontendNode.children.length : 0,
+        children: frontendNode.children?.slice(0, 3)
+      });
+    }
+
+    return treeData;
+  }, [treeData]);
+
+  // Simple custom tree renderer that manually handles hierarchy
+  const TreeNode = ({ node, level = 0 }) => {
+    const hasChildren = node.children && node.children.length > 0;
+    const isExpanded = expandedKeys.includes(String(node.key));
+    const isChecked = checkedKeys.includes(String(node.key));
+    
+    // Calculate token counts using the same logic as Ant Design version
+    const { total, included } = calculateTokens(node, folders);
+    
+    // Check if this node is indeterminate (some but not all children selected)
+    const isIndeterminate = hasChildren && !isChecked && 
+      node.children.some(child => checkedKeys.includes(String(child.key)));
+    
+    // Extract clean label and token count
+    const titleMatch = String(node.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
+    const cleanLabel = titleMatch ? titleMatch[1] : String(node.title);
+    const tokenCount = titleMatch ? parseInt(titleMatch[2].replace(/,/g, ''), 10) : 0;
+
+    const handleToggle = () => {
+      if (hasChildren) {
+        setExpandedKeys(prev =>
+          isExpanded
+            ? prev.filter(key => key !== String(node.key))
+            : [...prev, String(node.key)]
+        );
+      }
+    };
+
+    const handleCheck = (event) => {
+      event.stopPropagation();
+      handleCheckboxClick(String(node.key), !isChecked);
+    };
+
+    return (
+      <Box key={node.key}>
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            py: 0.25,
+            pl: level * 2,
+            '&:hover': {
+              backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.04)'
+            }
+          }}
+        >
+          {/* Expand/collapse icon */}
+          <IconButton
+            size="small"
+            onClick={handleToggle}
+            sx={{ p: 0.25, mr: 0.5, visibility: hasChildren ? 'visible' : 'hidden' }}
+          >
+            {hasChildren && (isExpanded ? <ArrowDropDownIcon fontSize="small" /> : <ArrowRightIcon fontSize="small" />)}
+          </IconButton>
+
+          {/* Checkbox */}
+          <Checkbox
+            checked={isChecked}
+            indeterminate={isIndeterminate}
+            onClick={handleCheck}
+            size="small"
+            sx={{ p: 0.25, mr: 0.5 }}
+          />
+
+          {/* Icon */}
+          {hasChildren ? (
+            <FolderIcon sx={{ mr: 0.5, fontSize: 16, color: isDarkMode ? '#69c0ff' : 'primary.main' }} />
+          ) : (
+            <InsertDriveFileIcon sx={{ mr: 0.5, fontSize: 16, color: isDarkMode ? '#91d5ff' : 'text.secondary' }} />
+          )}
+
+          {/* Label */}
+          <Typography
+            variant="body2"
+            sx={{
+              flexGrow: 1,
+              fontWeight: hasChildren ? 'bold' : (isChecked && total > 0 ? 'bold' : 'normal'),
+              color: isChecked && !hasChildren && total > 0 ? (isDarkMode ? '#ffffff' : '#000000') : (isDarkMode ? 'text.primary' : 'inherit')
+            }}
+          >
+            {cleanLabel}
+          </Typography>
+          
+          {/* Token count */}
+          {!hasChildren && total > 0 && (
+            <Typography
+              variant="caption"
+              sx={{
+                ml: 1,
+                fontSize: '0.7rem',
+                fontFamily: 'monospace',
+                color: isDarkMode ? '#aaa' : 'text.secondary',
+                fontWeight: isChecked && total > 0 ? 'bold' : 'normal',
+                ...(isChecked && total > 0 && { color: isDarkMode ? '#ffffff' : '#000000' })
+              }}
+            >
+              ({total.toLocaleString()})
+            </Typography>
+          )}
+          
+          {/* Token display for folders showing included/total */}
+          {hasChildren && total > 0 && (
+            <Typography
+              variant="caption"
+              sx={{
+                ml: 1,
+                fontSize: '0.7rem',
+                fontFamily: 'monospace',
+                color: isDarkMode ? '#aaa' : 'text.secondary'
+              }}
+            >
+              (<Typography 
+                component="span" 
+                sx={{ 
+                  fontWeight: included > 0 ? 'bold' : 'normal', 
+                  fontSize: 'inherit',
+                  color: included > 0 ? (isDarkMode ? '#ffffff' : '#000000') : 'inherit' 
+                }}
+              >
+                {included.toLocaleString()}
+              </Typography>/{total.toLocaleString()})
+            </Typography>
+          )}
+        </Box>
+
+        {/* Children */}
+        {hasChildren && (
+          <Collapse in={isExpanded}>
+            <Box sx={{ pl: 1 }}>
+              {node.children.map(child => (
+                <TreeNode key={child.key} node={child} level={level + 1} />
+              ))}
+            </Box>
+          </Collapse>
+        )}
+      </Box>
+    );
+  };
 
   // Debounced search function
   const debouncedSearch = useCallback(
     debounce((value) => {
       if (value) {
-        const { filteredData, expandedKeys } = filterTreeData(treeData, value);
+        console.log('MUI Applying search filter:', value);
+        const { filteredData, expandedKeys } = filterTreeData(muiTreeData, value);
         setFilteredTreeData(filteredData);
         setExpandedKeys(prev => [...prev, ...expandedKeys]);
         setAutoExpandParent(true);
       } else {
         setFilteredTreeData([]);
         setAutoExpandParent(false);
+        console.log('MUI Clearing search filter');
       }
     }, 300),
-    [treeData]
+    [muiTreeData]
   );
 
   // Handle search input change
@@ -257,11 +288,18 @@ export const MUIFileExplorer = () => {
 
   // Handle tree node expansion
   const handleNodeToggle = (event: React.SyntheticEvent, nodeIds: string[]) => {
+    console.log('MUI Node toggle:', {
+      event: event.type,
+      nodeIds,
+      current: expandedKeys
+    });
+
     // Convert all nodeIds to strings to ensure consistent comparison
     const stringNodeIds = nodeIds.map(id => String(id));
 
     // Update expanded keys with the new set of IDs
     setExpandedKeys(stringNodeIds);
+    console.log('MUI Updated expanded nodes:', stringNodeIds);
 
     setAutoExpandParent(false);
   };
@@ -300,11 +338,12 @@ export const MUIFileExplorer = () => {
       setIsRefreshing(false);
     }
   };
-
   // Handle checkbox click
   // This function is crucial for selecting/deselecting folders and files
   const handleCheckboxClick = (nodeId, checked) => {
-    // Find the node and its children
+    console.log('MUI Checkbox click:', { nodeId, checked });
+
+    // Find the node in the tree
     const findNode = (nodes, id) => {
       for (const node of nodes) {
         if (node.key === id) {
@@ -320,7 +359,7 @@ export const MUIFileExplorer = () => {
 
     // Get all child keys
     const getAllChildKeys = (node): string[] => {
-      let keys = [node.key];
+      let keys = [String(node.key)];
       if (node.children) {
         node.children.forEach(child => {
           keys = keys.concat(getAllChildKeys(child));
@@ -330,12 +369,12 @@ export const MUIFileExplorer = () => {
     };
 
     // Get all parent keys
-    const getAllParentKeys = (key: React.Key, tree: TreeDataNode[]): string[] => {
+    const getAllParentKeys = (key: React.Key, tree: any[]): string[] => {
       let parentKeys: string[] = [];
       const findParent = (currentKey, nodes) => {
         for (let i = 0; i < nodes.length; i++) {
           const node = nodes[i];
-          if (node.children && node.children.some(child => child.key === currentKey)) {
+          if (node.children && node.children.some(child => String(child.key) === String(currentKey))) {
             parentKeys.push(node.key);
             return node.key;
           } else if (node.children) {
@@ -357,17 +396,17 @@ export const MUIFileExplorer = () => {
 
     if (checked) {
       // Add this node and all its children
-      const keysToAdd = node.children ? getAllChildKeys(node) : [nodeId];
-      setCheckedKeys(prev => [...new Set([...prev, ...keysToAdd])]);
+      console.log('MUI Adding node and children:', nodeId, nodeHasChildren(node));
+      const keysToAdd = nodeHasChildren(node) ? getAllChildKeys(node) : [String(nodeId)];
+      setCheckedKeys(prev => [...new Set([...prev.map(String), ...keysToAdd])]);
     } else {
       // Remove this node and all its children
-      const keysToRemove = node.children ? getAllChildKeys(node) : [nodeId];
+      const keysToRemove = nodeHasChildren(node) ? getAllChildKeys(node) : [String(nodeId)];
       // Also remove parent selections if needed
-      const parentKeys = getAllParentKeys(nodeId, treeData);
+      const parentKeys = getAllParentKeys(nodeId, muiTreeData);
       setCheckedKeys(prev =>
-        prev.filter(key => !keysToRemove.includes(String(key)) && !parentKeys.includes(String(key)))
+        prev.map(String).filter(key => !keysToRemove.includes(key) && !parentKeys.includes(key))
       );
-      console.log('Unchecked keys:', keysToRemove);
     }
   };
 
@@ -377,7 +416,8 @@ export const MUIFileExplorer = () => {
     const cacheKey = String(nodePath);
 
     if (tokenCalculationCache.current.has(cacheKey)) {
-      return tokenCalculationCache.current.get(cacheKey);
+      const cached = tokenCalculationCache.current.get(cacheKey);
+      return cached;
     }
 
     if (!node.children || node.children.length === 0) { // It's a file
@@ -409,49 +449,9 @@ export const MUIFileExplorer = () => {
     return result;
   }, [checkedKeys, getFolderTokenCount]);
 
-  // Render the tree recursively
-  const renderTree = (nodes) => {
-    return nodes.map((node) => {
-      // Calculate token counts
-      const { total, included } = calculateTokens(node, folders);
-
-      // Check if this node is checked or indeterminate
-      const isChecked = checkedKeys.includes(node.key);
-
-      // For directories, check if some but not all children are checked
-      let isIndeterminate = false;
-      if (node.children && node.children.length > 0) {
-        const childKeys = node.children.map(child => child.key);
-        const checkedChildKeys = childKeys.filter(key => checkedKeys.includes(key));
-        isIndeterminate = checkedChildKeys.length > 0 && checkedChildKeys.length < childKeys.length;
-      }
-
-      // Determine icon based on whether it's a file or folder
-      const icon = node.children && node.children.length > 0 ? FolderIcon : InsertDriveFileIcon;
-
-      return (
-        <CheckboxTreeItem
-          key={node.key}
-          nodeId={node.key}
-          label={node.title}
-          checked={isChecked}
-          indeterminate={isIndeterminate}
-          onCheckboxClick={handleCheckboxClick}
-          hasChildren={node.children && node.children.length > 0}
-          tokenCount={total}
-          includedTokens={included}
-          totalTokens={total}
-          icon={icon}
-        >
-          {node.children && node.children.length > 0 && renderTree(node.children)}
-        </CheckboxTreeItem>
-      );
-    });
-  };
-
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
-      <Box sx={{ mb: 2 }}>
+      <Box sx={{ mb: 1 }}>
         <TextField
           fullWidth
           placeholder="Search folders"
@@ -476,40 +476,26 @@ export const MUIFileExplorer = () => {
         />
       </Box>
 
-      <Button
-        variant="outlined"
-        startIcon={<RefreshIcon />}
-        onClick={refreshFolders}
-        disabled={isRefreshing}
-        sx={{ mb: 2 }}
-      >
-        {isRefreshing ? 'Refreshing...' : 'Refresh Files'}
-      </Button>
+      <Box sx={{ mb: 1 }}>
+        <Button
+          variant="outlined"
+          startIcon={<RefreshIcon />}
+          onClick={refreshFolders}
+          disabled={isRefreshing}
+          sx={{ mb: 1 }}
+          size="small"
+        >
+          {isRefreshing ? 'Refreshing...' : 'Refresh Files'}
+        </Button>
+      </Box>
 
       <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
-        <TreeView
-          aria-label="file explorer"
-          defaultCollapseIcon={<ArrowDropDownIcon />}
-          defaultExpandIcon={<ArrowRightIcon />}
-          defaultEndIcon={<div style={{ width: 24 }} />}
-          expanded={expandedKeys.map(key => String(key))}
-          onNodeToggle={handleNodeToggle}
-          sx={{
-            flexGrow: 1,
-            overflowY: 'auto',
-            '& .MuiTreeItem-iconContainer': {
-              visibility: 'visible',
-              width: 'auto'
-            },
-            '& .MuiTreeItem-group': {
-              marginLeft: 15
-            }
-          }}
-        >
-          {renderTree(searchValue ? filteredTreeData : treeData)}
-        </TreeView>
-      </Box >
-    </Box >
+        <Box sx={{ height: '100%', overflowY: 'auto' }}>
+          {(searchValue ? filteredTreeData : muiTreeData).map(node => (
+            <TreeNode key={node.key} node={node} level={0} />
+          ))}
+        </Box>
+      </Box>
+    </Box>
   );
 };
-

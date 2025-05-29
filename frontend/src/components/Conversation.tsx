@@ -194,7 +194,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 setIsStreaming,
                                 removeStreamingConversation,
                                 addMessageToConversation,
-                                streamingConversations.has(currentConversationId)
+                                streamingConversations.has(currentConversationId),
                             );
                         } catch (error) {
                             setIsStreaming(false);

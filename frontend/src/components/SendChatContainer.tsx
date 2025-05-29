@@ -48,7 +48,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     }, [setQuestion]);
     const isDisabled = isQuestionEmpty(question) || streamingConversations.has(currentConversationId);
 
-    const handleSendPayload = async () => {
+    const handleSendPayload = async (isRetry: boolean = false, retryContent?: string) => {
 
         // Don't allow sending if we're already streaming in this conversation
         if (streamingConversations.has(currentConversationId)) {
@@ -64,7 +64,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         }
 
         // Store the question before clearing it
-        const currentQuestion = question;
+        const currentQuestion = retryContent || question;
 
         setQuestion('');
         setStreamedContentMap(new Map());
@@ -98,7 +98,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         });
 
         // Include the new message in messages for the API
-        const messagesWithNew = [...currentMessages];
+        const messagesToSend = isRetry ? currentMessages : [...currentMessages, newHumanMessage!];
         addStreamingConversation(currentConversationId);
         const targetConversationId = currentConversationId;
 
@@ -106,7 +106,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             // Get latest messages after state update
             const selectedFiles = convertKeysToStrings(checkedKeys);
             const result = await sendPayload(
-                [...currentMessages, newHumanMessage], // Include the new human message
+                messagesToSend,
                 question,
                 selectedFiles,
                 targetConversationId,
@@ -195,7 +195,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             />
             <Button
                 type="primary"
-                onClick={handleSendPayload}
+                onClick={() => handleSendPayload()}
                 disabled={isDisabled}
                 icon={<SendOutlined />}
                 style={{ marginLeft: '10px' }}
