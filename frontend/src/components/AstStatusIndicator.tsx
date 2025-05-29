@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Progress, Tooltip, Card } from 'antd';
 import { AstStatus, fetchAstStatus } from '../apis/astApi';
+import { useTheme } from '../context/ThemeContext';
 
 // Configuration
 const AST_STATUS_CHECK_INTERVAL = 3000; // 3 seconds
@@ -12,7 +13,7 @@ const AST_STATUS_CHECK_INTERVAL = 3000; // 3 seconds
  */
 const formatElapsedTime = (seconds: number | null): string => {
   if (!seconds) return '';
-  
+
   if (seconds < 60) {
     return `${Math.round(seconds)}s`;
   } else if (seconds < 3600) {
@@ -33,6 +34,7 @@ const formatElapsedTime = (seconds: number | null): string => {
 const AstStatusIndicator: React.FC = () => {
   const [status, setStatus] = useState<AstStatus | null>(null);
   const [visible, setVisible] = useState<boolean>(false);
+  const { isDarkMode } = useTheme();
 
   useEffect(() => {
     let timer: number | null = null;
@@ -41,22 +43,22 @@ const AstStatusIndicator: React.FC = () => {
     const checkStatus = async () => {
       try {
         const astStatus = await fetchAstStatus();
-        
+
         if (mounted) {
           setStatus(astStatus);
-          
+
           // Show the indicator if indexing is in progress
           if (astStatus.is_indexing || astStatus.error) {
             setVisible(true);
           }
-          
+
           // Hide the indicator 5 seconds after indexing completes
           if (astStatus.is_complete && !astStatus.error) {
             setTimeout(() => {
               if (mounted) setVisible(false);
             }, 5000);
           }
-          
+
           // Continue checking if indexing is still in progress
           if (astStatus.is_indexing && !astStatus.is_complete) {
             timer = window.setTimeout(checkStatus, AST_STATUS_CHECK_INTERVAL);
@@ -73,7 +75,7 @@ const AstStatusIndicator: React.FC = () => {
 
     // Start checking AST status
     checkStatus();
-    
+
     // Add event listener for page visibility changes
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -89,7 +91,7 @@ const AstStatusIndicator: React.FC = () => {
         }
       }
     };
-    
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // Cleanup
@@ -110,15 +112,16 @@ const AstStatusIndicator: React.FC = () => {
   // Render error state
   if (status.error) {
     return (
-      <Card 
+      <Card
         className="ast-status-error"
-        style={{ 
-          position: 'fixed', 
-          bottom: '10px', 
-          right: '10px', 
+        style={{
+          position: 'fixed',
+          bottom: '10px',
+          right: '10px',
           width: '300px',
-          backgroundColor: '#fff1f0',
-          borderColor: '#ffa39e'
+          backgroundColor: isDarkMode ? '#2a1f1f' : '#fff1f0',
+          borderColor: isDarkMode ? '#a61d24' : '#ffa39e',
+          color: isDarkMode ? '#ff7875' : undefined
         }}
       >
         <div>
@@ -132,15 +135,18 @@ const AstStatusIndicator: React.FC = () => {
   // Render indexing in progress
   if (status.is_indexing && !status.is_complete) {
     const elapsedStr = status.elapsed_seconds ? ` (${formatElapsedTime(status.elapsed_seconds)})` : '';
-    
+
     return (
-      <Card 
+      <Card
         className="ast-status-indicator"
-        style={{ 
-          position: 'fixed', 
-          bottom: '10px', 
-          right: '10px', 
-          width: '300px'
+        style={{
+          position: 'fixed',
+          bottom: '10px',
+          right: '10px',
+          width: '300px',
+          backgroundColor: isDarkMode ? '#141414' : '#ffffff',
+          borderColor: isDarkMode ? '#303030' : '#d9d9d9',
+          color: isDarkMode ? '#ffffff' : undefined
         }}
       >
         <div>
@@ -149,10 +155,10 @@ const AstStatusIndicator: React.FC = () => {
             <span>{status.completion_percentage}%{elapsedStr}</span>
           </div>
           <Tooltip title={`${status.indexed_files}/${status.total_files} files processed`}>
-            <Progress 
-              percent={status.completion_percentage} 
-              size="small" 
-              status="active" 
+            <Progress
+              percent={status.completion_percentage}
+              size="small"
+              status="active"
               showInfo={false}
             />
           </Tooltip>
@@ -167,15 +173,16 @@ const AstStatusIndicator: React.FC = () => {
   // Render completed state
   if (status.is_complete) {
     return (
-      <Card 
+      <Card
         className="ast-status-complete"
-        style={{ 
-          position: 'fixed', 
-          bottom: '10px', 
-          right: '10px', 
+        style={{
+          position: 'fixed',
+          bottom: '10px',
+          right: '10px',
           width: '300px',
-          backgroundColor: '#f6ffed',
-          borderColor: '#b7eb8f'
+          backgroundColor: isDarkMode ? '#162312' : '#f6ffed',
+          borderColor: isDarkMode ? '#389e0d' : '#b7eb8f',
+          color: isDarkMode ? '#ffffff' : undefined
         }}
       >
         <div>

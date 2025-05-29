@@ -71,7 +71,7 @@ def parse_arguments():
                         help="List all supported endpoints and their available models")
     parser.add_argument("--ast", action="store_true",
                         help="Enable AST-based code understanding capabilities")
-    parser.add_argument("--ast-resolution", choices=['minimal', 'medium', 'detailed', 'comprehensive'], 
+    parser.add_argument("--ast-resolution", choices=['disabled', 'minimal', 'medium', 'detailed', 'comprehensive'], 
                        default='medium', help="AST context resolution level (default: medium)")
     return parser.parse_args()
 

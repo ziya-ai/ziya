@@ -37,6 +37,7 @@ class ZiyaASTEnhancer:
         # AST resolution settings
         self.ast_resolution = ast_resolution
         self.resolution_settings = {
+            'disabled': {'symbols_per_file': 0, 'deps_per_file': 0},
             'minimal': {'symbols_per_file': 5, 'deps_per_file': 3},
             'medium': {'symbols_per_file': 20, 'deps_per_file': 10},
             'detailed': {'symbols_per_file': 50, 'deps_per_file': 20},
@@ -46,6 +47,7 @@ class ZiyaASTEnhancer:
         self.ast_cache = {}
         self.query_engines = {}
         self.project_ast = UnifiedAST()
+        self.UnifiedAST = UnifiedAST  # Store reference for re-initialization
         self.resolution_estimates = {}
     
     def _register_parsers(self):
@@ -286,6 +288,16 @@ class ZiyaASTEnhancer:
             original_resolution = self.ast_resolution
             self.ast_resolution = resolution_name
             
+            # Handle disabled case
+            if resolution_name == 'disabled':
+                estimates[resolution_name] = {
+                    'token_count': 0,
+                    'context_length': 0,
+                    'symbols_per_file': 0,
+                    'deps_per_file': 0
+                }
+                continue
+            
             # Generate context with this resolution
             context = self.generate_ast_context()
             token_count = len(context) // 4  # Rough token estimate
@@ -310,6 +322,11 @@ class ZiyaASTEnhancer:
         Returns:
             String representation of the AST context 
         """
+
+        # Return empty context if disabled
+        if self.ast_resolution == 'disabled':
+            return ""
+
         if not self.ast_cache:
             logger.info("No AST cache available, returning empty context")
             return "# AST Analysis\n\nNo files have been processed for AST analysis."
@@ -338,7 +355,7 @@ class ZiyaASTEnhancer:
         
         # For each file in the ast_cache
         settings = self.resolution_settings[self.ast_resolution]
-        for file_path, ast in self.ast_cache.items():
+        for file_path, ast in list(self.ast_cache.items()):
             # Get relative path for display
             rel_path = os.path.relpath(file_path)
             
@@ -348,7 +365,7 @@ class ZiyaASTEnhancer:
             
             # Show node types in this file
             node_types = {}
-            for node in ast.nodes.values():
+            for node in list(ast.nodes.values()):
                 node_types[node.node_type] = node_types.get(node.node_type, 0) + 1
             context_parts.append(f"Node types: {dict(sorted(node_types.items()))}")
             
@@ -356,14 +373,18 @@ class ZiyaASTEnhancer:
             symbols = self._extract_key_symbols(ast)
             if symbols:
                 context_parts.append("\nDefines:")
-                for symbol in symbols[:settings['symbols_per_file']]:
+                # Limit symbols based on resolution settings
+                symbol_list = list(symbols)[:settings['symbols_per_file']]
+                for symbol in symbol_list:
                     context_parts.append(f"- {symbol}")
             
             # Add dependencies
             deps = self._extract_dependencies(ast)
             if deps:
                 context_parts.append("\nDependencies:")
-                for dep in deps[:settings['deps_per_file']]:
+                # Limit dependencies based on resolution settings
+                dep_list = list(deps)[:settings['deps_per_file']]
+                for dep in dep_list:
                     context_parts.append(f"- {dep}")
         
         return "\n".join(context_parts)
@@ -373,7 +394,7 @@ class ZiyaASTEnhancer:
         symbols = []
         
         # Extract classes, functions, and variables
-        for node in ast.nodes.values():
+        for node in list(ast.nodes.values()):
             if node.node_type in ["class", "function", "method", "variable"]:
                 symbols.append(f"{node.node_type} {node.name}")
         
@@ -384,7 +405,7 @@ class ZiyaASTEnhancer:
         deps = []
         
         # Extract imports and references
-        for node in ast.nodes.values():
+        for node in list(ast.nodes.values()):
             if node.node_type == "import":
                 deps.append(f"import {node.name}")
         

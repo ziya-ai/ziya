@@ -9,7 +9,6 @@ import json
 import logging
 import importlib.util
 from typing import Dict, List, Optional, Any, Tuple
-
 from app.utils.logging_utils import logger
 
 # Global enhancer instance
@@ -19,6 +18,17 @@ _ast_token_count = 0
 _ast_initialized = False
 _resolution_estimates = {}
 
+# Local copy of AST indexing status to avoid circular import
+_ast_indexing_status = {
+    'is_indexing': False,
+    'completion_percentage': 0,
+    'is_complete': False,
+    'indexed_files': 0,
+    'total_files': 0,
+    'elapsed_seconds': None,
+    'error': None,
+    'enabled': False
+}
 
 def check_dependencies() -> bool:
     """
@@ -169,21 +179,88 @@ def change_ast_resolution(new_resolution: str) -> None:
         logger.error("AST enhancer not initialized")
         return
     
+    # Reset indexing status to show progress
+    _ast_indexing_status.update({
+        'is_indexing': True,
+        'completion_percentage': 0,
+        'is_complete': False,
+        'indexed_files': 0,
+        'total_files': 0,
+        'elapsed_seconds': 0,
+        'error': None,
+        'enabled': True
+    })
+    
     try:
         logger.info(f"Changing AST resolution to: {new_resolution}")
+        
+        # Handle disabled case - no re-indexing needed
+        if new_resolution == 'disabled':
+            # Set environment variable for persistence
+            os.environ['ZIYA_AST_RESOLUTION'] = new_resolution
+            _enhancer.ast_resolution = new_resolution
+            
+            # Clear context and token count
+            _ast_context = ""
+            _ast_token_count = 0
+            
+            # Update status to complete immediately
+            _ast_indexing_status.update({
+                'is_indexing': False,
+                'completion_percentage': 100,
+                'is_complete': True
+            })
+            
+            logger.info("AST resolution set to disabled - no indexing required")
+            return
+        
+        # Set environment variable for persistence
+        os.environ['ZIYA_AST_RESOLUTION'] = new_resolution
         
         # Update the enhancer's resolution
         _enhancer.ast_resolution = new_resolution
         
-        # Regenerate context with new resolution
-        new_context = _enhancer.generate_ast_context()
-        new_token_count = len(new_context) // 4
+        # Clear existing AST cache to force re-processing
+        _enhancer.ast_cache.clear()
+        _enhancer.query_engines.clear()
+        _enhancer.project_ast = _enhancer.UnifiedAST() if hasattr(_enhancer, 'UnifiedAST') else None
+        
+        # Re-process the codebase with new resolution
+        codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        
+        logger.info(f"Re-indexing codebase with resolution: {new_resolution}")
+        
+        # Get exclude patterns
+        from app.utils.directory_util import get_ignored_patterns
+        gitignore_patterns = get_ignored_patterns(codebase_dir)
+        
+        # Re-process the codebase
+        result = _enhancer.process_codebase(codebase_dir, gitignore_patterns, max_depth)
+        
+        # Update context and token count from the re-processing result
+        new_context = result.get("ast_context", "")
+        new_token_count = result.get("token_count", 0)
         
         # Update global variables
         _ast_context = new_context
         _ast_token_count = new_token_count
         
-        logger.info(f"AST resolution changed successfully. New token count: {new_token_count}")
+        # Recalculate resolution estimates
+        logger.info("Recalculating AST resolution estimates...")
+        _resolution_estimates = _enhancer.calculate_resolution_estimates()
+        
+        # Update status to complete
+        _ast_indexing_status.update({
+            'is_indexing': False,
+            'completion_percentage': 100,
+            'is_complete': True
+        })
+        
+        logger.info(f"AST resolution changed successfully to {new_resolution}")
+        logger.info(f"Files processed: {result.get('files_processed', 0)}")
+        logger.info(f"New token count: {new_token_count}")
+        
     except Exception as e:
         logger.error(f"Error changing AST resolution: {e}")
         raise
