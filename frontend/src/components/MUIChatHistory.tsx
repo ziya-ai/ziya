@@ -1150,15 +1150,37 @@ const MUIChatHistory = () => {
         if (a.isPinned && !b.isPinned) return -1;
         if (!a.isPinned && b.isPinned) return 1;
 
-        // Folders come before conversations
-        if (a.folder && !b.folder) return -1;
-        if (!a.folder && b.folder) return 1;
+        // Get activity times for both items
+        const getActivityTime = (item: any) => {
+          if (item.folder) {
+            // For folders, use lastActivityTime if > 0, otherwise use createdAt
+            return item.lastActivityTime > 0 ? item.lastActivityTime : item.createdAt;
+          } else {
+            // For conversations, use lastAccessedAt if available
+            return item.conversation?.lastAccessedAt ?? 0;
+          }
+        };
 
-        // Sort folders by last activity time (most recent first)
-        if (a.folder && b.folder) {
-          const aTime = a.lastActivityTime > 0 ? a.lastActivityTime : a.createdAt;
-          const bTime = b.lastActivityTime > 0 ? b.lastActivityTime : b.createdAt;
+        const aTime = getActivityTime(a);
+        const bTime = getActivityTime(b);
+
+        // If both have activity times, sort by most recent first
+        if (aTime > 0 && bTime > 0) {
           return bTime - aTime;
+        }
+
+        // If only one has activity time, it comes first
+        if (aTime > 0 && bTime === 0) return -1;
+        if (bTime > 0 && aTime === 0) return 1;
+
+        // If neither has activity time, fall back to type-based sorting
+        // Folders come before conversations as a tiebreaker
+        if (a.folder && b.folder) {
+          return 0; // Equal priority, will be handled by creation time below
+        } else if (a.folder && !b.folder) {
+          return -1; // Folder before conversation when no activity
+        } else if (!a.folder && b.folder) {
+          return 1; // Conversation after folder when no activity
         }
 
         // Sort conversations by last accessed time (most recent first)
