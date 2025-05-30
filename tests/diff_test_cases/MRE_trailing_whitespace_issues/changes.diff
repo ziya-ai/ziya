@@ -1,0 +1,12 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -1,6 +1,6 @@
+ def function_with_trailing_spaces():    
+-    # This line has trailing spaces    
+-    print("This function has trailing spaces")    
++    # This line has trailing spaces modified
++    print("This function has trailing spaces modified")
+     
+     # More trailing spaces    
+     return True    

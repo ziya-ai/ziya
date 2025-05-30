@@ -1,0 +1,15 @@
+diff --git a/src/example.py b/src/example.py
+--- a/src/example.py
++++ b/src/example.py
+@@ -1,9 +1,11 @@
+ def example_function():
+     # This file uses CRLF line endings
+     print("Hello")
++    # Adding a new line with LF ending
+     print("World")
+ 
+ def another_function():
+     # This section should maintain CRLF endings
+     value = 42
++    value += 1
+     return value

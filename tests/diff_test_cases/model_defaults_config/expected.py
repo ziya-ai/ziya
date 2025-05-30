@@ -43,6 +43,8 @@ class ModelManager:
         }
     }
 
+
+
     @classmethod
     def get_model_config(cls, endpoint: str, model_name: str = None) -> dict:
         endpoint_configs = cls.MODEL_CONFIGS.get(endpoint)

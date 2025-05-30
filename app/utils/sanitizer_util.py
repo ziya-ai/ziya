@@ -1,4 +1,19 @@
 # lets move sanitizers here to clean up code flow and make them reusable
+
+def sanitize_filename(filename: str) -> str:
+    """
+    Sanitizes a filename to ensure it's safe for filesystem operations.
+    
+    Args:
+        filename (str): The filename to sanitize
+        
+    Returns:
+        str: The sanitized filename
+    """
+    # Remove potentially dangerous characters
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    return ''.join(c for c in filename if c not in invalid_chars)
+
 def clean_backtick_sequences(text: str) -> str:
     """
     Cleans up problematic backtick sequences while preserving content within code blocks.

@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with incorrect hunk offsets that can break the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "incorrect_hunk_offsets_test"
+}

@@ -1,0 +1,28 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -1,2 +1,2 @@
+-def function_a():
+-    return "A"
++def function_a_modified():
++    return "Modified A"
+@@ -4,2 +4,2 @@
+-def function_b():
+-    return "B"
++def function_b_modified():
++    return "Modified B"
+@@ -7,2 +7,2 @@
+-def function_c():
+-    return "C"
++def function_c_modified():
++    return "Modified C"
+@@ -10,2 +10,2 @@
+-def function_d():
+-    return "D"
++def function_d_modified():
++    return "Modified D"
+@@ -13,2 +13,2 @@
+-def function_e():
+-    return "E"
++def function_e_modified():
++    return "Modified E"

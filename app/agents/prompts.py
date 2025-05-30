@@ -1,6 +1,35 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 # import pydevd_pycharm
 from app.utils.logging_utils import logger
+import os
+import importlib.util
+
+# Import AST capabilities if available
+try:
+    # First check if the required packages are installed
+    ast_deps_available = (
+        importlib.util.find_spec("cssutils") is not None and
+        importlib.util.find_spec("html5lib") is not None
+    )
+    
+    if not ast_deps_available:
+        logger.info("AST dependencies not found. They will be installed automatically on next 'fbuild'.")
+        raise ImportError("AST dependencies not installed")
+        
+    from app.utils.ast_parser import is_ast_available, get_ast_context, get_ast_token_count
+    AST_AVAILABLE = is_ast_available()
+    if AST_AVAILABLE:
+        AST_CONTEXT = get_ast_context()
+        AST_TOKEN_COUNT = get_ast_token_count()
+        logger.info(f"AST capabilities available. Context size: {AST_TOKEN_COUNT} tokens")
+        logger.info(f"AST context preview: {AST_CONTEXT[:200]}...")
+    else:
+        logger.info("AST capabilities not initialized.")
+except ImportError:
+    AST_AVAILABLE = False
+    AST_CONTEXT = ""
+    AST_TOKEN_COUNT = 0
+    logger.info("AST capabilities not available. They will be installed automatically on next 'fbuild'.")
 
 template = """
 
@@ -103,15 +132,20 @@ CRITICAL: When generating hunks and context:
 3. Verify line numbers match the actual file content
 4. Double-check that context lines exist in the original file
 
+CRITICAL: ALWAYS format code changes using the specified git diff format.
+
 CRITICAL: VISUALIZATION CAPABILITIES:
-You can generate inline diagrams using either ```graphviz code blocks. 
-Actively look for opportunities to enhance explanations with visual representations 
+You can generate inline diagrams using either ```graphviz``` or ```mermaid``` code blocks.
+Actively look for opportunities to enhance explanations with visual representations
 when they would provide clearer understanding, especially for:
 - System architectures
-- Flow diagrams
+- Flow diagrams (Flowcharts, Sequence Diagrams)
 - Dependency relationships
+- State transitions
+- Class structures
+- Timelines (Gantt charts)
 - Complex structures or processes
-Use graphviz for architecture and flow diagrams
+Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, Mermaid for flowcharts, sequence diagrams, class diagrams, etc.).
 
 IMPORTANT: When making changes:
 1. Focus only on fixing the specific problem described by the user
@@ -121,7 +155,8 @@ IMPORTANT: When making changes:
    - Choose the one requiring the fewest changes
    - Maintain existing patterns and values
    - Do not introduce new patterns or values unless necessary
-5. After providing the immediate solution, if you notice any of these:
+5. Provide any necessary changes in the git diff format specified
+6. After providing the immediate solution, if you notice any of these:
    - Fundamental architectural improvements that could provide significant benefits
    - Systematic issues that affect multiple parts of the codebase
    - Alternative approaches that could prevent similar issues in the future
@@ -130,7 +165,7 @@ IMPORTANT: When making changes:
    b. Then say "While examining this issue, I noticed a potential broader improvement:"
    c. Briefly explain the benefits (e.g., performance, maintainability, scalability)
    d. Ask if you should demonstrate how to implement this broader change
-6. If you notice other bugs or issues while solving the primary problem:
+7. If you notice other bugs or issues while solving the primary problem:
    - Don't fix them as part of the original solution
    - After providing the solution, note "While solving this, I also noticed:"
    - List the issues for future consideration
@@ -156,6 +191,16 @@ CRITICAL: When suggesting changes:
    - Maintain all existing requirements unless specifically told to remove them
    - If removing code, justify why it's safe to remove
    - If changing behavior, explain the impact on existing functionality
+
+NEVER provide code changes as plain code blocks unless specifically asked; ALWAYS use the git diff format.
+
+CRITICAL: HANDLING MISSING CONTEXT:
+When you need to modify a file that isn't fully visible in the conversation context:
+1. Ask for the specific file content first with "CONTEXT NEEDED: [filename]"
+2. Only suggest changes after seeing the actual file
+3. Request clarification instead of making assumptions about file structure or content
+4. Never generate diffs for files you haven't seen
+5. Clearly indicate when you need more information before proceeding
 
 When presenting multiple diffs in a numbered list:
 1. Start each list item with the number and a period (e.g., "1. ")
@@ -191,7 +236,7 @@ CRITICAL: After generating each hunk diff, carefully review and verify the follo
 6. When deleting a file, include `deleted file mode` to indicate that the file has been removed. Each line in the 
 deleted file should be prefixed with `-` to indicate the content removal.
 7. Lines ending with a newline (\n) should not be interpreted as an additional line. Treat \n as the end of the current 
-line’s content, not as a new line in the file.
+line's content, not as a new line in the file.
 
 Do not include any explanatory text within the diff blocks. If you need to provide explanations or comments, do so outside the diff blocks.
 
@@ -214,6 +259,54 @@ Codebase ends here.
 Remember to strictly adhere to the Git diff format guidelines provided above when suggesting code changes.
 
 """
+
+# Add AST capabilities to the template if available
+if os.environ.get("ZIYA_ENABLE_AST") == "true" and AST_AVAILABLE:
+    # Get AST context and token count
+    from app.utils.ast_parser import get_ast_context, get_ast_token_count
+    AST_CONTEXT = get_ast_context()
+    AST_TOKEN_COUNT = get_ast_token_count()
+    
+    # Log AST information
+    logger.info(f"Adding AST context to prompt. Size: {AST_TOKEN_COUNT} tokens")
+    
+    # Add basic AST capabilities information
+    ast_template = """
+
+ENHANCED CODE UNDERSTANDING CAPABILITIES:
+You have access to AST-based code understanding capabilities, which allow you to:
+1. Understand the structure of the code beyond simple text analysis
+2. Find references to symbols across the codebase
+3. Analyze dependencies between files
+4. Generate semantic code summaries
+
+When answering questions about code, you will use these capabilities to provide more accurate and insightful responses.
+You can analyze:
+- Function and class hierarchies
+- Symbol references and definitions
+- Type information (where available)
+- Code relationships and dependencies
+
+This allows you to provide deeper insights about:
+- How different parts of the code interact
+- Where and how functions and classes are used
+- The impact of potential changes
+- Architectural patterns in the codebase
+"""
+    
+    # Add detailed AST context if available
+    if AST_CONTEXT and AST_TOKEN_COUNT > 0:
+        ast_template += f"""
+
+CODEBASE STRUCTURE INFORMATION:
+The following is a semantic analysis of the codebase structure:
+
+{AST_CONTEXT}
+
+Use this structural information to better understand the codebase organization and relationships between components.
+"""
+    
+    template += ast_template
 
 # Create a wrapper around the original template
 original_template = template
@@ -243,7 +336,6 @@ conversational_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", template),
         MessagesPlaceholder(variable_name="chat_history", optional=True),
-
         ("user", "{question}"),
         MessagesPlaceholder(variable_name="agent_scratchpad", optional=True),
     ]

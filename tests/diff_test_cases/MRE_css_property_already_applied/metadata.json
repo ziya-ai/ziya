@@ -1,0 +1,6 @@
+{
+  "description": "Test case for CSS padding property incorrectly marked as already applied",
+  "target_file": "components/DiffView.tsx",
+  "expected_to_fail": false,
+  "apply_twice": true
+}

@@ -1,0 +1,5 @@
+{
+  "description": "Test case for React QuestionProvider component where first hunk is incorrectly reported as already applied",
+  "target_file": "frontend/src/index.tsx",
+  "expected_to_fail": false
+}

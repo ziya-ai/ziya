@@ -1,0 +1,6 @@
+{
+    "target_file": "non_existent_file.py",
+    "description": "Test case with changes to a non-existent file that breaks the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "non_existent_file_test"
+}

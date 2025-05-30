@@ -7,12 +7,44 @@ export interface Folders {
     };
 }
 
+export type MessageRole = 'human' | 'assistant' | 'system';
+
+export interface ModelChange {
+    from: string;
+    to: string;
+    changeKey?: string;
+}
+
+// Updated Message type to include 'system' role and modelChange property
 export type Message = {
+    id?: string;
     content: string;
-    role: 'human' | 'assistant';
+    _edited?: boolean;
+    _truncatedAfter?: boolean;
+    role: MessageRole;
+    modelChange?: {
+        _edited?: boolean;      // Flag to indicate this message was edited
+        _truncatedAfter?: boolean; // Flag to indicate conversation was truncated after this message
+        from: string;
+        to: string;
+        changeKey?: string;
+    };
     _timestamp?: number;
     _version?: number;
+    isComplete?: boolean;
 };
+
+export interface ConversationFolder {
+    id: string;
+    name: string;
+    parentId?: string | null; // For nested folders
+    useGlobalContext: boolean; // Whether to use global file context
+    useGlobalModel: boolean; // Whether to use global model config
+    systemInstructions?: string; // Additional system instructions
+    createdAt: number;
+    updatedAt: number;
+}
+
 
 export interface Conversation {
     id: string;
@@ -23,8 +55,12 @@ export interface Conversation {
     _version?: number;  // Optional version field for tracking changes
     isNew?: boolean;    // Flag for newly created conversations
     isActive: boolean;
+    folderId?: string | null;
+    _editInProgress?: boolean; // Flag to indicate an edit operation is in progress
     displayMode?: 'raw' | 'pretty';  // Store display mode per conversation
 }
+
+// Add _edited and _truncatedAfter to Message type
 
 export interface DiffNormalizerOptions {
     preserveWhitespace: boolean;

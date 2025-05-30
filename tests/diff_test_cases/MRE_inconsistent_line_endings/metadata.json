@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with inconsistent line endings that confuse the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "inconsistent_line_endings_test"
+}

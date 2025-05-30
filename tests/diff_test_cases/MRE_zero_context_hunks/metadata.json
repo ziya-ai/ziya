@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with hunks that have zero context lines, making them difficult to apply correctly",
+    "date_added": "2025-03-22",
+    "issue_reference": "zero_context_hunks_test"
+}

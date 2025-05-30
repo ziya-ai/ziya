@@ -1,0 +1,6 @@
+{
+  "description": "Test for indentation regression in diff application where a line gets extra indentation",
+  "target_file": "app/middleware/streaming.py",
+  "expected_to_fail": false,
+  "notes": "This test reproduces an issue where the line 'chunk_content = content' gets extra indentation when applied with difflib"
+}

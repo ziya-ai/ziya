@@ -1,0 +1,11 @@
+diff --git a/test.py b/test.py
+index 1234567..abcdefg 100644
+--- a/test.py
++++ b/test.py
+@@ -20,3 +20,3 @@ def function_four():
+     print("Function four")
+     
+-def function_five():
+-    print("Function five")
++def function_five_modified():
++    print("Function five modified")

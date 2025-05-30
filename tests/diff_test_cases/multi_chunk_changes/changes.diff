@@ -6,7 +6,7 @@ diff --git a/test_diff_apply.py b/test_diff_apply.py
 +# Test file for characterizing diff apply behavior - Modified
 +# Adding a line that looks like a diff: --- a/test.py
 +# Another line that looks like a diff: +++ b/test.py
-
++
  def marker_section_1():
      """Section 1: Lines 1-10"""
      line_1 = "MARKER 1"

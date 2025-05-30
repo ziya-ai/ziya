@@ -1,0 +1,9 @@
+{
+  "description": "Test case for duplicate state declaration in React component",
+  "target_file": "frontend/src/context/FolderContext.tsx",
+  "issue": "Difflib incorrectly applies changes resulting in duplicate state declarations",
+  "expected_behavior": "The diff should properly update the component without duplicating the expandedKeys state declaration",
+  "broken_behavior": "The diff application results in duplicate expandedKeys state declaration and broken code structure",
+  "force_difflib": true,
+  "tags": ["react", "typescript", "state", "duplicate", "difflib"]
+}

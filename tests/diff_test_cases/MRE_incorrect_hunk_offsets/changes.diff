@@ -1,0 +1,61 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -6,13 +6,14 @@ class DataProcessor:
+     def __init__(self, config=None):
+         self.config = config or {}
+         self.data = []
+         self.processed = False
++        self.errors = []
+     
+     def load_data(self, source):
+         """Load data from the specified source"""
+-        if source.type == "file":
++        try:
++            if source.type == "file":
+                 self._load_from_file(source.path)
+-        elif source.type == "api":
++            elif source.type == "api":
+                 self._load_from_api(source.url, source.params)
+             elif source.type == "database":
+                 self._load_from_database(source.connection, source.query)
+@@ -20,6 +21,9 @@ class DataProcessor:
+                 self.data = source.data
+             else:
+                 raise ValueError(f"Unsupported source type: {source.type}")
++        except Exception as e:
++            self.errors.append(str(e))
++            raise
+     
+     def _load_from_file(self, path):
+         """Load data from a file"""
+@@ -45,6 +49,9 @@ class DataProcessor:
+         if self.config.get("filter_empty", True):
+             self.data = [item for item in self.data if item]
+         
++        if self.config.get("deduplicate", False):
++            self.data = list(dict.fromkeys(self.data))
++        
+         self.processed = True
+         return self.data
+     
+@@ -56,5 +63,17 @@ class DataProcessor:
+             with open(destination.path, 'w') as f:
+                 for item in self.data:
+                     f.write(f"{item}\n")
++        elif destination.type == "memory":
++            destination.data = self.data.copy()
+         else:
+-            raise ValueError(f"Unsupported destination type: {destination.type}")
+\ No newline at end of file
++            raise ValueError(f"Unsupported destination type: {destination.type}")
++    
++    def get_stats(self):
++        """Get statistics about the processed data"""
++        if not self.processed:
++            raise ValueError("Data must be processed before getting stats")
++        
++        return {
++            "count": len(self.data),
++            "error_count": len(self.errors)
++        }

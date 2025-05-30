@@ -55,4 +55,3 @@ class ModelManager:
             # If no default specified, use first model
             first_model = next(iter(endpoint_configs.items()))
             return {**first_model[1], "name": first_model[0]}
-        

@@ -1,0 +1,13 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -9,7 +9,8 @@ def greet(name):
+         "french": "Bonjour",
+         "german": "Hallo",
+         "japanese": "こんにちは",
+-        "chinese": "你好",
++        "chinese": "你好",
++        "korean": "안녕하세요",
+         "russian": "Привет",
+         "arabic": "مرحبا"
+     }

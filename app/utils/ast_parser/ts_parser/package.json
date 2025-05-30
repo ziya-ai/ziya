@@ -1,0 +1,9 @@
+{
+  "name": "ziya-typescript-parser",
+  "version": "1.0.0",
+  "description": "TypeScript parser for Ziya",
+  "main": "parse_typescript.js",
+  "dependencies": {
+    "typescript": "^4.9.5"
+  }
+}

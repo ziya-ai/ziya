@@ -1,0 +1,41 @@
+diff --git a/frontend/src/index.tsx b/frontend/src/index.tsx
+index 1234567..abcdefg 100644
+--- a/frontend/src/index.tsx
++++ b/frontend/src/index.tsx
+@@ -8,6 +8,7 @@ import {App} from "./components/App";
+ import {Debug} from "./components/Debug";
+ import {ChatProvider} from "./context/ChatContext";
+ import {FolderProvider} from "./context/FolderContext";
+ import {ThemeProvider} from "./context/ThemeContext";
++import {QuestionProvider} from "./context/QuestionContext";
+ 
+ // hide unhandled promise rejections from making console spam
+ window.addEventListener('unhandledrejection', (event) => {
+@@ -25,10 +26,12 @@ root.render(
+     <React.StrictMode>
+         <ThemeProvider>
+             <ChatProvider>
+                 <FolderProvider>
+-		<BrowserRouter>
+-                      <Routes>
+-                          <Route path="/" element={<App />} />
+-                          <Route
+-                              path="/debug"
+-                              element={<Debug />}
+-                          />
+-                      </Routes>
+-                  </BrowserRouter>
++                    <QuestionProvider>
++                        <BrowserRouter>
++                            <Routes>
++                                <Route path="/" element={<App />} />
++                                <Route
++                                    path="/debug"
++                                    element={<Debug />}
++                                />
++                            </Routes>
++                        </BrowserRouter>
++                    </QuestionProvider>
+                 </FolderProvider>
+             </ChatProvider>
+         </ThemeProvider>

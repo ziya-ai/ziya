@@ -73,7 +73,7 @@ class FileStateCache:
             if not os.path.exists(full_path):
                 if file_path in self._state:
                     # File was deleted
-                    del thread_state[file_path]
+                    del self._state[file_path]
                     return True
                 return False
 
@@ -92,7 +92,7 @@ class FileStateCache:
                     last_checked=datetime.now(),
                     timestamp=datetime.now()
                 )
-                thread_state[file_path] = file_state
+                self._state[file_path] = file_state
                 logger.info(f"Thread {self.thread_id} first time seeing {file_path}")
                 return True
             elif current_content != file_state.current_content:
@@ -111,7 +111,7 @@ class FileStateCache:
             return False
 
         except Exception as e:
-            logger.error(f"Error reading current content for {file_path}")
+            logger.error(f"Error reading current content for {file_path}: {str(e)}")
             logger.error(f"Error checking file {file_path}: {str(e)}")
         return False
 
@@ -133,7 +133,7 @@ class FileStateCache:
         indicators = {}
         current_lines = current_content.splitlines()
         
-        if file_path not in thread_state:
+        if file_path not in self._state:
             # New file - all lines are additions
             return {i+1: '+' for i in range(len(current_lines))}
             

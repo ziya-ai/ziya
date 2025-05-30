@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with inconsistent indentation that can break the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "inconsistent_indentation_test"
+}
