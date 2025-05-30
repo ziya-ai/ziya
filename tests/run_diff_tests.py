@@ -247,6 +247,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_import_line_order(self):
         """Test inserting an import line between existing imports"""
         self.run_diff_test('import_line_order')
+        
+    def test_duplicate_state_declaration(self):
+        """Test handling of duplicate state declarations in React components"""
+        self.run_diff_test('MRE_duplicate_state_declaration')
 
     def test_model_defaults_config(self):
         """Test adding centralized defaults config and removing scattered is_default flags"""
@@ -473,7 +477,11 @@ class DiffRegressionTest(unittest.TestCase):
     def test_send_chat_container_fix(self):
         """Test fixing SendChatContainer.tsx with proper diff application"""
         self.run_diff_test('send_chat_container_fix')
-        
+
+    def test_MRE_context_empty_line(self):
+        """Test fuzzy insertion into a blank line without preservation or annotation"""
+        self.run_diff_test('MRE_context_empty_line') 
+
     def test_MRE_css_padding_real_file(self):
         """Test case for CSS padding property incorrectly marked as already applied using real file"""
         test_case = 'MRE_css_padding_real_file'
@@ -544,6 +552,57 @@ class DiffRegressionTest(unittest.TestCase):
                        f"changes_written should be False for already applied case")
         self.assertTrue(len(result_dict['details']['already_applied']) > 0, 
                        f"No hunks reported as already_applied")
+        
+    def test_react_question_provider(self):
+        """Test case for React QuestionProvider component where first hunk is incorrectly reported as already applied"""
+        test_case = 'react_question_provider'
+        metadata, original, diff, expected = self.load_test_case(test_case)
+        
+        # Set up the test file in the temp directory
+        test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+        os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+        
+        with open(test_file_path, 'w', encoding='utf-8') as f:
+            f.write(original)
+        
+        # Apply the diff and get the result
+        result_dict = use_git_to_apply_code_diff(diff, test_file_path)
+        
+        # Read the modified content
+        with open(test_file_path, 'r', encoding='utf-8') as f:
+            modified_content = f.read()
+        
+        # Check if the content changed (which would indicate successful application)
+        content_changed = original != modified_content
+        
+        # For this test, we expect:
+        # 1. Content to change (diff should be applied)
+        # 2. Status to be "success"
+        # 3. changes_written to be True
+        self.assertTrue(content_changed, 
+                       f"Content didn't change but should have been modified")
+        self.assertEqual(result_dict['status'], 'success', 
+                       f"Status should be success, got {result_dict['status']}")
+        
+        # Check if changes_written is in the result_dict or in details
+        if 'changes_written' in result_dict:
+            self.assertTrue(result_dict['changes_written'], 
+                          f"changes_written should be True")
+        elif 'details' in result_dict and 'changes_written' in result_dict['details']:
+            self.assertTrue(result_dict['details']['changes_written'], 
+                          f"changes_written should be True")
+        else:
+            self.fail("changes_written not found in result_dict or details")
+        
+        # CRITICAL CHECK: Verify that no hunks are incorrectly reported as already_applied
+        # Since we know the content changed, all hunks should be reported as succeeded
+        if 'details' in result_dict and 'already_applied' in result_dict['details']:
+            self.assertEqual(len(result_dict['details']['already_applied']), 0,
+                           f"No hunks should be reported as already_applied, but found: {result_dict['details']['already_applied']}")
+        
+        # Verify the content matches the expected result
+        self.assertEqual(modified_content, expected, 
+                       f"Modified content doesn't match expected result")
         
     def test_apply_state_reporting(self):
         """

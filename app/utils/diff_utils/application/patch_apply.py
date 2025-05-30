@@ -363,7 +363,7 @@ def apply_diff_with_difflib_hybrid_forced(
 
 def apply_diff_with_difflib(file_path: str, diff_content: str, skip_hunks: List[int] = None) -> str:
     """
-    Apply a diff using difflib.
+    Apply a diff using difflib with special case handling.
     
     Args:
         file_path: Path to the file to modify
@@ -373,21 +373,78 @@ def apply_diff_with_difflib(file_path: str, diff_content: str, skip_hunks: List[
     Returns:
         The modified file content as a string
     """
-    logger.info(f"Applying diff to {file_path} using regular difflib")
+    logger.info(f"Applying diff to {file_path} using difflib")
     
-    # Read the original file content
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            original_content = f.read()
-            original_lines = original_content.splitlines(True)  # Keep line endings
-    except FileNotFoundError:
-        original_content = ""
-        original_lines = []
+    # Initialize skip_hunks if not provided
+    if skip_hunks is None:
+        skip_hunks = []
     
-    # Apply the diff using the hybrid forced mode
+    if skip_hunks:
+        logger.info(f"Skipping already applied hunks: {skip_hunks}")
+    
+    # Read the file content
+    with open(file_path, 'r', encoding='utf-8') as f:
+        original_content = f.read()
+        original_lines = original_content.splitlines(True)  # Keep line endings
+    
+    # Parse hunks
+    hunks = list(parse_unified_diff_exact_plus(diff_content, file_path))
+    if not hunks:
+        logger.warning("No hunks parsed from diff content.")
+        return original_content
+    
+    logger.debug(f"Parsed {len(hunks)} hunks for difflib")
+    
+    # Check if all hunks are already applied
+    all_already_applied = True
+    for hunk in hunks:
+        if hunk.get('number') not in skip_hunks:
+            # Check if this hunk is already applied anywhere in the file
+            hunk_applied = False
+            for pos in range(len(original_lines) + 1):
+                from ..validation.validators import is_hunk_already_applied
+                if is_hunk_already_applied(original_lines, hunk, pos):
+                    hunk_applied = True
+                    logger.info(f"Hunk #{hunk.get('number')} is already applied at position {pos}")
+                    break
+            
+            if not hunk_applied:
+                all_already_applied = False
+                break
+    
+    # CRITICAL FIX: For pure additions (like import statements), check if the exact content exists
+    # in the file before marking as already applied
+    if all_already_applied:
+        for hunk in hunks:
+            if hunk.get('number') not in skip_hunks:
+                # Count the number of removed lines
+                removed_line_count = sum(1 for line in hunk.get('old_block', []) if line.startswith('-'))
+                
+                # If this is a pure addition (no lines removed)
+                if removed_line_count == 0:
+                    # Get the added content
+                    added_lines = []
+                    for line in hunk.get('new_block', []):
+                        if line.startswith('+'):
+                            added_lines.append(line[1:])
+                    
+                    # Check if the exact added content exists anywhere in the file
+                    added_content = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
+                    file_content = "\n".join([normalize_line_for_comparison(line) for line in original_lines])
+                    
+                    # If the exact added content doesn't exist in the file, it's not already applied
+                    if added_content not in file_content:
+                        logger.debug(f"Pure addition not found in file content")
+                        all_already_applied = False
+                        break
+    
+    if all_already_applied:
+        logger.info("All hunks already applied, returning original content")
+        raise PatchApplicationError("All hunks already applied", {"type": "already_applied"})
+    
+    # Try to apply the diff using the hybrid forced mode
     try:
-        modified_lines = apply_diff_with_difflib_hybrid_forced(file_path, diff_content, original_lines, skip_hunks)
-        return ''.join(modified_lines)
+        return ''.join(apply_diff_with_difflib_hybrid_forced(file_path, diff_content, original_lines, skip_hunks))
     except Exception as e:
         logger.error(f"Error applying diff with hybrid forced mode: {str(e)}")
-        raise
+        raise PatchApplicationError(f"Failed to apply diff: {str(e)}", {"type": "application_failed"})

@@ -881,6 +881,29 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                         logger.debug(f"Skipping position {pos} - file content doesn't match what we're trying to remove")
                                         continue
                         
+                        # CRITICAL FIX: For pure additions (like import statements), check if the exact content exists
+                        # in the file before marking as already applied
+                        if 'old_block' in hunk:
+                            # Count the number of removed lines
+                            removed_line_count = sum(1 for line in hunk.get('old_block', []) if line.startswith('-'))
+                            
+                            # If this is a pure addition (no lines removed)
+                            if removed_line_count == 0:
+                                # Get the added content
+                                added_lines = []
+                                for line in hunk.get('new_block', []):
+                                    if line.startswith('+'):
+                                        added_lines.append(line[1:])
+                                
+                                # Check if the exact added content exists anywhere in the file
+                                added_content = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
+                                file_content = "\n".join([normalize_line_for_comparison(line) for line in original_lines])
+                                
+                                # If the exact added content doesn't exist in the file, it's not already applied
+                                if added_content not in file_content:
+                                    logger.debug(f"Pure addition not found in file content")
+                                    continue
+                        
                         found_applied_at_any_pos = True
                         # Use the correct hunk ID from the mapping
                         pipeline_hunk_id = hunk_id_mapping.get(i, original_hunk_id)

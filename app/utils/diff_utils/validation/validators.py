@@ -129,24 +129,86 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     logger.debug(f"  Hunk content (preview): {repr(hunk)[:200]}...")
     
     # Handle edge cases
-    if not hunk.get('new_lines') or pos > len(file_lines):
+    if not hunk.get('new_lines') or pos >= len(file_lines):
         logger.debug(f"Empty hunk or position {pos} beyond file length {len(file_lines)}")
         return False
-
-    # Get the lines we're working with
-    window_size = max(len(hunk.get('old_block', [])), len(hunk.get('new_lines', [])))
-    if pos + window_size > len(file_lines):
-        window_size = len(file_lines) - pos
-    available_lines = file_lines[pos:pos + window_size]
     
     # Extract the removed and added lines from the hunk
     removed_lines, added_lines = extract_diff_changes(hunk)
     
-    # CRITICAL FIX: Check if the hunk is malformed
-    if not hunk.get('old_block') or not hunk.get('new_lines'):
-        logger.warning(f"Malformed hunk detected: missing old_block or new_lines")
-        # Don't mark malformed hunks as already applied
+    # CRITICAL FIX: For hunks that add new content (like imports), we need to be more strict
+    # If this is a pure addition (no lines removed), check if the exact content exists
+    if len(removed_lines) == 0 and len(added_lines) > 0:
+        # This is a pure addition - be more strict about considering it already applied
+        # Check if the exact content exists anywhere in the file
+        added_content = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
+        file_content = "\n".join([normalize_line_for_comparison(line) for line in file_lines])
+        
+        # If the exact added content doesn't exist in the file, it's not already applied
+        if added_content not in file_content:
+            logger.debug(f"Pure addition not found in file content")
+            return False
+    
+    # Check if the file content at this position matches what we're trying to remove
+    # This is essential to prevent marking a hunk as "already applied" when the file content doesn't match
+    # what we're trying to remove
+    if removed_lines and pos + len(removed_lines) <= len(file_lines):
+        file_slice_for_removed = file_lines[pos:pos+len(removed_lines)]
+        
+        # Normalize both for comparison
+        normalized_file_slice = [normalize_line_for_comparison(line) for line in file_slice_for_removed]
+        normalized_removed_lines = [normalize_line_for_comparison(line) for line in removed_lines]
+        
+        # If the file content doesn't match what we're trying to remove,
+        # then this hunk can't be already applied here
+        if normalized_file_slice != normalized_removed_lines:
+            # Calculate similarity to help with debugging
+            similarity = difflib.SequenceMatcher(None, 
+                                               "\n".join(normalized_file_slice), 
+                                               "\n".join(normalized_removed_lines)).ratio()
+            logger.debug(f"File content doesn't match what we're trying to remove at position {pos} (similarity: {similarity:.2f})")
+            logger.debug(f"File content: {normalized_file_slice}")
+            logger.debug(f"Removed lines: {normalized_removed_lines}")
+            return False
+    
+    # CRITICAL FIX: Direct check if the expected content after applying the hunk is already present
+    # This is the most reliable way to determine if a hunk is already applied
+    new_lines = hunk.get('new_lines', [])
+    if pos + len(new_lines) <= len(file_lines):
+        file_slice = file_lines[pos:pos+len(new_lines)]
+        
+        # Compare the file content with the expected content
+        exact_match = True
+        for i, (file_line, new_line) in enumerate(zip(file_slice, new_lines)):
+            if normalize_line_for_comparison(file_line) != normalize_line_for_comparison(new_line):
+                exact_match = False
+                logger.debug(f"Line mismatch at position {pos+i}")
+                logger.debug(f"  File: {repr(file_line)}")
+                logger.debug(f"  Expected: {repr(new_line)}")
+                break
+        
+        if exact_match:
+            logger.debug(f"Exact match of expected content found at position {pos}")
+            return True
+    
+    # Check if we have enough lines to compare
+    if pos + len(new_lines) > len(file_lines):
+        logger.debug(f"Not enough lines to compare at position {pos}")
         return False
+    
+    # Extract the file content at the position
+    file_slice = file_lines[pos:pos+len(new_lines)]
+    
+    # Compare the file content with the expected content
+    for i, (file_line, new_line) in enumerate(zip(file_slice, new_lines)):
+        if normalize_line_for_comparison(file_line) != normalize_line_for_comparison(new_line):
+            logger.debug(f"Line mismatch at position {pos+i}")
+            logger.debug(f"  File: {repr(file_line)}")
+            logger.debug(f"  Expected: {repr(new_line)}")
+            return False
+    
+    logger.debug(f"Hunk already applied at position {pos}")
+    return True
     
     # ENHANCED VERIFICATION: Perform more strict checking for already applied hunks
     
@@ -224,6 +286,43 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
             if exact_match:
                 logger.debug(f"Exact match of expected content found at position {pos}")
                 return True
+    
+    # CRITICAL FIX: Check for duplicate declarations
+    # This is a language-agnostic approach that looks for patterns like duplicate variable declarations
+    if added_lines:
+        # Look for patterns that might indicate declarations
+        declaration_patterns = [
+            r'const\s+\w+\s*=',  # const x =
+            r'let\s+\w+\s*=',    # let x =
+            r'var\s+\w+\s*=',    # var x =
+            r'function\s+\w+\s*\(',  # function x(
+            r'class\s+\w+\s*{',  # class x {
+            r'interface\s+\w+\s*{',  # interface x {
+            r'type\s+\w+\s*=',   # type x =
+            r'enum\s+\w+\s*{',   # enum x {
+        ]
+        
+        # Check if any added line matches a declaration pattern
+        for added_line in added_lines:
+            for pattern in declaration_patterns:
+                match = re.search(pattern, added_line)
+                if match:
+                    # Found a potential declaration, check if it already exists elsewhere in the file
+                    declaration_name = None
+                    for m in re.finditer(r'\b(\w+)\b', added_line[match.start():]):
+                        if m.group(1) not in ['const', 'let', 'var', 'function', 'class', 'interface', 'type', 'enum']:
+                            declaration_name = m.group(1)
+                            break
+                    
+                    if declaration_name:
+                        # Check if this declaration already exists elsewhere in the file
+                        for i, line in enumerate(file_lines):
+                            if i != pos and declaration_name in line:
+                                for p in declaration_patterns:
+                                    if re.search(p + r'.*\b' + re.escape(declaration_name) + r'\b', line):
+                                        logger.debug(f"Found duplicate declaration of '{declaration_name}' at line {i}")
+                                        # This declaration already exists elsewhere, so this hunk might be already applied
+                                        return True
     
     # Check if this is a whitespace-only change
     if len(removed_lines) == len(added_lines):

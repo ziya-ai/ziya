@@ -332,4 +332,12 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
     # Sort hunks by old_start to ensure they're processed in the correct order
     hunks.sort(key=lambda h: h['old_start'])
     
+    # Check if the diff has a "No newline at end of file" marker
+    has_no_newline_marker = "No newline at end of file" in diff_content
+    
+    # If the diff has a "No newline at end of file" marker and we have hunks, ensure the last hunk has the flag set
+    if has_no_newline_marker and hunks and not hunks[-1].get('missing_newline'):
+        logger.debug(f"Setting missing_newline flag on last hunk due to marker in diff")
+        hunks[-1]['missing_newline'] = True
+    
     return hunks
