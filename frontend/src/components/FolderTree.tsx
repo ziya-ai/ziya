@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo, useLayoutEffect, CSSProperties } from 'react';
 import { Tabs, message } from 'antd';
 import { useFolderContext } from '../context/FolderContext';
 import { useChatContext } from '../context/ChatContext';
@@ -12,6 +12,11 @@ import { convertToTreeData } from '../utils/folderUtil';
 import MUIChatHistory from './MUIChatHistory';
 import { MUIFileExplorer } from './MUIFileExplorer';
 import { useTheme } from '../context/ThemeContext';
+
+import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
+import AddCommentIcon from '@mui/icons-material/AddComment';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
 
 interface FolderTreeProps {
     isPanelCollapsed: boolean;
@@ -42,6 +47,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
     // Add ref for the panel element
+    const [showActionButtons, setShowActionButtons] = useState(true);
     const panelRef = useRef<HTMLDivElement>(null);
     const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || '1');
 
@@ -56,12 +62,37 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 window.dispatchEvent(new CustomEvent('folderPanelResize', {
                     detail: { width: entry.contentRect.width }
                 }));
+                
+                // Hide action buttons when panel gets too narrow (less than 280px)
+                setShowActionButtons(entry.contentRect.width >= 280);
             }
         });
 
         resizeObserver.observe(panelRef.current);
         return () => resizeObserver.disconnect();
     }, []);
+
+    // Handle creating a new folder at current level
+    const handleCreateFolderAtCurrentLevel = useCallback(async () => {
+        try {
+            const createdFolderId = await createFolder('New Folder', currentFolderId);
+            message.success('New folder created successfully');
+        } catch (error) {
+            console.error('Error creating folder:', error);
+            message.error('Failed to create folder');
+        }
+    }, [createFolder, currentFolderId]);
+
+    // Handle creating a new chat at current folder level
+    const handleCreateChatAtCurrentLevel = useCallback(async () => {
+        try {
+            await startNewChat(currentFolderId);
+            message.success('New chat created successfully');
+        } catch (error) {
+            console.error('Error creating chat:', error);
+            message.error('Failed to create new chat');
+        }
+    }, [startNewChat, currentFolderId]);
 
     useEffect(() => {
         localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
@@ -133,20 +164,62 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     {
                         key: '1',
                         label: (
-                            <span>
+                            <div style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'space-between',
+                                width: '100%',
+                                minWidth: 0
+                            }}>
+                                <span style={{ 
+                                    display: 'flex', 
+                                    alignItems: 'center',
+                                    minWidth: 0,
+                                    overflow: 'hidden'
+                                }}>
                                 <FolderOutlined style={{ marginRight: 8 }} />
                                 File Explorer
-                            </span>
+                                </span>
+                            </div>
                         ),
                         children: <MUIFileExplorer />
                     },
                     {
                         key: '2',
                         label: (
-                            <span>
+                            <div style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'space-between',
+                                width: '100%',
+                                minWidth: 0
+                            }}>
+                                <span style={{ 
+                                    display: 'flex', 
+                                    alignItems: 'center',
+                                    minWidth: 0,
+                                    overflow: 'hidden'
+                                }}>
                                 <MessageOutlined style={{ marginRight: 8 }} />
                                 Chat History
-                            </span>
+                                </span>
+                                {showActionButtons && activeTab === '2' && (
+                                    <div style={{ display: 'flex', gap: 4, marginLeft: 8, flexShrink: 0 }}>
+                                        <Tooltip title="Create new folder">
+                                            <IconButton size="small" onClick={handleCreateFolderAtCurrentLevel}
+                                                sx={{ color: '#1890ff', border: '1px solid #1890ff', width: 24, height: 24 }}>
+                                                <CreateNewFolderIcon sx={{ fontSize: 14 }} />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Tooltip title="Create new chat">
+                                            <IconButton size="small" onClick={handleCreateChatAtCurrentLevel}
+                                                sx={{ color: '#1890ff', border: '1px solid #1890ff', width: 24, height: 24 }}>
+                                                <AddCommentIcon sx={{ fontSize: 14 }} />
+                                            </IconButton>
+                                        </Tooltip>
+                                    </div>
+                                )}
+                            </div>
                         ),
                         children: <MUIChatHistory />
                     },

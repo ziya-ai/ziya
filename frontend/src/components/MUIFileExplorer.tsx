@@ -89,14 +89,14 @@ export const MUIFileExplorer = () => {
     const hasChildren = node.children && node.children.length > 0;
     const isExpanded = expandedKeys.includes(String(node.key));
     const isChecked = checkedKeys.includes(String(node.key));
-    
+
     // Calculate token counts using the same logic as Ant Design version
     const { total, included } = calculateTokens(node, folders);
-    
+
     // Check if this node is indeterminate (some but not all children selected)
-    const isIndeterminate = hasChildren && !isChecked && 
+    const isIndeterminate = hasChildren && !isChecked &&
       node.children.some(child => checkedKeys.includes(String(child.key)));
-    
+
     // Extract clean label and token count
     const titleMatch = String(node.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
     const cleanLabel = titleMatch ? titleMatch[1] : String(node.title);
@@ -124,7 +124,8 @@ export const MUIFileExplorer = () => {
             display: 'flex',
             alignItems: 'center',
             py: 0.25,
-            pl: level * 2,
+            pl: level * 2 + 1, // Reduced padding to move everything left
+            position: 'relative',
             '&:hover': {
               backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.04)'
             }
@@ -134,7 +135,12 @@ export const MUIFileExplorer = () => {
           <IconButton
             size="small"
             onClick={handleToggle}
-            sx={{ p: 0.25, mr: 0.5, visibility: hasChildren ? 'visible' : 'hidden' }}
+            sx={{
+              p: 0.25,
+              position: 'absolute',
+              left: level * 14 - 10, // More aggressive multiplier for better alignment
+              visibility: hasChildren ? 'visible' : 'hidden'
+            }}
           >
             {hasChildren && (isExpanded ? <ArrowDropDownIcon fontSize="small" /> : <ArrowRightIcon fontSize="small" />)}
           </IconButton>
@@ -145,7 +151,7 @@ export const MUIFileExplorer = () => {
             indeterminate={isIndeterminate}
             onClick={handleCheck}
             size="small"
-            sx={{ p: 0.25, mr: 0.5 }}
+            sx={{ p: 0.25, mr: 0.5, ml: 0 }}
           />
 
           {/* Icon */}
@@ -166,7 +172,7 @@ export const MUIFileExplorer = () => {
           >
             {cleanLabel}
           </Typography>
-          
+
           {/* Token count */}
           {!hasChildren && total > 0 && (
             <Typography
@@ -183,7 +189,7 @@ export const MUIFileExplorer = () => {
               ({total.toLocaleString()})
             </Typography>
           )}
-          
+
           {/* Token display for folders showing included/total */}
           {hasChildren && total > 0 && (
             <Typography
@@ -195,12 +201,12 @@ export const MUIFileExplorer = () => {
                 color: isDarkMode ? '#aaa' : 'text.secondary'
               }}
             >
-              (<Typography 
-                component="span" 
-                sx={{ 
-                  fontWeight: included > 0 ? 'bold' : 'normal', 
+              (<Typography
+                component="span"
+                sx={{
+                  fontWeight: included > 0 ? 'bold' : 'normal',
                   fontSize: 'inherit',
-                  color: included > 0 ? (isDarkMode ? '#ffffff' : '#000000') : 'inherit' 
+                  color: included > 0 ? (isDarkMode ? '#ffffff' : '#000000') : 'inherit'
                 }}
               >
                 {included.toLocaleString()}

@@ -31,6 +31,7 @@ import Fab from '@mui/material/Fab';
 import { Divider as AntDivider } from 'antd';
 
 // MUI icons
+import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
 import FolderIcon from '@mui/icons-material/Folder';
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import Box from '@mui/material/Box';
@@ -45,7 +46,8 @@ import UploadIcon from '@mui/icons-material/Upload';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import SyncIcon from '@mui/icons-material/Sync';
-import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
+import AddCommentIcon from '@mui/icons-material/AddComment';
+import NoteAddIcon from '@mui/icons-material/NoteAdd';
 
 // Ant Design Icons for the menu items
 import {
@@ -83,11 +85,21 @@ const StyledTreeItem = styled((props: TreeItemProps) => (
   <TreeItem {...props} />
 ))(({ theme }) => ({
   '& .MuiTreeItem-iconContainer': {
+    marginLeft: '-24px', // Move chevron into the left padding
+    marginRight: '6px',   // Add space between chevron and icon
+    width: '16px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
     '& .MuiSvgIcon-root': {
-      opacity: 0.3,
+      fontSize: '16px',
+      opacity: 0.7,
     },
-    marginLeft: 4,
-    paddingLeft: 16,
+  },
+
+  // Root level items should align properly
+  '&.MuiTreeItem-root > .MuiTreeItem-content': {
+    paddingLeft: '24px',
   },
 
   '& .MuiTreeItem-group': {
@@ -99,6 +111,8 @@ const StyledTreeItem = styled((props: TreeItemProps) => (
   '& .MuiTreeItem-content': {
     display: 'flex',
     padding: '4px 8px',
+    paddingLeft: '24px', // Provide space for the chevron
+    alignItems: 'center',
     borderRadius: '4px',
     transition: 'background-color 0.2s',
     '&:hover': {
@@ -622,6 +636,43 @@ const MUIChatHistory = () => {
       }
       return newPinned;
     });
+  }
+
+  // Handle creating a new folder at current level
+  const handleCreateFolderAtCurrentLevel = async () => {
+    try {
+      // Create a new folder at the current folder level (as a sibling)
+      const createdFolderId = await createFolder('New Folder', currentFolderId);
+      const newFolderId = String(createdFolderId);
+
+      // Ensure parent folder is expanded if creating a subfolder
+      if (currentFolderId && !expandedNodes.includes(currentFolderId)) {
+        setExpandedNodes(prev => [...prev, currentFolderId]);
+      }
+
+      message.success('New folder created successfully');
+
+      // Start editing the folder name immediately
+      if (newFolderId) {
+        setTimeout(() => {
+          setEditingId(newFolderId);
+          setEditValue('New Folder');
+        }, 100);
+      }
+    } catch (error) {
+      console.error('Error creating folder:', error);
+      message.error('Failed to create folder');
+    }
+  };
+
+  // Handle creating a new chat at current folder level
+  const handleCreateChatAtCurrentLevel = async () => {
+    try {
+      await setCurrentFolderId(currentFolderId);
+      await startNewChat(currentFolderId);
+    } catch (error) {
+      message.error('Failed to create new chat');
+    }
   };
 
   // Handle moving a folder
@@ -1595,7 +1646,7 @@ const MUIChatHistory = () => {
     </Box>
   ) : (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Tree View - now takes full height */}
+      {/* Tree View with integrated action buttons */}
       <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
         {(() => {
           const treeViewStyles = {
@@ -1640,6 +1691,7 @@ const MUIChatHistory = () => {
 
       {/* Export/Import buttons */}
       <Box sx={{
+        mt: 'auto',
         display: 'flex',
         justifyContent: 'flex-end',
         p: 2,
