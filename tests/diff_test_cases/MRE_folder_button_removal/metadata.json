@@ -1,0 +1,9 @@
+{
+  "description": "Test case for false 'already applied' detection with FolderButton removal",
+  "expected_behavior": "The diff should be applied correctly, removing the FolderButton import and usage",
+  "actual_behavior": "The diff is incorrectly detected as 'already applied' for both hunks",
+  "issue": "The difflib implementation incorrectly detects the changes as already applied",
+  "force_difflib": true,
+  "target_file": "frontend/src/components/FolderTree.tsx",
+  "extension": ".tsx"
+}

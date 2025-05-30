@@ -1,0 +1,20 @@
+diff --git a/app/middleware/streaming.py b/app/middleware/streaming.py
+index 0d9e8d3..f7e9c7f 100644
+--- a/app/middleware/streaming.py
++++ b/app/middleware/streaming.py
+@@ -14,6 +14,7 @@ class StreamingMiddleware:
+                         if hasattr(chunk.message, 'content'):
+                             content = chunk.message.content
+                             if content:
++                                chunk_content = content
+                                 if isinstance(content, dict):
+                                     yield f"data: {content}\n\n"
+                                 else:
+@@ -21,6 +22,7 @@ class StreamingMiddleware:
+                     
+                     # Last resort: convert to string
+                     str_chunk = str(chunk)
++                    chunk_content = str_chunk
+                     if str_chunk:
+                         yield f"data: {str_chunk}\n\n"
+                     

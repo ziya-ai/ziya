@@ -1,0 +1,24 @@
+diff --git a/frontend/src/components/SendChatContainer.tsx b/frontend/src/components/SendChatContainer.tsx
+index 0f8c0d0..c6b6c9f 100644
+--- a/frontend/src/components/SendChatContainer.tsx
++++ b/frontend/src/components/SendChatContainer.tsx
+@@ -25,7 +25,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
+         currentConversationId,
+         streamingConversations,
+         addStreamingConversation,
+-        removeStreamingConversation
++        removeStreamingConversation,
++        setUserHasScrolled
+     } = useChatContext();
+ 
+     const { checkedKeys } = useFolderContext();
+@@ -67,6 +68,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
+         setQuestion('');
+         setStreamedContentMap(new Map());
+ 
++        // Reset user scroll state when sending a new message
++        setUserHasScrolled(false);
++
+         // Debug log the selected files state
+         console.log('Current file selection state:', {
+             checkedKeys,

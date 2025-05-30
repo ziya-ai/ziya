@@ -1,0 +1,29 @@
+diff --git a/frontend/src/components/d3Chart.ts b/frontend/src/components/d3Chart.ts
+--- a/frontend/src/components/d3Chart.ts
++++ b/frontend/src/components/d3Chart.ts
+@@ -16,6 +16,7 @@ export class D3Chart {
+   private initialize(): void {
+     // Create the SVG element
+     this.svg = select(this.container)
++      .selectAll('*').remove()
+       .append('svg')
+       .attr('width', this.options.width)
+       .attr('height', this.options.height)
+@@ -29,6 +30,9 @@ export class D3Chart {
+   }
+ 
+   public update(data: any[]): void {
++    // Clear previous elements first
++    this.svg.selectAll('.data-point').remove();
++    
+     // Update the chart with new data
+     const circles = this.svg.selectAll('circle')
+       .data(data);
+@@ -36,6 +40,7 @@ export class D3Chart {
+     // Enter new elements
+     circles.enter()
+       .append('circle')
++      .attr('class', 'data-point')
+       .attr('r', 5)
+       .attr('cx', d => d.x)
+       .attr('cy', d => d.y)

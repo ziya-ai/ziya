@@ -1,0 +1,11 @@
+--- a/mre_context_empty_line.ts
++++ b/mre_context_empty_line.ts
+@@ -1,7 +1,7 @@
+ function exampleFunction() {
+     console.log("Line 1");
+     console.log("Line 2");
++    console.log("Line 2.5");
+     console.log("Line 3");
+     console.log("Line 4");
+     console.log("Line 5");
+ }

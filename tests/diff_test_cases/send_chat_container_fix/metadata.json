@@ -1,0 +1,6 @@
+{
+    "description": "Test case for fixing SendChatContainer.tsx with proper diff application",
+    "target_file": "SendChatContainer.tsx",
+    "expected_to_fail": false,
+    "apply_twice": false
+}

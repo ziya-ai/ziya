@@ -1,0 +1,11 @@
+--- a/frontend/src/components/MUIFileExplorer.tsx
++++ b/frontend/src/components/MUIFileExplorer.tsx
+@@ -133,7 +133,7 @@ const CheckboxTreeItem = React.memo<CheckboxTreeItemProps>(({
+             overflow: 'hidden',
+             textOverflow: 'ellipsis',
+             whiteSpace: 'nowrap',
+-            color: isDarkMode ? 'text.primary' : 'inherit'
++            color: isDarkMode ? 'text.primary' : 'inherit',
+           }}
+           >
+             {cleanLabel}

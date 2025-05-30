@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with escape sequences that cause regression in the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "escape_sequence_regression_test"
+}

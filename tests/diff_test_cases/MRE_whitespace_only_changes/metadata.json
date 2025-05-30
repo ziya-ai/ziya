@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with whitespace-only changes that breaks the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "whitespace_only_changes_test"
+}

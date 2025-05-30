@@ -1,0 +1,6 @@
+{
+    "target_file": "frontend/src/components/d3Chart.ts",
+    "description": "Test handling of chained method calls in D3.js code",
+    "date_added": "2025-04-01",
+    "issue_reference": "chained_method_calls_test"
+}

@@ -1,0 +1,10 @@
+diff --git a/non_existent_file.py b/non_existent_file.py
+--- a/non_existent_file.py
++++ b/non_existent_file.py
+@@ -1,5 +1,5 @@
+ def example_function():
+-    # This is the original comment
++    # This is the modified comment
+     print("Example function")
+     
+     return True

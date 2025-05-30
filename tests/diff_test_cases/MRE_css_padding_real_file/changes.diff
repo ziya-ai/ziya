@@ -1,0 +1,12 @@
+diff --git a/frontend/src/components/MarkdownRenderer.tsx b/frontend/src/components/MarkdownRenderer.tsx
+index c9b5c1e..e9d7c1f 100644
+--- a/frontend/src/components/MarkdownRenderer.tsx
++++ b/frontend/src/components/MarkdownRenderer.tsx
+@@ -1379,7 +1379,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
+         .diff-header {
+             height: auto;
+             overflow: visible !important;
+-            padding-bottom: 4px !important;
++            padding: 0 !important;
+             box-sizing: border-box !important;
+         }

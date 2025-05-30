@@ -1,0 +1,6 @@
+{
+  "description": "Test applying a multi-hunk diff where line numbers need adjustment after earlier hunks are applied",
+  "target_file": "TestComponent.tsx",
+  "expected_to_fail": false,
+  "apply_twice": false
+}

@@ -1,0 +1,114 @@
+/* Mermaid Theme Enhancements */
+
+/* Add smooth transitions for theme changes */
+.mermaid-container svg {
+    transition: background-color 0.3s ease;
+    max-width: 100% !important;
+}
+
+.mermaid-container svg text,
+.mermaid-container svg path,
+.mermaid-container svg rect,
+.mermaid-container svg polygon,
+.mermaid-container svg circle {
+    transition: fill 0.3s ease, stroke 0.3s ease;
+}
+
+/* Ensure custom styles from the diagram are preserved */
+.mermaid-container svg [style],
+.mermaid-wrapper svg [style] {
+    transition: none !important;
+}
+
+/* Enhance visibility in dark mode */
+.dark .mermaid-container .edgePath path {
+    stroke: #88c0d0 !important;
+    stroke-width: 1.5px !important;
+}
+
+/* Fix for arrow markers in dark mode */
+.dark .mermaid-container marker path {
+    stroke: #88c0d0 !important;
+    fill: #88c0d0 !important;
+}
+
+/* Fix for all SVG paths and lines in dark mode */
+.dark .mermaid-container svg line,
+.dark .mermaid-container svg path:not([fill]) {
+    stroke: #88c0d0 !important;
+    stroke-width: 1.5px !important;
+}
+
+/* Text on darker backgrounds should be black for contrast */
+.dark .mermaid-container .node .label text,
+.dark .mermaid-container .cluster .label text {
+    fill: #000000;
+    color: #000000 !important;
+}
+
+/* Text on lighter backgrounds should be white for contrast */
+.dark .mermaid-container .edgeLabel text,
+.dark .mermaid-container text:not(.node .label text):not(.cluster .label text) {
+    fill: #eceff4 !important;
+    color: #eceff4 !important;
+}
+
+/* Node styling */
+.dark .mermaid-container .node rect:not([style*="fill:"]),
+.dark .mermaid-container .node circle:not([style*="fill:"]),
+.dark .mermaid-container .node polygon:not([style*="fill:"]),
+.dark .mermaid-container .node path:not([style*="fill:"]) {
+    stroke: #81a1c1 !important;
+    fill: #5e81ac !important;
+}
+
+/* Ensure node labels are visible */
+.dark .mermaid-container .node .label {
+    background-color: transparent !important;
+}
+
+/* Flow chart links */
+.dark .mermaid-container .flowchart-link,
+.dark .mermaid-container path.path,
+.dark .mermaid-container path.messageText {
+    stroke: #88c0d0 !important;
+    stroke-width: 1.5px !important;
+}
+
+/* Fix for class diagram relationships */
+.dark .mermaid-container .relation {
+    stroke: #88c0d0 !important;
+}
+
+/* Fix for state diagram transitions */
+.dark .mermaid-container .transition {
+    stroke: #88c0d0 !important;
+}
+
+/* Fix for ER diagram relationships */
+.dark .mermaid-container .er.relationshipLine {
+    stroke: #88c0d0 !important;
+}
+
+/* Fix for cluster borders in dark mode */
+.dark .mermaid-container .cluster rect {
+    stroke: #81a1c1 !important;
+    fill: #4c566a !important;
+}
+
+/* Fix for sequence diagram actor borders */
+.dark .mermaid-container .actor {
+    stroke: #81a1c1 !important;
+    fill: #3b4252 !important;
+}
+
+/* Fix for gantt chart */
+.dark .mermaid-container .grid .tick line {
+    stroke: #555 !important;
+}
+
+/* Fix for arrowheads */
+.dark .mermaid-container defs marker path {
+    fill: #88c0d0 !important;
+    stroke: #88c0d0 !important;
+}

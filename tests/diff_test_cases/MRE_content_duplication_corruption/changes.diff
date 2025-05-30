@@ -1,0 +1,44 @@
+--- a/app/utils/diff_utils/pipeline/pipeline_manager.py
++++ b/app/utils/diff_utils/pipeline/pipeline_manager.py
+@@ -21,6 +21,29 @@ from ..application.git_diff import parse_patch_output
+
+ from .diff_pipeline import DiffPipeline, PipelineStage, HunkStatus, PipelineResult
+
++def clean_duplicate_headers(diff_content: str) -> str:
++    """
++    Clean up duplicate header lines in a diff that can cause 'trailing garbage' errors.
++    
++    Args:
++        diff_content: The diff content to clean
++        
++    Returns:
++        The cleaned diff content
++    """
++    lines = diff_content.splitlines()
++    cleaned_lines = []
++    seen_headers = set()
++    
++    for line in lines:
++        # Skip duplicate +++ or --- lines
++        if line.startswith('+++ ') or line.startswith('--- '):
++            if line in seen_headers:
++                continue
++            seen_headers.add(line)
++        
++        cleaned_lines.append(line)
++    
++    return '\n'.join(cleaned_lines)
+
+ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
+     """
+@@ -34,6 +57,10 @@ def apply_diff_pipeline(git_diff: str, file_path: str) -> Dict[str, Any]:
+     pipeline = DiffPipeline(file_path, git_diff)
+     pipeline.update_stage(PipelineStage.INIT)
+     
++    # Clean up duplicate headers in the diff
++    git_diff = clean_duplicate_headers(git_diff)
++    pipeline.current_diff = git_diff
++    
+     # Split combined diffs if present
+     individual_diffs = split_combined_diff(git_diff)
+     if len(individual_diffs) > 1:

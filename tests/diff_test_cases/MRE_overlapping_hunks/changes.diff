@@ -1,0 +1,45 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -8,6 +8,8 @@ def process_data(data):
+     # Process each item
+     for item in data:
+         # Skip empty items
++        # Also skip None values
++        if item is None:
++            continue
+         if not item:
+             continue
+             
+@@ -15,6 +17,7 @@ def process_data(data):
+         transformed = transform_item(item)
+         
+         # Add to results if valid
++        # Check validity before adding
+         if is_valid(transformed):
+             result.append(transformed)
+             count += 1
+@@ -22,6 +25,7 @@ def process_data(data):
+     # Return the processed data
+     return {
+         "items": result,
++        "processed": len(data),
+         "count": count
+     }
+
+@@ -8,6 +12,7 @@ def process_data(data):
+     # Process each item
+     for item in data:
+         # Skip empty items
++        # This is a duplicate comment that will cause conflicts
+         if not item:
+             continue
+             
+@@ -15,6 +20,7 @@ def process_data(data):
+         transformed = transform_item(item)
+         
+         # Add to results if valid
++        # This is another duplicate comment that will cause conflicts
+         if is_valid(transformed):
+             result.append(transformed)
+             count += 1

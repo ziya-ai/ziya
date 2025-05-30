@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with interleaved additions and deletions that can confuse the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "interleaved_changes_test"
+}

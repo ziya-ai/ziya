@@ -1,0 +1,25 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -8,12 +8,14 @@ def outer_function():
+             # Level 2 indentation
+             for i in range(10):
+                 # Level 3 indentation
+-                if i % 2 == 0:
+-                    # Level 4 indentation
+-                    print(f"Even: {i}")
+-                else:
+-                    # Level 4 indentation
+-                    print(f"Odd: {i}")
++                try:
++                    if i % 2 == 0:
++                        # Level 4 indentation
++                        print(f"Even: {i}")
++                    else:
++                        # Level 4 indentation
++                        print(f"Odd: {i}")
++                except Exception as e:
++                    print(f"Error: {e}")
+         
+         # Back to level 1
+         return "Done"

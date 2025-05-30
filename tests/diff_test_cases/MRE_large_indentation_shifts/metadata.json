@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with large indentation shifts that can break the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "large_indentation_shifts_test"
+}

@@ -31,15 +31,15 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
 
         try {
             const result = await sendPayload(
-                currentConversationId,
+                currentMessages,
                 lastHumanMessage.content,
-		streamingConversations.has(currentConversationId),
-		currentMessages,
+                convertKeysToStrings(checkedKeys),
+                currentConversationId,
                 setStreamedContentMap,
                 setIsStreaming,
-                convertKeysToStrings(checkedKeys),
-		addMessageToConversation,
-		removeStreamingConversation
+                removeStreamingConversation,
+                addMessageToConversation,
+                streamingConversations.has(currentConversationId)
             );
 
             if (result) {

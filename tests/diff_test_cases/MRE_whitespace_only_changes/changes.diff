@@ -1,0 +1,20 @@
+diff --git a/test.py b/test.py
+index 1234567..abcdefg 100644
+--- a/test.py
++++ b/test.py
+@@ -10,8 +10,6 @@ def calculate_total(items):
+     total = 0
+     for item in items:
+         total += item.price
+-    
+-    
+     return total
+ 
+ def apply_discount(total, discount_percent):
+@@ -19,5 +17,5 @@ def apply_discount(total, discount_percent):
+     if discount_percent < 0 or discount_percent > 100:
+         raise ValueError("Discount must be between 0 and 100")
+     
+-    discount = total * (discount_percent / 100)
++	discount = total * (discount_percent / 100)
+     return total - discount
