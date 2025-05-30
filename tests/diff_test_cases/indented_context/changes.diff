@@ -1,0 +1,10 @@
+--- a/app/utils/directory_util.py
++++ b/app/utils/directory_util.py
+@@ -50,7 +50,6 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], i
+             if not should_ignore_fn(file_path) and not is_binary_file(file_path) and not file.startswith('.'):
+                 file_dict[file_path] = {}
+ 
+-    return file_dict
+     return file_dict
+ 
+ def is_image_file(file_path: str) -> bool:

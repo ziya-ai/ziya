@@ -1,9 +1,10 @@
-import React, {createContext, ReactNode, useContext, useEffect, useState} from 'react';
-import {Folders} from "../utils/types";
-import {convertToTreeData} from "../utils/folderUtil";
-import {TreeDataNode} from "antd";
+import React, { createContext, ReactNode, useContext, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
+import { Folders } from "../utils/types";
+import { convertToTreeData } from "../utils/folderUtil";
+import { useChatContext } from "./ChatContext";
+import { TreeDataNode } from "antd";
 
-interface FolderContextType {
+export interface FolderContextType {
   folders: Folders | undefined;
   treeData: TreeDataNode[];
   checkedKeys: React.Key[];
@@ -19,67 +20,102 @@ interface FolderContextType {
 const FolderContext = createContext<FolderContextType | undefined>(undefined);
 
 export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const renderStart = useRef(performance.now());
+  const renderCount = useRef(0);
   const [folders, setFolders] = useState<Folders>();
   const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
     const saved = localStorage.getItem('ZIYA_CHECKED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
   });
+
+  const { currentFolderId, folderFileSelections, folders: chatFolders } = useChatContext();
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
     const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
   });
 
-  const getFolderTokenCount = (path: string, folderData: Folders): number => {
- 
+  // Monitor FolderProvider render performance
+  useLayoutEffect(() => {
+    renderCount.current++;
+    const renderTime = performance.now() - renderStart.current;
+    if (renderTime > 5 || renderCount.current % 30 === 0) {
+      console.log(`📊 FolderProvider render #${renderCount.current}: ${renderTime.toFixed(2)}ms`);
+    }
+    renderStart.current = performance.now();
+  });
+
+  const getFolderTokenCount = (path: string, folderData: Folders | undefined): number => {
+    if (!folderData) {
+      // console.warn(`getFolderTokenCount: folderData is undefined for path "${path}"`);
+      return 0;
+    }
+
     let current: Folders | undefined = folderData;
     const parts = path.split('/');
-    let totalTokens = 0;
 
-    let currentPath = '';
     for (const part of parts) {
       if (!current) {
         break;
       }
       const node = current[part];
       if (node) {
-        if (!node.children) {
-          // It's a file
-	  const fileTokens = node.token_count || 0;
-          totalTokens += fileTokens;
-        } else {
-          // It's a directory
-          current = node.children;
+        if (parts.indexOf(part) === parts.length - 1) { // Last part of the path
+          return node.token_count || 0;
         }
+        current = node.children;
       } else {
-        break;
+        // console.warn(`getFolderTokenCount: Path segment "${part}" not found in current node for path "${path}".`);
+        return 0; // Path segment not found
       }
     }
 
-    return totalTokens;
+    return 0;
   };
 
   // Save expanded folders whenever they change
   useEffect(() => {
-    localStorage.setItem('ZIYA_EXPANDED_FOLDERS', JSON.stringify(expandedKeys));
+    try {
+      localStorage.setItem('ZIYA_EXPANDED_FOLDERS', JSON.stringify(Array.from(expandedKeys)));
+    } catch (error) {
+      console.warn('Failed to save expanded folders to localStorage (QuotaExceeded?):', error);
+    }
   }, [expandedKeys]);
 
   // Save checked folders whenever they change
   useEffect(() => {
-    localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(checkedKeys));
+    try {
+      localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(checkedKeys));
+    } catch (error) {
+      console.warn('Failed to save checked folders to localStorage (QuotaExceeded?):', error);
+    }
   }, [checkedKeys]);
+
+  // Update checked keys when folder changes if folder has specific file selections
+  useEffect(() => {
+    if (currentFolderId) {
+      const folder = chatFolders.find(f => f.id === currentFolderId);
+      if (folder && !folder.useGlobalContext) {
+        const folderSelections = folderFileSelections.get(currentFolderId);
+        if (folderSelections) {
+          setCheckedKeys(folderSelections);
+        }
+      }
+    }
+  }, [currentFolderId, folders, folderFileSelections]);
 
   useEffect(() => {
     const fetchFolders = async () => {
       try {
         const response = await fetch('/api/folders');
-	if (!response.ok) {
+        if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
         }
         const data = await response.json();
 
         // Log the raw folder structure
+        console.debug('Raw folder structure loaded');
         console.debug('Raw folder structure:', {
           componentsPath: data?.frontend?.src?.components,
           d3Files: Object.keys(data?.frontend?.src?.components?.children || {})
@@ -104,13 +140,16 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           componentFiles: availablePaths.filter(p => p.includes('components/'))
         });
 
-        setTreeData(convertToTreeData(data));
+        // Convert to tree data and set expanded keys for top-level folders
+        const treeNodes = convertToTreeData(data);
+        setTreeData(treeNodes);
+        setExpandedKeys(prev => [...prev, ...treeNodes.map(node => node.key)]);
 
         // Update checked keys to include all available files and maintain selections
         setCheckedKeys(prev => {
           const currentChecked = new Set(prev as string[]);
 
-	  // Get the parent directory of any checked directory
+          // Get the parent directory of any checked directory
           const getParentDir = (path: string) => {
             const parts = path.split('/');
             return parts.slice(0, -1).join('/');
@@ -132,7 +171,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             removed: [...currentChecked].filter(k => !newChecked.has(k))
           });
 
-	  // Debug log for D3 files
+          // Debug log for D3 files
           const d3Files = [...newChecked].filter(k => k.includes('D3') || k.includes('Debug.tsx'));
           if (d3Files.length > 0) {
             console.log('D3 files in checked keys:', d3Files);
@@ -145,25 +184,27 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         console.error('Error fetching folders:', error);
       }
     };
-    fetchFolders();
-  }, []);
+        fetchFolders();
+    }, []);
 
-  return (
-    <FolderContext.Provider value={{
-      folders,
-      getFolderTokenCount,
-      setTreeData,
-      treeData,
-      checkedKeys,
-      setCheckedKeys,
-      searchValue,
-      setSearchValue,
-      expandedKeys,
-      setExpandedKeys
-    }}>
-      {children}
-    </FolderContext.Provider>
-  );
+    const contextValue = useMemo(() => ({
+        folders,
+        getFolderTokenCount,
+        setTreeData,
+        treeData,
+        checkedKeys,
+        setCheckedKeys,
+        searchValue,
+        setSearchValue,
+        expandedKeys,
+        setExpandedKeys
+    }), [folders, treeData, checkedKeys, searchValue, expandedKeys]);
+
+    return (
+        <FolderContext.Provider value={contextValue}>
+            {children}
+        </FolderContext.Provider>
+    );
 };
 
 export const useFolderContext = () => {

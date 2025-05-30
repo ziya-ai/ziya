@@ -1,11 +1,75 @@
-/* Base styles */
+/* Base styles with improved streaming visibility */
 body {
   font-family: Arial, sans-serif;
   margin: 0;
   padding: 0;
-  background-color: #f5f5f5;
+  background-color: #ffffff;
   transition: background-color 0.3s ease, color 0.3s ease;
   --model-display-height: 35px;
+  overflow: hidden;
+  height: 100vh;
+  overscroll-behavior: none;
+  position: fixed;
+  width: 100%;
+}
+
+/* Ensure streaming content remains visible */
+.streaming .diff-container,
+.streaming pre,
+.streaming code {
+  visibility: visible !important;
+}
+
+/* Diff table layout */
+table.diff, .diff-table {
+  table-layout: fixed !important;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+/* Diff code cells */
+.diff-code {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Line content with horizontal scrolling */
+.diff-line-content {
+  white-space: pre;
+  min-width: max-content;
+  display: block;
+  overflow: visible !important;
+  width: fit-content;
+}
+
+/* Gutter columns */
+.diff-gutter-col {
+  width: 50px;
+  min-width: 50px;
+/*  max-width: 50px; */
+  text-align: right;
+  padding-right: 10px;
+  user-select: none;
+  box-sizing: border-box;
+  overflow-x: auto !important;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+/* Split view columns */
+div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr > td.diff-code.diff-code-left,
+div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr > td.diff-code.diff-code-right {
+  width: 50%;
+  box-sizing: border-box;
+  overflow-x: auto !important;
+}
+
+/* Token container */
+.token-container {
+  display: inline-block;
+  min-width: 100%;
+  visibility: visible !important;
 }
 
 .app-header {
@@ -44,8 +108,9 @@ body {
 
 :root {
   --folder-panel-width: 30vw;
-  --folder-panel-max-width: 450px;
   --header-height: 60px;
+  --input-max-height: 200px;
+  --input-expanded-max-height: 50vh;
 }
 
 body.dark {
@@ -55,17 +120,20 @@ body.dark {
 
 /* Container Layout */
 .container {
-  position: absolute;
-  top: var(--header-height);
+  position: fixed;
+  top: calc(var(--app-header-height));
   left: 0;
   right: 0;
   bottom: 0;
   margin: 0;
-  overflow: hidden;
-  transition: left 0.3s ease;
+  overflow: hidden !important;
+  transition: left 0.5s ease-in-out, width 0.5s ease-in-out;
   border: none;
   background-color: inherit;
   will-change: transform;
+  height: calc(100vh - var(--app-header-height));
+  display: flex;
+  flex-direction: row;
 }
 
 .container.panel-collapsed {
@@ -74,29 +142,37 @@ body.dark {
 
 /* Chat Container */
 .chat-container {
-  contain: paint;
-  height: calc(100vh - var(--header-height) - 30px); 
-  transform: trnaslateZ(0);
+  contain: relative;
+  height: calc(100vh - var(--header-height) - 30px);
   overflow-y: auto;
   overflow-x: hidden !important;
+  contain: size layout;
   max-width: 100%;
   position: relative;
-  left: min(var(--folder-panel-width), var(--folder-panel-max-width));
-  width: calc(100% - min(var(--folder-panel-width), var(--folder-panel-max-width)) - 40px);
+  left: var(--folder-panel-width);
+  width: calc(100% - var(--folder-panel-width) - 40px);
   padding: 0;
   border: 1p solid #ccc;
   border-radius: 6px;
   background-color: inherit;
-  margin: 20px 0;
+  margin: 20px 0 20px 20px;
   margin-left: 20px;
   transition: background-color 0.3s ease, border-color 0.3s ease, left 0.3s ease, width 0.3s ease;
 }
 
+/* Prevent scroll jumps during streaming */
+.chat-container.streaming {
+  scroll-behavior: auto !important;
+  contain: size layout style;
+ }
+
 .chat-content-stabilizer {
   transform: translateZ(0);  /* Force GPU acceleration */
   backface-visibility: hidden;
+  min-height: 100%;
   perspective: 1000px;
 }
+
 
 .chat-content-with-fixed-input {
   border: none;
@@ -104,6 +180,8 @@ body.dark {
   width: 100%;
   max-width: 100%;
   flex-direction: column;
+  min-height: 100%;
+  contain: layout;
   outline: none;
 }
 
@@ -137,26 +215,30 @@ body.dark {
 /* Panel toggle button */
 .panel-toggle {
   position: fixed;
-  left: min(calc(var(--folder-panel-width) - 1px), calc(var(--folder-panel-max-width) - 1px));
+  left: var(--folder-panel-width);
+  top: calc(var(--header-height) + 50%);
   top: 50%;
   z-index: 3;
   transform: translateY(-50%);
-  transition: left 0.3s ease;
+  transition: left 0.5s ease-in-out, transform 0.5s ease-in-out;
   margin-left: 0;
   border-radius: 4px;
   background: none;
   padding: 0;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: bold;
 }
 
 .panel-toggle::before {
   content: '';
   position: absolute;
   left: -1px;
-  top: -100vh;
+  top: calc(var(--header-height) +50vh);
   bottom: -100vh;
   width: 2px;
   background-color: #d9d9d9;
@@ -165,24 +247,32 @@ body.dark {
 
 body:not(.dark) .panel-toggle.ant-btn-primary {
   background-color: #ffffff;
-  border: 1px solid #e8e8e8;
-  color: rgba(0, 0, 0, 0.85);
-  box-shadow: none;
+  border: 1px solid #1890ff;
+  color: #1890ff;
+  box-shadow: 0 2px 6px rgba(24, 144, 255, 0.2);
 }
 
 body:not(.dark) .panel-toggle.ant-btn-primary:focus {
     outline: none;
-    border-color: #e8e8e8;
+    border-color: #1890ff;
 }
 
 body:not(.dark) .panel-toggle.ant-btn-primary:hover {
-    color: #1890ff;
-    border-color: #e8e8e8;
-    background-color: #ffffff;
+    color: #ffffff;
+    border-color: #1890ff;
+    background-color: #1890ff;
 }
 
 .panel-toggle.collapsed {
   left: -1px;
+}
+
+.panel-toggle.collapsed .anticon {
+  transform: rotate(180deg);
+}
+
+.panel-toggle.collapsed .anticon {
+  transform: rotate(180deg);
 }
 
 /* Loading overlay styling */
@@ -321,6 +411,33 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   padding: 0 11px;
 }
 
+/* Model change notification styling */
+.model-change-notification {
+  padding: 8px 12px;
+  margin: 8px 0;
+  background-color: var(--notification-bg);
+  border-radius: 8px;
+  border-left: 4px solid #1890ff;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+}
+ 
+.notification-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+ 
+.notification-icon {
+  font-size: 18px;
+}
+ 
+.system-message {
+  opacity: 0.8;
+  font-style: italic;
+}
+
 /* Input Container */
 .input-container {
   position: sticky;
@@ -352,6 +469,19 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 .input-container textarea {
   width: 100%;
+  max-height: 200px;
+  overflow-y: auto !important;
+  transition: max-height 0.3s ease;
+}
+
+/* When actively typing, allow the textarea to grow larger */
+.input-container:not(.sending) textarea {
+  max-height: 50vh;
+}
+
+/* When sending or after submission, constrain the height */
+.input-container.sending textarea {
+  max-height: 200px;
 }
 
 .dark .ant-input {
@@ -376,17 +506,51 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   height: calc(100vh - var(--header-height));
   overflow: hidden;
   padding: 20px;
+  transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
   border-right: 2px solid #e8e8e8;
   flex-direction: column;
   z-index: 2;
   margin-top: 1px;
+  transform: translateX(0);
   display: flex;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .folder-tree-panel.collapsed {
-  display: none;
+  transform: translateX(-100%);
+  opacity: 0.2;
   width: 0;
   padding: 0;
+}
+
+/* Prevent layout shifts during initial load */
+.initial-load .folder-tree-panel, 
+.initial-load .chat-container, 
+.initial-load .panel-toggle, 
+.initial-load .panel-resizer {
+  transition: none !important;
+  animation: none !important;
+}
+/* Add class to enable animations after initial load */
+.animations-enabled .folder-tree-panel,
+.animations-enabled .chat-container,
+.animations-enabled .panel-toggle {
+  transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out, left 0.5s ease-in-out !important;
+}
+
+/* Token display responsive styles */
+.token-summary .ant-typography + div {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+}
+ 
+/* Ensure token items don't wrap and maintain even spacing */
+.token-summary .ant-typography + div > span {
+  white-space: nowrap;
+  flex: 1;
+  text-align: center;
 }
 
 .dark .folder-tree-panel {
@@ -404,16 +568,49 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   height: 100%;
 }
 
+/* Override any max-width constraints in the folder tree */
+.folder-tree-panel .ant-tree,
+.folder-tree-panel .ant-tabs,
+.folder-tree-panel .ant-tabs-content,
+.folder-tree-panel .ant-tabs-tabpane {
+  max-width: none !important;
+  width: 100% !important;
+}
+
+/* Ensure the tree takes up the full width */
+.folder-tree-panel .ant-tree {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+/* Make sure the token count display expands with the panel */
+.token-display-container,
+.token-display {
+  width: 100% !important;
+  max-width: none !important;
+}
+
 .folder-tree-panel .ant-tabs-content {
   flex: 1;
   height: calc(100% - var(--model-display-height));
   position: relative;
   overflow: auto;
+  width: 100% important;
 }
 
 .folder-tree-panel .ant-tabs-nav {
   margin-top: -8px;
+  margin-bottom: -2px;
   top: 0;
+}
+
+/* Fast tooltips for action buttons */
+[data-tooltip-delay="50"]:hover::after {
+    animation-delay: 50ms !important;
+}
+ 
+button[data-tooltip-delay="50"] {
+    --tooltip-delay: 50ms;
 }
 
 .dark .ant-tabs {
@@ -445,6 +642,11 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   backface-visibility: hidden;
 }
 
+.ant-tree .ant-tree-treenode {
+  width: 100% !important;
+  display: flex !important;
+}
+
 .ant-tree-node-content-wrapper {
   transform: translateZ(0);
   backface-visibility: hidden;
@@ -469,11 +671,18 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 }
 
 .dark .ant-tree-title {
+  width: 100% !important;
+  display: flex !important;
+  align-items: center;
   color: #ffffff;
 }
 
 /* Tree Component Styling */
 .ant-tree .ant-tree-node-content-wrapper {
+  width: 100% !important;
+  display: flex !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
   color: #000000;
 }
 
@@ -502,6 +711,8 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   background-color: inherit;
   transition: background-color 0.3s ease;
   z-index: 1;
+  padding: 0 4px !important;
+  box-sizing: border-box;
 }
 
 .dark .token-display {
@@ -516,16 +727,22 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 .token-summary {
   border-color: #303030;
   transition: all 0.3s ease;
+  padding: 4px 4px 8px 4px !important;
 }
 
 .token-summary .ant-typography {
   color: inherit;
 }
 
+.token-summary .ant-progress {
+  width: 100% !important;
+  margin: 4px 0 !important;
+}
+ 
 .model-id-display {
   position: fixed;
   z-index: 11;
-  bottom: 0;
+  bottom: 0; 
   width: min(var(--folder-panel-width), var(--folder-panel-max-width));
   padding: 8px;
   background-color: #f5f5f5;
@@ -564,7 +781,6 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     margin-bottom: 1em;
     width: 100%;
     overflow: auto;
-    overflow-x: auto !important;
     padding-bottom: 16px;
 }
 
@@ -576,7 +792,6 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 .diff-table.diff-split {
     table-layout: fixed !important;
     width: 100%;
-    min-width: 0;
     border-collapse: collapse;
     border-spacing: 0;
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
@@ -586,44 +801,37 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
     position: relative;
 }
 
-/* Make line numbers non-selectable and non-copyable */
-.no-copy {
-    -webkit-user-select: none !important;
-    -moz-user-select: none !important;
-    -ms-user-select: none !important;
-    user-select: none !important;
-    -webkit-touch-callout: none !important;
-}
-
 /* Column styles */
 .diff-table.diff-split .diff-gutter-col {
     width: 50px !important;
     min-width: 50px !important;
     max-width: 50px !important;
-    padding: 0 8px;
-    text-align: right;
-    position: relative;
+    padding: 0 8px !important;
+    text-align: right !important;
+    position: sticky;
+    left: 0;
+    z-index: 1;
     box-sizing: border-box;
     white-space: nowrap;
     background-color: #f6f8fa;
     border-right: 1px solid #e1e4e8;
+    overflow-x: visible !important;
 }
 
 /* Code cell styles */
 .diff-table.diff-split .diff-code {
-    width: calc(50% - var(--gutter-width, 0px)) !important;
+    width: 50% !important;
     -webkit-user-select: text !important;
     -moz-user-select: text !important;
     -ms-user-select: text !important;
     user-select: text !important;
     position: relative;
-    z-index: 1;
-    background: inherit;
-    min-width: calc(50% - 50px) !important;
-    max-width: calc(50% - 50px) !important;
-    padding: 0 8px;
-    box-sizing: border-box;
-    overflow: hidden;
+    z-index: 0;
+    padding: 0 8px !important;
+    box-sizing: border-box !important;
+    white-space: pre !important;
+    word-wrap: normal !important;
+    overflow: visible !important;
 }
 
 .diff-table.diff-split .diff-code-right .diff-line-insert {
@@ -779,6 +987,15 @@ body:not(.dark) .token.attr-name {
     color: #005cc5;
 }
 
+/* Ensure streaming content remains visible */
+.streaming .diff-view,
+.streaming .diff-container,
+.streaming pre,
+.streaming code,
+.streaming .token-container {
+  visibility: visible !important;
+}
+
 /* General Diff-mode styling improvements */
 .diff-table {
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
@@ -790,6 +1007,7 @@ body:not(.dark) .token.attr-name {
     -moz-user-select: text;
     table-layout: fixed !important;
     transform: translateZ(0);
+    contain: layout style;
     will-change: transform;
 }
 
@@ -801,10 +1019,12 @@ body:not(.dark) .token.attr-name {
     -moz-user-select: text !important;
     -ms-user-select: text !important;
     user-select: text !important;
+    contain: layout;
 }
 
 .diff-code-content {
     padding: 1px 0;
+    contain: layout;
 }
 
 .dark .diff-table {
@@ -829,6 +1049,7 @@ body:not(.dark) .token.attr-name {
 /* Dark mode syntax highlighting Prism overrides */
 .dark .token.comment,
 .dark .token.prolog,
+.streaming .token,
 .dark .token.doctype,
 .dark .token.cdata {
     color: #8b949e;
@@ -897,6 +1118,14 @@ body:not(.dark) .token.attr-name {
     height: 100%;
     background-color: #2ea043; 
 }
+
+/* Ensure proper scrolling behavior for split view */
+.diff-table.diff-split {
+    width: 100% !important;
+    max-width: none !important;
+    overflow-x: visible !important;
+}
+
 
 .diff-table.diff-split .diff-gutter-col.diff-gutter-new:empty::after,
 .diff-table.diff-split .diff-gutter-col.diff-gutter-new.diff-gutter-delete::after {
@@ -981,6 +1210,15 @@ body:not(.dark) .token.attr-name {
     border-radius: 6px;
 }
 
+/* Dark theme switch styling */
+.dark-theme-switch.ant-switch.ant-switch-checked {
+  background-color: #177ddc;
+}
+ 
+.dark-theme-switch.ant-switch.ant-switch-checked:hover:not(.ant-switch-disabled) {
+  background-color: #1890ff;
+}
+
 /* Diff View */
 .diff-view-controls {
   margin-bottom: 10px;
@@ -995,6 +1233,41 @@ body:not(.dark) .token.attr-name {
   align-items: center;
   border-bottom: 1px solid #e1e4e8;
 }
+
+/* This is the div wrapping the table in MarkdownRenderer.tsx DiffView */
+/* We only want this to scroll for UNIFIED view. Split view panes scroll themselves. */
+.diff-view.smaller-diff-view.diff-view-unified {
+  overflow-x: hidden !important;
+  overflow-y: hidden;
+  position: relative; /* For sticky elements if any, like headers or line numbers */
+  width: 100%; /* Ensure it takes up available width before scrolling */
+}
+
+/* Styling for the new hunk-level scroll container in UNIFIED view */
+.hunk-scroll-container {
+  overflow-x: auto !important; /* This div scrolls its hunk's table */
+  margin-bottom: 0; /* No margin needed as ellipsis divs provide separation */
+  /* border: 1px solid #444; */ /* Optional: for debugging hunk boundaries */
+}
+ 
+/* Table INSIDE a hunk-scroll-container (for UNIFIED view hunks) */
+.hunk-scroll-container > table.diff-table-hunk.diff-table-unified-hunk {
+  table-layout: auto !important; /* Allow content to define table width */
+  width: auto !important; /* Let the table determine its own width based on content */
+  min-width: 100%;
+}
+
+/* UNIFIED VIEW: The single TD containing code must allow its content to overflow. */
+.diff-view.smaller-diff-view.diff-view-unified > table.diff-table > tbody > tr > td.diff-code {
+  width: auto !important; /* Allow cell to expand with content */
+  overflow: visible !important;
+}
+
+/* Specifically for the TD in UNIFIED view, ensure it allows content to overflow */
+.diff-view.diff-view-unified .diff-table td.diff-code {
+  overflow: visible !important;
+}
+
 
 .dark .diff-view-controls {
   background-color: #040404;
@@ -1286,12 +1559,62 @@ body:not(.dark) .token.attr-name {
    pointer-events: none;
 }
 
+/* Vega-Lite visualization styles */
+.vega-lite-container {
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100% !important;
+    overflow-x: auto;
+    overflow-y: visible;
+}
+ 
+.vega-lite-container canvas,
+.vega-lite-container svg {
+    max-width: 100% !important;
+    width: 100% !important;
+    height: auto !important;
+}
+ 
+/* Ensure Vega-Lite embeds are responsive */
+.vega-lite-container .vega-embed {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: fit-content !important;
+    overflow: visible !important;
+}
+ 
+.vega-lite-container .vega-embed > div {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+}
+
 /* D3 Visualization Styles */
-.d3-container {
+.d3-container:not(.d3-container .d3-container) {
    margin: 1em 0;
-   padding: 1em;
    border-radius: 6px;
    overflow: auto;
+   box-sizing: border-box;
+   /* Allow container to size based on content, up to 100% width */
+   display: block; 
+   height: auto;
+   min-height: 50px;
+   max-width: 100%;
+   position: relative; /* Needed for positioning the button */
+}
+
+/* Vega-Lite containers should be able to expand */
+.d3-container:has(.vega-lite-container) {
+   height: auto !important;
+   overflow: visible !important;
+}
+
+/* Nested d3-containers should not have margins/padding */
+.d3-container .d3-container {
+   margin: 0;
+   padding: 0;
+   border-radius: 0;
 }
 
 .dark .d3-container {
@@ -1301,6 +1624,8 @@ body:not(.dark) .token.attr-name {
 .d3-container svg {
    display: block;
    margin: 0 auto;
+   max-width: 100%;
+   height: auto;
 }
 
 /* D3 Axis Styles */
@@ -1322,6 +1647,16 @@ body:not(.dark) .token.attr-name {
    fill: #888;
 }
 
+.diff-line {
+  contain: strict;
+  content-visibility: auto;
+}
+
+.diff-line-container {
+  contain: content;
+  position: relative;
+}
+
 /* D3 Error Message */
 .d3-error {
    padding: 16px;
@@ -1330,6 +1665,144 @@ body:not(.dark) .token.attr-name {
    background-color: #fff2f0;
    border: 1px solid #ffa39e;
    color: #cf1322;
+}
+
+/* Graphviz Styles */
+.graphviz-container {
+   margin: 1em 0;   
+   padding: 1em;
+   border-radius: 6px;
+   overflow: auto; /* Crucial for large graphs */
+   background-color: #ffffff; /* Default light mode background */
+   border: 1px solid #e1e4e8; /* Optional border */
+   box-sizing: border-box;
+}
+
+.dark .graphviz-container {
+   background-color: #1f1f1f; /* Dark mode background */
+   border-color: #30363d;
+}
+
+/* Ensure SVG scales correctly within the container */
+.graphviz-container svg {
+   display: block; /* Prevents extra space below SVG */
+   max-width: none; /* Allows SVG to be wider than container for scrolling */
+   height: auto; /* Maintain aspect ratio */
+   margin: 0 auto; /* Center smaller graphs */
+}
+
+/* Graphviz Loading State (Optional but good UX) */
+.graphviz-container.loading {
+   display: flex;
+   justify-content: center;
+   align-items: center;
+   min-height: 150px;
+   background-color: rgba(255, 255, 255, 0.8); /* Light overlay */
+}
+.dark .graphviz-container.loading {
+   background-color: rgba(31, 31, 31, 0.8); /* Dark overlay */
+}
+
+/* Graphviz Error State */
+.graphviz-error {
+   padding: 16px;
+   margin: 16px 0;
+   border-radius: 6px;
+   background-color: #fff2f0; /* Light error background */
+   border: 1px solid #ffa39e; /* Light error border */
+   color: #cf1322; /* Light error text */
+}
+
+.dark .graphviz-error {
+   background-color: #2a1f1f; /* Dark error background */
+   border-color: #a61d24; /* Dark error border */
+   color: #ff7875; /* Dark error text */
+}
+
+.graphviz-error p {
+    margin-bottom: 8px;
+}
+
+.graphviz-error details {
+    margin-top: 12px;
+}
+
+.graphviz-error summary {
+    cursor: pointer;
+    font-weight: bold;
+    color: inherit; /* Use parent color */
+}
+
+.graphviz-error pre code {
+   display: block; /* Ensure pre takes block layout */
+   white-space: pre-wrap; /* Wrap long lines */
+   word-break: break-all; /* Break long words/identifiers */
+   background-color: rgba(0,0,0,0.05); /* Slight background for code */
+   padding: 8px;
+   border-radius: 4px;
+   margin-top: 8px;
+   color: inherit; /* Use parent color */
+}
+
+.dark .graphviz-error pre code {
+    background-color: rgba(255,255,255,0.1);
+}
+
+/* Diagram Action Buttons Styling */
+.diagram-actions {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    z-index: 10; /* Ensure it's above the SVG */
+    display: flex;
+    gap: 5px;
+    background: rgba(240, 240, 240, 0.8); /* Light background for visibility */
+    padding: 3px;
+    border-radius: 4px;
+    opacity: 0; /* Hidden by default */
+    transition: opacity 0.2s ease-in-out;
+}
+
+.d3-container:hover .diagram-actions {
+    opacity: 1; /* Show on hover */
+}
+
+.diagram-action-button {
+    padding: 3px 8px;
+    font-size: 11px;
+    background-color: rgba(200, 200, 200, 0.7);
+    border: 1px solid rgba(150, 150, 150, 0.8);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: opacity 0.2s ease-in-out;
+    opacity: 0.8;
+}
+
+.diagram-action-button:hover {
+    background-color: rgba(180, 180, 180, 0.9);
+    border-color: rgba(120, 120, 120, 0.9);
+    opacity: 1;
+}
+
+.dark .diagram-actions {
+    background: rgba(40, 40, 40, 0.8);
+}
+
+.dark .diagram-action-button {     
+    background-color: rgba(50, 50, 50, 0.7);
+    border-color: rgba(100, 100, 100, 0.8);
+    color: #ccc;
+}
+
+.dark .diagram-action-button:hover {
+    background-color: rgba(70, 70, 70, 0.9);
+    border-color: rgba(120, 120, 120, 0.9);
+}
+
+.hunk-status-indicator:hover {
+    filter: brightness(1.1);
+    transform: scale(1.05);
+    transition: all 0.2s ease;
 }
 
 /* dark theme scrollbars */
@@ -1382,6 +1855,34 @@ body:not(.dark) .token.attr-name {
     scrollbar-width: thin;
 }
 
+/* --- Vertical Indentation Guides for Ant Design Tree (FolderTree) --- */
+ 
+/* Target the <ul> that groups children. This <ul> is inside an <li> (treenode). */
+.folder-tree-panel .ant-tree .ant-tree-treenode ul.ant-tree-child-tree {
+  /*
+    Ant Design's Tree already indents child groups using `ant-tree-indent-unit` spans.
+    We apply the border to the `ul` itself.
+    The `padding-left` on this `ul` then creates space for its direct `li` children
+    to appear to the right of this vertical line.
+  */
+  padding-left: 18px; /* Adjust this: space between the line and child items' content.
+                         Should be enough to clear the child's switcher icon (if any) + desired gap.
+                         AntD switcher is ~24px wide. So 12px (half switcher) + 6px gap = 18px. */
+  position: relative; /* Needed if you wanted to use ::before for more complex lines, but border-left is simpler. */
+  border-left: 1px solid #e0e0e0; /* The vertical line for light mode. */
+}
+ 
+/* Dark mode for the line */
+.dark .folder-tree-panel .ant-tree .ant-tree-treenode ul.ant-tree-child-tree {
+  border-left-color: #606060; /* More visible dark mode line color. #424242 is also an option. */
+}
+ 
+/* Optional: If you were to use showLine prop on Tree and wanted to hide AntD's default lines: */
+/* .folder-tree-panel .ant-tree.ant-tree-show-line .ant-tree-indent-unit::before,
+.folder-tree-panel .ant-tree.ant-tree-show-line .ant-tree-indent-unit::after {
+  display: none !important;
+} */
+
 /* Chat History responsive styles */
 .chat-history-actions {
     display: flex;
@@ -1411,4 +1912,133 @@ body:not(.dark) .token.attr-name {
 }
 .chat-history-list .ant-list-item:has(> div[style*="width"] > div > .chat-history-title:first-child:nth-last-child(1):not(:only-child)) {
     max-width: 180px;  /* Approximately 20 characters in typical font */
+}
+/* Markdown text styling */
+.markdown-text .list-item {
+  display: block;
+  margin-left: 1em;
+  position: relative;
+}
+
+.markdown-text .list-item + .list-item {
+  margin-top: 0.25em;
+}
+
+/* Add proper spacing between list items */
+.markdown-text br + .list-item {
+  margin-top: 0.25em;
+}
+
+/* Ensure proper spacing for consecutive list items */
+.markdown-text span.list-item + br + span.list-item {
+  margin-top: 0.25em;
+}
+
+/* Mermaid container styles */
+.d3-container.mermaid-container {
+    height: auto !important;
+    min-height: unset !important;
+    max-height: none !important;
+}
+
+.mermaid-wrapper {
+    width: 100%;
+    max-width: 100%;
+    overflow: auto;
+    padding: 1em;
+    display: flex;
+    justify-content: center;
+}
+
+.mermaid-wrapper svg {
+    max-width: 100% !important;
+    height: auto !important;
+    width: auto !important;
+    min-width: 200px;
+    max-height: 600px;
+}
+
+.mermaid-container {
+    width: 100% !important;
+    height: auto !important;
+    overflow: auto !important;
+    padding: 1em 0 !important;
+    max-height: 800px !important;
+}
+
+/* MUI Chat History specific styles */
+
+/* Remove ALL default padding from the TreeView root */
+.chat-history-tree.MuiTreeView-root {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+ 
+/* Remove padding from root tree items - push chevrons to the left edge */
+.chat-history-tree .MuiTreeItem-root {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+}
+ 
+/* Remove padding from content wrapper - chevrons should be at left edge */
+.chat-history-tree .MuiTreeItem-content {
+  padding: 1px 4px 1px 0 !important;
+  min-height: 24px !important;
+  margin-left: 0 !important;
+}
+
+/* Remove any default indentation from icon container */
+.chat-history-tree .MuiTreeItem-iconContainer {
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+  margin-right: 2px !important; /* Minimal space between chevron and content */
+}
+
+/* vertical span expansion lines for folders */
+.chat-history-tree .MuiTreeItem-group {
+  margin-left: 8px !important; 
+  padding-left: 0px !important; 
+}
+
+/* Shift nested content even more left */
+.chat-history-tree .MuiTreeItem-group .MuiTreeItem-content {
+  margin-left: 0px !important; /* Pull nested content further left */
+  padding-left: 8px !important;
+}
+ 
+/* Reduce icon container spacing */
+.chat-history-tree .MuiTreeItem-iconContainer {
+  margin-right: 2px !important; /* Reduce space between chevron and content */
+}
+
+/* Override MUI hover styles to prevent underline */
+.chat-history-tree .MuiTypography-root:hover {
+  text-decoration: none !important;
+}
+.mermaid-container svg {
+    max-width: 100% !important;
+    height: auto !important;
+}
+
+.diagram-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    display: flex;
+    gap: 4px;
+}
+
+.diagram-action-button {
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    background: rgba(255, 255, 255, 0.9);
+    cursor: pointer;
+}
+
+.dark .diagram-action-button {
+    background: rgba(0, 0, 0, 0.7);
+    border-color: #444;
+    color: #fff;
 }

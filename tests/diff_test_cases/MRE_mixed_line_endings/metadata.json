@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with mixed line endings (CRLF and LF) that breaks the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "mixed_line_endings_test"
+}

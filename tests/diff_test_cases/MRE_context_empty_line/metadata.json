@@ -1,0 +1,5 @@
+{
+  "description": "Fuzzy insertion into a gap without preserving/noting the presence of the gap",
+  "target_file": "mre_context_empty_line.ts",
+  "expected_to_fail": false 
+}

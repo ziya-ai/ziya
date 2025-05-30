@@ -1,7 +1,22 @@
-type 'typescript jsx' doesn't invoke prism syntax hghlighting in either codeblocks or diffs
-some jsx code, espcially open ended spans and other bracket conetnt, does not render
-diff apply, while significantly more robust, is still a work in progress and should be used at your own risk:
- -- there is the potential for some corruption, especially for single line additions
-D3 and VegaLite renderers are incomplete, don't tell the model about them and you should be fine.
-the green status checkmark is meant for streaming responses received while out of context, but it still shows up for most recent responses when you are in the context and switch away from it as well
-there are some messy rej and orig diff files from some of the interim stages that are left around, even when a more advanced apply pipeline stage later successfully completed the rest of the hunks.
+Vegalite:
+ - popout light/dark re-renders are broken
+ - some compound graphs have odd sizing/spacing
+ - going to source and back to view disables ability to see source again
+Deepseek-r1 @ Bedrock:
+ - re-thought mode needs to be caught/interpreted
+ - Some stream results can show broken state at end of succesfull streams
+Diff Views:
+ - Horizontal scrolling within side-to-side view is not currently supported
+Diff Apply:
+ - Trouble matching for apply on extremely large source files
+ - Some cases of partial apply fail to update status
+ - Some 'already applied' cases apply succesfully and report already applied
+ - Some succesful applies report as already applied
+Nova:
+ - Some Nova models lead and trail with empty brackets
+UX: Scrolling:
+ - sticky scroll to follow active content not enabled in bottom-up
+UX: Conversation View:
+ - MUI drag and drop not properly enabled
+IndexedDB:
+ - There remains a case where db corruption can make a browser/port unrecoverable (only seen on safari. haven't seen with recent corruption, but still doesn't cleanly recover)

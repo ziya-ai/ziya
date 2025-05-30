@@ -1,0 +1,5 @@
+{
+    "name": "MRE_line_endings_preservation",
+    "description": "Test case for preserving line endings when applying diffs",
+    "target_file": "src/example.py"
+}

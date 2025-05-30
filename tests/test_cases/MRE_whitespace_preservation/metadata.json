@@ -1,0 +1,5 @@
+{
+    "name": "MRE_whitespace_preservation",
+    "description": "Test case for preserving whitespace when applying diffs",
+    "target_file": "src/whitespace_example.py"
+}

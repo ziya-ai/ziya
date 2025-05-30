@@ -1,0 +1,7 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with incorrect line numbers in the diff hunk headers",
+    "date_added": "2025-03-22",
+    "issue_reference": "incorrect_line_numbers_test",
+    "expected_to_fail": true
+}

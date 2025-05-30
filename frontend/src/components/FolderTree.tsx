@@ -1,66 +1,126 @@
-import React, {useEffect, useState, useCallback} from 'react';
-import {Input, Tabs, Tree, TreeDataNode, Button, message} from 'antd';
-import {useFolderContext} from '../context/FolderContext';
-import {Folders} from '../utils/types';
-import {useChatContext} from '../context/ChatContext';
-import {TokenCountDisplay} from "./TokenCountDisplay";
-import union from 'lodash/union';
-import {ChatHistory} from "./ChatHistory";
-import {useTheme} from '../context/ThemeContext';
-import {ModelConfigButton} from './ModelConfigButton';
-import {ReloadOutlined, FolderOutlined, MessageOutlined} from '@ant-design/icons';
+import React, { useEffect, useState, useCallback, useRef, useMemo, useLayoutEffect, CSSProperties } from 'react';
+import { Tabs, message } from 'antd';
+import { useFolderContext } from '../context/FolderContext';
+import { useChatContext } from '../context/ChatContext';
+import { TokenCountDisplay } from "./TokenCountDisplay";
+import { FolderOutlined, FileOutlined } from '@ant-design/icons'; // Import icons
+import { debounce } from 'lodash';
+import { ChatHistory } from "./ChatHistory";
+import { ModelConfigButton } from './ModelConfigButton';
+import { ReloadOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons';
 import { convertToTreeData } from '../utils/folderUtil';
-const {TabPane} = Tabs;
+import MUIChatHistory from './MUIChatHistory';
+import { MUIFileExplorer } from './MUIFileExplorer';
+import { useTheme } from '../context/ThemeContext';
 
-const {Search} = Input;
+import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
+import AddCommentIcon from '@mui/icons-material/AddComment';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
 
 interface FolderTreeProps {
     isPanelCollapsed: boolean;
 }
 
+// Create a cache for token calculations to avoid redundant logs
+const tokenCalculationCache = new Map<string, { included: number, total: number }>();
+const DEBUG_LOGGING_ENABLED = false; // Set to false to disable verbose logging
+
 const ACTIVE_TAB_KEY = 'ZIYA_ACTIVE_TAB';
-const DEFAULT_TAB = '1'; // File Explorer tab
 
-export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
-    const {
-        folders,
-        treeData,
-	setTreeData,
-        checkedKeys,
-        setCheckedKeys,
-	expandedKeys,
-	setExpandedKeys
-    } = useFolderContext();
+export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => {
+    // We only need minimal context now since MUIFileExplorer handles its own state
+    // Extract only the specific values needed from ChatContext
+    // to prevent unnecessary re-renders
     const [modelId, setModelId] = useState<string>('');
-    const {isDarkMode} = useTheme();
-    const {currentConversationId} = useChatContext();
-    const [isRefreshing, setIsRefreshing] = useState(false);
-    const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || DEFAULT_TAB);
-    const [filteredTreeData, setFilteredTreeData] = useState<TreeDataNode[]>([]);
-    const [searchValue, setSearchValue] = useState('');
-    const [autoExpandParent, setAutoExpandParent] = useState(true);
+    const { } = useChatContext();
+    const { isDarkMode } = useTheme();
 
+    // Use a more selective approach to extract only what we need from ChatContext
+    const chatContext = useChatContext();
+    const { startNewChat, createFolder } = useChatContext();
+    const currentFolderId = chatContext.currentFolderId;
+    const chatFolders = chatContext.folders;
+
+    // Add state to track panel width
+    const [panelWidth, setPanelWidth] = useState<number>(300);
+    const [modelDisplayName, setModelDisplayName] = useState<string>('');
+
+    // Add ref for the panel element
+    const [showActionButtons, setShowActionButtons] = useState(true);
+    const panelRef = useRef<HTMLDivElement>(null);
+    const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || '1');
+
+    // Add effect to track panel width
     useEffect(() => {
-        if (searchValue) {
-            const {filteredData, expandedKeys} = filterTreeData(treeData, searchValue);
-            setFilteredTreeData(filteredData);
-            setExpandedKeys(expandedKeys);
-        } else {
-            setFilteredTreeData(treeData);
-            setExpandedKeys([]);
-        }
-    }, [searchValue, treeData]);
+        if (!panelRef.current) return;
 
-    // Save active tab whenever it changes
+        const resizeObserver = new ResizeObserver(entries => {
+            for (const entry of entries) {
+                setPanelWidth(entry.contentRect.width);
+                // Dispatch custom event for other components to react to width change
+                window.dispatchEvent(new CustomEvent('folderPanelResize', {
+                    detail: { width: entry.contentRect.width }
+                }));
+                
+                // Hide action buttons when panel gets too narrow (less than 280px)
+                setShowActionButtons(entry.contentRect.width >= 280);
+            }
+        });
+
+        resizeObserver.observe(panelRef.current);
+        return () => resizeObserver.disconnect();
+    }, []);
+
+    // Handle creating a new folder at current level
+    const handleCreateFolderAtCurrentLevel = useCallback(async () => {
+        try {
+            const createdFolderId = await createFolder('New Folder', currentFolderId);
+            message.success('New folder created successfully');
+        } catch (error) {
+            console.error('Error creating folder:', error);
+            message.error('Failed to create folder');
+        }
+    }, [createFolder, currentFolderId]);
+
+    // Handle creating a new chat at current folder level
+    const handleCreateChatAtCurrentLevel = useCallback(async () => {
+        try {
+            await startNewChat(currentFolderId);
+            message.success('New chat created successfully');
+        } catch (error) {
+            console.error('Error creating chat:', error);
+            message.error('Failed to create new chat');
+        }
+    }, [startNewChat, currentFolderId]);
+
     useEffect(() => {
         localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
     }, [activeTab]);
 
-        const fetchModelId = useCallback(async () => {
+    // Update model info when it changes
+    const updateModelInfo = useCallback(async () => {
+        try {
+            const response = await fetch('/api/current-model');
+            const data = await response.json();
+            setModelId(data.model_id);
+            setModelDisplayName(data.display_model_id || data.model_alias || data.model_id);
+            console.info(`Updated model info: ${data.model_id} (${data.display_model_id || 'no display name'})`);
+        } catch (error) {
+            console.error('Error fetching model info:', error);
+            // Fallback to basic model ID if detailed info fails
+            fetchModelId();
+        }
+    }, []);
+
+    const fetchModelId = useCallback(async () => {
         try {
             const response = await fetch('/api/model-id');
             const data = await response.json();
             setModelId(data.model_id);
+            if (!modelDisplayName) {
+                setModelDisplayName(data.model_id);
+            }
         } catch (error) {
             console.error('Error fetching model ID:', error);
         }
@@ -68,170 +128,26 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
 
     useEffect(() => {
         fetchModelId();
-    }, [fetchModelId]);
+        updateModelInfo();
 
-    const refreshFolders = async () => {
-        setIsRefreshing(true);
-        try {
-            const response = await fetch('/api/folders?refresh=true');
-            if (!response.ok) {
-                throw new Error('Failed to refresh folders');
-            }
-	    const data: Folders = await response.json();
-
-            // Sort the tree data recursively
-            const sortTreeData = (nodes: TreeDataNode[]): TreeDataNode[] => {
-		return nodes.sort((a, b) =>
-                    String(a.title).toLowerCase()
-                        .localeCompare(String(b.title).toLowerCase())
-                )
-                    .map(node => ({
-                        ...node,
-                        children: node.children ? sortTreeData(node.children) : undefined
-                    }));
-            };
-
-	    const sortedData = sortTreeData(convertToTreeData(data));
-	    console.debug('Refreshed and sorted folder structure:', { nodeCount: sortedData.length });
-
-            setTreeData(sortedData);
-            message.success('Folder structure refreshed');
-        } catch (err) {
-            console.error('Failed to refresh folders:', err);
-            message.error('Failed to refresh folders');
-        } finally {
-            setIsRefreshing(false);
-        }
-    };
-
-    const filterTreeData = (data: TreeDataNode[], searchValue: string): {
-        filteredData: TreeDataNode[],
-        expandedKeys: React.Key[]
-    } => {
-        const expandedKeys: React.Key[] = [];
-
-        const filter = (node: TreeDataNode): TreeDataNode | null => {
-            const nodeTitle = node.title as string;
-            if (nodeTitle.toLowerCase().includes(searchValue.toLowerCase())) {
-                expandedKeys.push(node.key);
-                return node;
-            }
-
-            if (node.children) {
-                const filteredChildren = node.children
-                    .map(child => filter(child))
-                    .filter((child): child is TreeDataNode => child !== null);
-
-                if (filteredChildren.length > 0) {
-                    expandedKeys.push(node.key);
-                    return {...node, children: filteredChildren};
-                }
-            }
-            return null;
+        // Listen for model changes
+        const handleModelChange = () => {
+            console.log("Model change detected, updating model info");
+            // Use setTimeout to ensure the backend has updated
+            updateModelInfo();
+            // And check again after a delay to ensure we have the latest
+            setTimeout(updateModelInfo, 500);
         };
-
-        const filteredData = data.map(node => filter(node)).filter((node): node is TreeDataNode => node !== null);
-
-        return {filteredData, expandedKeys};
-    };
-
-    const onExpand = (keys: React.Key[]) => {
-        setExpandedKeys(keys);
-        setAutoExpandParent(false);
-    };
-
-    const onCheck = React.useCallback(
-        (checkedKeysValue, e) => {
-            const getAllChildKeys = (node: TreeDataNode): string[] => {
-                let keys: string[] = [node.key as string];
-                if (node.children) {
-                    node.children.forEach(child => {
-                        keys = keys.concat(getAllChildKeys(child));
-                    });
-                }
-                return keys;
-            };
-
-            const getAllParentKeys = (key: React.Key, tree: TreeDataNode[]): string[] => {
-                let parentKeys: string[] = [];
-                const findParent = (currentKey: React.Key, nodes: TreeDataNode[]): React.Key | null => {
-                    for (let i = 0; i < nodes.length; i++) {
-                        const node = nodes[i];
-                        if (node.children && node.children.some(child => child.key === currentKey)) {
-                            parentKeys.push(node.key as string);
-                            return node.key;
-                        } else if (node.children) {
-                            const foundParent = findParent(currentKey, node.children);
-                            if (foundParent) {
-                                parentKeys.push(node.key as string);
-                                return foundParent;
-                            }
-                        }
-                    }
-                    return null;
-                };
-
-                findParent(key, tree);
-                return parentKeys;
-            };
-
-            if (e.checked || e.selected) {
-                if (e.node.children?.length) {
-                    const keysToAdd = getAllChildKeys(e.node);
-                    setCheckedKeys(prevKeys =>
-                        union(prevKeys as string[], keysToAdd)
-                    );
-                } else {
-                    setCheckedKeys(prevKeys =>
-                        union(prevKeys as string[], [e.node.key as string])
-                    );
-                }
-            } else {
-                const keysToRemove = e.node.children?.length ? getAllChildKeys(e.node) : [e.node.key as string];
-                const parentKeys = getAllParentKeys(e.node.key, treeData);
-                setCheckedKeys(prevKeys =>
-                    (prevKeys as string[]).filter(key => !keysToRemove.includes(key) && !parentKeys.includes(key))
-                );
-            }
-        },
-        [searchValue, treeData]
-    );
-
-    const getParentKey = (key: React.Key, tree: TreeDataNode[]): React.Key => {
-        let parentKey: React.Key;
-        for (let i = 0; i < tree.length; i++) {
-            const node = tree[i];
-            if (node.children) {
-                if (node.children.some((item) => item.key === key)) {
-                    parentKey = node.key;
-                } else if (getParentKey(key, node.children)) {
-                    parentKey = getParentKey(key, node.children);
-                }
-            }
-        }
-        return parentKey!;
-    };
-
-    const onSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const value = e.target.value;
-        setSearchValue(value);
-        setAutoExpandParent(true);
-    };
-
-    const titleRender = (nodeData) => (
-        <span style={{
-            userSelect: 'text',
-            cursor: 'text',
-            color: isDarkMode ? '#ffffff' : '#000000',
-        }}>
-            {nodeData.title}
-        </span>
-    );
+        window.addEventListener('modelSettingsChanged', handleModelChange);
+        return () => {
+            window.removeEventListener('modelSettingsChanged', handleModelChange);
+        };
+    }, [fetchModelId, updateModelInfo]);
 
     return (
-        <div className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
-	    <TokenCountDisplay/>
-            <Tabs 
+        <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
+            <TokenCountDisplay />
+            <Tabs
                 activeKey={activeTab}
                 defaultActiveKey="1"
                 destroyInactiveTabPane={false}
@@ -241,99 +157,81 @@ export const FolderTree: React.FC<FolderTreeProps> = ({ isPanelCollapsed }) => {
                     flexDirection: 'column',
                     color: isDarkMode ? '#ffffff' : undefined,
                     overflow: 'hidden',
-		    margin: '0 -8px'
+                    margin: '0 -8px'
                 }}
                 onChange={setActiveTab}
                 items={[
                     {
                         key: '1',
-			label: (
-                            <span>
+                        label: (
+                            <div style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'space-between',
+                                width: '100%',
+                                minWidth: 0
+                            }}>
+                                <span style={{ 
+                                    display: 'flex', 
+                                    alignItems: 'center',
+                                    minWidth: 0,
+                                    overflow: 'hidden'
+                                }}>
                                 <FolderOutlined style={{ marginRight: 8 }} />
                                 File Explorer
-                            </span>
+                                </span>
+                            </div>
                         ),
-                        children: (
-                            <>
-                                <div style={{
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    height: '100%',
-                                    overflow: 'hidden',
-				    padding: '0 8px'
-                                }}>
-                                    <div style={{
-                                        flex: 1,
-                                        overflowY: 'auto',
-                                        overflowX: 'hidden'
-                                    }}>
-                                        <Search
-                                            style={{
-                                                marginBottom: 8,
-                                                backgroundColor: isDarkMode ? '#1f1f1f' : undefined,
-                                            }}
-                                            placeholder="Search folders"
-                                            onChange={onSearch}
-                                            allowClear
-                                        />
-                                        {folders ? (
-                                            <>
-                                                <Button
-                                                    icon={<ReloadOutlined spin={isRefreshing}/>}
-                                                    onClick={refreshFolders}
-                                                    style={{marginBottom: 8}}
-                                                    loading={isRefreshing}
-                                                >
-                                                    Refresh Files
-                                                </Button>
-                                                <Tree
-                                                    checkable
-                                                    onExpand={onExpand}
-                                                    expandedKeys={expandedKeys}
-                                                    autoExpandParent={autoExpandParent}
-                                                    onCheck={onCheck}
-                                                    checkedKeys={checkedKeys}
-                                                treeData={searchValue ? filteredTreeData : treeData}
-                                                    titleRender={titleRender}
-                                                    style={{
-                                                        background: 'transparent',
-                                                        color: isDarkMode ? '#ffffff' : '#000000',
-                                                        height: 'calc(100% - 40px)',
-                                                        overflow: 'auto',
-                                                        position: 'relative'
-                                                    }}
-                                                    className={isDarkMode ? 'dark' : ''}
-                                                />
-                                            </>
-                                        ) : (
-                                            <div>Loading Folders...</div>
-                                        )}
-                                    </div>
-                                </div>
-                            </>
-                        )
+                        children: <MUIFileExplorer />
                     },
                     {
                         key: '2',
-			label: (
-                            <span>
+                        label: (
+                            <div style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'space-between',
+                                width: '100%',
+                                minWidth: 0
+                            }}>
+                                <span style={{ 
+                                    display: 'flex', 
+                                    alignItems: 'center',
+                                    minWidth: 0,
+                                    overflow: 'hidden'
+                                }}>
                                 <MessageOutlined style={{ marginRight: 8 }} />
                                 Chat History
-                            </span>
+                                </span>
+                                {showActionButtons && activeTab === '2' && (
+                                    <div style={{ display: 'flex', gap: 4, marginLeft: 8, flexShrink: 0 }}>
+                                        <Tooltip title="Create new folder">
+                                            <IconButton size="small" onClick={handleCreateFolderAtCurrentLevel}
+                                                sx={{ color: '#1890ff', border: '1px solid #1890ff', width: 24, height: 24 }}>
+                                                <CreateNewFolderIcon sx={{ fontSize: 14 }} />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Tooltip title="Create new chat">
+                                            <IconButton size="small" onClick={handleCreateChatAtCurrentLevel}
+                                                sx={{ color: '#1890ff', border: '1px solid #1890ff', width: 24, height: 24 }}>
+                                                <AddCommentIcon sx={{ fontSize: 14 }} />
+                                            </IconButton>
+                                        </Tooltip>
+                                    </div>
+                                )}
+                            </div>
                         ),
-                        children: <ChatHistory/>
-                    }
+                        children: <MUIChatHistory />
+                    },
                 ]}
             />
-            <div className="model-id-display" style={{ 
-                display: 'flex', 
-                alignItems: 'center', 
-                justifyContent: 'space-between',
-                padding: '0 8px' 
+            <div className="model-id-display" style={{
+                display: 'flex',
+                alignItems: 'center',
             }}>
-                {modelId && <span style={{ flex: 1 }}>Model: {modelId}</span>}
+                {modelId && <span style={{ flex: 1 }}>Model: {modelDisplayName || modelId}</span>}
                 {modelId && <ModelConfigButton modelId={modelId} />}
             </div>
         </div>
     );
-};
+});

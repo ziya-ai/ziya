@@ -1006,6 +1006,7 @@ export const D3Test: React.FC = () => {
     const [complexity, setComplexity] = useState<'all' | 'simple' | 'complex'>('all');
     const [category, setCategory] = useState<'all' | 'bar' | 'line' | 'scatter' | 'function' | 'multiaxis' | 'bubble' | 'timeseries' | 'special'>('all');
     const [showBroken, setShowBroken] = useState(false);
+    const [isDarkMode, setIsDarkMode] = useState(false); // Add isDarkMode state
 
     const filteredTests = TEST_CASES.filter(test =>
         (complexity === 'all' || test.type === complexity) &&
@@ -1041,6 +1042,11 @@ export const D3Test: React.FC = () => {
                             checked={showBroken}
                             onChange={setShowBroken}
                         />
+                        <Text>Dark Mode:</Text>
+                        <Switch
+                            checked={isDarkMode}
+                            onChange={setIsDarkMode}
+                        />
                     </Space>
                     <Space wrap>
                         <Text>Complexity:</Text>
@@ -1069,6 +1075,27 @@ export const D3Test: React.FC = () => {
                 </Space>
             </Card>
 
+            {filteredTests.length === 0 && (
+                <Card>
+                    <Empty
+                        description={
+                            <Space direction="vertical">
+                                <Text>No test cases match the current filters</Text>
+                                <Button
+                                    type="primary"
+                                    onClick={() => {
+                                        setCategory('all');
+                                        setComplexity('all');
+                                    }}
+                                >
+                                    Reset Filters
+                                </Button>
+                            </Space>
+                        }
+                    />
+                </Card>
+            )}
+
             {filteredTests.map((test, index) => (
                 <Card
                     key={index}
@@ -1095,7 +1122,7 @@ export const D3Test: React.FC = () => {
                             </Space>
                         </Space>
                     }
-                    extra={
+                    extra={(
                         <Space>
                             {test.status === 'needs-fix' && (
                                 <Tooltip title="View Error Details">
@@ -1105,64 +1132,26 @@ export const D3Test: React.FC = () => {
                                 </Tooltip>
                             )}
                         </Space>
-                    }
-                >
-                    <div style={{
-                        position: 'relative',
-                        minHeight: '300px'
-                    }}>
+                    )}>
                         <D3Renderer
                             spec={JSON.stringify(test.spec)}
-                            width={800}
-                            height={400}
+                            width={test.spec.options?.width || 600}
+                            height={test.spec.options?.height || 400}
+                            type="d3"
                         />
-                    </div>
+                    
                     {showSource && (
-                        <>
-                            <Divider>
-                                <Space>
-                                    <CodeOutlined />
-                                    <Text>Source</Text>
-                                </Space>
-                            </Divider>
-                            <div style={{
-                                maxHeight: '400px',
-                                overflow: 'auto',
-                                backgroundColor: 'rgb(40, 44, 52)',
-                                borderRadius: '6px',
-                                padding: '16px'
-                            }}>
-                                <pre style={{ margin: 0 }}>
-                                    <code style={{ color: '#abb2bf' }}>
-                                        {JSON.stringify(test.spec, null, 2)}
-                                    </code>
-                                </pre>
-                            </div>
-                        </>
+                        <pre style={{
+                            padding: '16px',
+                            background: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                            borderRadius: '4px',
+                            overflow: 'auto'
+                        }}>
+                            <code>{JSON.stringify(test.spec, null, 2)}</code>
+                        </pre>
                     )}
                 </Card>
             ))}
-
-            {filteredTests.length === 0 && (
-                <Card>
-                    <Empty
-                        description={
-                            <Space direction="vertical">
-                                <Text>No test cases match the current filters</Text>
-                                <Button
-                                    type="primary"
-                                    onClick={() => {
-                                        setCategory('all');
-                                        setComplexity('all');
-                                    }}
-                                >
-                                    Reset Filters
-                                </Button>
-                            </Space>
-                        }
-                    />
-                </Card>
-            )}
         </Space>
     );
 };

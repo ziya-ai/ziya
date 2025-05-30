@@ -53,7 +53,7 @@ class DiffRegressionTest(unittest.TestCase):
             f.write(original)
             
         # Apply the diff
-        use_git_to_apply_code_diff(diff)
+        use_git_to_apply_code_diff(diff, metadata['target_file'])
         
         # Read the result
         with open(test_file_path) as f:

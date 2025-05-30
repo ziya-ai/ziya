@@ -1,20 +1,13 @@
-import { SetStateAction, Dispatch } from 'react';
+import { SetStateAction, Dispatch, MouseEvent } from 'react';
 import { createParser } from 'eventsource-parser';
 import { message } from 'antd';
 import { Message } from '../utils/types';
-import { db } from '../utils/db';
-
-
-interface Operation {
-    op: string;
-    path: string;
-    value?: string;
-}
 
 interface ErrorResponse {
     error: string;
     detail: string;
     event?: string;
+    status_code?: number;
 }
 
 const isValidMessage = (message: any) => {
@@ -23,120 +16,246 @@ const isValidMessage = (message: any) => {
     return message.content.trim().length > 0;
 };
 
-const cleanMessages = (messages: any[]) => {
-    return messages
-        .filter(isValidMessage)
-        .map(msg => ({ ...msg, content: msg.content.trim() }));
-};
+/**
+ * Extract error information from SSE message content
+ */
+function extractErrorFromSSE(content: string): ErrorResponse | null {
+    if (!content) return null;
 
-const isStreamingError = (error: any): boolean => {
-    return error instanceof Error && (
-        error.message.includes('validationException') ||
-        error.message.includes('Input is too long')
-    );
-};
-
-const handleStreamError = async (response: Response): Promise<never> => {
-    console.log("Handling stream error:", response.status);
-    let errorMessage: string = 'An unknown error occurred';
-
-    // Try to get detailed error message from response
     try {
-        const errorData = await response.json();
-        errorMessage = errorData.detail || errorMessage;
-    } catch (e) {
-        // If we can't parse the response, keep the default error message
-        console.warn('Could not parse error response:', e);
-    }
+        // Check for JSON error format
+        if (content.includes('"error"') || content.includes('"detail"')) {
+            try {
+                const parsed = JSON.parse(content);
+                if (parsed.error || parsed.detail) {
+                    return {
+                        error: parsed.error || 'Unknown error',
+                        detail: parsed.detail || parsed.error || 'An error occurred',
+                        status_code: parsed.status_code
+                    };
+                }
+            } catch (e) {
+                // Not valid JSON, continue with other checks
+            }
+        }
 
-    // Handle different response status codes
-    switch (response.status) {
-        case 413:
-            console.log("Content too large error detected");
-            errorMessage = 'Selected content is too large for the model. Please reduce the number of files.';
-            break;
-        case 401:
-            console.log("Authentication error");
-            errorMessage = 'Authentication failed. Please check your credentials.';
-            break;
-        case 503:
-            console.log("Service unavailable");
-            errorMessage = 'Service is temporarily unavailable. Please try again in a moment.';
-            break;
-        default:
-            errorMessage = 'An unexpected error occurred. Please try again.';
-    }
-    // Always throw error to stop the streaming process
-    throw new Error(errorMessage);
-};
+        // Check for specific error patterns - only at the beginning of lines
+        // and not within code blocks
+        const hasErrorPattern = content.match(/^Error:/m) || content.match(/^error:/m);
+        if (hasErrorPattern) {
+            // Check if this pattern is inside a code block
+            const codeBlockRegex = /```[\s\S]*?(?:^Error:|^error:)[\s\S]*?```/m;
+            const isInCodeBlock = codeBlockRegex.test(content);
 
-const createEventSource = (url: string, body: any): EventSource => {
-    try {
-        const params = new URLSearchParams();
-        params.append('data', JSON.stringify(body));
-        const eventSource = new EventSource(`${url}?${params}`);
-        eventSource.onerror = (error) => {
-            console.error('EventSource error:', error);
-            eventSource.close();
-        };
-        eventSource.close();
-        message.error({
-            content: 'Connection to server lost. Please try again.',
-            duration: 5
-	});
-        return eventSource;
+            // Only treat as error if not in a code block
+            if (!isInCodeBlock) {
+                const errorMatch = content.match(/(?:^|\n)(?:Error|error):\s*(.+?)(?:\n|$)/);
+                if (errorMatch && errorMatch[1]) {
+                    return {
+                        error: 'Error detected',
+                        detail: errorMatch[1].trim()
+                    };
+                }
+            }
+        }
+
+        // Check for "An error occurred" pattern - but not in code blocks
+        if (content.toLowerCase().includes('an error occurred')) {
+            // Check if this is likely part of code or documentation
+            const isInCodeOrExample = /```[\s\S]*?an error occurred[\s\S]*?```/i.test(content) ||
+                /`an error occurred`/i.test(content) ||
+                /example.*?an error occurred/i.test(content);
+
+            if (!isInCodeOrExample) {
+                return {
+                    error: 'Error detected',
+                    detail: 'An error occurred during processing'
+                };
+            }
+        }
+
+        return null;
     } catch (error) {
-        console.error('Error creating EventSource:', error);
-        throw error;
+        console.warn('Error in extractErrorFromSSE:', error);
+        return null;
     }
-};
+}
+
+/**
+ * Extract error from nested ops structure in LangChain output
+ */
+function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
+    try {
+        // Try to find JSON objects in the chunk
+        const jsonMatches = chunk.match(/(\{.*?\})/g);
+        if (!jsonMatches) return null;
+
+        for (const jsonStr of jsonMatches) {
+            try {
+                const data = JSON.parse(jsonStr);
+
+                // Check for direct error properties
+                if (data.error || data.detail) {
+                    return {
+                        error: data.error || 'Unknown error',
+                        detail: data.detail || data.error || 'An error occurred',
+                        status_code: data.status_code
+                    };
+                }
+
+                // Check for ops array with errors
+                if (data.ops && Array.isArray(data.ops)) {
+                    for (const op of data.ops) {
+                        if (op.value && typeof op.value === 'object') {
+                            // Check for error in value
+                            if (op.value.error || op.value.detail) {
+                                return {
+                                    error: op.value.error || 'Unknown error',
+                                    detail: op.value.detail || op.value.error || 'An error occurred',
+                                    status_code: op.value.status_code
+                                };
+                            }
+
+                            // Check for error in messages array - but be careful not to match code examples
+                            if (op.value.messages && Array.isArray(op.value.messages)) {
+                                for (const msg of op.value.messages) {
+                                    if (msg.content && typeof msg.content === 'string') {
+                                        // Only check for errors outside of code blocks
+                                        const isInCodeBlock = /```[\s\S]*?(?:Error:|error:)[\s\S]*?```/m.test(msg.content);
+                                        if (!isInCodeBlock) {
+                                            const errorResponse = extractErrorFromSSE(msg.content);
+                                            if (errorResponse) return errorResponse;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                // Not valid JSON, try next match
+            }
+        }
+
+        return null;
+    } catch (error) {
+        console.warn('Error in extractErrorFromNestedOps:', error);
+        return null;
+    }
+}
+
+/**
+ * Handle stream error response
+ */
+async function handleStreamError(response: Response): Promise<Error> {
+    try {
+        const text = await response.text();
+        console.log("Error response text:", text);
+
+        try {
+            const data = JSON.parse(text);
+            if (data.detail || data.error) {
+                return new Error(data.detail || data.error);
+            }
+        } catch (e) {
+            // Not JSON, use text directly
+        }
+
+        return new Error(text || `HTTP error ${response.status}`);
+    } catch (error) {
+        return new Error(`HTTP error ${response.status}`);
+    }
+}
+
+const STREAMING_CHUNK_DELAY = 10; // ms delay between processing chunks to allow rendering
 
 export const sendPayload = async (
-    conversationId: string,
-    question: string,
-    isStreamingToCurrentConversation: boolean,
     messages: Message[],
+    question: string,
+    checkedItems: string[],
+    conversationId: string,
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>,
-    setIsStreaming: (streaming: boolean) => void,
-    checkedItems: string[], 
-    addMessageToConversation: (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => void,
+    setIsStreaming: Dispatch<SetStateAction<boolean>>,
     removeStreamingConversation: (id: string) => void,
-    onStreamComplete?: (content: string) => void
-) => {
-    let eventSource: EventSource | undefined;
+    addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void,
+    isStreamingToCurrentConversation: boolean = true
+): Promise<string> => {
+    let eventSource: any = null;
+    let currentContent = '';
+    let errorOccurred = false;
+    let containsDiff = false;  // Flag to track if content contains diff blocks
+
+    // Create an AbortController to handle cancellation
+    const abortController = new AbortController();
+    const { signal } = abortController;
+
+    let isAborted = false;
+
+    // Remove any existing listeners for this conversation ID to prevent duplicates
+    document.removeEventListener('abortStream', window[`abortListener_${conversationId}`]);
+
+    // Set up abort event listener
+    const abortListener = (event: CustomEvent) => {
+        if (event.detail.conversationId === conversationId) {
+            console.log(`Aborting stream for conversation: ${conversationId}`);
+            abortController.abort();
+            isAborted = true;
+
+            console.log('Sending abort notification to server');
+            // Also notify the server about the abort
+            try {
+                fetch('/api/abort-stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ conversation_id: conversationId }),
+                }).catch(e => {
+                    // Ignore errors from the abort request
+                    console.warn('Error sending abort notification to server:', e);
+                });
+            } catch (e) { }
+
+            removeStreamingConversation(conversationId);
+            setIsStreaming(false);
+        }
+    };
+    document.addEventListener('abortStream', abortListener as EventListener);
+
     try {
-	eventSource = undefined;
-	let hasError = false;
+        // Filter out empty messages
+        const messagesToSend = messages.filter(isValidMessage);
 
-	console.log('Messages received in sendPayload:', messages.map(m => ({
-            role: m.role,
-            content: m.content.substring(0, 50)
-        })));
+        // Log message count before and after filtering
+        if (messages.length !== messagesToSend.length) {
+            console.log("Filtered out empty messages:", {
+                before: messages.length,
+                after: messagesToSend.length,
+                dropped: messages.length - messagesToSend.length
+            });
+        }
 
-	let currentContent = '';
-	setIsStreaming(true);
-	let response = await getApiResponse(messages, question, checkedItems);
+        setIsStreaming(true);
+        let response = await getApiResponse(messagesToSend, question, checkedItems, signal);
         console.log("Initial API response:", response.status, response.statusText);
-        
+
         if (!response.ok) {
             if (response.status === 503) {
-		console.log("Service unavailable, attempting retry");
+                console.log("Service unavailable, attempting retry");
                 await handleStreamError(response);
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 // Retry the request once
-                let retryResponse = await getApiResponse(messages, question, checkedItems);
+                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, signal);
                 if (!retryResponse.ok) {
                     throw await handleStreamError(retryResponse);
                 }
                 response = retryResponse;
             } else if (response.status === 401) {
-		console.log("Authentication error");
+                console.log("Authentication error");
                 // Handle auth failure explicitly
                 throw await handleStreamError(response);
             } else {
-		console.log("Other error:", response.status);
-		// Handle other errors
+                console.log("Other error:", response.status);
+                // Handle other errors
                 throw await handleStreamError(response);
             }
         }
@@ -145,281 +264,362 @@ export const sendPayload = async (
             throw new Error('No body in response');
         }
 
-	// Set up cleanup on unmount or error
+        // Set up cleanup on unmount or error
         const cleanup = () => {
-            if (eventSource) eventSource.close();
+            if (eventSource && typeof eventSource.close === 'function') eventSource.close();
             setIsStreaming(false);
-            removeStreamingConversation(conversationId);
         };
 
-        console.log("Setting up stream reader for response");
+        // Use ReadableStream API for more reliable streaming
         const reader = response.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-	let errorOccurred = false;
-        const parser = createParser(onParse);
+        const decoder = new TextDecoder();
 
-        function onParse(event) {
-            if (event.type === 'event') {
-		// Received SSE Event
-                try {
-                    const data = JSON.parse(event.data);
-		    // Check for errors in either direct response or nested in operations
-		    let errorData: ErrorResponse | null = null;
+        // Process chunks as they arrive
+        function processChunk(chunk: string) {
+            // Split the chunk by newlines to handle multiple SSE events
+            const lines = chunk.split('\n');
 
-                    if (data.error || data.event === 'error') {
-                        errorData = data;
-                    }
-                    if (data.ops && Array.isArray(data.ops)) {
-                        for (const op of data.ops) {
-                            if (op.op === 'add' && op.value && typeof op.value.output === 'string') {
-                                try {
-                                    const outputData = JSON.parse(op.value.output);
-				    if (outputData && typeof outputData === 'object' && 'error' in outputData) {
-					const response = new Response(JSON.stringify(outputData), {
-					    status: outputData.error === 'validation_error' ? 413 : 500
-					});
-					message.error({
-					    content: outputData.detail || 'An error occurred',
-					    duration: 10,
-					    key: 'stream-error'
-					});
-					errorOccurred = true;
-					removeStreamingConversation(conversationId);
-					break;
-				    }
-                                } catch (e) {} // Not JSON or not an error
-			    }
-			}
+            for (const line of lines) {
+                if (!line.trim()) continue;
+
+                // Check if it's an SSE data line
+                if (line.startsWith('data:')) {
+                    const data = line.slice(5).trim();
+
+                    // Check if this chunk contains diff syntax and set the flag
+                    if (!containsDiff && (
+                        data.includes('```diff') || data.includes('diff --git') ||
+                        data.match(/^@@ /) || data.match(/^\+\+\+ /) || data.match(/^--- /))) {
+                        containsDiff = true;
+                        console.log("Detected diff content, disabling error detection");
                     }
 
-                    // Process operations if present
-                    const ops = data.ops || [];
-                    for (const op of ops) {
-                        if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
-                            const newContent = op.value || '';
-                            if (!newContent) continue;
-                            currentContent += newContent;
-			    setStreamedContentMap((prev: Map<string, string>) => {
+                    // Check if this is a hunk status update
+                    try {
+                        const jsonData = JSON.parse(data);
+                        if (jsonData.request_id && jsonData.details && jsonData.details.hunk_statuses) {
+                            // Dispatch a custom event with the hunk status update
+                            window.dispatchEvent(new CustomEvent('hunkStatusUpdate', {
+                                detail: {
+                                    requestId: jsonData.request_id,
+                                    hunkStatuses: jsonData.details.hunk_statuses
+                                }
+                            }));
+                        }
+                    } catch (e) {
+                        // Not JSON or not a hunk status update, ignore
+                    }
+
+                    // Check for errors using our new function - but be careful not to match code examples
+                    // Skip error checking if the data looks like it contains code blocks or diffs
+                    const containsCodeBlock = data.includes('```');
+                    const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(data);
+
+                    if (errorResponse) {
+                        console.log("Error detected in SSE data:", errorResponse);
+                        message.error({
+                            content: errorResponse.detail || 'An error occurred',
+                            duration: 10,
+                            key: 'stream-error'
+                        });
+                        errorOccurred = true;
+                        removeStreamingConversation(conversationId);
+                        return;
+                    }
+
+                    try {
+                        const jsonData = JSON.parse(data);
+
+                        // Handle done marker
+                        if (jsonData.done) {
+                            console.log("Received done marker in JSON data");
+                            return;
+                        }
+
+                        // Skip heartbeat messages
+                        if (jsonData.heartbeat) {
+                            console.log("Received heartbeat, skipping");
+                            continue;
+                        }
+
+                        // Extract text content from the response
+                        if (jsonData.text) {
+                            currentContent += jsonData.text;
+                            setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
                                 next.set(conversationId, currentContent);
                                 return next;
                             });
-                        } else {
-                            continue;
+                        } else if (jsonData.content) {
+                            currentContent += jsonData.content;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
                         }
+
+                        // Process operations if present
+                        const ops = jsonData.ops || [];
+                        for (const op of ops) {
+                            if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
+                                const newContent = op.value || '';
+                                if (!newContent) continue;
+                                currentContent += newContent;
+                                setStreamedContentMap((prev: Map<string, string>) => {
+                                    const next = new Map(prev);
+                                    next.set(conversationId, currentContent);
+                                    return next;
+                                });
+                            } else if (op.op === 'add' && op.path.includes('/streamed_output/-')) {
+                                // Check for error in messages array - but be careful not to match code examples
+                                if (op.value && op.value.messages && Array.isArray(op.value.messages)) {
+                                    for (const msg of op.value.messages) {
+                                        if (msg.content && typeof msg.content === 'string') {
+                                            // Check if this message contains diff syntax and set the flag
+                                            if (!containsDiff && (
+                                                msg.content.includes('```diff') || msg.content.includes('diff --git') ||
+                                                msg.content.match(/^@@ /m) || msg.content.match(/^\+\+\+ /m) || msg.content.match(/^--- /m))) {
+                                                containsDiff = true;
+                                                console.log("Detected diff content in message, disabling error detection");
+                                            }
+
+                                            // Skip error checking if the message contains code blocks or diffs
+                                            const containsCodeBlock = msg.content.includes('```');
+                                            const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(msg.content);
+
+                                            if (errorResponse) {
+                                                console.log("Error detected in message content:", errorResponse);
+                                                message.error({
+                                                    content: errorResponse.detail || 'An error occurred',
+                                                    duration: 10,
+                                                    key: 'stream-error'
+                                                });
+                                                errorOccurred = true;
+                                                removeStreamingConversation(conversationId);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        const e = error as Error;
+                        console.error('Error parsing JSON chunk:', { error: e, rawData: data });
+                        console.error('Error parsing JSON:', e);
                     }
-                } catch (e) {
-                    console.error('Error parsing JSON:', e);
                 }
             }
         }
 
         async function readStream() {
-	    let streamClosed = false;
-            while (true) {
-		try {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    if (errorOccurred) break;
-                    const chunk = decoder.decode(value);
-                    if (!chunk) continue;
-                    // Try to parse the chunk as JSON to check for validation error
+            try {
+                while (true) {
                     try {
-                        const jsonData = JSON.parse(chunk);
-                        if (jsonData.error === 'validation_error') {
-		            const response = new Response(chunk, { status: 413 });
-			    try {
-                                throw await handleStreamError(response);
-                            } catch (error) {
-                                errorOccurred = true;
+                        if (signal.aborted) {
+                            console.log("Stream aborted by user");
+                            errorOccurred = true;
+                            removeStreamingConversation(conversationId);
+                            setIsStreaming(false);
+                            return 'Response generation stopped by user.';
+                        }
+                        const { done, value } = await reader.read();
+                        if (done) {
+                            console.log("Stream read complete (done=true)");
+                            // If the stream was aborted, don't process the final content
+                            if (isAborted) {
+                                console.log("Stream was aborted, discarding final content");
                                 removeStreamingConversation(conversationId);
-                                throw error;
+                                return 'Response generation stopped by user.';
                             }
                             break;
                         }
-                    } catch (e) {} // Ignore parse errors for non-JSON chunks
-		    parser.feed(chunk);
-                } catch (error) {
-                    console.error('Error reading stream:', error);
-                    break;
-		}
+                        if (errorOccurred) {
+                            console.log("Stream read aborted due to error");
+                            break;
+                        }
+                        const chunk = decoder.decode(value);
+                        if (!chunk) {
+                            // Check if the stream was aborted during processing
+                            if (isAborted) {
+                                console.log("Stream was aborted during processing, discarding chunk");
+                                removeStreamingConversation(conversationId);
+                                setIsStreaming(false);
+                                return 'Response generation stopped by user.';
+                            }
+                            console.log("Empty chunk received, continuing");
+                            continue;
+                        }
+
+                        // Check if this chunk contains diff syntax and set the flag
+                        if (!containsDiff && (
+                            chunk.includes('```diff') || chunk.includes('diff --git') ||
+                            chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
+                            containsDiff = true;
+                            console.log("Detected diff content in chunk, disabling error detection");
+                        }
+
+                        // Check for errors using our new function - but be careful with code blocks
+                        try {
+                            // Skip error checking if the chunk contains code blocks or diffs
+                            const containsCodeBlock = chunk.includes('```');
+
+                            if (!containsCodeBlock && !containsDiff) {
+                                // Check for nested errors in LangChain ops structure
+                                const nestedError = extractErrorFromNestedOps(chunk);
+                                if (nestedError) {
+                                    console.log("Nested error detected in ops structure:", nestedError);
+                                    message.error({
+                                        content: nestedError.detail || 'An error occurred',
+                                        duration: 10,
+                                        key: 'stream-error'
+                                    });
+                                    errorOccurred = true;
+                                    removeStreamingConversation(conversationId);
+                                    break;
+                                }
+                            }
+                        } catch (error) {
+                            console.warn("Error checking for nested errors:", error);
+                        }
+
+                        processChunk(chunk);
+                    } catch (error) {
+                        console.error('Error reading stream:', error);
+                        message.error('Stream reading error. Check JS console for details.');
+                        errorOccurred = true;
+                        removeStreamingConversation(conversationId);
+                        setIsStreaming(false);
+                        break;
+                    }
+                }
+            } catch (error) {
+                if (error instanceof DOMException && error.name === 'AbortError') return '';
+                console.error('Unhandled Stream error in readStream:', { error });
+                removeStreamingConversation(conversationId);
+                setIsStreaming(false);
+                throw error;
+            } finally {
+                setIsStreaming(false);
+                return !errorOccurred && currentContent ? currentContent : '';
             }
         }
 
-	try {
+        try {
             console.log("Starting stream read...");
-            await readStream();
-	    // After successful streaming, update with final content
-	    if (currentContent && !errorOccurred) {
-		console.log("Stream completed successfully");
+            const result = await readStream();
+            // After successful streaming, update with final content
+            if (currentContent && !errorOccurred) {
+                console.log("Stream completed successfully");
 
-		// Check if the content is an error message
-                try {
-                    const errorData = JSON.parse(currentContent);
-		    console.log("Parsed final content:", errorData);
-                    if (errorData.error === 'validation_error') {
-                        message.error({
-                            content: errorData.detail,
-                            duration: 10
-                        });
-                        return '';
-                    }
-                } catch (e) {} // Not JSON or not an error
+                // Check if the stream was aborted before adding the message
+                if (isAborted) {
+                    console.log("Stream was aborted, not adding final message");
+                    removeStreamingConversation(conversationId);
+                    return 'Response generation stopped by user.';
+                }
 
-                onStreamComplete?.(currentContent);
-		// Add AI response to conversation
+                // Check if the stream was aborted before adding the message
+                if (isAborted) {
+                    console.log("Stream was aborted, not adding final message");
+                    removeStreamingConversation(conversationId);
+                    return 'Response generation stopped by user.';
+                }
+                // Check if the content is an error message using our new function
+                // Skip error checking if the content contains code blocks or diffs
+                const containsCodeBlock = currentContent.includes('```');
+                const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(currentContent);
+
+                if (errorResponse) {
+                    console.log("Error detected in final content:", errorResponse);
+                    message.error({
+                        content: errorResponse.detail || 'An error occurred',
+                        duration: 10,
+                        key: 'stream-error'
+                    });
+                    errorOccurred = true;
+                    removeStreamingConversation(conversationId);
+                    return '';
+                }
+
+                // Create a message object for the AI response
                 const aiMessage: Message = {
                     role: 'assistant',
                     content: currentContent
                 };
 
-		const isNonCurrentConversation = !isStreamingToCurrentConversation;
+                const isNonCurrentConversation = !isStreamingToCurrentConversation;
                 addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
-		removeStreamingConversation(conversationId);
+                removeStreamingConversation(conversationId);
             }
+            return result;
+
         } catch (error) {
-	    // Type guard for DOMException
-            if (error instanceof DOMException && error.name === 'AbortError') return;
-            console.error('Stream error:', error);
-            hasError = true;
+            // Type guard for DOMException
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                console.log('Request was aborted');
+                return 'Response generation stopped by user.';
+            }
+            if (error instanceof DOMException && error.name === 'AbortError') return '';
+
+            console.error('Stream processing error in readStream catch block:', { error });
+            removeStreamingConversation(conversationId);
+            setIsStreaming(false);
             throw error;
-	} finally {
-	    setIsStreaming(false);
+        } finally {
+            setIsStreaming(false);
             return !errorOccurred && currentContent ? currentContent : '';
+
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
-	// Type guard for Error objects
+        // Check for abort error
+        if (error instanceof DOMException && error.name === 'AbortError') {
+            return 'Response generation stopped by user.';
+        }
+        // Type guard for Error objects
         if (error instanceof Error) {
             console.error('Error details:', {
                 name: error.name,
                 message: error.message,
                 stack: error.stack
             });
+            message.error(`Error: ${error.message}`);
         }
-	if (eventSource && eventSource instanceof EventSource) eventSource.close();
-	// Clear streaming state
+        if (eventSource && typeof eventSource.close === 'function') eventSource.close();
+        // Clear streaming state
         setIsStreaming(false);
         removeStreamingConversation(conversationId);
-        // Show error message if not already shown
-	if (error instanceof Error) {
-                // Let the server's error message through
-                const errorMsg = error.message;
-                if (!errorMsg.includes('AWS credential error')) {
-                    message.error({ content: errorMsg, key: 'stream-error', duration: 10 });
-		}
-        }
+        throw error;
     } finally {
-	if (eventSource && eventSource instanceof EventSource) eventSource.close();
+        if (eventSource && typeof eventSource.close === 'function') eventSource.close();
+        document.removeEventListener('abortStream', abortListener as EventListener);
+        setIsStreaming(false);
+        removeStreamingConversation(conversationId);
         return '';
     }
 };
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[]) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], signal?: AbortSignal) {
     const messageTuples: string[][] = [];
-    
-    // Validate that we have files selected
-    console.log('API Request File Selection:', {
-	endpoint: '/ziya/stream_log',
-        checkedItemsCount: checkedItems.length,
-        checkedItems,
-        sampleFile: checkedItems[0],
-        hasD3Renderer: checkedItems.includes('frontend/src/components/D3Renderer.tsx')
-    });
 
-    // Log specific file paths we're interested in
-    console.log('Looking for specific files:', {
-        d3Path: 'frontend/src/components/D3Renderer.tsx',
-        checkedItems,
-        sampleFile: checkedItems[0]
-    });
-
-    console.log('Messages received in getApiResponse:', messages.map(m => ({
-        role: m.role,
-        content: m.content.substring(0, 50)
-    })));
-
-    // Build pairs of human messages and AI responses
-    try {
-	// If this is the first message, we won't have any pairs yet
-        if (messages.length === 1 && messages[0].role === 'human') {
-            console.log('First message in conversation, no history to send');
-	    console.log('Selected files being sent to server:', checkedItems);
-	    const response = await fetch('/ziya/stream_log', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    input: {
-                        chat_history: [],
-                        question: question,
-			config: {
-                            files: checkedItems,
-                            // Add explicit file list for debugging
-                            fileList: checkedItems.join(', ')
-                        },
-                    },
-                }),
-            });
-	    if (!response.ok) {
-                throw await handleStreamError(response);
-            }
-            return response;
-        }
- 
-        // For subsequent messages, build the history pairs
-        const validMessages = messages.filter(msg => msg?.content?.trim());
-
-	console.log('Valid messages:', validMessages.map(m => ({
-            role: m.role,
-            content: m.content.substring(0, 50)
-        })));
-
-	// Build pairs from completed exchanges
-        for (let i = 0; i < validMessages.length; i++) {
-            const current = validMessages[i];
-            const next = validMessages[i + 1];
-
-            // Only add complete human-assistant pairs
-            if (current?.role === 'human' && next?.role === 'assistant') {
-                messageTuples.push([current.content, next.content]);
-		console.log('Added pair:', {
-                    human: current.content.substring(0, 50),
-                    ai: next.content.substring(0, 50),
-		    humanRole: current.role,
-                    aiRole: next.role
-                });
-		i++; // Skip the next message since we've used it
-            }
-        }
-
-        console.log('Chat history pairs:', messageTuples.length);
-	console.log('Current question:', question);
-	console.log('Full chat history:', messageTuples);
-
-	const payload = {
-            input: {
-                chat_history: messageTuples,
-                question: question,
-                config: {
-                    files: checkedItems,
-                    // Add explicit file list for debugging
-                    fileList: checkedItems.join(', ')
-                },
-            },
-        };
-
-        console.log('Sending payload to server:', JSON.stringify(payload, null, 2));
-        const response = await fetch('/ziya/stream_log', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-	    body: JSON.stringify(payload),
-        });
-	if (!response.ok) {
-            throw await handleStreamError(response);
-        }
-        return response;
-    } catch (error) {
-        console.error('API request failed:', error);
-        throw error;
+    for (const message of messages) {
+        messageTuples.push([message.role, message.content]);
     }
+
+    const payload = {
+        messages: messageTuples,
+        question,
+        files: checkedItems
+    };
+
+    return fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload),
+        signal
+    });
 }

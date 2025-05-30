@@ -1,0 +1,39 @@
+diff --git a/lib/stacks/CloudWatchMonitoringCDKStack.ts b/lib/stacks/CloudWatchMonitoringCDKStack.ts
+--- a/lib/stacks/CloudWatchMonitoringCDKStack.ts
++++ b/lib/stacks/CloudWatchMonitoringCDKStack.ts
+@@ -10,11 +10,7 @@ import {
+ } from 'aws-cdk-lib/aws-cloudwatch';
+ import { CloudwatchDashboardsWiki } from '@amzn/cloudwatch-dashboards-wiki-cdk-construct';
+ import { App, Duration } from 'aws-cdk-lib';
+-import {
+-  simTicketAlarmActionSev3,
+-  simTicketAlarmActionSev4,
+-  simTicketAlarmActionSev5,
+-} from '../constants/monitoringConstants';
++import { SIMTicketAlarmAction } from '@amzn/sim-ticket-cdk-constructs';
+ import { Queue } from 'aws-cdk-lib/aws-sqs';
+ import { IFunction } from 'aws-cdk-lib/aws-lambda';
+ import { StageRegionConfig } from '../config/stages';
+@@ -293,13 +289,17 @@ export class CloudWatchMonitoringCDKStack extends DeploymentStack {
+     };
+   };
+ 
+-  private addAlarmActions(stage: StageName, alarm: Alarm) {
++  private addAlarmActions(
++    stage: StageName, 
++    alarm: Alarm, 
++    prodAlarmAction?: SIMTicketAlarmAction,
++    gammaAlarmAction?: SIMTicketAlarmAction,
++    betaAlarmAction?: SIMTicketAlarmAction
++  ) {
+     if (stage === StageName.PROD) {
+-      alarm.addAlarmAction(simTicketAlarmActionSev3); //TODO: Update to Sev-2 later
++      alarm.addAlarmAction(prodAlarmAction || simTicketAlarmActionSev3);
+     } else if (stage === StageName.GAMMA) {
+-      alarm.addAlarmAction(simTicketAlarmActionSev4);
++      alarm.addAlarmAction(gammaAlarmAction || simTicketAlarmActionSev4);
+     } else {
+-      alarm.addAlarmAction(simTicketAlarmActionSev5);
++      alarm.addAlarmAction(betaAlarmAction || simTicketAlarmActionSev5);
+     }
+   }

@@ -1,0 +1,4 @@
+{
+    "description": "Test handling of invisible Unicode characters in diffs",
+    "target_file": "example.py"
+}

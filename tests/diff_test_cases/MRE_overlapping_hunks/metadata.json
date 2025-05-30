@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with overlapping hunks that modify the same lines",
+    "date_added": "2025-03-22",
+    "issue_reference": "overlapping_hunks_test"
+}

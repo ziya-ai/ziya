@@ -1,0 +1,16 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -1,5 +1,5 @@
+ def first_function():
+-    # This line has LF ending
++    # This line was modified (LF)
+     print("First function")
+
+@@ -7,5 +7,5 @@ def second_function():
+     print("Second function")
+
+ def third_function():
+-    # This line has LF ending
++    # This line was modified (LF)
+     print("Third function")

@@ -1,0 +1,10 @@
+diff --git test.py test.py
+--- test.py
++++ test.py
+@@ -1,5 +1,5 @@
+ def example_function():
+-    # This is a comment
++    # This is a modified comment
+     print("Example function")
+     
+     return True

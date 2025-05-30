@@ -1,0 +1,68 @@
+--- a/frontend/src/context/FolderContext.tsx
++++ b/frontend/src/context/FolderContext.tsx
+@@ -1,4 +1,4 @@
+-import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
++import React, { createContext, ReactNode, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
+ import { Folders } from "../utils/types";
+ import { convertToTreeData } from "../utils/folderUtil";
+ import { useChatContext } from "./ChatContext";
+@@ -37,7 +37,15 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children })
+     return saved ? JSON.parse(saved) : [];
+   });
+ 
+-  const getFolderTokenCount = (path: string, folderData: Folders | undefined): number => {
++  const tokenCountCache = useRef<Map<string, number>>(new Map());
++  const foldersRef = useRef<Folders>();
++
++  const getFolderTokenCount = useCallback((path: string, folderData?: Folders): number => {
++    // Use cache to avoid expensive recalculations
++    const cacheKey = `${path}-${folderData ? 'provided' : 'context'}`;
++    if (tokenCountCache.current.has(cacheKey)) {
++      return tokenCountCache.current.get(cacheKey)!;
++    }
++    
++    const dataToUse = folderData || foldersRef.current;
+     if (!folderData) {
+       // console.warn(`getFolderTokenCount: folderData is undefined for path "${path}"`);
+       return 0;
+@@ -59,9 +67,19 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children })
+       }
+     }
+
+-    return 0;
+-  };
++    const result = 0;
++    tokenCountCache.current.set(cacheKey, result);
++    return result;
++  }, []);
++
++  // Update folders ref and clear cache when folders change
++  useEffect(() => {
++    foldersRef.current = folders;
++    tokenCountCache.current.clear();
++  }, [folders]);
+ 
+   // Save expanded folders whenever they change
+   useEffect(() => {
+@@ -81,7 +99,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children })
+   }, [checkedKeys]);
+ 
+   // Update checked keys when folder changes if folder has specific file selections
+-  useEffect(() => {
++  const updateCheckedKeysForFolder = useCallback(() => {
+     if (currentFolderId) {
+       const folder = chatFolders.find(f => f.id === currentFolderId);
+       if (folder && !folder.useGlobalContext) {
+@@ -90,7 +108,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children })
+         }
+       }
+     }
+-  }, [currentFolderId, folderFileSelections, chatFolders]);
++  }, [currentFolderId, folderFileSelections, chatFolders, setCheckedKeys]);
++
++  useEffect(() => {
++    updateCheckedKeysForFolder();
++  }, [updateCheckedKeysForFolder]);
+ 
+   // Update tree data whenever folders change
+   useEffect(() => {

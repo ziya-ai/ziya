@@ -1,0 +1,6 @@
+{
+    "target_file": "test.py",
+    "description": "Test case with trailing whitespace issues that breaks the diff apply mechanism",
+    "date_added": "2025-03-22",
+    "issue_reference": "trailing_whitespace_issues_test"
+}

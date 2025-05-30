@@ -34,81 +34,94 @@ const isBasicChartSpec = (spec: any): spec is BasicChartSpec => {
 
 export const basicChartPlugin: D3RenderPlugin = {
     name: 'basic-chart',
-    priority: 1,
-    canHandle: isBasicChartSpec,
-    render: (container: HTMLElement, spec: BasicChartSpec) => {
-        const width = spec.width || 600;
-        const height = spec.height || 400;
-        const margin = { ...defaultMargin, ...spec.margin };
+    priority: 10, // Higher priority than network diagram
+    canHandle: (spec: any) => {
+        return (
+            typeof spec === 'object' &&
+            (spec.type === 'bar' || spec.type === 'line' || spec.type === 'scatter' || spec.type === 'bubble')
+        );
+    },
+    render: (container: HTMLElement, d3: any, spec: any) => {
+        console.debug('Basic chart plugin rendering:', spec);
 
         try {
             // Clear any existing content
             d3.select(container).selectAll('*').remove();
             
+            const margin = spec.margin || defaultMargin;
+            const width = (spec.width || 600) - margin.left - margin.right;
+            const height = (spec.height || 400) - margin.top - margin.bottom;
+
             // Create SVG
             const svg = d3.select(container)
                 .append('svg')
-                .attr('width', width)
-                .attr('height', height)
-                .attr('viewBox', [0, 0, width, height])
-                .style('overflow', 'visible')
-                .style('display', 'block');
-
-            const g = svg.append('g')
-                .attr('transform', `translate(${margin.left},${margin.top})`);
+                .attr('width', width + margin.left + margin.right)
+                .attr('height', height + margin.top + margin.bottom)
+                .append('g')
+                .attr('transform', `translate(${margin.left},${margin.top})`)
+                
+            const data = Array.isArray(spec.data) ? spec.data : [];;
 
             // Create scales
             const x = d3.scaleBand()
-                .domain(spec.data.map(d => d.label))
-                .range([0, width - margin.left - margin.right])
+                .range([0, width])
+                .domain(spec.data.map((d: any) => d.label))
                 .padding(0.1);
 
             const y = d3.scaleLinear()
-                .domain([0, d3.max(spec.data, d => d.value) || 0])
-                .nice()
-                .range([height - margin.top - margin.bottom, 0]);
+                .range([height, 0])
+                .domain([0, d3.max(spec.data, (d: any) => d.value)]);
 
             // Add X axis
-            g.append('g')
-                .attr('transform', `translate(0,${height - margin.top - margin.bottom})`)
-                .call(d3.axisBottom(x))
-                .selectAll('text')
-                .style('text-anchor', 'middle');
+            svg.append('g')
+                .attr('transform', `translate(0,${height})`)
+                .call(d3.axisBottom(x));
 
             // Add Y axis
-            g.append('g')
+            svg.append('g')
                 .call(d3.axisLeft(y));
 
-            if (spec.type === 'bar') {
-                // Create bars
-                g.selectAll('rect')
-                    .data(spec.data)
+             if (spec.type === 'bar') {
+                // Add bars
+                svg.selectAll('rect')
+                    .data(data)
                     .join('rect')
-                    .attr('x', d => x(d.label) ?? 0)
-                    .attr('y', d => y(d.value) ?? 0)
-                    .attr('height', d => (y(0) ?? 0) - (y(d.value) ?? 0))
-                    .attr('width', () => x.bandwidth())
-                    .attr('fill', 'steelblue');
-            } else if (spec.type === 'line') {
-                // Create line
-                const line = d3.line<{label: string; value: number}>()
-                    .x(d => {
-                        const xPos = x(d.label);
-                        return xPos === undefined ? 0 : xPos + x.bandwidth() / 2;
-                    })
-                    .y(d => y(d.value) ?? 0)
-                    .defined(d => x(d.label) !== undefined && y(d.value) !== undefined);
-
-                g.append('path')
-                    .datum(spec.data)
-                    .attr('fill', 'none')
-                    .attr('stroke', 'steelblue')
-                    .attr('stroke-width', 1.5)
-                    .attr('d', line);
+                    .attr('x', (d: any) => x(d.label))
+                    .attr('y', (d: any) => y(d.value))
+                    .attr('width', x.bandwidth())
+                    .attr('height', (d: any) => height - y(d.value))
+                    .attr('fill', (d: any) => d.color || 'steelblue');
+            } else if (spec.type === 'line' || spec.type === 'scatter') {
+                // Create line generator
+                const line = d3.line()
+                    .x((d: any) => x(d.label) + x.bandwidth() / 2)
+                    .y((d: any) => y(d.value));
+ 
+                if (spec.type === 'line') {
+                    // Add line
+                    svg.append('path')
+                        .datum(data)
+                        .attr('fill', 'none')
+                        .attr('stroke', 'steelblue')
+                        .attr('stroke-width', 2)
+                        .attr('d', line);
+                }
+ 
+                // Add points
+                svg.selectAll('circle')
+                    .data(data)
+                    .join('circle')
+                    .attr('cx', (d: any) => x(d.label) + x.bandwidth() / 2)
+                    .attr('cy', (d: any) => y(d.value))
+                    .attr('r', spec.type === 'bubble' ? (d: any) => d.size || 5 : 4)
+                    .attr('fill', (d: any) => d.color || 'steelblue')
+                    .attr('stroke', '#fff')
+                    .attr('stroke-width', 1);
             }
+
         } catch (error) {
-            console.error('Error rendering basic chart:', error);
+            console.error('Basic chart render error:', error);
             throw error;
         }
     }
-}
+};

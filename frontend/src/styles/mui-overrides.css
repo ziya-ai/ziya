@@ -1,0 +1,55 @@
+/* MUI Component Overrides */
+
+/* TreeView spacing adjustments */
+.MuiTreeItem-root {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.MuiTreeItem-content {
+  padding: 0px 2px !important;
+  min-height: 14px !important;
+}
+
+/* Ensure proper indentation for nested items */
+.MuiTreeItem-group {
+  margin-left: 16px !important;
+  padding-left: 8px !important;
+}
+
+/* Make dotted lines more visible in dark mode */
+.dark .MuiTreeItem-group {
+  border-left-color: #606060 !important;
+  border-left-style: dashed !important;
+}
+
+/* Remove underline from clickable labels */
+.MuiTypography-root:hover {
+  text-decoration: none !important;
+}
+
+/* Drag and drop styling */
+/* Drag and drop styling */
+.MuiTreeItem-root.drag-over {
+  background-color: rgba(24, 144, 255, 0.1) !important;
+  outline: 1px dashed #1890ff !important;
+}
+
+/* Add styles for dragged items */
+.MuiTreeItem-root[dragging="true"] {
+  opacity: 0.4 !important;
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Ensure the tree component takes available space */
+.MuiTreeView-root {
+  flex: 1;
+  height: 100%;
+}
+
+/* Make tree items draggable */
+.MuiTreeItem-content {
+  cursor: grab !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}

@@ -1,0 +1,67 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -27,8 +27,13 @@ def process_user_input(input_type, value):
+         if not isinstance(value, (int, float, str)):
+             return None
+         try:
+-            return float(value)
++            num_value = float(value)
++            # Additional validation for number type
++            if num_value > 1e10 or num_value < -1e10:
++                return None  # Number out of reasonable range
++            return num_value
+         except ValueError:
++            return None
+     
+     if input_type == 'date':
+         if value is None:
+@@ -38,8 +43,13 @@ def process_user_input(input_type, value):
+             return None
+         try:
+             import datetime
+-            return datetime.datetime.strptime(value, '%Y-%m-%d').date()
++            date_obj = datetime.datetime.strptime(value, '%Y-%m-%d').date()
++            # Additional validation for date type
++            today = datetime.date.today()
++            if date_obj > today + datetime.timedelta(days=365*10):
++                return None  # Date too far in the future
++            return date_obj
+         except ValueError:
++            return None
+     
+     if input_type == 'boolean':
+         if value is None:
+@@ -47,9 +57,13 @@ def process_user_input(input_type, value):
+         if isinstance(value, bool):
+             return value
+         if isinstance(value, str):
+             value = value.lower()
+-            if value in ('true', 'yes', '1'):
++            if value in ('true', 'yes', '1', 'on'):
+                 return True
+-            if value in ('false', 'no', '0'):
++            if value in ('false', 'no', '0', 'off'):
++                return False
++        if isinstance(value, int):
++            if value == 1:
++                return True
++            if value == 0:
+                 return False
+         return None
+     
+@@ -59,8 +73,12 @@ def process_user_input(input_type, value):
+             return None
+         if len(value) == 0:
+             return None
+-        if '@' not in value:
++        if '@' not in value or '.' not in value:
+             return None
+-        return value.strip().lower()
++        email = value.strip().lower()
++        # Additional validation for email
++        if len(email.split('@')[0]) == 0:
++            return None  # Missing username part
++        return email
+     
+     # Unknown input type

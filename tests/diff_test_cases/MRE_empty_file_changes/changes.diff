@@ -1,0 +1,9 @@
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -1,0 +1,5 @@
++# This is a test file that was previously empty
++
++def main():
++    print("Hello, world!")
++    return 0

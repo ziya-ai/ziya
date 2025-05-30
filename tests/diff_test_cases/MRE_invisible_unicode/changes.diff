@@ -1,0 +1,10 @@
+diff --git a/example.py b/example.py
+--- a/example.py
++++ b/example.py
+@@ -1,5 +1,5 @@
+ def example_function():
+-    # This is a comment
++    # This is a comment with invisible unicode characters: ​‌‍‎‏⁠⁡⁢⁣⁤﻿
+     print("Example function")
+     
+     return True
