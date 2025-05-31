@@ -910,9 +910,7 @@ async def stream_chunks(body):
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 done_marker_sent = True
 
-            # Clean up the stream
-            if conversation_id in active_streams:
-                del active_streams[conversation_id]
+            await cleanup_stream(conversation_id)
             return
                 
         except Exception as e:

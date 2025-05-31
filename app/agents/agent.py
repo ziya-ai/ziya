@@ -531,6 +531,10 @@ class RetryingChatBedrock(Runnable):
         # Add AWS credential debugging
         from app.utils.aws_utils import debug_aws_credentials
         # debug_aws_credentials()
+        
+        # Ensure each stream has its own conversation tracking
+        #stream_id = f"stream_{id(self)}_{hash(str(messages))}"
+        stream_id = "unbound"
 
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
