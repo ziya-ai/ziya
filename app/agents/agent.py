@@ -46,6 +46,7 @@ from app.utils.context_enhancer import enhance_context_with_ast, get_ast_indexin
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file
+from app.utils.prompt_cache import get_prompt_cache
 from app.utils.file_state_manager import FileStateManager
 from app.utils.error_handlers import format_error_response, detect_error_type
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
@@ -61,6 +62,7 @@ except KnownCredentialException as e:
     print("=" * 80 + "\n")
     sys.exit(1)
 
+prompt_cache = get_prompt_cache()
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Clean chat history by removing invalid messages and normalizing content."""
@@ -291,7 +293,8 @@ class RetryingChatBedrock(Runnable):
         error_message = {
             "error": error_type,
             "detail": detail,
-            "status_code": status_code
+                    "status_code": status_code,
+                    "stream_id": stream_id
         }
         if retry_after:
             error_message["retry_after"] = retry_after
@@ -333,7 +336,8 @@ class RetryingChatBedrock(Runnable):
         error_message = {
             "error": error_type,
             "detail": detail,
-            "status_code": status_code
+                    "status_code": status_code,
+                    "stream_id": stream_id
         }
         if retry_after:
             error_message["retry_after"] = retry_after
@@ -524,6 +528,10 @@ class RetryingChatBedrock(Runnable):
         # Add AWS credential debugging
         from app.utils.aws_utils import debug_aws_credentials
         # debug_aws_credentials()
+        
+        # Ensure each stream has its own conversation tracking
+        #stream_id = f"stream_{id(self)}_{hash(str(messages))}"
+        stream_id = "unbound"
 
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1} of {max_retries}")
@@ -563,18 +571,16 @@ class RetryingChatBedrock(Runnable):
                                 logger.info(f"Signer has session token of length: {token_length}")
 
                 async for chunk in self.model.astream(messages, config, **kwargs):
+                    # Check if this is an error chunk that should terminate this specific stream
                     if isinstance(chunk, ChatGoogleGenerativeAIError):
-                        # Format Gemini errors as structured error payload within a chunk
                         error_msg = {
-                            "error": "server_error",
+                            "error": "server_error", 
                             "detail": str(chunk),
-                            "status_code": 500
+                            "status_code": 500,
+                            "stream_id": stream_id  # Include stream ID for debugging
                         }
-                        # Yield the error payload as content in an AIMessageChunk
                         yield AIMessageChunk(content=json.dumps(error_msg))
-                        # Signal termination by yielding a specific marker (optional, stream_chunks can also detect error type)
-                        # yield AIMessageChunk(content="[STREAM_ERROR_SENTINEL]") # Alternative approach
-                        return
+                        return  # Only terminate this specific stream
 
                     elif isinstance(chunk, AIMessageChunk):
                         raw_chunk_content_repr = repr(chunk.content)[:200]
@@ -668,6 +674,7 @@ class RetryingChatBedrock(Runnable):
                         "error": "throttling_error",
                         "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
                         "status_code": 429,
+                        "stream_id": stream_id,
                         "retry_after": "5"
                     }
                     
@@ -984,7 +991,73 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     print("--------------------------------------------------------")
     return combined_contents
 
-
+def extract_file_paths_from_input(x) -> List[str]:
+    """Extract file paths from agent input for cache tracking."""
+    files = x["config"].get("files", [])
+    user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
+    
+    file_paths = []
+    for file_path in files:
+        full_path = os.path.join(user_codebase_dir, file_path)
+        if os.path.exists(full_path) and not os.path.isdir(full_path):
+            file_paths.append(full_path)
+    
+    return file_paths
+ 
+def get_conversation_id_from_input(x) -> str:
+    """Extract conversation ID from agent input."""
+    return x.get("conversation_id", "default")
+ 
+def estimate_token_count(text: str) -> int:
+    """Estimate token count for caching purposes."""
+    try:
+        import tiktoken
+        encoding = tiktoken.get_encoding("cl100k_base")
+        return len(encoding.encode(text))
+    except Exception:
+        # Fallback estimation: roughly 4 characters per token
+        return len(text) // 4
+ 
+def log_codebase_wrapper_with_cache(x):
+    """Enhanced codebase wrapper that integrates with prompt caching."""
+    conversation_id = get_conversation_id_from_input(x)
+    file_paths = extract_file_paths_from_input(x)
+    
+    # Generate the codebase context
+    codebase = extract_codebase(x)
+    
+    # Get AST context if available
+    ast_context = ""
+    if os.environ.get("ZIYA_ENABLE_AST") == "true":
+        from app.utils.context_enhancer import get_ast_context
+        if get_ast_context:
+            ast_context = get_ast_context() or ""
+    
+    # Check for cached version
+    full_context = codebase + ast_context
+    cached_context = prompt_cache.get_cached_prompt(
+        conversation_id=conversation_id,
+        full_prompt=full_context,
+        file_paths=file_paths,
+        ast_context=ast_context
+    )
+    
+    if cached_context:
+        logger.info(f"Using cached context for conversation {conversation_id}")
+        return cached_context
+    
+    # Cache the new context
+    token_count = estimate_token_count(full_context)
+    prompt_cache.cache_prompt(
+        conversation_id=conversation_id,
+        full_prompt=full_context,
+        file_paths=file_paths,
+        token_count=token_count,
+        ast_context=ast_context
+    )
+    
+    logger.info(f"Cached new context for conversation {conversation_id} ({token_count} tokens)")
+    return codebase
 
 class AgentInput(BaseModel):
     question: str
@@ -1139,7 +1212,7 @@ def create_agent_chain(chat_model: BaseChatModel):
     
     # Define the input mapping with conditional AST context
     input_mapping = {
-        "codebase": log_codebase_wrapper,
+        "codebase": log_codebase_wrapper_with_cache,
         "question": lambda x: x["question"],
         "chat_history": lambda x: _format_chat_history(x.get("chat_history", [])),
         "agent_scratchpad": lambda x: [

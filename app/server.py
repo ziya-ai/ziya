@@ -247,7 +247,7 @@ async def cleanup_stream(conversation_id: str):
     """Clean up resources when a stream ends or is aborted."""
     if conversation_id in active_streams:
         logger.info(f"Cleaning up stream for conversation: {conversation_id}")
-        # Remove from active streams
+        # Remove only this specific stream from active streams
         del active_streams[conversation_id]
         # Any other cleanup needed
         logger.info(f"Stream cleanup complete for conversation: {conversation_id}")
@@ -262,7 +262,11 @@ async def stream_chunks(body):
     try:
         # Get the question from the request body
         question = body.get("question", "")
-        conversation_id = body.get("conversation_id", "default")
+        # Generate unique conversation ID if not provided to prevent conflicts
+        conversation_id = body.get("conversation_id")
+        if not conversation_id:
+            import uuid
+            conversation_id = f"stream_{uuid.uuid4().hex[:8]}"
 
         # Register this stream as active
         active_streams[conversation_id] = {
@@ -647,9 +651,8 @@ async def stream_chunks(body):
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 done_marker_sent = True
 
-                # Clean up the stream
-                if conversation_id in active_streams:
-                    del active_streams[conversation_id]
+                # Clean up this specific stream without affecting others
+                await cleanup_stream(conversation_id)
 
                 # We need to break out of the async for loop
                 return  # Exit the entire generator function
@@ -674,9 +677,7 @@ async def stream_chunks(body):
             
             # If the loop finished normally (no error break) and we sent content, send DONE
             if not done_marker_sent and chunk_count > 0 and not is_error_chunk:
-                # Clean up the stream
-                if conversation_id in active_streams:
-                    del active_streams[conversation_id]
+                await cleanup_stream(conversation_id)
 
                 yield f"data: {json.dumps({'done': True})}\n\n"
 
@@ -692,8 +693,7 @@ async def stream_chunks(body):
                 yield "data: [DONE]\n\n"
 
             # Clean up the stream
-            if conversation_id in active_streams:
-                del active_streams[conversation_id]
+            await cleanup_stream(conversation_id)
             return
             
         except (CredentialRetrievalError, BotoCoreError) as e:
@@ -715,9 +715,7 @@ async def stream_chunks(body):
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 done_marker_sent = True
 
-            # Clean up the stream
-            if conversation_id in active_streams:
-                del active_streams[conversation_id]
+            await cleanup_stream(conversation_id)
             return
                 
         except Exception as e:
@@ -727,9 +725,7 @@ async def stream_chunks(body):
                 # logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-                # Clean up the stream
-                if conversation_id in active_streams:
-                    del active_streams[conversation_id]
+                await cleanup_stream(conversation_id)
 
                 # yield f"data: {json.dumps({'done': True})}\n\n" # Middleware will send DONE
                 # done_marker_sent = True
@@ -740,10 +736,8 @@ async def stream_chunks(body):
             # We're not updating any files, so pass an empty list
             update_conversation_state(conversation_id, [])
         except Exception as e:
-            logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
-            # Clean up the stream
-            if conversation_id in active_streams:
-                del active_streams[conversation_id]
+            logger.error(f"stream_chunks error updating conversation state: {e}")
+            await cleanup_stream(conversation_id)
             
     except Exception as e:
         raise # re-raise for middleware to catch        
@@ -754,9 +748,7 @@ async def stream_chunks(body):
             update_conversation_state(conversation_id, [])
         except Exception as e:
             logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
-            # Clean up the stream
-            if conversation_id in active_streams:
-                del active_streams[conversation_id]
+            await cleanup_stream(conversation_id)
 
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")
@@ -1179,7 +1171,7 @@ def get_available_models():
             })
             
         # Log the models being returned
-        logger.info(f"Available models: {json.dumps(models)}")
+        logger.debug(f"Available models: {json.dumps(models)}")
         return models
     except Exception as e:
         logger.error(f"Error getting available models: {str(e)}")
@@ -1686,11 +1678,11 @@ def get_model_capabilities(model: str = None):
 
     try:
         base_model_config = ModelManager.get_model_config(endpoint, model_alias)
-        logger.info(f"[DEBUG CAPABILITIES] base_model_config: {json.dumps(base_model_config)}")
+        logger.debug(f"base_model_config: {json.dumps(base_model_config)}")
 
         # Get the *current effective settings* which include env overrides
         effective_settings = ModelManager.get_model_settings()
-        logger.info(f"[DEBUG CAPABILITIES] effective_settings: {json.dumps(effective_settings)}")
+        logger.debug(f"effective_settings: {json.dumps(effective_settings)}")
 
         capabilities = {
             "supports_thinking": effective_settings.get("thinking_mode", base_model_config.get("supports_thinking", False)),
@@ -1707,12 +1699,12 @@ def get_model_capabilities(model: str = None):
         # Get ABSOLUTE maximums from base config for ranges
         absolute_max_output_tokens = base_model_config.get("max_output_tokens", 4096)
 
-        logger.info(f"[DEBUG CAPABILITIES] absolute_max_output_tokens from base_model_config: {absolute_max_output_tokens}") # DEBUG
-        logger.info(f"[DEBUG CAPABILITIES] effective_max_output_tokens from effective_settings: {effective_max_output_tokens}") # DEBUG
+        logger.debug(f"absolute_max_output_tokens from base_model_config: {absolute_max_output_tokens}") # DEBUG
+        logger.debug(f"effective_max_output_tokens from effective_settings: {effective_max_output_tokens}") # DEBUG
 
         # Get absolute max input tokens from base config (usually under 'token_limit')
         absolute_max_input_tokens = base_model_config.get("token_limit", 4096)
-        logger.info(f"[DEBUG CAPABILITIES] absolute_max_input_tokens from base_model_config: {absolute_max_input_tokens}") # DEBUG
+        logger.debug(f"absolute_max_input_tokens from base_model_config: {absolute_max_input_tokens}") # DEBUG
 
  
         # Add token limits to capabilities
@@ -1729,7 +1721,7 @@ def get_model_capabilities(model: str = None):
         capabilities["top_k_range"] = base_top_k_range
         # Add range for max_output_tokens using the absolute max
         capabilities["max_output_tokens_range"] = {"min": 1, "max": absolute_max_output_tokens, "default": effective_max_output_tokens}
-        logger.info(f"[DEBUG CAPABILITIES] max_output_tokens_range being set: {capabilities['max_output_tokens_range']}") # DEBUG         # Add range for max_input_tokens using the absolute max
+        logger.debug(f"max_output_tokens_range being set: {capabilities['max_output_tokens_range']}") # DEBUG         # Add range for max_input_tokens using the absolute max
 
         # Add range for max_input_tokens using the absolute max
         capabilities["max_input_tokens_range"] = {"min": 1, "max": absolute_max_input_tokens, "default": effective_max_input_tokens}
@@ -1795,7 +1787,7 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
             method_used = "primary"
         except AttributeError:
             # If primary method fails, use fallback
-            logger.warning("Primary token counting method unavailable, using fallback")
+            logger.debug("Primary token counting method unavailable, using fallback")
             token_count = count_tokens_fallback(request.text)
             method_used = "fallback"
         except Exception as e:
@@ -1945,7 +1937,7 @@ async def abort_stream(request: Request):
         if conversation_id in active_streams:
             logger.info(f"Explicitly aborting stream for conversation: {conversation_id}")
             # Remove from active streams to signal to any ongoing processing that it should stop
-            del active_streams[conversation_id]
+            await cleanup_stream(conversation_id)
             return JSONResponse(content={"status": "success", "message": "Stream aborted"})
         else:
             return JSONResponse(content={"status": "not_found", "message": "No active stream found for this conversation"})
