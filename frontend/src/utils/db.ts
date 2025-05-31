@@ -589,9 +589,22 @@ class ConversationDB implements DB {
             return new Promise((resolve, reject) => {
                 request.onsuccess = () => {
                     const conversations = Array.isArray(request.result) ? request.result : [];
-                    // Only export active conversations
                     const activeConversations = conversations.filter(conv => conv.isActive !== false);
-                    resolve(JSON.stringify(activeConversations, null, 2));
+
+                    // Also export folders to maintain hierarchy
+                    this.getFolders().then(folders => {
+                        const exportData = {
+                            version: '1.0',
+                            exportDate: new Date().toISOString(),
+                            conversations: activeConversations,
+                            folders: folders
+                        };
+                        resolve(JSON.stringify(exportData, null, 2));
+                    }).catch(error => {
+                        console.warn('Failed to export folders, exporting conversations only:', error);
+                        // Fallback to conversations only for backward compatibility
+                        resolve(JSON.stringify(activeConversations, null, 2));
+                    });
                 };
                 request.onerror = () => reject(request.error);
             });
@@ -615,23 +628,69 @@ class ConversationDB implements DB {
         try {
             // Parse and validate the imported data
             const parsedData = JSON.parse(data);
-            if (!Array.isArray(parsedData)) {
-                throw new Error('Invalid import format - expected array');
+            let importedConversations: Conversation[] = [];
+            let importedFolders: ConversationFolder[] = [];
+
+            // Handle both old format (array of conversations) and new format (object with conversations and folders)
+            if (Array.isArray(parsedData)) {
+                // Old format - just conversations
+                importedConversations = parsedData;
+                console.log('Importing legacy format (conversations only)');
+            } else if (parsedData && typeof parsedData === 'object') {
+                // New format - object with conversations and folders
+                if (parsedData.conversations && Array.isArray(parsedData.conversations)) {
+                    importedConversations = parsedData.conversations;
+                }
+                if (parsedData.folders && Array.isArray(parsedData.folders)) {
+                    importedFolders = parsedData.folders;
+                }
+                console.log('Importing new format with folders:', {
+                    conversations: importedConversations.length,
+                    folders: importedFolders.length
+                });
+            } else {
+                throw new Error('Invalid import format - expected array or object with conversations');
             }
 
             // Ensure all imported conversations are marked as active
-            const importedData = parsedData.map(conv => ({ ...conv, isActive: true }));
+            const processedConversations = importedConversations.map(conv => ({ ...conv, isActive: true }));
 
             // Validate each conversation
-            const validConversations = importedData.filter(conv =>
+            const validConversations = processedConversations.filter(conv =>
                 this.validateConversations([conv])
             );
 
             if (validConversations.length === 0) {
                 throw new Error('No valid conversations found in import file');
             }
+
+            // Import folders first (if any)
+            if (importedFolders.length > 0) {
+                console.log('Importing folders:', importedFolders.length);
+
+                // Get existing folders to avoid duplicates
+                const existingFolders = await this.getFolders();
+                const existingFolderIds = new Set(existingFolders.map(f => f.id));
+
+                // Only import folders that don't already exist
+                const newFolders = importedFolders.filter(folder => !existingFolderIds.has(folder.id));
+
+                // Save new folders
+                for (const folder of newFolders) {
+                    try {
+                        await this.saveFolder({
+                            ...folder,
+                            createdAt: folder.createdAt || Date.now(),
+                            updatedAt: Date.now()
+                        });
+                    } catch (error) {
+                        console.warn(`Failed to import folder ${folder.name}:`, error);
+                    }
+                }
+            }
+
             console.debug('Importing conversations:', {
-                total: importedData.length,
+                total: processedConversations.length,
                 valid: validConversations.length
             });
             // Get existing conversations
