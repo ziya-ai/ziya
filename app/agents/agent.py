@@ -497,12 +497,6 @@ class RetryingChatBedrock(Runnable):
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
         
-        # Filter kwargs based on model's supported parameters
-        from app.agents.models import ModelManager
-        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
-        model_config = ModelManager.get_model_config(endpoint, model_name)
-        
         # Create a copy of kwargs to avoid modifying the original
         filtered_kwargs = {}
 
@@ -513,8 +507,11 @@ class RetryingChatBedrock(Runnable):
             # Add max_tokens to kwargs if it's not already there
             filtered_kwargs["max_tokens"] = max_tokens
             logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
+        from app.agents.models import ModelManager
+        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
+        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        model_config = ModelManager.get_model_config(endpoint, model_name)
 
-        # Add other kwargs
         for key, value in kwargs.items():
             if key != "max_tokens":  # We've already handled max_tokens
                 filtered_kwargs[key] = value
@@ -820,6 +817,14 @@ class RetryingChatBedrock(Runnable):
                 model_family=model_family,
                 endpoint=endpoint
             )
+
+        # Extract conversation_id from config for caching
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get("conversation_id")
+            if conversation_id:
+                kwargs["conversation_id"] = conversation_id
+                logger.debug(f"Added conversation_id to invoke kwargs for caching")
         
         for attempt in range(max_retries):
             try:
@@ -1362,7 +1367,7 @@ def create_agent_executor(agent_chain: Runnable):
                 
                 # Call the original astream and convert to RunLogPatch
                 from langchain_core.tracers.log_stream import RunLogPatch
-                async for chunk in self.executor.astream(input_data, config, **kwargs):
+                async for chunk in self.executor.astream(input_data, config=config, **kwargs):
                     # Process the chunk safely
                     safe_chunk = self._ensure_safe_chunk(chunk)
                     # Convert to RunLogPatch format

@@ -125,11 +125,21 @@ active_websockets = set()
 hunk_status_updates = []
 
 # Get the directory of the current file
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
+def get_templates_dir():
+    """Get the templates directory, handling both development and installed package scenarios."""
+    # First try relative to the current file (development mode)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(current_dir)
+    dev_templates_dir = os.path.join(parent_dir, "templates")
+    
+    if os.path.exists(dev_templates_dir):
+        return dev_templates_dir
+    
+    # For installed packages, look in the package data
+    import pkg_resources
+    return pkg_resources.resource_filename('ziya', 'templates')
 
-# Set up templates directory
-templates_dir = os.path.join(parent_dir, "templates")
+templates_dir = get_templates_dir()
 
 # Mount templates/static if it exists (for frontend assets)
 templates_static_dir = os.path.join(templates_dir, "static")
@@ -434,9 +444,14 @@ async def stream_chunks(body):
         # Set up the model with the stop sequence
         # This ensures the model will properly stop at the sentinel
         model_with_stop = model_instance.bind(stop=["</tool_input>"])
+
+        # Create config dict with conversation_id for caching
+        config = {"conversation_id": conversation_id}
+        logger.info(f"Passing conversation_id to model: {conversation_id}")
+
         
         try:
-            async for chunk in model_with_stop.astream(messages):
+            async for chunk in model_with_stop.astream(messages, config=config):
 
                 # Check if client disconnected
                 if conversation_id not in active_streams:
@@ -1826,6 +1841,65 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
         # Return 0 in case of error to avoid breaking the frontend
         return {"token_count": 0}
 
+@app.get('/api/cache-stats')
+async def get_cache_stats():
+    """Get context caching statistics and effectiveness metrics."""
+    try:
+        from app.utils.context_cache import get_context_cache_manager
+        cache_manager = get_context_cache_manager()
+        
+        stats = cache_manager.get_cache_stats()
+        
+        # Calculate effectiveness metrics
+        total_operations = stats["hits"] + stats["misses"]
+        hit_rate = (stats["hits"] / total_operations * 100) if total_operations > 0 else 0
+        
+        return {
+            "cache_enabled": True,
+            "statistics": {
+                "cache_hits": stats["hits"],
+                "cache_misses": stats["misses"],
+                "context_splits": stats["splits"],
+                "hit_rate_percent": round(hit_rate, 1),
+                "active_cache_entries": stats["cache_entries"],
+                "estimated_tokens_cached": stats["estimated_token_savings"]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {str(e)}")
+        return {"cache_enabled": False, "error": str(e)}
+
+@app.get('/api/cache-test')
+async def test_cache_functionality():
+    """Test if context caching is properly configured and working."""
+    try:
+        from app.utils.context_cache import get_context_cache_manager
+        from app.agents.models import ModelManager
+        
+        # Check model configuration
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        cache_manager = get_context_cache_manager()
+        
+        # Create a large test content
+        test_content = "Test file content. " * 1000  # ~20,000 chars
+        
+        return {
+            "model_supports_caching": model_config.get("supports_context_caching", False),
+            "current_model": model_name,
+            "endpoint": endpoint,
+            "test_content_size": len(test_content),
+            "should_cache": cache_manager.should_cache_context(test_content, model_config),
+            "min_cache_size": cache_manager.min_cache_size,
+            "cache_manager_initialized": cache_manager is not None
+        }
+    except Exception as e:
+        logger.error(f"Error testing cache functionality: {str(e)}")
+        return {"error": str(e)}
+
+
 @app.post('/api/model-settings')
 async def update_model_settings(settings: ModelSettingsRequest):
     global model
@@ -1889,6 +1963,14 @@ async def update_model_settings(settings: ModelSettingsRequest):
         logger.info(f"Model kwargs before filtering: {model_kwargs}")
         filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
         logger.info(f"Filtered model kwargs: {filtered_kwargs}")
+
+        # Extract conversation_id from config if available for caching
+        if config and isinstance(config, dict) and config.get('conversation_id'):
+            filtered_kwargs["conversation_id"] = config.get('conversation_id')
+            logger.info(f"Added conversation_id to astream kwargs for caching: {config.get('conversation_id')}")
+        elif hasattr(input, 'get') and input.get('conversation_id'):
+            filtered_kwargs["conversation_id"] = input.get('conversation_id')
+            logger.info(f"Added conversation_id from input to astream kwargs for caching")
 
         # Update the model's kwargs directly
         if hasattr(model, 'model'):

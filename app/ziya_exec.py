@@ -21,12 +21,20 @@ def ziya():
     # Check for version flag first to avoid importing main
     if "--version" in sys.argv:
         # Use direct import of version utility to avoid loading the full app
-        from app.utils.version_util import get_current_version
+        try:
+            from .utils.version_util import get_current_version
+        except ImportError:
+            # Fallback for development mode
+            from app.utils.version_util import get_current_version
         print(f"Ziya version {get_current_version()}")
         return
         
     # Only import main when needed
-    from app.main import main
+    try:
+        from .main import main
+    except ImportError:
+        # Fallback for development mode
+        from app.main import main
     main()
 
 
@@ -42,7 +50,11 @@ def dev():
     frontend_thread.start()
     try:
         # Only import main when needed
-        from app.main import main
+        try:
+            from .main import main
+        except ImportError:
+            # Fallback for development mode
+            from app.main import main
         print("Came to main")
         main()
     except KeyboardInterrupt:
