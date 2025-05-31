@@ -740,6 +740,9 @@ class ZiyaBedrock(Runnable):
         Returns:
             The model's response
         """
+        logger.info(f"🔧 DEBUG: invoke called")
+        logger.info(f"🔧 DEBUG: config type={type(config)}, config={config}")
+        
         # Convert input to messages if needed
         if isinstance(input, str):
             messages = [HumanMessage(content=input)]
