@@ -160,17 +160,16 @@ export const graphvizPlugin: D3RenderPlugin = {
                     /^(\s*(?:di)?graph\s+[^{]*{)/,
                     `$1
                     bgcolor="transparent";
-                    node [color="${colors.nodeBorder}", fontcolor="${defaultTextColor}", style="filled", fillcolor="${colors.nodeFill}", penwidth=1.5];
+                    node [color="${colors.nodeBorder}", style="filled", fillcolor="${colors.nodeFill}", penwidth=1.5];
                     edge [color="${colors.edgeColor}", fontcolor="${defaultTextColor}", penwidth=1.5];
                     graph [fontcolor="${defaultTextColor}", color="${colors.clusterBorder}", fontname="Arial"];`
                 );
-
                 // Handle graph label if present
-                const labelMatch = spec.definition.match(/\s+label\s*=\s*"([^"]+)"/);
+                const labelMatch = spec.definition.match(/^\s*label\s*=\s*"([^"]+)"/m);
                 if (labelMatch) {
                     const originalLabel = labelMatch[1];
                     themedDot = themedDot.replace(
-                        /\s+label\s*=\s*"([^"]+)"/,
+                        /^\s*label\s*=\s*"([^"]+)"/m,
                         ` label=<<font color="${defaultTextColor}">${originalLabel}</font>>`
                     );
                 }
