@@ -13,6 +13,8 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from app.utils.logging_utils import logger
 from app.utils.custom_bedrock import CustomBedrockClient
 import os
+from app.utils.context_cache import get_context_cache_manager
+
 
 class ZiyaBedrock(Runnable):
     """
@@ -51,6 +53,7 @@ class ZiyaBedrock(Runnable):
         self.ziya_top_p = model_kwargs.get("top_p") if model_kwargs else None
         self.streaming = streaming
         self.callbacks = callbacks
+        self.context_cache_manager = get_context_cache_manager()
         self.verbose = verbose
         self.region_name = os.environ.get("AWS_REGION", region_name)
         self.credentials_profile_name = credentials_profile_name
@@ -124,13 +127,153 @@ class ZiyaBedrock(Runnable):
         logger.info(f"Initializing ZiyaBedrock with model_id={model_id}")
         logger.info(f"ZiyaBedrock parameters: max_tokens={self.ziya_max_tokens}, temperature={temperature}, thinking_mode={thinking_mode}")
         logger.info(f"Effective model_kwargs passed to ChatBedrock: {filtered_kwargs}")    
+
+    def _prepare_messages_with_smart_caching(self, messages: List[BaseMessage], conversation_id: str = None) -> List[BaseMessage]:
+        """
+        Prepare messages with smart context caching that splits stable and dynamic content.
+        
+        Args:
+            messages: List of messages to prepare
+            conversation_id: Optional conversation ID for caching
+            
+        Returns:
+            List of prepared messages with caching metadata
+        """
+        logger.info(f"🔧 DEBUG: _prepare_messages_with_smart_caching called")
+        logger.info(f"🔧 DEBUG: conversation_id={conversation_id}")
+        logger.info(f"🔧 DEBUG: messages count={len(messages)}")
+        
+        if not conversation_id:
+            logger.info(f"🔧 DEBUG: No conversation_id, skipping caching")
+            return messages
+            
+        # Get model configuration to check caching support
+        from app.agents.models import ModelManager
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        model_name = os.environ.get("ZIYA_MODEL")
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        logger.info(f"🔧 DEBUG: endpoint={endpoint}, model={model_name}")
+        logger.info(f"🔧 DEBUG: supports_context_caching={model_config.get('supports_context_caching', False)}")
+        
+        if not model_config.get("supports_context_caching", False):
+            logger.info(f"🔧 DEBUG: Model doesn't support context caching")
+            return messages
+            
+        # Process system messages with large content (codebase context)
+        prepared_messages = []
+        for message in messages:
+            logger.info(f"🔧 DEBUG: Processing message type={type(message)}")
+            if isinstance(message, SystemMessage) and len(message.content) > 10000:
+                logger.info(f"🔍 CACHE: Analyzing system message with {len(message.content):,} characters")
+                
+                # Split context into stable and dynamic parts
+                context_split = self._split_system_message_context(
+                    message, conversation_id, model_config
+                )
+                
+                if context_split:
+                    # Replace the single large message with split messages
+                    logger.info(f"✅ CACHE: Successfully split context into {len(context_split)} messages")
+                    prepared_messages.extend(context_split)
+                    continue
+                elif self.context_cache_manager.should_cache_context(message.content, model_config):
+                    # Fall back to simple caching if splitting fails
+                    logger.info(f"Enabling simple context caching for system message with {len(message.content)} characters")
+                    
+                    cached_message = SystemMessage(
+                        content=message.content,
+                        additional_kwargs={"cache_control": {"type": "ephemeral"}}
+                    )
+                    prepared_messages.append(cached_message)
+                    continue
+                else:
+                    logger.info(f"❌ CACHE: Content not suitable for caching")
+            prepared_messages.append(message)
+            
+        return prepared_messages
+
+    def _split_system_message_context(
+        self, 
+        message: SystemMessage, 
+        conversation_id: str, 
+        model_config: Dict[str, Any]
+    ) -> Optional[List[SystemMessage]]:
+        """
+        Split a system message with codebase context into cacheable and dynamic parts.
+        
+        Returns:
+            List of SystemMessage objects if splitting was successful, None otherwise
+        """
+        if not conversation_id:
+            logger.debug("No conversation_id provided, skipping context splitting")
+            return None
+            
+        # Extract file paths from the message content
+        file_paths = self._extract_file_paths_from_content(message.content)
+        if not file_paths:
+            return None
+            
+        # Split the context
+        context_split = self.context_cache_manager.split_context_by_file_changes(
+            conversation_id, message.content, file_paths
+        )
+        
+        # Only split if we have substantial stable content to cache
+        if len(context_split.stable_content) < 5000:
+            logger.info("Stable content too small for splitting, using simple caching")
+            return None
+            
+        messages = []
+        
+        # Add stable content with caching
+        if context_split.stable_content:
+            logger.info(f"💾 CACHE: Stable content: {len(context_split.stable_files)} files, "
+                       f"{len(context_split.stable_content):,} chars → CACHED")
+            stable_message = SystemMessage(
+                content=context_split.stable_content,
+                additional_kwargs={"cache_control": {"type": "ephemeral"}}
+            )
+            messages.append(stable_message)
+            logger.info(f"Created cached stable context: {len(context_split.stable_content)} chars, {len(context_split.stable_files)} files")
+        
+        # Add dynamic content without caching
+        if context_split.dynamic_content:
+            logger.info(f"⚡ DYNAMIC: {len(context_split.dynamic_files)} files, "
+                       f"{len(context_split.dynamic_content):,} chars → NOT CACHED")
+            dynamic_message = SystemMessage(content=context_split.dynamic_content)
+            messages.append(dynamic_message)
+        
+        return messages
+    
+    def _extract_file_paths_from_content(self, content: str) -> List[str]:
+        """Extract file paths from context content."""
+        import re
+        file_paths = []
+        
+        # Look for "File: " markers
+        for line in content.split('\n'):
+            if line.startswith('File: '):
+                file_path = line[6:].strip()
+                if file_path:
+                    file_paths.append(file_path)
+                    
+        return file_paths
+
     def _generate(
         self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kwargs: Any
     ) -> ChatResult:
         """
         Generate a response from the model.
         """
+        logger.info(f"🔧 DEBUG: _generate called with kwargs keys: {list(kwargs.keys())}")
+        
         # Add our stored parameters to kwargs if not already present
+
+        # Prepare messages with caching if supported
+        conversation_id = kwargs.get("conversation_id")
+        messages = self._prepare_messages_with_smart_caching(messages, conversation_id)
+
         kwargs["max_tokens"] = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", self.ziya_max_tokens))  # Use environment variable if available
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = self.ziya_max_tokens
@@ -486,6 +629,9 @@ class ZiyaBedrock(Runnable):
         Returns:
             The model's response
         """
+        logger.info(f"🔧 DEBUG: invoke called")
+        logger.info(f"🔧 DEBUG: config type={type(config)}, config={config}")
+        
         # Convert input to messages if needed
         if isinstance(input, str):
             messages = [HumanMessage(content=input)]
@@ -495,6 +641,18 @@ class ZiyaBedrock(Runnable):
             messages = input.to_messages()
         else:
             messages = input
+
+        # Extract conversation_id from various sources
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get("conversation_id")
+            logger.info(f"🔧 DEBUG: Found conversation_id in config: {conversation_id}")
+        elif hasattr(input, 'get'):
+            conversation_id = input.get('conversation_id')
+            logger.info(f"🔧 DEBUG: Found conversation_id in input: {conversation_id}")
+
+        # Prepare messages with caching if supported
+        messages = self._prepare_messages_with_smart_caching(messages, config.get("conversation_id") if config else None)
             
         # Add our stored parameters to kwargs if not already present
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
@@ -531,6 +689,9 @@ class ZiyaBedrock(Runnable):
         Returns:
             The model's response
         """
+        logger.info(f"🔧 DEBUG: invoke called")
+        logger.info(f"🔧 DEBUG: config type={type(config)}, config={config}")
+        
         # Convert input to messages if needed
         if isinstance(input, str):
             messages = [HumanMessage(content=input)]
@@ -540,6 +701,9 @@ class ZiyaBedrock(Runnable):
             messages = input.to_messages()
         else:
             messages = input
+
+        # Prepare messages with caching if supported
+        messages = self._prepare_messages_with_smart_caching(messages, config.get("conversation_id") if config else None)
             
         # Add our stored parameters to kwargs if not already present
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
@@ -589,6 +753,9 @@ class ZiyaBedrock(Runnable):
             messages = input.to_messages()
         else:
             messages = input
+
+        # Prepare messages with caching if supported
+        messages = self._prepare_messages_with_smart_caching(messages, config.get("conversation_id") if config else None)
             
         # Add our stored parameters to kwargs if not already present
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
@@ -638,6 +805,9 @@ class ZiyaBedrock(Runnable):
         else:
             messages = input
             
+        # Prepare messages with caching if supported
+        messages = self._prepare_messages_with_smart_caching(messages, config.get("conversation_id") if config else None)
+
         # Add our stored parameters to kwargs if not already present
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = self.ziya_max_tokens

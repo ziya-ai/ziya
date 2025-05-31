@@ -4,7 +4,10 @@ version = "0.2.1"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>"]
 readme = "README.md"
-include = ["templates/**/*", "pyproject.toml" ,"ziya_exec.py", "app/utils/ast_parser/ts_parser"]
+include = [
+    "templates/**/*", 
+    "app/utils/ast_parser/ts_parser"
+]
 packages = [
     { include = "app" },
 ]
@@ -41,11 +44,11 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-ziya = 'ziya_exec:ziya'
-dev = 'ziya_exec:dev'
-finstall = "ziya_exec:frontend_install"
-fstart = "ziya_exec:frontend_start"
-fbuild = "ziya_exec:frontend_build"
+ziya = 'app.ziya_exec:ziya'
+dev = 'app.ziya_exec:dev'
+finstall = "app.ziya_exec:frontend_install"
+fstart = "app.ziya_exec:frontend_start"
+fbuild = "app.ziya_exec:frontend_build"
 
 [build-system.hooks.typescript-install]
 install-script = "scripts/install_typescript.py"

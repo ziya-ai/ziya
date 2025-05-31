@@ -171,6 +171,7 @@ MODEL_CONFIGS = {
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
             "family": "claude",
+            "supports_context_caching": True,
             "region": "us-east-1"  # Model-specific region preference
         },
         "sonnet3.7": {
@@ -183,49 +184,56 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 10000,  # Default value for max_output_tokens
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
-            "family": "claude"
+            "family": "claude",
+            "supports_context_caching": True,
         },
         "sonnet3.5-v2": {
             "model_id": {
                 "us": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
                 # Only available in US regions presently
             },
-            "family": "claude"
+            "family": "claude",
+            "supports_context_caching": True,
         },
         "sonnet3.5": {
             "model_id": {
                 "us": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
                 "eu": "anthropic.claude-3-5-sonnet-20240620-v1:0"
             },
-            "family": "claude"
+            "family": "claude",
+            "supports_context_caching": True,
         },
         "opus3": {
             "model_id": {
                 "us": "us.anthropic.claude-3-opus-20240229-v1:0",
                 # Only available in US regions currently
             },
-            "family": "claude"
+            "family": "claude",
+            "supports_context_caching": True,
         }, 
         "opus4": {
             "model_id": {
                 "us": "us.anthropic.claude-opus-4-20250514-v1:0",
                 # Only available in US regions currently
             },
-            "family": "claude"
+            "family": "claude",
+            "supports_context_caching": True,
         },
         "sonnet": {
             "model_id": {
                 "us": "us.anthropic.claude-3-sonnet-20240229-v1:0",
                 "eu": "anthropic.claude-3-sonnet-20240229-v1:0"
             },
-            "family": "claude"
+            "family": "claude",
+            "supports_context_caching": True,
         },
         "haiku": {
             "model_id": {
                 "us": "us.anthropic.claude-3-haiku-20240307-v1:0",
                 "eu": "anthropic.claude-3-haiku-20240307-v1:0"
             },
-            "family": "claude"
+            "family": "claude",
+            "supports_context_caching": True,
         },
         "nova-pro": {
             "model_id": {
