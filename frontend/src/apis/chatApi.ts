@@ -234,7 +234,7 @@ export const sendPayload = async (
         }
 
         setIsStreaming(true);
-        let response = await getApiResponse(messagesToSend, question, checkedItems, signal);
+        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal);
         console.log("Initial API response:", response.status, response.statusText);
 
         if (!response.ok) {
@@ -244,7 +244,7 @@ export const sendPayload = async (
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 // Retry the request once
-                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, signal);
+                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal);
                 if (!retryResponse.ok) {
                     throw await handleStreamError(retryResponse);
                 }
@@ -601,16 +601,20 @@ export const sendPayload = async (
     }
 };
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[], signal?: AbortSignal) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal) {
     const messageTuples: string[][] = [];
 
     for (const message of messages) {
         messageTuples.push([message.role, message.content]);
     }
 
+    // Debug log the conversation ID being sent
+    console.log('🔍 API: Sending conversation_id to server:', conversationId);
+
     const payload = {
         messages: messageTuples,
         question,
+        conversation_id: conversationId,
         files: checkedItems
     };
 
@@ -618,6 +622,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
+            // conversation_id is now in the payload body
         },
         body: JSON.stringify(payload),
         signal
