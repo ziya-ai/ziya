@@ -517,12 +517,33 @@ class RetryingChatBedrock(Runnable):
         for key, value in kwargs.items():
             if key != "max_tokens":  # We've already handled max_tokens
                 filtered_kwargs[key] = value
-                
         # Filter kwargs based on supported parameters
         filtered_kwargs = ModelManager.filter_model_kwargs(filtered_kwargs, model_config)
         logger.info(f"Filtering model kwargs: {filtered_kwargs}")
         
+        # Extract conversation_id from config for caching
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get('conversation_id')
+            if conversation_id:
+                filtered_kwargs["conversation_id"] = conversation_id
+                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
+        
         # Use filtered kwargs for the rest of the method
+        kwargs = filtered_kwargs
+        # Extract conversation_id from config for caching, but don't pass it to the model
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get('conversation_id')
+            if conversation_id:
+                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
+        
+        # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
+        if "conversation_id" in filtered_kwargs:
+            del filtered_kwargs["conversation_id"]
+            logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
+        
+        # Use filtered kwargs for the model call
         kwargs = filtered_kwargs
         
         # Add AWS credential debugging
