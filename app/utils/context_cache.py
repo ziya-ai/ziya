@@ -97,9 +97,9 @@ class ContextCacheManager:
         
         # Analyze each file individually
         for file_path in file_paths:
-            if self._has_file_changes(conversation_id, file_path):
+            if self._has_recent_changes(conversation_id, file_path):
                 changed_files.add(file_path)
-                logger.debug(f"File {file_path} has changes - will not cache")
+                logger.debug(f"File {file_path} has recent changes - will not cache")
             else:
                 unchanged_files.add(file_path)
                 logger.debug(f"File {file_path} unchanged - eligible for caching")
@@ -146,21 +146,24 @@ class ContextCacheManager:
     def _has_file_changes(self, conversation_id: str, file_path: str) -> bool:
         """
         Check if a file has changes in the current conversation.
-        Returns True if file has ANY modifications since conversation started.
+        Returns True if file has ANY changes since conversation started.
         """
         if conversation_id not in self.file_state_manager.conversation_states:
-            # No conversation state = first time seeing files = all are "new"
             return True
-            
-        file_state = self.file_state_manager.conversation_states[conversation_id].get(file_path)
-        if not file_state:
-            return True  # File not in state = new file = changed
-            
-        # File has changes if it has any line state markers (+ or *)
-        has_changes = bool(file_state.line_states)
-        logger.debug(f"File {file_path} change check: {has_changes} (line_states: {len(file_state.line_states)})")
-        return has_changes
+        
+        state = self.file_state_manager.conversation_states[conversation_id].get(file_path)
+        return bool(state and state.line_states) if state else True
     
+    def _has_recent_changes(self, conversation_id: str, file_path: str) -> bool:
+        """Check if file has changes since last context submission."""
+        return self.file_state_manager.has_changes_since_last_context_submission(
+                conversation_id, file_path
+        )
+            
+    def mark_context_submitted(self, conversation_id: str) -> None:
+        """Mark that context has been submitted for this conversation."""
+        self.file_state_manager.mark_context_submission(conversation_id)
+
     def _parse_context_by_files(self, context: str) -> Dict[str, str]:
         """
         Parse context content and split by file sections.

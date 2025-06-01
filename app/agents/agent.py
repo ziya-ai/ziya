@@ -515,12 +515,33 @@ class RetryingChatBedrock(Runnable):
         for key, value in kwargs.items():
             if key != "max_tokens":  # We've already handled max_tokens
                 filtered_kwargs[key] = value
-                
         # Filter kwargs based on supported parameters
         filtered_kwargs = ModelManager.filter_model_kwargs(filtered_kwargs, model_config)
         logger.info(f"Filtering model kwargs: {filtered_kwargs}")
         
+        # Extract conversation_id from config for caching
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get('conversation_id')
+            if conversation_id:
+                filtered_kwargs["conversation_id"] = conversation_id
+                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
+        
         # Use filtered kwargs for the rest of the method
+        kwargs = filtered_kwargs
+        # Extract conversation_id from config for caching, but don't pass it to the model
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get('conversation_id')
+            if conversation_id:
+                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
+        
+        # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
+        if "conversation_id" in filtered_kwargs:
+            del filtered_kwargs["conversation_id"]
+            logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
+        
+        # Use filtered kwargs for the model call
         kwargs = filtered_kwargs
         
         # Add AWS credential debugging
@@ -603,13 +624,18 @@ class RetryingChatBedrock(Runnable):
                             if hasattr(creds, 'token') and creds.token:
                                 token_length = len(creds.token) if creds.token else 0
                                 logger.info(f"Signer has session token of length: {token_length}")
+                    logger.debug(f"Filtered to {len(messages)} non-empty messages")
 
-                async for chunk in self.model.astream(messages, config, **kwargs):
+                # Debug the Bedrock client being used
+                # Pass conversation_id through config to the model for caching
+                model_config = config.copy() if config else {}
+                if conversation_id:
+                    model_config["conversation_id"] = conversation_id
+                
+                async for chunk in self.model.astream(messages, model_config, **kwargs):
                     # Check if this is an error chunk that should terminate this specific stream
                     if isinstance(chunk, ChatGoogleGenerativeAIError):
                         error_msg = {
-                            "error": "server_error", 
-                            "detail": str(chunk),
                             "status_code": 500,
                             "stream_id": stream_id  # Include stream ID for debugging
                         }
@@ -1067,8 +1093,15 @@ def estimate_token_count(text: str) -> int:
  
 def log_codebase_wrapper_with_cache(x):
     """Enhanced codebase wrapper that integrates with prompt caching."""
-    conversation_id = get_conversation_id_from_input(x)
+    # Extract conversation_id from multiple possible locations
+    conversation_id = (
+        x.get("conversation_id") or
+        x.get("config", {}).get("conversation_id") or
+        get_conversation_id_from_input(x)
+    )
     file_paths = extract_file_paths_from_input(x)
+
+    logger.info(f"log_codebase_wrapper_with_cache using conversation_id: {conversation_id}")
     
     # Generate the codebase context
     codebase = extract_codebase(x)
@@ -1114,13 +1147,23 @@ class AgentInput(BaseModel):
 
 def extract_codebase(x):
     files = x["config"].get("files", [])
-    conversation_id = x.get("conversation_id", "default")
+    # Extract conversation_id from multiple possible sources
+    conversation_id = (
+        x.get("conversation_id") or 
+        x.get("config", {}).get("conversation_id") or
+        "default"
+    )
+
+    logger.debug(f"extract_codebase using conversation_id: {conversation_id}")
+    logger.debug(f"extract_codebase input keys: {list(x.keys()) if isinstance(x, dict) else type(x)}")
+
     logger.debug(f"Extracting codebase for files: {files}")
     logger.info(f"Processing with conversation_id: {conversation_id}")
 
+    # Initialize conversation state FIRST, before any file processing
+    # This ensures the context cache system can find the conversation state
     file_contents = {}
     for file_path in files:
-
         try:
             full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
             if os.path.isdir(full_path):
@@ -1133,7 +1176,7 @@ def extract_codebase(x):
             if os.path.isdir(full_path):
                 # Skip directories silently
                 continue
-
+ 
             with open(full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 file_contents[file_path] = content
@@ -1141,19 +1184,21 @@ def extract_codebase(x):
         except (UnicodeDecodeError, IOError) as e:
                 logger.error(f"Error reading file {file_path}: {str(e)}")
                 continue
-
-    # Initialize or update file states
+ 
+    # Initialize conversation state immediately after loading files
     if conversation_id not in file_state_manager.conversation_states:
+        logger.info(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
         file_state_manager.initialize_conversation(conversation_id, file_contents)
-        # After initialization, update the file states to ensure all lines are properly marked
-        for file_path, content in file_contents.items():
-            file_state_manager.update_file_state(conversation_id, file_path, content)
-
-    # Update any new files that weren't in the initial state
+        logger.info(f"Initialized conversation {conversation_id} with {len(file_contents)} files")
+        # Set initial context submission baseline
+        file_state_manager.mark_context_submission(conversation_id)
+        logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
+    
+    # Update any files that may have changed
     file_state_manager.update_files_in_state(conversation_id, file_contents)
 
-    # Get changes since last message
-    overall_changes, recent_changes = file_state_manager.format_context_message(conversation_id)
+    # Get layered changes (cumulative + recent)
+    overall_changes, recent_changes = file_state_manager.format_layered_context_message(conversation_id)
 
     codebase = get_combined_docs_from_files(files, conversation_id)
 
@@ -1260,7 +1305,8 @@ def create_agent_chain(chat_model: BaseChatModel):
     # Define the input mapping with conditional AST context
     input_mapping = {
         "codebase": log_codebase_wrapper_with_cache,
-        "question": lambda x: x["question"],
+        "question": lambda x: x.get("question", ""),
+        "conversation_id": lambda x: x.get("conversation_id", "default"),
         "chat_history": lambda x: _format_chat_history(x.get("chat_history", [])),
         "agent_scratchpad": lambda x: [
             AIMessage(content=format_xml([]))
@@ -1331,6 +1377,12 @@ def update_conversation_state(conversation_id: str, file_paths: List[str]) -> No
         logger.info(f"Files changed during conversation {conversation_id}:")
         for file_path, changed_lines in changes.items():
             logger.info(f"- {file_path}: {len(changed_lines)} lines changed")
+
+    # Mark context submission after the response is complete
+    from app.utils.context_cache import get_context_cache_manager
+    cache_manager = get_context_cache_manager()
+    cache_manager.mark_context_submitted(conversation_id)
+    logger.info(f"Marked context submission for conversation {conversation_id}")
 
 def update_and_return(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """Update file state and preserve the full response structure"""

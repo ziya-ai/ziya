@@ -272,12 +272,27 @@ async def stream_chunks(body):
     try:
         # Get the question from the request body
         question = body.get("question", "")
-        # Generate unique conversation ID if not provided to prevent conflicts
+
+        # Extract conversation ID from the request body
         conversation_id = body.get("conversation_id")
+        if not conversation_id:
+            # Also check if it's nested in config
+            logger.info("🔍 STREAM: No conversation_id in body, checking config...")
+            config = body.get("config", {})
+            conversation_id = config.get("conversation_id")
+        if not conversation_id:
+            # Check if it's in the config
+            config = body.get("config", {})
+            conversation_id = config.get("conversation_id")
+        
+        # Only generate a stream ID as last resort
         if not conversation_id:
             import uuid
             conversation_id = f"stream_{uuid.uuid4().hex[:8]}"
-
+            logger.warning(f"No conversation_id provided, generated: {conversation_id}")
+        else:
+            logger.info(f"Using provided conversation_id: {conversation_id}")
+            logger.info(f"🔍 STREAM: Final conversation_id: {conversation_id}")
         # Register this stream as active
         active_streams[conversation_id] = {
             "start_time": time.time(),
@@ -313,6 +328,7 @@ async def stream_chunks(body):
         if files:
             from langchain_core.messages import SystemMessage
             logger.info(f"[INSTRUMENTATION] stream_chunks adding system message with {len(files)} files")
+            logger.info(f"[INSTRUMENTATION] Using conversation_id: {conversation_id}")
             logger.info("=== System Message Content Debug ===")
             file_context = "Here are the files in the codebase:\n\n"
             
@@ -448,7 +464,8 @@ async def stream_chunks(body):
         # Create config dict with conversation_id for caching
         config = {"conversation_id": conversation_id}
         logger.info(f"Passing conversation_id to model: {conversation_id}")
-
+        
+        # Ensure conversation_id is available for context enhancement
         
         try:
             async for chunk in model_with_stop.astream(messages, config=config):
@@ -1268,6 +1285,9 @@ async def chat_endpoint(request: Request):
         messages = body.get('messages', [])
         question = body.get('question', '')
         files = body.get('files', [])
+        conversation_id = body.get('conversation_id')
+        logger.info(f"Chat API received conversation_id: {conversation_id}")
+        logger.info(f"🔍 CHAT_API: Received conversation_id from frontend: {conversation_id}")
 
         logger.info("=== File Processing Debug ===")
         logger.info(f"Files received: {files}")
@@ -1297,8 +1317,10 @@ async def chat_endpoint(request: Request):
         # Format the data for the stream endpoint
         formatted_body = {
             'question': question,
+            'conversation_id': conversation_id,
             'chat_history': messages,
             'config': {
+                'conversation_id': conversation_id,  # Also include in config for backward compatibility
                 'files': files
             }
         }
