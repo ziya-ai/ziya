@@ -1,12 +1,15 @@
 import os
 import re
 import time
+import threading
 import json
 import asyncio
 import uuid
 import traceback
 from typing import Dict, Any, List, Tuple, Optional, Union
 from starlette.background import BackgroundTask
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import signal
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import tiktoken
@@ -947,12 +950,25 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     
     logger.debug(f"Getting folder structure for {directory} with max depth {max_depth}")
     
+    # Track scanning progress
+    scan_stats = {
+        'directories_scanned': 0,
+        'files_processed': 0,
+        'start_time': time.time(),
+        'slow_directories': []
+    }
+    
     def count_tokens(file_path: str) -> int:
         """Count tokens in a file using tiktoken."""
         try:
+            dir_start = time.time()
             # Skip binary files
             if is_binary_file(file_path):
+                dir_time = time.time() - dir_start
+                if dir_time > 0.1:  # Log if binary check takes >100ms
+                    logger.warning(f"Slow binary check for {file_path}: {dir_time:.2f}s")
                 return 0
+            scan_stats['files_processed'] += 1
                 
             # Skip large files (>1MB)
             if os.path.getsize(file_path) > 1024 * 1024:
@@ -971,6 +987,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         if depth > max_depth:
             return {'token_count': 0}
             
+        scan_stats['directories_scanned'] += 1
+        dir_start_time = time.time()
         result = {'token_count': 0, 'children': {}}
         total_tokens = 0
         
@@ -978,9 +996,18 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             entries = os.listdir(path)
         except PermissionError:
             logger.debug(f"Permission denied for {path}")
+            dir_time = time.time() - dir_start_time
+            if dir_time > 1.0:
+                scan_stats['slow_directories'].append((path, dir_time, 'permission_denied'))
+                logger.warning(f"Slow permission check for {path}: {dir_time:.2f}s")
+            return {'token_count': 0}
+
+        except OSError as e:
+            logger.warning(f"OS error accessing {path}: {e}")
             return {'token_count': 0}
             
         for entry in entries:
+            entry_start = time.time()
             if entry.startswith('.'):  # Skip hidden files
                 continue
                 
@@ -991,6 +1018,12 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 
             if should_ignore_fn(entry_path):  # Skip ignored files
                 continue
+                
+            # Log slow entry processing
+            entry_time = time.time() - entry_start
+            if entry_time > 0.5:  # Log if single entry takes >500ms
+                scan_stats['slow_directories'].append((entry_path, entry_time, 'slow_entry'))
+                logger.warning(f"Slow entry processing for {entry_path}: {entry_time:.2f}s")
                 
             if os.path.isdir(entry_path):
                 if depth < max_depth:
@@ -1005,34 +1038,98 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                     total_tokens += tokens
         
         result['token_count'] = total_tokens
+        
+        # Log slow directory processing
+        dir_time = time.time() - dir_start_time
+        if dir_time > 2.0:  # Log if directory takes >2s
+            scan_stats['slow_directories'].append((path, dir_time, 'slow_directory'))
+            logger.warning(f"Slow directory scan for {path}: {dir_time:.2f}s ({len(entries)} entries)")
+            
         return result
     
     # Process the root directory
     root_result = process_dir(directory, 1)
     
     # Return just the children of the root to match expected format
+    total_time = time.time() - scan_stats['start_time']
+    logger.info(f"Folder scan completed: {scan_stats['directories_scanned']} dirs, "
+                f"{scan_stats['files_processed']} files in {total_time:.2f}s")
+    
+    if scan_stats['slow_directories']:
+        logger.warning(f"Found {len(scan_stats['slow_directories'])} slow operations:")
+        for path, duration, reason in scan_stats['slow_directories'][:5]:  # Log top 5
+            logger.warning(f"  {path}: {duration:.2f}s ({reason})")
+            
     return root_result.get('children', {})
 
 @app.post("/folder")
 async def get_folder(request: FolderRequest):
     """Get the folder structure of a directory."""
+    start_time = time.time()
+    logger.info(f"Starting folder scan for: {request.directory}")
+    logger.info(f"Max depth: {request.max_depth}")
+    
     try:
         # Get the ignored patterns
         ignored_patterns = get_ignored_patterns(request.directory)
+        logger.info(f"Ignore patterns loaded: {len(ignored_patterns)} patterns")
+        
+        # Log some sample patterns for debugging
+        if ignored_patterns:
+            sample_patterns = [p[0] for p in ignored_patterns[:5]]
+            logger.debug(f"Sample ignore patterns: {sample_patterns}")
         
         # Use the max_depth from the request, but ensure it's at least 15 if not specified
         max_depth = request.max_depth if request.max_depth > 0 else int(os.environ.get("ZIYA_MAX_DEPTH", 15))
         logger.info(f"Using max depth for folder structure: {max_depth}")
         
+        # Check if directory exists and is accessible
+        if not os.path.exists(request.directory):
+            logger.error(f"Directory does not exist: {request.directory}")
+            return {"error": f"Directory does not exist: {request.directory}"}
+            
+        if not os.path.isdir(request.directory):
+            logger.error(f"Path is not a directory: {request.directory}")
+            return {"error": f"Path is not a directory: {request.directory}"}
+            
+        # Test basic access
+        try:
+            os.listdir(request.directory)
+        except PermissionError:
+            logger.error(f"Permission denied accessing: {request.directory}")
+            return {"error": f"Permission denied accessing directory"}
+        except OSError as e:
+            logger.error(f"OS error accessing {request.directory}: {e}")
+            return {"error": f"Cannot access directory: {str(e)}"}
+        
         # Check if we have a cached result that's less than 5 seconds old
         current_time = time.time()
         if _folder_cache['timestamp'] > current_time - 5:
+            logger.info("Returning cached folder structure")
             return _folder_cache['data']
+            
+        # Use thread pool with timeout for the actual scanning
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(get_folder_structure, request.directory, ignored_patterns, max_depth)
             
         # Get the folder structure
         result = get_folder_structure(request.directory, ignored_patterns, max_depth)
         
         # Cache the result
+        _folder_cache['timestamp'] = current_time
+        _folder_cache['data'] = result
+
+        try:
+            result = future.result(timeout=30)  # 30 second timeout
+            logger.info(f"Folder scan completed successfully in {time.time() - start_time:.2f}s")
+        except FutureTimeoutError:
+            logger.error(f"Folder scan timed out after 30s for: {request.directory}")
+            return {"error": "Directory scan timed out - directory may be too large or contain network mounts"}
+        except Exception as e:
+            logger.error(f"Error during folder scan: {str(e)}")
+            return {"error": f"Scan failed: {str(e)}"}
+    
+        # Cache the successful result
         _folder_cache['timestamp'] = current_time
         _folder_cache['data'] = result
         
