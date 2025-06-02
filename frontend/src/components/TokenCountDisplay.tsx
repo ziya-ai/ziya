@@ -239,7 +239,7 @@ export const TokenCountDisplay = memo(() => {
     }, [astResolutions, currentAstResolution]);
     // Create menu items for AST resolution dropdown
     const astMenuItems = useMemo(() => {
-        console.log('Creating AST resolution menu, resolutions:', astResolutions);
+        console.log('Creating AST resolution menu, resolutions loaded:', astResolutionsLoaded, 'resolutions:', astResolutions);
         if (Object.keys(astResolutions).length === 0) return [];
 
         return Object.entries(astResolutions).map(([key, data]: [string, any]) => ({
@@ -253,7 +253,7 @@ export const TokenCountDisplay = memo(() => {
                 </span>
             ),
         }));
-    }, [astResolutions, handleAstResolutionChange]);
+    }, [astResolutions, astResolutionsLoaded]);
 
     const handleMenuClick = ({ key }: { key: string }) => {
         console.log('Menu item clicked:', key);
