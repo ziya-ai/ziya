@@ -713,6 +713,44 @@ const MUIChatHistory = () => {
     }
   };
 
+  // Handle moving a folder
+  const handleMoveFolder = async (folderId: string, targetParentId: string | null) => {
+    try {
+      const folder = folders.find(f => f.id === folderId);
+      if (!folder) return;
+
+      // Prevent moving a folder into itself or its descendants
+      if (targetParentId === folderId) {
+        message.error("Cannot move a folder into itself");
+        return;
+      }
+
+      const isDescendant = (checkId: string, ancestorId: string): boolean => {
+        if (checkId === ancestorId) return true;
+        const checkFolder = folders.find(f => f.id === checkId);
+        if (!checkFolder || !checkFolder.parentId) return false;
+        return isDescendant(checkFolder.parentId, ancestorId);
+      };
+
+      if (targetParentId && isDescendant(targetParentId, folderId)) {
+        message.error("Cannot move a folder into one of its descendants");
+        return;
+      }
+
+      // Update the folder's parent
+      const updatedFolder = {
+        ...folder,
+        parentId: targetParentId
+      };
+
+      await updateFolder(updatedFolder);
+      message.success('Folder moved successfully');
+    } catch (error) {
+      message.error('Failed to move folder');
+      console.error('Move folder error:', error);
+    }
+  };
+
   // Handle edit actions
   const handleEdit = (id: string) => {
     if (id.startsWith('conv-')) {
@@ -1109,14 +1147,69 @@ const MUIChatHistory = () => {
       try {
         const reader = new FileReader();
         reader.onload = async (e) => {
+          message.destroy(); // Clear any existing messages
           const content = e.target?.result as string;
+
+          // Parse and validate the content
+          const parsedContent = JSON.parse(content);
+          let conversationCount = 0;
+          let folderCount = 0;
+          let reconstructedFolderCount = 0;
+
+          // Determine format and count items
+          if (Array.isArray(parsedContent)) {
+            conversationCount = parsedContent.length;
+            // Check if conversations have folder references that could be reconstructed
+            const conversationsWithFolders = parsedContent.filter(conv => conv.folderId);
+            if (conversationsWithFolders.length > 0) {
+              const uniqueFolderIds = new Set(conversationsWithFolders.map(conv => conv.folderId));
+              reconstructedFolderCount = uniqueFolderIds.size;
+            }
+          } else if (parsedContent && typeof parsedContent === 'object') {
+            conversationCount = parsedContent.conversations?.length || 0;
+            folderCount = parsedContent.folders?.length || 0;
+
+            // Check if we need to reconstruct folders even in new format
+            if (folderCount === 0 && parsedContent.conversations) {
+              const conversationsWithFolders = parsedContent.conversations.filter(conv => conv.folderId);
+              if (conversationsWithFolders.length > 0) {
+                const uniqueFolderIds = new Set(conversationsWithFolders.map(conv => conv.folderId));
+                reconstructedFolderCount = uniqueFolderIds.size;
+              }
+            }
+          }
+
+          // Show progress message
+          let importMessage = `Importing ${conversationCount} conversations`;
+          if (folderCount > 0) {
+            importMessage += ` and ${folderCount} folders`;
+          } else if (reconstructedFolderCount > 0) {
+            importMessage += ` and reconstructing ${reconstructedFolderCount} folders from conversation references`;
+          }
+          importMessage += '...';
+          message.loading(importMessage, 0);
+
           await db.importConversations(content);
           const newConversations = await db.getConversations();
+          const newFolders = await db.getFolders();
           setConversations(newConversations);
-          message.success('Conversations imported successfully');
+          setFolders(newFolders);
+
+          message.destroy();
+          let successMessage = `Successfully imported ${conversationCount} conversations`;
+          if (folderCount > 0) {
+            successMessage += ` and ${folderCount} folders with hierarchy preserved`;
+          } else if (reconstructedFolderCount > 0) {
+            successMessage += ` and reconstructed ${reconstructedFolderCount} folders from conversation references`;
+          }
+          if (reconstructedFolderCount > 0) {
+            successMessage += '. Reconstructed folders are marked with "(Recovered)" and may need renaming.';
+          }
+          message.success(successMessage);
         };
         reader.readAsText(file);
       } catch (error) {
+        message.destroy();
         message.error('Failed to import conversations');
       }
     };

@@ -328,6 +328,53 @@ export const StreamedContent: React.FC = () => {
         };
     }, [currentConversationId, streamingConversations]);
 
+        // Listen for network errors during streaming
+        const handleStreamError = (event: ErrorEvent) => {
+            if (streamingConversations.has(currentConversationId)) {
+                if (event.message.includes('network error') || 
+                    event.message.includes('ERR_INCOMPLETE_CHUNKED_ENCODING')) {
+                    setError('Connection interrupted. Please try again.');
+                    removeStreamingConversation(currentConversationId);
+                    setIsStreaming(false);
+                    setIsLoading(false);
+                }
+            }
+        };
+
+        window.addEventListener('error', handleStreamError);
+
+        return () => {
+            window.removeEventListener('error', handleStreamError);
+        };
+    }, [isStreaming, currentConversationId, streamingConversations]);
+
+    // Set up observer to detect when user is viewing the bottom of content
+    const observerRef = useRef<IntersectionObserver>();
+
+    useEffect(() => {
+        if (!contentRef.current) return;
+
+        if (observerRef.current) {
+            observerRef.current.disconnect();
+        }
+
+        observerRef.current = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    isAutoScrollingRef.current = true;
+                } else {
+                    isAutoScrollingRef.current = false;
+                }
+            });
+        }, { threshold: 0.1, rootMargin: '0px' });
+
+        observerRef.current.observe(contentRef.current);
+
+        return () => {
+            observerRef.current?.disconnect();
+        };
+    }, [currentConversationId, streamingConversations]);
+
     // Add effect to handle conversation switches
     useEffect(() => {
         // Force scroll event to trigger re-render
@@ -355,6 +402,26 @@ export const StreamedContent: React.FC = () => {
 
         return () => clearInterval(scrollInterval);
     }, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
+
+    // Add a separate effect to handle scroll position restoration
+    useEffect(() => {
+        if (!streamingConversations.has(currentConversationId)) return;
+
+        const container = contentRef.current?.closest('.chat-container');
+        if (!container) return;
+
+        // Store current scroll position before any content changes
+        const storeScrollPosition = () => {
+            lastScrollPositionRef.current = container.scrollTop;
+        };
+
+        // Add event listener to store position before any updates
+        container.addEventListener('scroll', storeScrollPosition, { passive: true });
+
+        return () => {
+            container.removeEventListener('scroll', storeScrollPosition);
+        };
+    }, [currentConversationId, streamingConversations]);
 
     // Add a separate effect to handle scroll position restoration
     useEffect(() => {

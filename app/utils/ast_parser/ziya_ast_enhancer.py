@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Any, Set
 import time
 
 # Set up logging for this module
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from .registry import ParserRegistry
@@ -297,6 +297,222 @@ class ZiyaASTEnhancer:
                     'deps_per_file': 0
                 }
                 continue
+            
+            # Generate context with this resolution
+            context = self.generate_ast_context()
+            token_count = len(context) // 4  # Rough token estimate
+            
+            estimates[resolution_name] = {
+                'token_count': token_count,
+                'context_length': len(context),
+                'symbols_per_file': settings['symbols_per_file'],
+                'deps_per_file': settings['deps_per_file']
+            }
+            
+            # Restore original resolution
+            self.ast_resolution = original_resolution
+        
+        self.resolution_estimates = estimates
+        return estimates
+    
+    def generate_ast_context(self) -> str:
+        """
+        Generate a textual context from the AST.
+        
+        Returns:
+            String representation of the AST context 
+        """
+
+        # Return empty context if disabled
+        if self.ast_resolution == 'disabled':
+            return ""
+
+        if not self.ast_cache:
+            logger.info("No AST cache available, returning empty context")
+            return "# AST Analysis\n\nNo files have been processed for AST analysis."
+            
+        if not self.project_ast:
+            return ""
+            
+        context_parts = []
+        
+        # Add file structure information
+        context_parts.append("# Code Structure Summary")
+        
+        # Add statistics about file types processed
+        file_types = {}
+        for file_path in self.ast_cache.keys():
+            ext = os.path.splitext(file_path)[1]
+            file_types[ext] = file_types.get(ext, 0) + 1
+        
+        context_parts.append(f"\n## Files Processed by Type: {dict(sorted(file_types.items()))}")
+        
+        # Add key files and their relationships
+        context_parts.append(f"\n## Total AST Statistics")
+        context_parts.append(f"- Total nodes in project AST: {len(self.project_ast.nodes)}")
+        context_parts.append(f"- Total edges in project AST: {len(self.project_ast.edges)}")
+        context_parts.append("\n## Key Files and Dependencies")
+        
+        # For each file in the ast_cache
+        settings = self.resolution_settings[self.ast_resolution]
+        for file_path, ast in list(self.ast_cache.items()):
+            # Get relative path for display
+            rel_path = os.path.relpath(file_path)
+            
+            # Add file summary
+            context_parts.append(f"\n### {rel_path}")
+            context_parts.append(f"Nodes: {len(ast.nodes)}, Edges: {len(ast.edges)}")
+            
+            # Show node types in this file
+            node_types = {}
+            for node in list(ast.nodes.values()):
+                node_types[node.node_type] = node_types.get(node.node_type, 0) + 1
+            context_parts.append(f"Node types: {dict(sorted(node_types.items()))}")
+            
+            # Add key symbols defined in this file
+            symbols = self._extract_key_symbols(ast)
+            if symbols:
+                context_parts.append("\nDefines:")
+                # Limit symbols based on resolution settings
+                symbol_list = list(symbols)[:settings['symbols_per_file']]
+                for symbol in symbol_list:
+                    context_parts.append(f"- {symbol}")
+            
+            # Add dependencies
+            deps = self._extract_dependencies(ast)
+            if deps:
+                context_parts.append("\nDependencies:")
+                # Limit dependencies based on resolution settings
+                dep_list = list(deps)[:settings['deps_per_file']]
+                for dep in dep_list:
+                    context_parts.append(f"- {dep}")
+        
+        return "\n".join(context_parts)
+    
+    def _extract_key_symbols(self, ast: UnifiedAST) -> List[str]:
+        """Extract key symbols defined in the AST."""
+        symbols = []
+        
+        # Extract classes, functions, and variables
+        for node in list(ast.nodes.values()):
+            if node.node_type in ["class", "function", "method", "variable"]:
+                symbols.append(f"{node.node_type} {node.name}")
+        
+        return symbols
+    
+    def _extract_dependencies(self, ast: UnifiedAST) -> List[str]:
+        """Extract dependencies from the AST."""
+        deps = []
+        
+        # Extract imports and references
+        for node in list(ast.nodes.values()):
+            if node.node_type == "import":
+                deps.append(f"import {node.name}")
+        
+        return deps
+    
+    def process_codebase(self, codebase_dir: str, ignored_patterns: Optional[List[str]] = None, max_depth: int = 15) -> Dict[str, Any]:
+        """
+        Process the entire codebase and build AST representations.
+        
+        Args:
+            codebase_dir: Path to the codebase directory
+            ignored_patterns: List of patterns to ignore
+            max_depth: Maximum depth for folder traversal
+            
+        Returns:
+            Dict containing AST processing results
+        """
+        # Import gitignore utilities
+        from app.utils.gitignore_parser import parse_gitignore_patterns
+        from app.utils.directory_util import get_ignored_patterns
+        
+        if ignored_patterns is None:
+            ignored_patterns = []
+        
+        logger.info(f"Processing codebase at {codebase_dir} with ignored_patterns={ignored_patterns}, max_depth={max_depth}")
+        
+        start_time = time.time()
+        print("\nIndexing codebase for AST analysis...")
+        
+        # Get proper gitignore patterns
+        gitignore_patterns = get_ignored_patterns(codebase_dir)
+        should_ignore_fn = parse_gitignore_patterns(gitignore_patterns)
+        
+        logger.info(f"Using {len(gitignore_patterns)} gitignore patterns for AST indexing")
+        logger.debug(f"Gitignore patterns: {gitignore_patterns[:10]}...")  # Log first 10 patterns
+        
+        # Create a progress callback that updates the global status
+        def progress_callback(processed: int, total: int, percentage: int):
+            try:
+                from app.utils.context_enhancer import _ast_indexing_status
+                _ast_indexing_status.update({
+                    'indexed_files': processed,
+                    'total_files': total,
+                    'completion_percentage': percentage,
+                    'elapsed_seconds': time.time() - start_time
+                })
+                logger.debug(f"Progress update: {processed}/{total} files ({percentage}%)")
+            except Exception as e:
+                logger.error(f"Error updating progress: {e}")
+        
+        try:
+            # Process files
+            self._process_directory(codebase_dir, should_ignore_fn, max_depth, progress_callback)
+            
+            # Generate AST context
+            ast_context = self.generate_ast_context()
+            
+            # Ensure we have a token count
+            if not ast_context:
+                ast_context = "# AST Analysis\n\nNo files processed for AST analysis."
+            
+            # Calculate token count (rough estimate: 1 token ≈ 4 characters)
+            token_count = len(ast_context) // 4
+            
+            elapsed_time = time.time() - start_time
+            files_processed = len(self.ast_cache)
+            
+            print(f"✅ AST indexing complete: {files_processed} files processed in {elapsed_time:.1f}s")
+            print(f"📊 AST context generated: {len(ast_context)} characters, ~{token_count} tokens")
+            logger.info(f"AST indexing complete: {files_processed} files processed in {elapsed_time:.1f}s")
+            logger.info(f"AST context size: {len(ast_context)} chars, ~{token_count} tokens")
+            
+            # Return a properly formatted result dictionary
+            return {
+                "files_processed": files_processed,
+                "ast_context": ast_context,
+                "token_count": max(token_count, 1),  # Ensure at least 1 token
+                "context_length": len(ast_context),
+                "file_list": list(self.ast_cache.keys())
+            }
+        except Exception as e:
+            logger.error(f"Error processing codebase: {e}")
+            import traceback
+            logger.error(f"AST processing traceback: {traceback.format_exc()}")
+            
+            # Return a minimal context to avoid breaking the application
+            return {
+                "files_processed": 0,
+                "ast_context": f"# AST Analysis\n\nError processing codebase: {str(e)}",
+                "token_count": 10,
+                "file_list": [],
+            "file_list": list(self.ast_cache.keys())
+        }
+    
+    def calculate_resolution_estimates(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate estimated token counts for each resolution level.
+        
+        Returns:
+            Dictionary mapping resolution levels to their estimated sizes
+        """
+        estimates = {}
+        
+        for resolution_name, settings in self.resolution_settings.items():
+            # Temporarily change resolution
+            original_resolution = self.ast_resolution
+            self.ast_resolution = resolution_name
             
             # Generate context with this resolution
             context = self.generate_ast_context()

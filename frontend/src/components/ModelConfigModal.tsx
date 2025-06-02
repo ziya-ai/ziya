@@ -750,6 +750,42 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
           />
         </Form.Item>
 
+        <Form.Item
+          label={
+            <Space align="center">
+              <span>Max Input Tokens</span>
+              <Tooltip title="Maximum number of tokens that can be sent to the model">
+                <InfoCircleOutlined />
+              </Tooltip>
+            </Space>
+          }
+          name="max_input_tokens"
+          extra={
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              marginTop: '8px',
+              color: 'rgba(0, 0, 0, 0.45)'
+            }}>
+              <Text type="secondary" className="slider-value">
+                Current: {sliderValues.max_input_tokens?.toLocaleString() || '0'} tokens
+              </Text>
+              <Text type="secondary" style={{ marginLeft: 'auto' }}>
+                Maximum: {inputRange?.max?.toLocaleString() || '4096'} tokens {/* <-- Use max from range with fallback */}
+              </Text>
+            </div>
+          }>
+          <Slider
+            min={1}
+            max={inputRange?.max || 4096} // <-- Use max from range with fallback
+            step={inputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
+            onChange={(value) => form.setFieldsValue({ max_input_tokens: value })}
+            tooltip={{
+              formatter: (value?: number) => value ? `${value.toLocaleString()} tokens` : '0 tokens',
+            }}
+          />
+        </Form.Item>
+
         <div style={{ marginTop: 16, padding: 12, backgroundColor: isDarkMode ? '#1f1f1f' : '#f5f5f5', borderRadius: 4 }}>
           <div style={{ marginBottom: 4 }}>
             <Text type="secondary" strong>Model Alias:</Text>{' '}
