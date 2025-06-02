@@ -98,6 +98,10 @@ class PipelineResult:
         # If we have any failed hunks AND any succeeded/already applied hunks, it's partial
         if failed_count > 0 and (succeeded_count > 0 or already_applied_count > 0):
             return "partial"
+        # Special case: if changes were written but no hunks are tracked (like file creation), it's success
+        elif self.changes_written and total_hunks == 0:
+            logger.debug("Changes written with no tracked hunks - treating as success (likely file creation)")
+            return "success"
         # If all hunks failed and no changes were written, it's an error
         elif failed_count > 0 and succeeded_count == 0 and already_applied_count == 0:
             return "error"
