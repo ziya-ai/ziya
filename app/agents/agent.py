@@ -45,7 +45,9 @@ from app.utils.sanitizer_util import clean_backtick_sequences
 from app.utils.context_enhancer import enhance_context_with_ast, get_ast_indexing_status
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
-from app.utils.file_utils import is_binary_file
+from app.utils.file_utils import is_binary_file, is_processable_file
+from app.utils.file_utils import read_file_content
+from app.utils.prompt_cache import get_prompt_cache
 from app.utils.file_state_manager import FileStateManager
 from app.utils.error_handlers import format_error_response, detect_error_type
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
@@ -61,6 +63,7 @@ except KnownCredentialException as e:
     print("=" * 80 + "\n")
     sys.exit(1)
 
+prompt_cache = get_prompt_cache()
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Clean chat history by removing invalid messages and normalizing content."""
@@ -268,6 +271,7 @@ class RetryingChatBedrock(Runnable):
             
         return RetryingChatBedrock(self.model.bind(**supported_kwargs))
 
+
     def get_num_tokens(self, text: str) -> int:
         return self.model.get_num_tokens(text)
 
@@ -291,7 +295,8 @@ class RetryingChatBedrock(Runnable):
         error_message = {
             "error": error_type,
             "detail": detail,
-            "status_code": status_code
+                    "status_code": status_code,
+                    "stream_id": stream_id
         }
         if retry_after:
             error_message["retry_after"] = retry_after
@@ -333,7 +338,8 @@ class RetryingChatBedrock(Runnable):
         error_message = {
             "error": error_type,
             "detail": detail,
-            "status_code": status_code
+                    "status_code": status_code,
+                    "stream_id": stream_id
         }
         if retry_after:
             error_message["retry_after"] = retry_after
@@ -492,6 +498,64 @@ class RetryingChatBedrock(Runnable):
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
         
+        # Create a copy of kwargs to avoid modifying the original
+        filtered_kwargs = {}
+
+        # If max_tokens is specified in kwargs, use that instead
+        if "max_tokens" in kwargs:
+            max_tokens = kwargs["max_tokens"]
+        elif max_tokens:
+            # Add max_tokens to kwargs if it's not already there
+            filtered_kwargs["max_tokens"] = max_tokens
+            logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
+        from app.agents.models import ModelManager
+        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
+        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+
+        for key, value in kwargs.items():
+            if key != "max_tokens":  # We've already handled max_tokens
+                filtered_kwargs[key] = value
+        # Filter kwargs based on supported parameters
+        filtered_kwargs = ModelManager.filter_model_kwargs(filtered_kwargs, model_config)
+        logger.info(f"Filtering model kwargs: {filtered_kwargs}")
+        
+        # Extract conversation_id from config for caching
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get('conversation_id')
+            if conversation_id:
+                filtered_kwargs["conversation_id"] = conversation_id
+                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
+        
+        # Use filtered kwargs for the rest of the method
+        kwargs = filtered_kwargs
+        # Extract conversation_id from config for caching, but don't pass it to the model
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get('conversation_id')
+            if conversation_id:
+                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
+        
+        # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
+        if "conversation_id" in filtered_kwargs:
+            del filtered_kwargs["conversation_id"]
+            logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
+        
+        # Use filtered kwargs for the model call
+        kwargs = filtered_kwargs
+        
+        # Add AWS credential debugging
+        from app.utils.aws_utils import debug_aws_credentials
+        # debug_aws_credentials()
+        
+        # Ensure each stream has its own conversation tracking
+        #stream_id = f"stream_{id(self)}_{hash(str(messages))}"
+        stream_id = "unbound"
+
+        # Get max_tokens from environment variables
+        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
+        
         # Filter kwargs based on model's supported parameters
         from app.agents.models import ModelManager
         endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
@@ -561,20 +625,23 @@ class RetryingChatBedrock(Runnable):
                             if hasattr(creds, 'token') and creds.token:
                                 token_length = len(creds.token) if creds.token else 0
                                 logger.info(f"Signer has session token of length: {token_length}")
+                    logger.debug(f"Filtered to {len(messages)} non-empty messages")
 
-                async for chunk in self.model.astream(messages, config, **kwargs):
+                # Debug the Bedrock client being used
+                # Pass conversation_id through config to the model for caching
+                model_config = config.copy() if config else {}
+                if conversation_id:
+                    model_config["conversation_id"] = conversation_id
+                
+                async for chunk in self.model.astream(messages, model_config, **kwargs):
+                    # Check if this is an error chunk that should terminate this specific stream
                     if isinstance(chunk, ChatGoogleGenerativeAIError):
-                        # Format Gemini errors as structured error payload within a chunk
                         error_msg = {
-                            "error": "server_error",
-                            "detail": str(chunk),
-                            "status_code": 500
+                            "status_code": 500,
+                            "stream_id": stream_id  # Include stream ID for debugging
                         }
-                        # Yield the error payload as content in an AIMessageChunk
                         yield AIMessageChunk(content=json.dumps(error_msg))
-                        # Signal termination by yielding a specific marker (optional, stream_chunks can also detect error type)
-                        # yield AIMessageChunk(content="[STREAM_ERROR_SENTINEL]") # Alternative approach
-                        return
+                        return  # Only terminate this specific stream
 
                     elif isinstance(chunk, AIMessageChunk):
                         raw_chunk_content_repr = repr(chunk.content)[:200]
@@ -668,6 +735,7 @@ class RetryingChatBedrock(Runnable):
                         "error": "throttling_error",
                         "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
                         "status_code": 429,
+                        "stream_id": stream_id,
                         "retry_after": "5"
                     }
                     
@@ -776,6 +844,14 @@ class RetryingChatBedrock(Runnable):
                 model_family=model_family,
                 endpoint=endpoint
             )
+
+        # Extract conversation_id from config for caching
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get("conversation_id")
+            if conversation_id:
+                kwargs["conversation_id"] = conversation_id
+                logger.debug(f"Added conversation_id to invoke kwargs for caching")
         
         for attempt in range(max_retries):
             try:
@@ -885,8 +961,13 @@ class RetryingChatBedrock(Runnable):
                     logger.error(f"All {max_retries} attempts failed")
                     raise
 
-    async def ainvoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
-        return await self.model.ainvoke(input, config, **kwargs)
+            formatted_messages.append({
+                'role': role,
+                'content': content
+            })
+ 
+        return formatted_messages
+ 
 
 class LazyLoadedModel:
     def __init__(self):
@@ -960,6 +1041,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
             logger.debug(f"Skipping directory: {full_path}")
             continue
         try:
+            from app.utils.file_utils import read_file_content
             # Get annotated content with change tracking
             logger.info(f"Getting annotated content for {file_path}")
             annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
@@ -984,7 +1066,80 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     print("--------------------------------------------------------")
     return combined_contents
 
+def extract_file_paths_from_input(x) -> List[str]:
+    """Extract file paths from agent input for cache tracking."""
+    files = x["config"].get("files", [])
+    user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
+    
+    file_paths = []
+    for file_path in files:
+        full_path = os.path.join(user_codebase_dir, file_path)
+        if os.path.exists(full_path) and not os.path.isdir(full_path):
+            file_paths.append(full_path)
+    
+    return file_paths
+ 
+def get_conversation_id_from_input(x) -> str:
+    """Extract conversation ID from agent input."""
+    return x.get("conversation_id", "default")
+ 
+def estimate_token_count(text: str) -> int:
+    """Estimate token count for caching purposes."""
+    try:
+        import tiktoken
+        encoding = tiktoken.get_encoding("cl100k_base")
+        return len(encoding.encode(text))
+    except Exception:
+        # Fallback estimation: roughly 4 characters per token
+        return len(text) // 4
+ 
+def log_codebase_wrapper_with_cache(x):
+    """Enhanced codebase wrapper that integrates with prompt caching."""
+    # Extract conversation_id from multiple possible locations
+    conversation_id = (
+        x.get("conversation_id") or
+        x.get("config", {}).get("conversation_id") or
+        get_conversation_id_from_input(x)
+    )
+    file_paths = extract_file_paths_from_input(x)
 
+    logger.info(f"log_codebase_wrapper_with_cache using conversation_id: {conversation_id}")
+    
+    # Generate the codebase context
+    codebase = extract_codebase(x)
+    
+    # Get AST context if available
+    ast_context = ""
+    if os.environ.get("ZIYA_ENABLE_AST") == "true":
+        from app.utils.context_enhancer import get_ast_context
+        if get_ast_context:
+            ast_context = get_ast_context() or ""
+    
+    # Check for cached version
+    full_context = codebase + ast_context
+    cached_context = prompt_cache.get_cached_prompt(
+        conversation_id=conversation_id,
+        full_prompt=full_context,
+        file_paths=file_paths,
+        ast_context=ast_context
+    )
+    
+    if cached_context:
+        logger.info(f"Using cached context for conversation {conversation_id}")
+        return cached_context
+    
+    # Cache the new context
+    token_count = estimate_token_count(full_context)
+    prompt_cache.cache_prompt(
+        conversation_id=conversation_id,
+        full_prompt=full_context,
+        file_paths=file_paths,
+        token_count=token_count,
+        ast_context=ast_context
+    )
+    
+    logger.info(f"Cached new context for conversation {conversation_id} ({token_count} tokens)")
+    return codebase
 
 class AgentInput(BaseModel):
     question: str
@@ -994,46 +1149,58 @@ class AgentInput(BaseModel):
 
 def extract_codebase(x):
     files = x["config"].get("files", [])
-    conversation_id = x.get("conversation_id", "default")
+    # Extract conversation_id from multiple possible sources
+    conversation_id = (
+        x.get("conversation_id") or 
+        x.get("config", {}).get("conversation_id") or
+        "default"
+    )
+
+    logger.debug(f"extract_codebase using conversation_id: {conversation_id}")
+    logger.debug(f"extract_codebase input keys: {list(x.keys()) if isinstance(x, dict) else type(x)}")
+
     logger.debug(f"Extracting codebase for files: {files}")
     logger.info(f"Processing with conversation_id: {conversation_id}")
 
+    # Initialize conversation state FIRST, before any file processing
+    # This ensures the context cache system can find the conversation state
     file_contents = {}
     for file_path in files:
-
         try:
             full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
             if os.path.isdir(full_path):
                 logger.debug(f"Skipping directory: {file_path}")
                 continue
-            if is_binary_file(full_path):
+            if not is_processable_file(full_path):
                 logger.debug(f"Skipping binary file: {file_path}")
                 continue
-                
-            if os.path.isdir(full_path):
-                # Skip directories silently
-                continue
-
-            with open(full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            
+            # Use the new read_file_content function
+            content = read_file_content(full_path)
+            if content:
                 file_contents[file_path] = content
-                logger.info(f"Successfully loaded {file_path} with {len(content.splitlines())} lines")
-        except (UnicodeDecodeError, IOError) as e:
-                logger.error(f"Error reading file {file_path}: {str(e)}")
-                continue
-
-    # Initialize or update file states
+                lines = len(content.splitlines()) if isinstance(content, str) else 0
+                logger.info(f"Successfully loaded {file_path} with {lines} lines")
+            else:
+                logger.warning(f"Failed to read content from {file_path}")
+        except Exception as e:
+            logger.error(f"Error reading file {file_path}: {str(e)}")
+            continue
+ 
+    # Initialize conversation state immediately after loading files
     if conversation_id not in file_state_manager.conversation_states:
+        logger.info(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
         file_state_manager.initialize_conversation(conversation_id, file_contents)
-        # After initialization, update the file states to ensure all lines are properly marked
-        for file_path, content in file_contents.items():
-            file_state_manager.update_file_state(conversation_id, file_path, content)
-
-    # Update any new files that weren't in the initial state
+        logger.info(f"Initialized conversation {conversation_id} with {len(file_contents)} files")
+        # Set initial context submission baseline
+        file_state_manager.mark_context_submission(conversation_id)
+        logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
+    
+    # Update any files that may have changed
     file_state_manager.update_files_in_state(conversation_id, file_contents)
 
-    # Get changes since last message
-    overall_changes, recent_changes = file_state_manager.format_context_message(conversation_id)
+    # Get layered changes (cumulative + recent)
+    overall_changes, recent_changes = file_state_manager.format_layered_context_message(conversation_id)
 
     codebase = get_combined_docs_from_files(files, conversation_id)
 
@@ -1139,8 +1306,9 @@ def create_agent_chain(chat_model: BaseChatModel):
     
     # Define the input mapping with conditional AST context
     input_mapping = {
-        "codebase": log_codebase_wrapper,
-        "question": lambda x: x["question"],
+        "codebase": log_codebase_wrapper_with_cache,
+        "question": lambda x: x.get("question", ""),
+        "conversation_id": lambda x: x.get("conversation_id", "default"),
         "chat_history": lambda x: _format_chat_history(x.get("chat_history", [])),
         "agent_scratchpad": lambda x: [
             AIMessage(content=format_xml([]))
@@ -1212,6 +1380,12 @@ def update_conversation_state(conversation_id: str, file_paths: List[str]) -> No
         for file_path, changed_lines in changes.items():
             logger.info(f"- {file_path}: {len(changed_lines)} lines changed")
 
+    # Mark context submission after the response is complete
+    from app.utils.context_cache import get_context_cache_manager
+    cache_manager = get_context_cache_manager()
+    cache_manager.mark_context_submitted(conversation_id)
+    logger.info(f"Marked context submission for conversation {conversation_id}")
+
 def update_and_return(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """Update file state and preserve the full response structure"""
     update_conversation_state(input_data.get("conversation_id", "default"),
@@ -1247,7 +1421,7 @@ def create_agent_executor(agent_chain: Runnable):
                 
                 # Call the original astream and convert to RunLogPatch
                 from langchain_core.tracers.log_stream import RunLogPatch
-                async for chunk in self.executor.astream(input_data, config, **kwargs):
+                async for chunk in self.executor.astream(input_data, config=config, **kwargs):
                     # Process the chunk safely
                     safe_chunk = self._ensure_safe_chunk(chunk)
                     # Convert to RunLogPatch format

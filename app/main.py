@@ -304,9 +304,15 @@ def start_server(args):
             # This avoids the double initialization issue
             logger.info("Authentication successful, starting server...")
             
+            # Ensure we're in the right directory for langchain-cli to find modules
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if os.getcwd() != project_root:
+                os.chdir(project_root)
+            
             # Pass the environment variable to child processes
             os.environ["ZIYA_SKIP_INIT"] = "true"
             serve(host="0.0.0.0", port=args.port)
+            
         except KnownCredentialException as e:
             # The exception will handle printing the message only once
             logger.error("Server startup aborted due to authentication error.")

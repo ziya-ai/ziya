@@ -7,6 +7,7 @@ import os
 import re
 import gc
 from app.utils.logging_utils import logger
+from typing import Dict, List
 
 class CustomBedrockClient:
     """
@@ -196,11 +197,36 @@ class CustomBedrockClient:
             if 'max_tokens' not in body_dict and effective_max_tokens is not None:
                 body_dict['max_tokens'] = effective_max_tokens
                 logger.debug(f"Added max_tokens={effective_max_tokens} to request body")
+
+            # Handle context caching parameters
+            if 'messages' in body_dict:
+                has_cache_control = self._process_cache_control(body_dict['messages'])
+                
+                # Add contextTtlInSeconds if we have cache control
+                if has_cache_control and 'contextTtlInSeconds' not in body_dict:
+                    body_dict['contextTtlInSeconds'] = 3600  # 1 hour default
+                    logger.info(f"🕐 CACHE: Set TTL to 3600 seconds (1 hour)")
             
             return json.dumps(body_dict)
         except Exception as e:
             logger.error(f"Error preparing request body: {e}")
             return body_str
+
+    def _process_cache_control(self, messages: List[Dict]) -> bool:
+        """Process cache control parameters in messages. Returns True if any cache control was found."""
+        has_cache_control = False
+        
+        for message in messages:
+            if isinstance(message, dict):
+                # Check for cache_control in additional_kwargs (LangChain format)
+                if 'additional_kwargs' in message and isinstance(message['additional_kwargs'], dict):
+                    cache_control = message['additional_kwargs'].get('cache_control')
+                    if cache_control:
+                        message['cache_control'] = cache_control
+                        has_cache_control = True
+                        logger.info(f"🏷️  CACHE: Applied cache control: {cache_control}")
+        
+        return has_cache_control
     
     def _get_effective_max_tokens(self):
         """Get the effective max_tokens value to use, considering environment variables."""

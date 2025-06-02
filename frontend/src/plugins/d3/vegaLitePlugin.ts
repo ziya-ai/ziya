@@ -203,20 +203,32 @@ export const vegaLitePlugin: D3RenderPlugin = {
         hasRepeat: !!vegaSpec.repeat
       });
 
-      // Handle sizing for different types of visualizations
-      if (!vegaSpec.width && !vegaSpec.vconcat && !vegaSpec.hconcat && !vegaSpec.facet) {
-        vegaSpec.width = 'container';
+      // Get container dimensions for responsive sizing
+      const containerRect = container.getBoundingClientRect();
+      const availableWidth = Math.max(containerRect.width - 40, 400); // Account for padding, minimum 400px
+      const availableHeight = Math.max(containerRect.height || 400, 300); // Minimum 300px height
+
+      console.log(">>> vegaLitePlugin: Container dimensions:", {
+        containerWidth: containerRect.width,
+        availableWidth,
+        availableHeight
+      });
+
+      // Set responsive width - use container width for all visualizations
+      vegaSpec.width = availableWidth;
+
+      // Handle height based on visualization type
+      if (!vegaSpec.height && !vegaSpec.vconcat && !vegaSpec.hconcat && !vegaSpec.facet) {
+        // For simple charts, let height be determined by content but set a reasonable default
+        vegaSpec.height = Math.min(availableHeight * 0.6, 400);
       }
 
-      // Only set autosize for simple visualizations
-      if (!vegaSpec.vconcat && !vegaSpec.hconcat && !vegaSpec.facet && !vegaSpec.repeat) {
-        // Remove any fixed height and let it be determined by content
-        delete vegaSpec.height;
-        vegaSpec.autosize = { type: 'fit-x', contains: 'padding' };
-      } else {
-        // For complex layouts, use fit sizing
-        vegaSpec.autosize = { type: 'fit', contains: 'padding' };
-      }
+      // Configure autosize to make visualizations responsive
+      vegaSpec.autosize = {
+        type: 'fit-x',
+        contains: 'padding',
+        resize: true
+      };
 
       // Ensure it has a schema if not present
       if (!vegaSpec.$schema) {
@@ -229,24 +241,21 @@ export const vegaLitePlugin: D3RenderPlugin = {
         theme: isDarkMode ? 'dark' : 'excel',
         renderer: 'svg' as const, // Use SVG for better scaling with complex layouts
         scaleFactor: 1,
-        // Force proper sizing
+        width: availableWidth,
+        height: vegaSpec.height || availableHeight * 0.6,
         config: {
           view: {
-            continuousWidth: 400,
-            continuousHeight: 300
+            continuousWidth: availableWidth,
+            continuousHeight: vegaSpec.height || availableHeight * 0.6,
+            stroke: 'transparent' // Remove default border
           },
-          facet: {
-            spacing: 10
-          },
-          concat: {
-            spacing: 10
-          }
+          background: null // Let container handle background
         }
       };
 
       // Set explicit container dimensions for complex layouts
       if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {
-        container.style.minHeight = '400px';
+        container.style.minHeight = `${availableHeight}px`;
         container.style.width = '100%';
       }
 
@@ -650,6 +659,37 @@ ${svgData}`;
       setTimeout(() => {
         const svgElement = container.querySelector('svg');
         const vegaEmbedDiv = container.classList.contains('vega-embed') ? container : container.querySelector('.vega-embed') as HTMLElement;
+
+        if (svgElement) {
+          // Ensure SVG uses full container width
+          svgElement.style.width = '100%';
+          svgElement.style.maxWidth = '100%';
+          svgElement.style.height = 'auto';
+          svgElement.style.display = 'block';
+
+          // Remove any fixed width/height attributes that might constrain sizing
+          svgElement.removeAttribute('width');
+          svgElement.removeAttribute('height');
+
+          console.log(">>> vegaLitePlugin: SVG sizing applied:", {
+            svgWidth: svgElement.style.width,
+            containerWidth: container.getBoundingClientRect().width,
+            svgRect: svgElement.getBoundingClientRect()
+          });
+        }
+
+        if (vegaEmbedDiv) {
+          vegaEmbedDiv.style.width = '100%';
+          vegaEmbedDiv.style.maxWidth = '100%';
+        }
+
+        // Force parent containers to use full width
+        let parent = container.parentElement;
+        while (parent && parent.classList.contains('d3-container')) {
+          (parent as HTMLElement).style.width = '100%';
+          (parent as HTMLElement).style.maxWidth = '100%';
+          parent = parent.parentElement;
+        }
 
         // Add global debugging functions to window
         (window as any).debugVegaLite = {

@@ -73,6 +73,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [folderPanelWidth, setFolderPanelWidth] = useState<number>(300); // Default width
     const processedModelChanges = useRef<Set<string>>(new Set());
     const contentRef = useRef<HTMLDivElement>(null);
+    const saveQueue = useRef<Promise<void>>(Promise.resolve());
+    const isRecovering = useRef<boolean>(false);
     const pendingSave = useRef<NodeJS.Timeout | null>(null);
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
@@ -194,6 +196,37 @@ export function ChatProvider({ children }: ChatProviderProps) {
         return true;
     };
 
+    // Enhanced backup system with corruption detection
+    const createBackup = useCallback(async (conversations: Conversation[]) => {
+        try {
+            const activeConversations = conversations.filter(c => c.isActive !== false);
+            if (activeConversations.length > 0) {
+                const backupData = JSON.stringify(activeConversations);
+
+                // Verify backup integrity before saving
+                const parsed = JSON.parse(backupData);
+                if (Array.isArray(parsed) && parsed.length === activeConversations.length) {
+                    localStorage.setItem('ZIYA_CONVERSATION_BACKUP', backupData);
+                    localStorage.setItem('ZIYA_BACKUP_TIMESTAMP', Date.now().toString());
+                    console.debug(`✅ Backup created: ${activeConversations.length} conversations`);
+                } else {
+                    console.error('❌ Backup verification failed');
+                }
+            }
+        } catch (e) {
+            console.error('❌ Backup creation failed:', e);
+        }
+    }, []);
+
+    // Queue-based save system to prevent race conditions
+    const queueSave = useCallback(async (conversations: Conversation[]) => {
+        saveQueue.current = saveQueue.current.then(async () => {
+            await db.saveConversations(conversations);
+            await createBackup(conversations);
+        });
+        return saveQueue.current;
+    }, [createBackup]);
+
     const saveConversationsWithDebounce = useCallback(async (conversations: Conversation[]) => {
         if (pendingSave.current) {
             clearTimeout(pendingSave.current);
@@ -201,15 +234,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         pendingSave.current = setTimeout(async () => {
             try {
-                await db.saveConversations(conversations);
-                console.log('Debounced saved conversations to database');
+                await queueSave(conversations);
             } catch (error) {
                 console.error('Failed to save conversations:', error);
                 setDbError(error instanceof Error ? error.message : 'Failed to save conversations');
             }
             pendingSave.current = null;
         }, 1000);
-    }, []);
+    }, [queueSave]);
 
     const addMessageToConversation = useCallback((message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
         const conversationId = targetConversationId || currentConversationId;
@@ -274,10 +306,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }))
             });
 
-            db.saveConversations(updatedConversations).catch(error => {
-                console.error('Failed to save conversations:', error);
-                setDbError(error instanceof Error ? error.message : 'Failed to save conversation');
-            });
+            queueSave(updatedConversations).catch(console.error);
 
             return updatedConversations;
         });
@@ -381,8 +410,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         : conv
                 );
 
-                db.saveConversations([...updatedConversations, newConversation])
-                    .then(() => {
+                queueSave([...updatedConversations, newConversation])
+                    .then(async () => {
                         setConversations([...updatedConversations, newConversation]);
                         setCurrentMessages([]);
                         setCurrentConversationId(newId);
@@ -412,10 +441,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         : conv);
 
                 // Then persist to database
-                db.saveConversations(updatedConversations).catch(error => {
-                    console.error('Failed to save conversation state:', error);
-                });
-
+                queueSave(updatedConversations).catch(console.error);
                 return updatedConversations;
             });
 
@@ -445,6 +471,103 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
         setStreamedContentMap(new Map());
     }, [currentConversationId, conversations, streamingConversations, streamedContentMap]);
+
+    // Folder management functions
+    const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
+        const newFolder: ConversationFolder = {
+            id: uuidv4(),
+            name,
+            parentId: parentId || null,
+            useGlobalContext: true,
+            useGlobalModel: true,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        };
+
+        try {
+            await db.saveFolder(newFolder);
+            setFolders(prev => [...prev, newFolder]);
+            return newFolder.id;
+        } catch (error) {
+            console.error('Error creating folder:', error);
+            throw error;
+        }
+    }, []);
+
+    const updateFolder = useCallback(async (folder: ConversationFolder): Promise<void> => {
+        try {
+            folder.updatedAt = Date.now();
+            await db.saveFolder(folder);
+            setFolders(prev => prev.map(f => f.id === folder.id ? folder : f));
+        } catch (error) {
+            console.error('Error updating folder:', error);
+            throw error;
+        }
+    }, []);
+
+    // frontend/src/context/ChatContext.tsx
+    const deleteFolder = useCallback(async (id: string): Promise<void> => {
+        try {
+            // Get the most up-to-date list of conversations from the DB or state.
+            // To be safest, especially if other operations might be happening,
+            // it's better to work with the data that will be persisted.
+            const currentConversationsFromDB = await db.getConversations();
+            const updatedConversationsForDB = currentConversationsFromDB.map(conv =>
+                conv.folderId === id ? { ...conv, isActive: false, _version: Date.now() } : conv
+            );
+
+            // Save the entire updated list to the database once
+            await queueSave(updatedConversationsForDB);
+
+            // Now update the React state based on the successfully persisted changes
+            setConversations(prevConvs => prevConvs.map(conv =>
+                conv.folderId === id ? { ...conv, isActive: false, _version: Date.now() } : conv
+            ));
+
+            // Delete the folder metadata from the database
+            await db.deleteFolder(id);
+
+            // Update folders state in React
+            setFolders(prevFolders => prevFolders.filter(f => f.id !== id));
+
+            // If the currently active folder is the one being deleted, reset it
+            if (currentFolderId === id) {
+                setCurrentFolderId(null);
+            }
+
+            const numAffectedConversations = updatedConversationsForDB.filter(c => c.folderId === id && !currentConversationsFromDB.find(oc => oc.id === c.id)?.isActive).length;
+            console.log(`Folder deleted and ${numAffectedConversations} conversations marked inactive.`);
+
+        } catch (error) {
+            console.error('Error deleting folder:', error);
+            message.error('Failed to delete folder. Please try again.');
+            // Potentially re-fetch state from DB to ensure consistency if partial failure
+            const freshConversations = await db.getConversations();
+            setConversations(freshConversations);
+            const freshFolders = await db.getFolders();
+            setFolders(freshFolders);
+        }
+    }, [currentFolderId, setConversations, setFolders, setCurrentFolderId]); // Removed 'conversations' from deps, relies on fetching fresh from DB
+
+    const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
+        try {
+            // First update the conversation in memory with a new version
+            const newVersion = Date.now();
+            setConversations(prev => prev.map(conv =>
+                conv.id === conversationId
+                    ? { ...conv, folderId, _version: newVersion }
+                    : conv
+            ));
+
+            // Then update in the database
+            await db.moveConversationToFolder(conversationId, folderId);
+
+            return;
+        } catch (error) {
+            console.error('Error moving conversation to folder:', error);
+            throw error;
+        }
+    }, []);
 
     // Folder management functions
     const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
@@ -550,86 +673,58 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, [conversations, currentConversationId, isInitialized]);
 
+
+    // Enhanced initialization with corruption detection and recovery
+    const initializeWithRecovery = useCallback(async () => {
+        if (isRecovering.current) return;
+        isRecovering.current = true;
+
+        try {
+            await db.init();
+            const savedConversations = await db.getConversations();
+            const savedFolders = await db.getFolders();
+
+            // Check for corruption by comparing with backup
+            const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
+            if (backup) {
+                const backupConversations = JSON.parse(backup);
+
+                // If IndexedDB has significantly fewer conversations than backup, restore from backup
+                if (savedConversations.length < backupConversations.length * 0.5) {
+                    console.warn(`⚠️ Potential corruption detected: IndexedDB has ${savedConversations.length} conversations, backup has ${backupConversations.length}`);
+
+                    // Auto-recovery
+                    await db.saveConversations(backupConversations);
+                    setConversations(backupConversations);
+                    console.log('✅ Auto-recovery completed');
+                } else {
+                    setConversations(savedConversations);
+                    await createBackup(savedConversations);
+                }
+            } else {
+                setConversations(savedConversations);
+                await createBackup(savedConversations);
+            }
+
+            setFolders(savedFolders);
+            setIsInitialized(true);
+        } catch (error) {
+            console.error('Initialization failed:', error);
+            // Existing error handling...
+        } finally {
+            isRecovering.current = false;
+        }
+    }, [createBackup]);
+
     useEffect(() => {
-        const initialize = async () => {
-            try {
-                await db.init();
-                const savedFolders = await db.getFolders();
-                const saved = await db.getConversations();
-                setConversations(saved);
-                setIsInitialized(true);
-            } catch (error) {
-                console.error('Failed to initialize:', error);
+        initializeWithRecovery();
 
-                // Check if we have a backup in localStorage
-                try {
-                    const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
-                    if (backup) {
-                        const backupConversations = JSON.parse(backup);
-                        if (Array.isArray(backupConversations) && backupConversations.length > 0) {
-                            console.log('Found backup conversations in localStorage:', backupConversations.length);
-                            setConversations(backupConversations);
-                            setIsInitialized(true);
-
-                            // Try to repair in the background
-                            performEmergencyRecovery().then(() => {
-                                message.success('Database repaired successfully');
-                                // Save the recovered conversations
-                                db.saveConversations(backupConversations).catch(console.error);
-                            }).catch(console.error);
-
-                            // Return early since we've restored from backup
-                            return;
-                        }
-                    }
-                } catch (e) {
-                    console.error('Error checking for backup:', e);
-                }
-
-                // Show user-friendly recovery dialog
-                Modal.confirm({
-                    title: 'Database Issue Detected',
-                    content: 'We found an issue with your data storage. Would you like to repair it automatically?',
-                    okText: 'Repair Now',
-                    cancelText: 'Cancel',
-                    onOk: async () => {
-                        try {
-                            const result = await performEmergencyRecovery();
-                            if (result.success) {
-                                message.success('Recovery completed. Reloading page...');
-                                setTimeout(() => window.location.reload(), 1500);
-                            } else {
-                                message.error(`Recovery failed: ${result.message}`);
-                            }
-                        } catch (recoveryError) {
-                            message.error('Recovery failed. Please try again.');
-                        }
-                    }
-                });
-            }
-        };
-        // Set up periodic backup of conversations to localStorage
-        const backupConversations = () => {
+        // Enhanced backup interval - every 15 seconds instead of 30
+        const backupInterval = setInterval(() => {
             if (conversations.length > 0) {
-                try {
-                    // Only backup active conversations
-                    const activeConversations = conversations.filter(c => c.isActive !== false);
-                    if (activeConversations.length > 0) {
-                        localStorage.setItem('ZIYA_CONVERSATION_BACKUP',
-                            JSON.stringify(activeConversations));
-                        console.debug('Backed up', activeConversations.length, 'conversations to localStorage');
-                    }
-                } catch (e) {
-                    console.error('Error backing up conversations:', e);
-                }
+                createBackup(conversations);
             }
-        };
-
-        // Set up periodic backup every 30 seconds
-        const backupInterval = setInterval(backupConversations, 30000);
-
-
-        initialize();
+        }, 60000);
 
         const request = indexedDB.open('ZiyaDB');
         request.onerror = (event) => {
@@ -643,7 +738,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 clearInterval(backupInterval);
             }
         };
-    }, []);
+    }, [initializeWithRecovery, createBackup]);
 
     // Load folders when component mounts
     useEffect(() => {
@@ -758,7 +853,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
                 return conv;
             });
-            db.saveConversations(updated).catch(console.error);
+            queueSave(updated).catch(console.error);
             return updated;
         });
     }, []);

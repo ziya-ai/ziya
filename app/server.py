@@ -1,12 +1,16 @@
 import os
+import os.path
 import re
 import time
+import threading
 import json
 import asyncio
 import uuid
 import traceback
 from typing import Dict, Any, List, Tuple, Optional, Union
 from starlette.background import BackgroundTask
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import signal
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import tiktoken
@@ -54,6 +58,7 @@ from app.utils.error_handlers import (
 )
 from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
+from app.utils.file_utils import read_file_content
 from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
@@ -125,11 +130,21 @@ active_websockets = set()
 hunk_status_updates = []
 
 # Get the directory of the current file
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
+def get_templates_dir():
+    """Get the templates directory, handling both development and installed package scenarios."""
+    # First try relative to the current file (development mode)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(current_dir)
+    dev_templates_dir = os.path.join(parent_dir, "templates")
+    
+    if os.path.exists(dev_templates_dir):
+        return dev_templates_dir
+    
+    # For installed packages, look in the package data
+    import pkg_resources
+    return pkg_resources.resource_filename('ziya', 'templates')
 
-# Set up templates directory
-templates_dir = os.path.join(parent_dir, "templates")
+templates_dir = get_templates_dir()
 
 # Mount templates/static if it exists (for frontend assets)
 templates_static_dir = os.path.join(templates_dir, "static")
@@ -247,7 +262,7 @@ async def cleanup_stream(conversation_id: str):
     """Clean up resources when a stream ends or is aborted."""
     if conversation_id in active_streams:
         logger.info(f"Cleaning up stream for conversation: {conversation_id}")
-        # Remove from active streams
+        # Remove only this specific stream from active streams
         del active_streams[conversation_id]
         # Any other cleanup needed
         logger.info(f"Stream cleanup complete for conversation: {conversation_id}")
@@ -262,8 +277,27 @@ async def stream_chunks(body):
     try:
         # Get the question from the request body
         question = body.get("question", "")
-        conversation_id = body.get("conversation_id", "default")
 
+        # Extract conversation ID from the request body
+        conversation_id = body.get("conversation_id")
+        if not conversation_id:
+            # Also check if it's nested in config
+            logger.info("🔍 STREAM: No conversation_id in body, checking config...")
+            config = body.get("config", {})
+            conversation_id = config.get("conversation_id")
+        if not conversation_id:
+            # Check if it's in the config
+            config = body.get("config", {})
+            conversation_id = config.get("conversation_id")
+        
+        # Only generate a stream ID as last resort
+        if not conversation_id:
+            import uuid
+            conversation_id = f"stream_{uuid.uuid4().hex[:8]}"
+            logger.warning(f"No conversation_id provided, generated: {conversation_id}")
+        else:
+            logger.info(f"Using provided conversation_id: {conversation_id}")
+            logger.info(f"🔍 STREAM: Final conversation_id: {conversation_id}")
         # Register this stream as active
         active_streams[conversation_id] = {
             "start_time": time.time(),
@@ -298,7 +332,6 @@ async def stream_chunks(body):
         # Add system message with file context if available
         if files:
             from langchain_core.messages import SystemMessage
-            logger.info(f"[INSTRUMENTATION] stream_chunks adding system message with {len(files)} files")
             logger.info("=== System Message Content Debug ===")
             file_context = "Here are the files in the codebase:\n\n"
             
@@ -320,10 +353,12 @@ async def stream_chunks(body):
                              if os.path.isdir(full_path):
                                  # Skip directories silently
                                  continue
-                             with open(full_path, 'r', encoding='utf-8') as f:
-                               file_content = f.read()
-                             file_context += f"File: {file}\n```\n{file_content}\n```\n\n"
-                             string_file_count += 1
+                             content = read_file_content(full_path)
+                             if content:
+                                file_context += f"File: {file}\n```\n{content}\n```\n\n"
+                                logger.info(f"Successfully loaded content from {file}: {len(content)} chars")
+                             else:
+                                logger.warning(f"Failed to extract content from {file}")
                         else:
                              logger.warning(f"File not found: {full_path}")
                     except Exception as e:
@@ -430,9 +465,15 @@ async def stream_chunks(body):
         # Set up the model with the stop sequence
         # This ensures the model will properly stop at the sentinel
         model_with_stop = model_instance.bind(stop=["</tool_input>"])
+
+        # Create config dict with conversation_id for caching
+        config = {"conversation_id": conversation_id}
+        logger.info(f"Passing conversation_id to model: {conversation_id}")
+        
+        # Ensure conversation_id is available for context enhancement
         
         try:
-            async for chunk in model_with_stop.astream(messages):
+            async for chunk in model_with_stop.astream(messages, config=config):
 
                 # Check if client disconnected
                 if conversation_id not in active_streams:
@@ -588,9 +629,6 @@ async def stream_chunks(body):
                                     # Ensure it's a string
                                     text_to_yield = str(raw_text_content)
  
-                                    # Log exactly what is being yielded
-                                    logger.debug(f"[STREAM DEBUG] Yielding text (repr): {repr(text_to_yield)}")
- 
                                     # Accumulate for stop sentinel check (using the same reliable text)
                                     full_response += text
                                     
@@ -647,9 +685,8 @@ async def stream_chunks(body):
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 done_marker_sent = True
 
-                # Clean up the stream
-                if conversation_id in active_streams:
-                    del active_streams[conversation_id]
+                # Clean up this specific stream without affecting others
+                await cleanup_stream(conversation_id)
 
                 # We need to break out of the async for loop
                 return  # Exit the entire generator function
@@ -674,9 +711,7 @@ async def stream_chunks(body):
             
             # If the loop finished normally (no error break) and we sent content, send DONE
             if not done_marker_sent and chunk_count > 0 and not is_error_chunk:
-                # Clean up the stream
-                if conversation_id in active_streams:
-                    del active_streams[conversation_id]
+                await cleanup_stream(conversation_id)
 
                 yield f"data: {json.dumps({'done': True})}\n\n"
 
@@ -692,8 +727,29 @@ async def stream_chunks(body):
                 yield "data: [DONE]\n\n"
 
             # Clean up the stream
-            if conversation_id in active_streams:
-                del active_streams[conversation_id]
+            await cleanup_stream(conversation_id)
+            return
+            
+        except (CredentialRetrievalError, BotoCoreError) as e:
+            # Handle AWS credential errors specifically
+            from app.utils.error_handlers import _handle_aws_credential_error, create_sse_error_response
+            
+            # Get appropriate error message
+            error_message = str(e)
+            error_type, detail, status_code, _ = _handle_aws_credential_error(error_message)
+            
+            # Create and send the error response
+            error_response = create_sse_error_response(error_type, detail)
+            logger.info(f"Sending credential error as SSE: {error_response}")
+            yield f"data: {json.dumps(error_response)}\n\n"
+            
+            # Always send the done marker for credential errors
+            if not done_marker_sent:
+                logger.info("Sending done marker after credential error")
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                done_marker_sent = True
+
+            await cleanup_stream(conversation_id)
             return
             
         except (CredentialRetrievalError, BotoCoreError) as e:
@@ -727,9 +783,7 @@ async def stream_chunks(body):
                 # logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-                # Clean up the stream
-                if conversation_id in active_streams:
-                    del active_streams[conversation_id]
+                await cleanup_stream(conversation_id)
 
                 # yield f"data: {json.dumps({'done': True})}\n\n" # Middleware will send DONE
                 # done_marker_sent = True
@@ -740,10 +794,8 @@ async def stream_chunks(body):
             # We're not updating any files, so pass an empty list
             update_conversation_state(conversation_id, [])
         except Exception as e:
-            logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
-            # Clean up the stream
-            if conversation_id in active_streams:
-                del active_streams[conversation_id]
+            logger.error(f"stream_chunks error updating conversation state: {e}")
+            await cleanup_stream(conversation_id)
             
     except Exception as e:
         raise # re-raise for middleware to catch        
@@ -754,9 +806,7 @@ async def stream_chunks(body):
             update_conversation_state(conversation_id, [])
         except Exception as e:
             logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
-            # Clean up the stream
-            if conversation_id in active_streams:
-                del active_streams[conversation_id]
+            await cleanup_stream(conversation_id)
 
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")
@@ -895,7 +945,14 @@ async def debug(request: Request):
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    return FileResponse('../templates/favicon.ico')
+    favicon_path = '../templates/favicon.ico'
+    if os.path.exists(favicon_path):
+        return FileResponse(favicon_path)
+    else:
+        # Return a 404 response instead of crashing
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
 
 
 # Cache for folder structure with timestamp
@@ -913,7 +970,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     Returns:
         Dict with folder structure including token counts
     """
-    from app.utils.file_utils import is_binary_file
+    from app.utils.file_utils import is_binary_file, is_document_file, is_processable_file, read_file_content
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     encoding = tiktoken.get_encoding("cl100k_base")
     
@@ -923,30 +980,57 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     
     logger.debug(f"Getting folder structure for {directory} with max depth {max_depth}")
     
+    # Track scanning progress
+    scan_stats = {
+        'directories_scanned': 0,
+        'files_processed': 0,
+        'start_time': time.time(),
+        'slow_directories': []
+    }
+    
     def count_tokens(file_path: str) -> int:
         """Count tokens in a file using tiktoken."""
         try:
+            
+            dir_start = time.time()
             # Skip binary files
-            if is_binary_file(file_path):
+            if not is_processable_file(file_path):
+                if is_document_file(file_path):
+                    logger.error(f"Document file {file_path} failed is_processable_file check")
+                dir_time = time.time() - dir_start
+                if dir_time > 0.1:  # Log if binary check takes >100ms
+                    logger.warning(f"Slow processable check for {file_path}: {dir_time:.2f}s")
                 return 0
-                
-            # Skip large files (>1MB)
-            if os.path.getsize(file_path) > 1024 * 1024:
+            if not is_processable_file(file_path):
+                dir_time = time.time() - dir_start
+                if dir_time > 0.1:  # Log if binary check takes >100ms
+                    logger.warning(f"Slow binary check for {file_path}: {dir_time:.2f}s")
                 return 0
+            scan_stats['files_processed'] += 1
                 
             # Read file and count tokens
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-                return len(encoding.encode(content))
+            content = read_file_content(file_path)
+            if content:
+                token_count = len(encoding.encode(content))
+                 # Skip files with excessive token counts (>50k tokens)
+                if token_count > 50000:
+                    logger.debug(f"Skipping file with excessive tokens {file_path}: {token_count} tokens")
+                    return 0
+                return token_count
+            else:
+                logger.debug(f"No content extracted from: {file_path}")
+                return 0
         except Exception as e:
             logger.debug(f"Error counting tokens in {file_path}: {e}")
-            return 0
-    
+        return 0
+
     def process_dir(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory recursively."""
         if depth > max_depth:
             return {'token_count': 0}
             
+        scan_stats['directories_scanned'] += 1
+        dir_start_time = time.time()
         result = {'token_count': 0, 'children': {}}
         total_tokens = 0
         
@@ -954,19 +1038,33 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             entries = os.listdir(path)
         except PermissionError:
             logger.debug(f"Permission denied for {path}")
+            dir_time = time.time() - dir_start_time
+            if dir_time > 1.0:
+                scan_stats['slow_directories'].append((path, dir_time, 'permission_denied'))
+                logger.warning(f"Slow permission check for {path}: {dir_time:.2f}s")
+            return {'token_count': 0}
+
+        except OSError as e:
+            logger.warning(f"OS error accessing {path}: {e}")
             return {'token_count': 0}
             
         for entry in entries:
+            entry_start = time.time()
             if entry.startswith('.'):  # Skip hidden files
                 continue
                 
             entry_path = os.path.join(path, entry)
-            
             if os.path.islink(entry_path):  # Skip symlinks
                 continue
                 
             if should_ignore_fn(entry_path):  # Skip ignored files
                 continue
+                
+            # Log slow entry processing
+            entry_time = time.time() - entry_start
+            if entry_time > 0.5:  # Log if single entry takes >500ms
+                scan_stats['slow_directories'].append((entry_path, entry_time, 'slow_entry'))
+                logger.warning(f"Slow entry processing for {entry_path}: {entry_time:.2f}s")
                 
             if os.path.isdir(entry_path):
                 if depth < max_depth:
@@ -981,34 +1079,100 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                     total_tokens += tokens
         
         result['token_count'] = total_tokens
+        
+        # Log slow directory processing
+        dir_time = time.time() - dir_start_time
+        if result['children']:
+            logger.debug(f"Directory {path} processed with {len(result['children'])} children, total tokens: {total_tokens}")
+        if dir_time > 2.0:  # Log if directory takes >2s
+            scan_stats['slow_directories'].append((path, dir_time, 'slow_directory'))
+            logger.warning(f"Slow directory scan for {path}: {dir_time:.2f}s ({len(entries)} entries)")
+            
         return result
     
     # Process the root directory
     root_result = process_dir(directory, 1)
     
     # Return just the children of the root to match expected format
+    total_time = time.time() - scan_stats['start_time']
+    logger.info(f"Folder scan completed: {scan_stats['directories_scanned']} dirs, "
+                f"{scan_stats['files_processed']} files in {total_time:.2f}s")
+    
+    if scan_stats['slow_directories']:
+        logger.warning(f"Found {len(scan_stats['slow_directories'])} slow operations:")
+        for path, duration, reason in scan_stats['slow_directories'][:5]:  # Log top 5
+            logger.warning(f"  {path}: {duration:.2f}s ({reason})")
+            
     return root_result.get('children', {})
 
 @app.post("/folder")
 async def get_folder(request: FolderRequest):
     """Get the folder structure of a directory."""
+    start_time = time.time()
+    logger.info(f"Starting folder scan for: {request.directory}")
+    logger.info(f"Max depth: {request.max_depth}")
+    
     try:
         # Get the ignored patterns
         ignored_patterns = get_ignored_patterns(request.directory)
+        logger.info(f"Ignore patterns loaded: {len(ignored_patterns)} patterns")
+        
+        # Log some sample patterns for debugging
+        if ignored_patterns:
+            sample_patterns = [p[0] for p in ignored_patterns[:5]]
+            logger.debug(f"Sample ignore patterns: {sample_patterns}")
         
         # Use the max_depth from the request, but ensure it's at least 15 if not specified
         max_depth = request.max_depth if request.max_depth > 0 else int(os.environ.get("ZIYA_MAX_DEPTH", 15))
         logger.info(f"Using max depth for folder structure: {max_depth}")
         
+        # Check if directory exists and is accessible
+        if not os.path.exists(request.directory):
+            logger.error(f"Directory does not exist: {request.directory}")
+            return {"error": f"Directory does not exist: {request.directory}"}
+            
+        if not os.path.isdir(request.directory):
+            logger.error(f"Path is not a directory: {request.directory}")
+            return {"error": f"Path is not a directory: {request.directory}"}
+            
+        # Test basic access
+        try:
+            os.listdir(request.directory)
+        except PermissionError:
+            logger.error(f"Permission denied accessing: {request.directory}")
+            return {"error": f"Permission denied accessing directory"}
+        except OSError as e:
+            logger.error(f"OS error accessing {request.directory}: {e}")
+            return {"error": f"Cannot access directory: {str(e)}"}
+        
         # Check if we have a cached result that's less than 5 seconds old
         current_time = time.time()
         if _folder_cache['timestamp'] > current_time - 5:
+            logger.info("Returning cached folder structure")
             return _folder_cache['data']
+            
+        # Use thread pool with timeout for the actual scanning
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(get_folder_structure, request.directory, ignored_patterns, max_depth)
             
         # Get the folder structure
         result = get_folder_structure(request.directory, ignored_patterns, max_depth)
         
         # Cache the result
+        _folder_cache['timestamp'] = current_time
+        _folder_cache['data'] = result
+
+        try:
+            result = future.result(timeout=30)  # 30 second timeout
+            logger.info(f"Folder scan completed successfully in {time.time() - start_time:.2f}s")
+        except FutureTimeoutError:
+            logger.error(f"Folder scan timed out after 30s for: {request.directory}")
+            return {"error": "Directory scan timed out - directory may be too large or contain network mounts"}
+        except Exception as e:
+            logger.error(f"Error during folder scan: {str(e)}")
+            return {"error": f"Scan failed: {str(e)}"}
+    
+        # Cache the successful result
         _folder_cache['timestamp'] = current_time
         _folder_cache['data'] = result
         
@@ -1179,7 +1343,7 @@ def get_available_models():
             })
             
         # Log the models being returned
-        logger.info(f"Available models: {json.dumps(models)}")
+        logger.debug(f"Available models: {json.dumps(models)}")
         return models
     except Exception as e:
         logger.error(f"Error getting available models: {str(e)}")
@@ -1237,23 +1401,12 @@ async def chat_endpoint(request: Request):
         messages = body.get('messages', [])
         question = body.get('question', '')
         files = body.get('files', [])
+        conversation_id = body.get('conversation_id')
+        logger.info(f"Chat API received conversation_id: {conversation_id}")
+        logger.info(f"🔍 CHAT_API: Received conversation_id from frontend: {conversation_id}")
 
         logger.info("=== File Processing Debug ===")
         logger.info(f"Files received: {files}")
-        if files:
-            for file_path in files:
-                try:
-                    full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
-                    if os.path.exists(full_path):
-                        if os.path.isdir(full_path):
-                            # Skip directories silently
-                            continue
-                        with open(full_path, 'r') as f:
-                            content = f.read()
-                    else:
-                        logger.warning(f"File not found: {full_path}")
-                except Exception as e:
-                    logger.error(f"Error reading file {file_path}: {e}")
         
         # Log message structure for debugging
         if messages and len(messages) > 0:
@@ -1266,8 +1419,10 @@ async def chat_endpoint(request: Request):
         # Format the data for the stream endpoint
         formatted_body = {
             'question': question,
+            'conversation_id': conversation_id,
             'chat_history': messages,
             'config': {
+                'conversation_id': conversation_id,  # Also include in config for backward compatibility
                 'files': files
             }
         }
@@ -1380,6 +1535,7 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     current_time = time.time()
     cache_age = current_time - _folder_cache['timestamp']
 
+    logger.debug(f"Cache age: {cache_age}s, will refresh: {_folder_cache['data'] is None or cache_age > 10}")
     # Refresh cache if older than 10 seconds
     if _folder_cache['data'] is None or cache_age > 10:
         _folder_cache['data'] = get_folder_structure(directory, ignored_patterns, max_depth)
@@ -1395,7 +1551,28 @@ async def api_get_folders():
         user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
         max_depth = int(os.environ.get("ZIYA_MAX_DEPTH"))
         ignored_patterns: List[Tuple[str, str]] = get_ignored_patterns(user_codebase_dir)
-        return get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+
+        # Log a sample of the result to see if token counts are included
+        sample_files = []
+        def collect_sample(data, path=""):
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    current_path = f"{path}/{key}" if path else key
+                    if isinstance(value, dict) and 'token_count' in value:
+                        sample_files.append(f"{current_path}: {value['token_count']} tokens")
+                        if len(sample_files) >= 5:  # Only collect first 5 for logging
+                            return
+                    elif isinstance(value, dict) and 'children' in value:
+                        collect_sample(value['children'], current_path)
+        
+        collect_sample(result)
+        if sample_files:
+            logger.info(f"Sample files with token counts: {sample_files}")
+        else:
+            logger.warning("No files with token counts found in folder structure")
+        
+        return result
     except Exception as e:
         logger.error(f"Error in api_get_folders: {e}")
         return {"error": str(e)}
@@ -1686,11 +1863,11 @@ def get_model_capabilities(model: str = None):
 
     try:
         base_model_config = ModelManager.get_model_config(endpoint, model_alias)
-        logger.info(f"[DEBUG CAPABILITIES] base_model_config: {json.dumps(base_model_config)}")
+        logger.debug(f"base_model_config: {json.dumps(base_model_config)}")
 
         # Get the *current effective settings* which include env overrides
         effective_settings = ModelManager.get_model_settings()
-        logger.info(f"[DEBUG CAPABILITIES] effective_settings: {json.dumps(effective_settings)}")
+        logger.debug(f"effective_settings: {json.dumps(effective_settings)}")
 
         capabilities = {
             "supports_thinking": effective_settings.get("thinking_mode", base_model_config.get("supports_thinking", False)),
@@ -1707,12 +1884,12 @@ def get_model_capabilities(model: str = None):
         # Get ABSOLUTE maximums from base config for ranges
         absolute_max_output_tokens = base_model_config.get("max_output_tokens", 4096)
 
-        logger.info(f"[DEBUG CAPABILITIES] absolute_max_output_tokens from base_model_config: {absolute_max_output_tokens}") # DEBUG
-        logger.info(f"[DEBUG CAPABILITIES] effective_max_output_tokens from effective_settings: {effective_max_output_tokens}") # DEBUG
+        logger.debug(f"absolute_max_output_tokens from base_model_config: {absolute_max_output_tokens}") # DEBUG
+        logger.debug(f"effective_max_output_tokens from effective_settings: {effective_max_output_tokens}") # DEBUG
 
         # Get absolute max input tokens from base config (usually under 'token_limit')
         absolute_max_input_tokens = base_model_config.get("token_limit", 4096)
-        logger.info(f"[DEBUG CAPABILITIES] absolute_max_input_tokens from base_model_config: {absolute_max_input_tokens}") # DEBUG
+        logger.debug(f"absolute_max_input_tokens from base_model_config: {absolute_max_input_tokens}") # DEBUG
 
  
         # Add token limits to capabilities
@@ -1729,7 +1906,7 @@ def get_model_capabilities(model: str = None):
         capabilities["top_k_range"] = base_top_k_range
         # Add range for max_output_tokens using the absolute max
         capabilities["max_output_tokens_range"] = {"min": 1, "max": absolute_max_output_tokens, "default": effective_max_output_tokens}
-        logger.info(f"[DEBUG CAPABILITIES] max_output_tokens_range being set: {capabilities['max_output_tokens_range']}") # DEBUG         # Add range for max_input_tokens using the absolute max
+        logger.debug(f"max_output_tokens_range being set: {capabilities['max_output_tokens_range']}") # DEBUG         # Add range for max_input_tokens using the absolute max
 
         # Add range for max_input_tokens using the absolute max
         capabilities["max_input_tokens_range"] = {"min": 1, "max": absolute_max_input_tokens, "default": effective_max_input_tokens}
@@ -1795,7 +1972,7 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
             method_used = "primary"
         except AttributeError:
             # If primary method fails, use fallback
-            logger.warning("Primary token counting method unavailable, using fallback")
+            logger.debug("Primary token counting method unavailable, using fallback")
             token_count = count_tokens_fallback(request.text)
             method_used = "fallback"
         except Exception as e:
@@ -1809,6 +1986,65 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
         logger.error(f"Error counting tokens: {str(e)}", exc_info=True)
         # Return 0 in case of error to avoid breaking the frontend
         return {"token_count": 0}
+
+@app.get('/api/cache-stats')
+async def get_cache_stats():
+    """Get context caching statistics and effectiveness metrics."""
+    try:
+        from app.utils.context_cache import get_context_cache_manager
+        cache_manager = get_context_cache_manager()
+        
+        stats = cache_manager.get_cache_stats()
+        
+        # Calculate effectiveness metrics
+        total_operations = stats["hits"] + stats["misses"]
+        hit_rate = (stats["hits"] / total_operations * 100) if total_operations > 0 else 0
+        
+        return {
+            "cache_enabled": True,
+            "statistics": {
+                "cache_hits": stats["hits"],
+                "cache_misses": stats["misses"],
+                "context_splits": stats["splits"],
+                "hit_rate_percent": round(hit_rate, 1),
+                "active_cache_entries": stats["cache_entries"],
+                "estimated_tokens_cached": stats["estimated_token_savings"]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {str(e)}")
+        return {"cache_enabled": False, "error": str(e)}
+
+@app.get('/api/cache-test')
+async def test_cache_functionality():
+    """Test if context caching is properly configured and working."""
+    try:
+        from app.utils.context_cache import get_context_cache_manager
+        from app.agents.models import ModelManager
+        
+        # Check model configuration
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        cache_manager = get_context_cache_manager()
+        
+        # Create a large test content
+        test_content = "Test file content. " * 1000  # ~20,000 chars
+        
+        return {
+            "model_supports_caching": model_config.get("supports_context_caching", False),
+            "current_model": model_name,
+            "endpoint": endpoint,
+            "test_content_size": len(test_content),
+            "should_cache": cache_manager.should_cache_context(test_content, model_config),
+            "min_cache_size": cache_manager.min_cache_size,
+            "cache_manager_initialized": cache_manager is not None
+        }
+    except Exception as e:
+        logger.error(f"Error testing cache functionality: {str(e)}")
+        return {"error": str(e)}
+
 
 @app.post('/api/model-settings')
 async def update_model_settings(settings: ModelSettingsRequest):
@@ -1873,6 +2109,14 @@ async def update_model_settings(settings: ModelSettingsRequest):
         logger.info(f"Model kwargs before filtering: {model_kwargs}")
         filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
         logger.info(f"Filtered model kwargs: {filtered_kwargs}")
+
+        # Extract conversation_id from config if available for caching
+        if config and isinstance(config, dict) and config.get('conversation_id'):
+            filtered_kwargs["conversation_id"] = config.get('conversation_id')
+            logger.info(f"Added conversation_id to astream kwargs for caching: {config.get('conversation_id')}")
+        elif hasattr(input, 'get') and input.get('conversation_id'):
+            filtered_kwargs["conversation_id"] = input.get('conversation_id')
+            logger.info(f"Added conversation_id from input to astream kwargs for caching")
 
         # Update the model's kwargs directly
         if hasattr(model, 'model'):
@@ -1945,7 +2189,7 @@ async def abort_stream(request: Request):
         if conversation_id in active_streams:
             logger.info(f"Explicitly aborting stream for conversation: {conversation_id}")
             # Remove from active streams to signal to any ongoing processing that it should stop
-            del active_streams[conversation_id]
+            await cleanup_stream(conversation_id)
             return JSONResponse(content={"status": "success", "message": "Stream aborted"})
         else:
             return JSONResponse(content={"status": "not_found", "message": "No active stream found for this conversation"})
@@ -1977,6 +2221,32 @@ async def apply_changes(request: ApplyChangesRequest):
 
         logger.info(request.diff[:100])
         logger.info(f"Full diff content: \n{request.diff}")
+
+        # --- SUGGESTION: Add secure path validation ---
+        user_codebase_dir = os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR"))
+        if not user_codebase_dir:
+            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        
+        # Prioritize extracting the file path from the diff content itself
+        extracted_path = extract_target_file_from_diff(request.diff)
+
+        if extracted_path:
+            file_path = os.path.join(user_codebase_dir, extracted_path)
+            logger.info(f"Extracted target file from diff: {extracted_path}")
+        elif request.filePath:
+            # Fallback to using the provided filePath if extraction fails
+            file_path = os.path.join(user_codebase_dir, request.filePath)
+            logger.info(f"Using provided file path: {request.filePath}")
+
+            # Resolve the absolute path and check if it's within the codebase dir
+            resolved_path = os.path.abspath(file_path)
+            if not resolved_path.startswith(user_codebase_dir):
+                logger.error(f"Attempt to access file outside codebase directory: {resolved_path}")
+                raise ValueError("Invalid file path specified")
+        else:
+            raise ValueError("Could not determine target file path from diff or request")
 
         # --- SUGGESTION: Add secure path validation ---
         user_codebase_dir = os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR"))
