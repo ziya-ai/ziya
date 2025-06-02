@@ -5,6 +5,7 @@ import { Folders } from '../utils/types';
 import { debounce } from 'lodash';
 import { message } from 'antd';
 import { convertToTreeData } from '../utils/folderUtil';
+import { getFileIcon, getFolderIcon } from '../utils/fileIcons';
 
 // MUI imports
 import Typography from '@mui/material/Typography';
@@ -19,8 +20,6 @@ import Box from '@mui/material/Box';
 import Collapse from '@mui/material/Collapse';
 
 // MUI icons
-import FolderIcon from '@mui/icons-material/Folder';
-import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -155,11 +154,9 @@ export const MUIFileExplorer = () => {
           />
 
           {/* Icon */}
-          {hasChildren ? (
-            <FolderIcon sx={{ mr: 0.5, fontSize: 16, color: isDarkMode ? '#69c0ff' : 'primary.main' }} />
-          ) : (
-            <InsertDriveFileIcon sx={{ mr: 0.5, fontSize: 16, color: isDarkMode ? '#91d5ff' : 'text.secondary' }} />
-          )}
+          {hasChildren ? 
+            getFolderIcon(isExpanded) : 
+            getFileIcon(cleanLabel)}
 
           {/* Label */}
           <Typography

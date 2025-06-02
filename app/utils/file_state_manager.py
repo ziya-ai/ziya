@@ -4,6 +4,7 @@ import os
 from typing import Dict, List, Optional, Set, Tuple
 import hashlib
 from difflib import SequenceMatcher
+from app.utils.file_utils import read_file_content
 from app.utils.logging_utils import logger
 from app.utils.prompt_cache import get_prompt_cache
 
