@@ -234,7 +234,7 @@ export const sendPayload = async (
         }
 
         setIsStreaming(true);
-        let response = await getApiResponse(messagesToSend, question, checkedItems, signal);
+        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal);
         console.log("Initial API response:", response.status, response.statusText);
 
         if (!response.ok) {
@@ -244,7 +244,7 @@ export const sendPayload = async (
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 // Retry the request once
-                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, signal);
+                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal);
                 if (!retryResponse.ok) {
                     throw await handleStreamError(retryResponse);
                 }
@@ -399,7 +399,48 @@ export const sendPayload = async (
                                                 removeStreamingConversation(conversationId);
                                                 break;
                                             }
+                                        } catch (error) {
+                                            console.warn("Error checking operation output:", error);
                                         }
+                                    } else if (typeof op.value.output === 'object' && op.value.output !== null) {
+                                        // Handle case where output is an object
+                                        console.log("Operation output is an object:", op.value.output);
+                                        try {
+                                            if (op.value.output.error) {
+                                                console.log("Error found in operation output object:", op.value.output);
+                                                message.error({
+                                                    content: op.value.output.detail || 'An error occurred',
+                                                    duration: 10,
+                                                    key: 'stream-error'
+                                                });
+                                                errorOccurred = true;
+                                                removeStreamingConversation(conversationId);
+                                                break;
+                                            }
+                                        } catch (error) {
+                                            console.warn("Error checking object output:", error);
+                                        }
+                                    }
+                                } else if (op.path.includes('final_output')) {
+                                    // Special handling for timestamp values that cause errors
+                                    try {
+                                        // Check if value is a timestamp string (common error case)
+                                        if (op.value && typeof op.value === 'string' && 
+                                            op.value.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)) {
+                                            console.log("Skipping timestamp value:", op.value);
+                                            continue;
+                                        }
+                                        
+                                        // Check if we have an object with output property
+                                        if (op.value && typeof op.value === 'object' && 'output' in op.value) {
+                                            if (typeof op.value.output !== 'string') {
+                                                console.log("Non-string output in final_output:", op.value.output);
+                                                // Don't try to use substring on non-string outputs
+                                                continue;
+                                            }
+                                        }
+                                    } catch (error) {
+                                        console.warn("Error handling timestamp or final output:", error);
                                     }
                                 }
                             }
@@ -433,6 +474,53 @@ export const sendPayload = async (
                                 removeStreamingConversation(conversationId);
                                 return 'Response generation stopped by user.';
                             }
+                        }
+
+                        // Check if this chunk contains diff syntax and set the flag
+                        if (!containsDiff && (
+                            chunk.includes('```diff') || chunk.includes('diff --git') ||
+                            chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
+                            containsDiff = true;
+                            console.log("Detected diff content in chunk, disabling error detection");
+                        }
+
+                        // Check for errors using our new function - but be careful with code blocks
+                        try {
+                            // Skip error checking if the chunk contains code blocks or diffs
+                            const containsCodeBlock = chunk.includes('```');
+
+                            if (!containsCodeBlock && !containsDiff) {
+                                // Check for nested errors in LangChain ops structure
+                                const nestedError = extractErrorFromNestedOps(chunk);
+                                if (nestedError) {
+                                    console.log("Nested error detected in ops structure:", nestedError);
+                                    message.error({
+                                        content: nestedError.detail || 'An error occurred',
+                                        duration: 10,
+                                        key: 'stream-error'
+                                    });
+                                    errorOccurred = true;
+                                    removeStreamingConversation(conversationId);
+                                    break;
+                                }
+                            }
+                        } catch (error) {
+                            console.warn("Error checking for nested errors:", error);
+                        }
+                        
+                        // Check for auth error specifically - use more precise detection
+                        if ((chunk.includes('"error": "auth_error"') || 
+                            chunk.includes('"error":"auth_error"')) &&
+                            // Make sure it's in a proper SSE data format to avoid false positives
+                            chunk.includes('data: {')) {
+                            console.log("Auth error detected in chunk");
+                            message.error({
+                                content: "AWS credentials have expired. Please refresh your credentials.",
+                                duration: 10,
+                                key: 'stream-error'
+                            });
+                            errorOccurred = true;
+                            removeStreamingConversation(conversationId);
                             break;
                         }
                         if (errorOccurred) {
@@ -601,16 +689,20 @@ export const sendPayload = async (
     }
 };
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[], signal?: AbortSignal) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal) {
     const messageTuples: string[][] = [];
 
     for (const message of messages) {
         messageTuples.push([message.role, message.content]);
     }
 
+    // Debug log the conversation ID being sent
+    console.log('🔍 API: Sending conversation_id to server:', conversationId);
+
     const payload = {
         messages: messageTuples,
         question,
+        conversation_id: conversationId,
         files: checkedItems
     };
 
@@ -618,6 +710,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
+            // conversation_id is now in the payload body
         },
         body: JSON.stringify(payload),
         signal

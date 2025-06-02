@@ -834,6 +834,14 @@ button[data-tooltip-delay="50"] {
     overflow: visible !important;
 }
 
+/* Enable horizontal scrolling for split view */
+.diff-table.diff-split .diff-code {
+    overflow-x: auto !important;
+    white-space: pre !important;
+    word-wrap: normal !important;
+    overflow: visible !important;
+}
+
 .diff-table.diff-split .diff-code-right .diff-line-insert {
     background-color: #e6ffec;
 }

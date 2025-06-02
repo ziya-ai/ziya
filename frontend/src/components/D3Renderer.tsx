@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, CSSProperties, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, CSSProperties, useCallback, useLayoutEffect } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { Spin, Modal } from 'antd';
 import vegaEmbed from 'vega-embed';
@@ -76,6 +76,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     onLoad,
     onError,
     isStreaming = false,
+    forceRender = false,
     isMarkdownBlockClosed = true,
     config = {}
 }) => {
@@ -97,11 +98,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const streamingContentRef = useRef<string | null>(null);
     const lastUsedPluginRef = useRef<D3RenderPlugin | null>(null);
     const lastValidSpecRef = useRef<any>(null);
+    const [renderingStarted, setRenderingStarted] = useState<boolean>(false);
     const hasSuccessfulRenderRef = useRef<boolean>(false);
 
     // New state for size reservation and rendering control
+    const cleanupFunctionsRef = useRef<(() => void)[]>([]);
     const [reservedSize, setReservedSize] = useState<{ width: number; height: number } | null>(null);
-    const [renderingStarted, setRenderingStarted] = useState<boolean>(false);
 
     // Store the spec in a ref to avoid unnecessary re-renders
     useEffect(() => { lastSpecRef.current = spec; }, [spec]);
@@ -116,41 +118,51 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         }
     }, [spec, reservedSize]);
 
-    // First useEffect for cleanup
+    // Comprehensive cleanup on unmount
     useEffect(() => {
         return () => {
             mounted.current = false;
             console.debug('D3Renderer cleanup triggered');
-            if (vegaViewRef.current) {
+
+            // Execute all cleanup functions
+            cleanupFunctionsRef.current.forEach(cleanup => {
                 try {
+                    cleanup();
+                } catch (e) {
+                    console.warn('Error during cleanup:', e);
+                }
+            });
+            cleanupFunctionsRef.current = [];
+
+            // Clean up Vega view
+            try {
+                if (vegaViewRef.current) {
                     vegaViewRef.current.finalize();
                     vegaViewRef.current = null;
-                } catch (e) { /* ignore cleanup errors */ }
-                console.debug('Vega view finalized');
+                }
+            } catch (e) {
+                console.warn('Error finalizing Vega view:', e);
             }
-            // Clear D3 container
-            if (d3ContainerRef.current) {
-                // Stop any running force simulation
+
+            // Clean up D3 and simulations
+            try {
                 if (simulationRef.current) {
                     simulationRef.current.stop();
                     simulationRef.current = null;
                 }
-                // Remove all D3 event listeners
-                d3.select(d3ContainerRef.current)
-                    .selectAll('*')
-                    .on('.', null);
-
-                d3ContainerRef.current.innerHTML = '';
-                if (cleanupRef.current) {
-                    cleanupRef.current();
-                    cleanupRef.current = null;
+                if (d3ContainerRef.current) {
+                    d3.select(d3ContainerRef.current).selectAll('*').on('.', null);
+                    d3ContainerRef.current.innerHTML = '';
                 }
+            } catch (e) {
+                console.warn('Error cleaning up D3:', e);
             }
         };
     }, []);
 
     // Initialize visualization with useCallback for better performance and dependency tracking
-    const initializeVisualization = useCallback(async () => {
+    const initializeVisualization = useCallback(async (forceRender = false) => {
+        if (!mounted.current) return;
         // Once we start rendering, hide the spinner permanently
         if (!renderingStarted) {
             setRenderingStarted(true);
@@ -160,6 +172,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             setIsLoading(true);
         }
         try {
+            // Clear previous cleanup functions
+            cleanupFunctionsRef.current.forEach(cleanup => cleanup());
+            cleanupFunctionsRef.current = [];
+
             if (!spec) {
                 throw new Error('No specification provided');
                 return;
@@ -209,6 +225,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     return;
                 }
             }
+                
+                // Log the parsed spec for debugging
+                console.debug('D3Renderer: Successfully parsed spec:', {
+                    type: parsed.type,
+                    renderer: parsed.renderer
+                });
 
             // If we have a parsed spec, determine if it's complete enough to render
             if (parsed) {
@@ -363,21 +385,36 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     return;
                 }
 
-                // Cleanup existing simulation
-                if (simulationRef.current) {
-                    try {
-                        simulationRef.current.stop();
-                        simulationRef.current = null;
-                    } catch (error) {
-                        console.warn('Error cleaning up simulation:', error);
-                    }
+                // Handle Vega-Lite rendering
+                const container = vegaContainerRef.current;
+                if (!container) return;
+
+                const vegaSpec = {
+                    $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+                    width: width || 'container',
+                    height: height || 300,
+                    mark: parsed.type || 'point',
+                    data: {
+                        values: Array.isArray(parsed.data) ? parsed.data : [parsed.data]
+                    },
+                    encoding: parsed.encoding || {
+                        x: { field: 'x', type: 'quantitative' },
+                        y: { field: 'y', type: 'quantitative' }
+                    },
+                    ...parsed
+                };
+
+                if (vegaViewRef.current) {
+                    vegaViewRef.current.finalize();
+                    vegaViewRef.current = null;
                 }
 
-                // Set container dimensions
-                container.style.width = `${width}px`;
-                container.style.height = `${height}px`;
-                container.style.position = 'relative';
-                container.style.overflow = 'hidden';
+                console.debug('Rendering Vega spec:', vegaSpec);
+                const result = await vegaEmbed(container, vegaSpec, {
+                    actions: false,
+                    theme: isDarkMode ? 'dark' : 'excel',
+                    renderer: 'canvas'
+                });
 
                 // Check if this is a Graphviz or Mermaid plugin
                 const plugin = findPlugin(parsed);
@@ -415,6 +452,17 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         // If result is a function, use it as cleanup
                         if (typeof result === 'function') {
                             cleanupRef.current = result;
+                            cleanupFunctionsRef.current.push(result);
+                        }
+
+                        // Register simulation cleanup if it exists
+                        if (simulationRef.current) {
+                            cleanupFunctionsRef.current.push(() => {
+                                if (simulationRef.current) {
+                                    simulationRef.current.stop();
+                                    simulationRef.current = null;
+                                }
+                            });
                         }
                     } else if (parsed.type === 'network') {
                         const plugin = findPlugin(parsed);
@@ -429,6 +477,14 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                             renderSuccessful = true;
                         }
                     } else {
+                        // Register cleanup for plugin renders
+                        const pluginCleanup = () => {
+                            if (tempContainer && tempContainer.parentNode) {
+                                tempContainer.innerHTML = '';
+                            }
+                        };
+                        cleanupFunctionsRef.current.push(pluginCleanup);
+
                         const plugin = findPlugin(parsed);
                         if (!plugin) {
                             throw new Error('No render function or compatible plugin found');
@@ -486,6 +542,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 hasSuccessfulRenderRef.current = true;
                 return;
             }
+        };
 
             // Handle Vega-Lite rendering
             const container = vegaContainerRef.current;
@@ -524,12 +581,16 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             }
 
             vegaViewRef.current = result.view;
+            cleanupFunctionsRef.current.push(() => {
+                if (result.view) {
+                    result.view.finalize();
+                }
+            });
             setIsLoading(false);
             hasSuccessfulRenderRef.current = true;
             onLoad?.();
 
         } catch (error: any) {
-            // During streaming, suppress most errors unless the markdown block is closed
             if (isStreaming && !isMarkdownBlockClosed) {
                 console.debug('Suppressing streaming error:', error.message);
                 // Keep the waiting message visible
@@ -547,18 +608,25 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         }
     }, [spec, type, width, height, isDarkMode, isStreaming, isMarkdownBlockClosed, config, onLoad, onError, isLoading, hasAttemptedRender, mounted, renderingStarted]);
 
-    // Main rendering useEffect
+    // Main rendering useEffect with stable dependencies
     useEffect(() => {
-        // Skip re-rendering if we already have a successful render and the markdown block is closed
-        if (hasSuccessfulRenderRef.current && isMarkdownBlockClosed) return;
-        const currentRender = ++renderIdRef.current;
-        console.debug(`Starting render #${currentRender}`);
-        initializeVisualization();
-    }, [initializeVisualization]);
+        if (!mounted.current) return;
 
-    // Add a specific effect for theme changes to force re-rendering
+        // Only re-render if content has actually changed or we're forcing a render
+        const shouldRender = !hasSuccessfulRenderRef.current ||
+            !isMarkdownBlockClosed ||
+            forceRender;
+
+        if (shouldRender) {
+            const currentRender = ++renderIdRef.current;
+            console.debug(`Starting render #${currentRender}`);
+            initializeVisualization(forceRender);
+        }
+    }, [spec, isMarkdownBlockClosed, forceRender]);
+
+    // Separate effect for theme changes to avoid circular dependencies
     useEffect(() => {
-        if (lastSpecRef.current) {
+        if (lastSpecRef.current && hasSuccessfulRenderRef.current) {
             console.log('Theme changed, re-rendering visualization');
             initializeVisualization();
         }
@@ -574,6 +642,89 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
         return plugin?.name === 'mermaid-renderer';
     }, [spec]);
+
+    // Determine if it's specifically a Graphviz render
+    const isGraphvizRender = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return plugin?.name === 'graphviz-renderer';
+    }, [spec]);
+
+    // Determine if it's specifically a Vega-Lite render
+    const isVegaLiteRender = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return plugin?.name === 'vega-lite-renderer';
+    }, [spec]);
+
+    // Determine if it's specifically a Joint.js render
+    const isJointRender = useMemo(() => {
+        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
+        return plugin?.name === 'joint-renderer';
+    }, [spec]);
+
+    // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams
+    useEffect(() => {
+        // Only run this effect when theme changes and we have a Mermaid or Graphviz diagram
+        if ((isMermaidRender || isGraphvizRender) && d3ContainerRef.current) {
+            console.debug(`Theme changed for ${isMermaidRender ? 'Mermaid' : 'Graphviz'} diagram, re-rendering`);
+
+            // For Mermaid, apply post-render fixes
+            if (isMermaidRender) {
+                const svgElement = d3ContainerRef.current.querySelector('svg');
+                if (svgElement) {
+                    if (isDarkMode) {
+                        // Fix for arrow markers in dark mode
+                        svgElement.querySelectorAll('defs marker path').forEach(el => {
+                            el.setAttribute('stroke', '#88c0d0');
+                            el.setAttribute('fill', '#88c0d0');
+                        });
+
+                        // Fix for all SVG paths and lines
+                        svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
+                            el.setAttribute('stroke', '#88c0d0');
+                            el.setAttribute('stroke-width', '1.5');
+                        });
+
+                        // Text on darker backgrounds should be black for contrast
+                        svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
+                            el.setAttribute('fill', '#000000');
+                        });
+
+                        // Node and cluster styling
+                        svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
+                            el.setAttribute('stroke', '#81a1c1');
+                            el.setAttribute('fill', '#5e81ac');
+                        });
+
+                        svgElement.querySelectorAll('.cluster rect').forEach(el => {
+                            el.setAttribute('stroke', '#81a1c1');
+                            el.setAttribute('fill', '#4c566a');
+                        });
+                    }
+                }
+            }
+
+            // For Graphviz, trigger a complete re-render
+            if (isGraphvizRender && typeof spec === 'object') {
+                // Find the theme button and click it to trigger a re-render
+                const themeButton = d3ContainerRef.current.querySelector('.graphviz-theme-button');
+                if (themeButton) {
+                    (themeButton as HTMLButtonElement).click();
+                } else {
+                    // If no theme button, force a re-render by triggering a new render cycle
+                    // This is a simpler approach that avoids referencing initializeVisualization
+                    renderIdRef.current++; // Increment render ID to force a new render
+
+                    // Force re-render by updating a state
+                    setIsLoading(true);
+                    setTimeout(() => {
+                        if (mounted.current) {
+                            setIsLoading(false);
+                        }
+                    }, 10);
+                }
+            }
+        }
+    }, [isDarkMode, isMermaidRender, isGraphvizRender, spec]);
 
     // Determine if it's specifically a Graphviz render
     const isGraphvizRender = useMemo(() => {
@@ -665,17 +816,21 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const outerContainerStyle: CSSProperties = {
         position: 'relative',
         width: '100%',
-        maxWidth: isVegaLiteRender ? '100%' : undefined,
-        height: 'auto',
+        maxWidth: '100%',
+        height: isJointRender ? '600px' : 'auto',
         display: 'block',
-        overflow: 'visible',
-        margin: 'lem 0',
+        margin: '1em 0',
         padding: 0,
         boxSizing: 'border-box',
+        minWidth: '100%',
         // Reserve space based on estimated size to prevent layout shifts
-        ...(isVegaLiteRender ? {
-            // Specific styles for Vega-Lite
-            resize: 'horizontal' as const,
+        ...(isJointRender ? {
+            minHeight: '400px',
+            maxHeight: '600px',
+            overflow: 'auto'
+        } : isVegaLiteRender ? {
+            // Specific styles for Vega-Lite - ensure full width usage
+            width: '100%',
         } : {}),
         ...(reservedSize && !hasSuccessfulRenderRef.current ? {
             minHeight: `${reservedSize.height}px`,
@@ -974,12 +1129,12 @@ ${svgData}`;
                     className={`d3-container ${isMermaidRender ? 'mermaid-container' : ''}`}
                     style={{
                         ...containerStyles,
+                        width: '100%',
                         height: isVegaLiteRender ? 'auto' : containerStyles.height,
                         overflow: isVegaLiteRender ? 'visible' : 'auto',
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
-                        width: '100%',
                         position: 'relative',
                         boxSizing: 'border-box'
                     }}
@@ -991,6 +1146,7 @@ ${svgData}`;
                     className="vega-lite-container"
                     style={{
                         width: '100%',
+                        minWidth: '100%',
                         maxWidth: '100%',
                         display: !isD3Render ? 'block' : 'none',
                         position: 'relative',

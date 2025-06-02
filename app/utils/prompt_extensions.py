@@ -70,7 +70,7 @@ class PromptExtensionManager:
                 cls._config[extension_type][key] = {}
             cls._config[extension_type][key] = config
         
-        logger.info(f"Registered prompt extension '{name}' for {extension_type}{': ' + target if target else ''}")
+        logger.debug(f"Registered prompt extension '{name}' for {extension_type}{': ' + target if target else ''}")
     
     @classmethod
     def apply_extensions(cls, 
@@ -236,7 +236,7 @@ class PromptExtensionManager:
                 # Check if the module has a register_extensions function
                 if hasattr(module, "register_extensions"):
                     module.register_extensions(cls)
-                    logger.info(f"Loaded extensions from {file_path}")
+                    logger.debug(f"Loaded extensions from {file_path}")
                 else:
                     logger.warning(f"Extension file {file_path} does not have a register_extensions function")
             except Exception as e:

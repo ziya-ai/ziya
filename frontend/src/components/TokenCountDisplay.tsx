@@ -51,6 +51,7 @@ export const TokenCountDisplay = memo(() => {
     const [astEnabled, setAstEnabled] = useState(false);
     const [astTokenCount, setAstTokenCount] = useState<number>(0);
     const [astResolutions, setAstResolutions] = useState<Record<string, any>>({});
+    const [astResolutionsLoaded, setAstResolutionsLoaded] = useState(false);
     const [currentAstResolution, setCurrentAstResolution] = useState<string>('medium');
     const [astResolutionLoading, setAstResolutionLoading] = useState(false);
 
@@ -61,24 +62,34 @@ export const TokenCountDisplay = memo(() => {
     // Create ref outside of the effect
     const fetchAttemptedRef = useRef(false);
 
-    // Check if AST is enabled
+    // Fetch AST resolutions data
+    const fetchAstResolutions = useCallback(async () => {
+        try {
+            const response = await fetch('/api/ast/resolutions');
+            if (response.ok) {
+                const data = await response.json();
+                console.log('Fetched AST resolutions:', data.resolutions);
+                setAstResolutions(data.resolutions || {});
+                setCurrentAstResolution(data.current_resolution || 'medium');
+                setAstResolutionsLoaded(true);
+
+                // Update token count with the current resolution's value
+                const currentResolutionData = data.resolutions?.[data.current_resolution || 'medium'];
+                if (currentResolutionData?.token_count !== undefined) {
+                    setAstTokenCount(currentResolutionData.token_count);
+                }
+
+                return data;
+            }
+        } catch (error) {
+            console.debug('Could not fetch AST resolutions:', error);
+        }
+        return null;
+    }, []);
+
+    // Check if AST is enabled and fetch initial data
     useEffect(() => {
         let isMounted = true;
-        const fetchAstResolutions = async () => {
-            try {
-                const response = await fetch('/api/ast/resolutions');
-                if (response.ok) {
-                    const data = await response.json();
-                    if (isMounted) {
-                        console.log('Fetched AST resolutions:', data.resolutions);
-                        setAstResolutions(data.resolutions || {});
-                        setCurrentAstResolution(data.current_resolution || 'medium');
-                    }
-                }
-            } catch (error) {
-                console.debug('Could not fetch AST resolutions:', error);
-            }
-        };
 
         const checkAstEnabled = async () => {
             try {
@@ -87,16 +98,20 @@ export const TokenCountDisplay = memo(() => {
                     const data = await response.json();
                     if (isMounted) {
                         setAstEnabled(data.enabled === true);
-                        if (data.enabled === true && data.token_count !== undefined) {
-                            setAstTokenCount(data.token_count);
 
-                            // Fetch resolution options
-                            fetchAstResolutions();
+                        if (data.enabled === true) {
+                            // Fetch resolution options first to get the correct token count
+                            const resolutionData = await fetchAstResolutions();
+
+                            // Only use the status token count if we don't have resolution data
+                            if (!resolutionData && data.token_count !== undefined) {
+                                setAstTokenCount(data.token_count);
+                            }
                         }
                     }
 
-                    // If AST is indexing, set up polling to check for completion
-                    if (data.enabled === true && data.is_indexing && !data.is_complete) {
+                    // Set up polling if AST is indexing
+                    if (isMounted && data.enabled === true && data.is_indexing && !data.is_complete) {
                         const pollForCompletion = setInterval(async () => {
                             try {
                                 const pollResponse = await fetch('/api/ast/status');
@@ -129,7 +144,7 @@ export const TokenCountDisplay = memo(() => {
         };
 
         checkAstEnabled();
-    }, []);
+    }, [fetchAstResolutions]);
 
     const handleAstResolutionChange = useCallback(async (newResolution: string) => {
         setAstResolutionLoading(true);
@@ -167,7 +182,7 @@ export const TokenCountDisplay = memo(() => {
     }, [astResolutions, currentAstResolution]);
     // Create menu items for AST resolution dropdown
     const astMenuItems = useMemo(() => {
-        console.log('Creating AST resolution menu, resolutions:', astResolutions);
+        console.log('Creating AST resolution menu, resolutions loaded:', astResolutionsLoaded, 'resolutions:', astResolutions);
         if (Object.keys(astResolutions).length === 0) return [];
 
         return Object.entries(astResolutions).map(([key, data]: [string, any]) => ({
@@ -181,7 +196,7 @@ export const TokenCountDisplay = memo(() => {
                 </span>
             ),
         }));
-    }, [astResolutions, handleAstResolutionChange]);
+    }, [astResolutions, astResolutionsLoaded]);
 
     const handleMenuClick = ({ key }: { key: string }) => {
         console.log('Menu item clicked:', key);
@@ -508,7 +523,8 @@ export const TokenCountDisplay = memo(() => {
 
     // Add AST item if enabled
     if (astEnabled) {
-        const astComponent = astMenuItems.length > 0 ? (
+        // Always render as dropdown if AST is enabled, even if menu items aren't loaded yet
+        const astComponent = astResolutionsLoaded ? (
             <Dropdown
                 menu={{ items: astMenuItems, onClick: handleMenuClick }}
                 trigger={['click']}
@@ -537,7 +553,12 @@ export const TokenCountDisplay = memo(() => {
                 </span>
             </Dropdown>
         ) : (
-            <span>AST: <span style={getTokenStyle(astTokenCount)}>{astTokenCount.toLocaleString()}</span></span>
+            <span style={{ opacity: 0.6 }}>
+                AST: <span style={getTokenStyle(astTokenCount)}>
+                    {astTokenCount.toLocaleString()}
+                </span>
+                {astResolutionLoading && <span style={{ marginLeft: '4px' }}>⟳</span>}
+            </span>
         );
         tokenItems.push(
             <Tooltip key="ast" title="AST tokens - click to change resolution">

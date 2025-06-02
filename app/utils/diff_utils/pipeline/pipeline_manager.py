@@ -106,6 +106,23 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         try:
             create_new_file(git_diff, user_codebase_dir)
             cleanup_patch_artifacts(user_codebase_dir, file_path)
+            
+            # Create a synthetic hunk for the file creation to track success
+            synthetic_hunk = {
+                'number': 1,
+                'old_start': 0,
+                'old_count': 0,
+                'new_start': 1,
+                'new_count': len([line for line in diff_lines if line.startswith('+') and not line.startswith('+++')]),
+                'header': '@@ -0,0 +1,{} @@'.format(len([line for line in diff_lines if line.startswith('+') and not line.startswith('+++')])),
+                'old_block': [],
+                'new_lines': [line[1:] for line in diff_lines if line.startswith('+') and not line.startswith('+++')]
+            }
+            
+            # Initialize the pipeline with the synthetic hunk
+            pipeline.initialize_hunks([synthetic_hunk])
+            pipeline.update_hunk_status(1, PipelineStage.SYSTEM_PATCH, HunkStatus.SUCCEEDED)
+            
             pipeline.result.changes_written = True
             pipeline.complete()
             return pipeline.result.to_dict()
@@ -995,6 +1012,105 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         
         if not hunks_to_apply:
             logger.info("All hunks are already marked as applied, no need to apply diff")
+            return False
+        
+        # Apply the diff with difflib
+        try:
+            # First try with the hybrid forced mode
+            try:
+                logger.info("Attempting to apply diff with hybrid forced mode")
+                # Pass the list of hunks to skip to the hybrid forced mode
+                modified_lines = apply_diff_with_difflib_hybrid_forced(
+                    file_path, 
+                    git_diff, 
+                    original_lines,
+                    skip_hunks=hunks_to_skip
+                )
+                modified_content = ''.join(modified_lines)
+                
+                # CRITICAL VERIFICATION: Check if the content actually changed
+                if modified_content == original_content:
+                    logger.warning("Hybrid forced mode claimed success but no changes were made to the content")
+                    # This could be a case where the changes were already applied
+                    # Double-check if hunks are already applied
+                    all_already_applied = True
+                    for i, hunk in enumerate(hunks, 1):
+                        hunk_applied = False
+                        hunk_id = hunk.get('number', i)
+                        # Check if this hunk is already applied anywhere in the file
+                        for pos in range(len(original_lines) + 1):
+                            if is_hunk_already_applied(original_lines, hunk, pos):
+                                hunk_applied = True
+                                logger.info(f"Verified hunk #{hunk_id} is already applied at position {pos}")
+                                break
+                        if not hunk_applied:
+                            all_already_applied = False
+                            break
+                    
+                    if all_already_applied:
+                        # All hunks were actually already applied
+                        logger.info("Verified all hunks were already applied")
+                        for hunk_id, tracker in pipeline.result.hunks.items():
+                            if tracker.status == HunkStatus.PENDING:
+                                pipeline.update_hunk_status(
+                                    hunk_id=hunk_id,
+                                    stage=PipelineStage.DIFFLIB,
+                                    status=HunkStatus.ALREADY_APPLIED
+                                )
+                                logger.info(f"Marked hunk #{hunk_id} as ALREADY_APPLIED")
+                        # Set changes_written to False since no actual changes were made
+                        pipeline.result.changes_written = False
+                        return False
+                    else:
+                        # Hunks were not applied and no changes were made
+                        logger.warning("Hunks were not already applied but no changes were made")
+                        for hunk_id, tracker in pipeline.result.hunks.items():
+                            if tracker.status == HunkStatus.PENDING:
+                                pipeline.update_hunk_status(
+                                    hunk_id=hunk_id,
+                                    stage=PipelineStage.DIFFLIB,
+                                    status=HunkStatus.FAILED,
+                                    error_details={"error": "No changes were applied despite success claim"}
+                                )
+                                logger.info(f"Marked hunk #{hunk_id} as FAILED due to no actual changes")
+                        # Set changes_written to False since no actual changes were made
+                        pipeline.result.changes_written = False
+                        return False
+                
+                logger.info("Successfully applied diff with hybrid forced mode - verified content changes")
+
+                # Write the modified content back to the file
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(modified_content)
+                    logger.info(f"Successfully wrote changes to {file_path}")
+
+                pipeline.result.changes_written = True
+                
+                # Update all hunks to SUCCEEDED regardless of previous status
+                # This is necessary because the difflib stage can succeed even if git_apply failed
+                for hunk_id in pipeline.result.hunks:
+                    pipeline.update_hunk_status(
+                        hunk_id=hunk_id,
+                        stage=PipelineStage.DIFFLIB,
+                        status=HunkStatus.ALREADY_APPLIED
+                    )
+            
+            # Explicitly add all hunks to already_applied_hunks
+            for i, hunk in enumerate(hunks, 1):
+                hunk_id = hunk.get('number', i)
+                if hunk_id not in pipeline.result.already_applied_hunks:
+                    pipeline.result.already_applied_hunks.append(hunk_id)
+            
+            # Set the status to success for already applied hunks
+            pipeline.result.status = "success"
+            pipeline.result.changes_written = False
+            
+            # Complete the pipeline and return success
+            pipeline.complete()
+            
+            # No need to modify the result_dict - the to_dict method will properly
+            # include the already_applied_hunks from the pipeline result
+            
             return False
         
         # Apply the diff with difflib

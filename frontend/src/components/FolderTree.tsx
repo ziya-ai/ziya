@@ -5,7 +5,6 @@ import { useChatContext } from '../context/ChatContext';
 import { TokenCountDisplay } from "./TokenCountDisplay";
 import { FolderOutlined, FileOutlined } from '@ant-design/icons'; // Import icons
 import { debounce } from 'lodash';
-import { ChatHistory } from "./ChatHistory";
 import { ModelConfigButton } from './ModelConfigButton';
 import { ReloadOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons';
 import { convertToTreeData } from '../utils/folderUtil';
@@ -62,7 +61,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 window.dispatchEvent(new CustomEvent('folderPanelResize', {
                     detail: { width: entry.contentRect.width }
                 }));
-                
+
                 // Hide action buttons when panel gets too narrow (less than 280px)
                 setShowActionButtons(entry.contentRect.width >= 280);
             }
@@ -164,21 +163,21 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     {
                         key: '1',
                         label: (
-                            <div style={{ 
-                                display: 'flex', 
-                                alignItems: 'center', 
+                            <div style={{
+                                display: 'flex',
+                                alignItems: 'center',
                                 justifyContent: 'space-between',
                                 width: '100%',
                                 minWidth: 0
                             }}>
-                                <span style={{ 
-                                    display: 'flex', 
+                                <span style={{
+                                    display: 'flex',
                                     alignItems: 'center',
                                     minWidth: 0,
                                     overflow: 'hidden'
                                 }}>
-                                <FolderOutlined style={{ marginRight: 8 }} />
-                                File Explorer
+                                    <FolderOutlined style={{ marginRight: 8 }} />
+                                    File Explorer
                                 </span>
                             </div>
                         ),
@@ -187,21 +186,21 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     {
                         key: '2',
                         label: (
-                            <div style={{ 
-                                display: 'flex', 
-                                alignItems: 'center', 
+                            <div style={{
+                                display: 'flex',
+                                alignItems: 'center',
                                 justifyContent: 'space-between',
                                 width: '100%',
                                 minWidth: 0
                             }}>
-                                <span style={{ 
-                                    display: 'flex', 
+                                <span style={{
+                                    display: 'flex',
                                     alignItems: 'center',
                                     minWidth: 0,
                                     overflow: 'hidden'
                                 }}>
-                                <MessageOutlined style={{ marginRight: 8 }} />
-                                Chat History
+                                    <MessageOutlined style={{ marginRight: 8 }} />
+                                    Chat History
                                 </span>
                                 {showActionButtons && activeTab === '2' && (
                                     <div style={{ display: 'flex', gap: 4, marginLeft: 8, flexShrink: 0 }}>

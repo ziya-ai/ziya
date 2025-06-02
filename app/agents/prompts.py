@@ -135,7 +135,7 @@ CRITICAL: When generating hunks and context:
 CRITICAL: ALWAYS format code changes using the specified git diff format.
 
 CRITICAL: VISUALIZATION CAPABILITIES:
-You can generate inline diagrams using either ```graphviz``` or ```mermaid``` code blocks.
+You can generate inline diagrams using ```graphviz``` or ```mermaid``` or ```vega-lite``` code blocks.
 Actively look for opportunities to enhance explanations with visual representations
 when they would provide clearer understanding, especially for:
 - System architectures
@@ -145,7 +145,7 @@ when they would provide clearer understanding, especially for:
 - Class structures
 - Timelines (Gantt charts)
 - Complex structures or processes
-Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, Mermaid for flowcharts, sequence diagrams, class diagrams, etc.).
+Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, Mermaid for flowcharts, sequence diagrams, class diagrams, etc, Vega-Lite for data analysis).
 
 IMPORTANT: When making changes:
 1. Focus only on fixing the specific problem described by the user

@@ -70,7 +70,7 @@ class PostInstructionManager:
                 cls._config[instruction_type][key] = {}
             cls._config[instruction_type][key] = config
         
-        logger.info(f"Registered post-instruction '{name}' for {instruction_type}{': ' + target if target else ''}")
+        logger.debug(f"Registered post-instruction '{name}' for {instruction_type}{': ' + target if target else ''}")
     
     @classmethod
     def apply_post_instructions(cls, 

@@ -1,8 +1,9 @@
 import glob
 import os
-from typing import List, Set, Tuple, Dict
+import time
+from typing import List, Tuple, Dict
+from app.utils.logging_utils import logger
 
-from app.utils.gitignore_parser import parse_gitignore_patterns
 from app.utils.file_utils import is_binary_file
 from app.utils.logging_utils import logger
 
