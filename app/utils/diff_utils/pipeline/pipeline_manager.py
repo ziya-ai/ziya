@@ -106,6 +106,23 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         try:
             create_new_file(git_diff, user_codebase_dir)
             cleanup_patch_artifacts(user_codebase_dir, file_path)
+            
+            # Create a synthetic hunk for the file creation to track success
+            synthetic_hunk = {
+                'number': 1,
+                'old_start': 0,
+                'old_count': 0,
+                'new_start': 1,
+                'new_count': len([line for line in diff_lines if line.startswith('+') and not line.startswith('+++')]),
+                'header': '@@ -0,0 +1,{} @@'.format(len([line for line in diff_lines if line.startswith('+') and not line.startswith('+++')])),
+                'old_block': [],
+                'new_lines': [line[1:] for line in diff_lines if line.startswith('+') and not line.startswith('+++')]
+            }
+            
+            # Initialize the pipeline with the synthetic hunk
+            pipeline.initialize_hunks([synthetic_hunk])
+            pipeline.update_hunk_status(1, PipelineStage.SYSTEM_PATCH, HunkStatus.SUCCEEDED)
+            
             pipeline.result.changes_written = True
             pipeline.complete()
             return pipeline.result.to_dict()
