@@ -35,6 +35,13 @@ transformers = "^4.36.2"
 cssutils = ">=2.6.0"
 html5lib = ">=1.1"
 tqdm = "^4.66.1"
+# Document extraction dependencies
+PyPDF2 = "^3.0.1"
+pdfplumber = "^0.10.0"
+python-docx = "^1.1.0"
+openpyxl = "^3.1.2"
+pandas = "^2.1.0"
+python-pptx = "^0.6.21"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"

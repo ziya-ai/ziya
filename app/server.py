@@ -1,4 +1,5 @@
 import os
+import os.path
 import re
 import time
 import threading
@@ -57,6 +58,7 @@ from app.utils.error_handlers import (
 )
 from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
+from app.utils.file_utils import read_file_content
 from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
@@ -330,8 +332,6 @@ async def stream_chunks(body):
         # Add system message with file context if available
         if files:
             from langchain_core.messages import SystemMessage
-            logger.info(f"[INSTRUMENTATION] stream_chunks adding system message with {len(files)} files")
-            logger.info(f"[INSTRUMENTATION] Using conversation_id: {conversation_id}")
             logger.info("=== System Message Content Debug ===")
             file_context = "Here are the files in the codebase:\n\n"
             
@@ -353,10 +353,12 @@ async def stream_chunks(body):
                              if os.path.isdir(full_path):
                                  # Skip directories silently
                                  continue
-                             with open(full_path, 'r', encoding='utf-8') as f:
-                               file_content = f.read()
-                             file_context += f"File: {file}\n```\n{file_content}\n```\n\n"
-                             string_file_count += 1
+                             content = read_file_content(full_path)
+                             if content:
+                                file_context += f"File: {file}\n```\n{content}\n```\n\n"
+                                logger.info(f"Successfully loaded content from {file}: {len(content)} chars")
+                             else:
+                                logger.warning(f"Failed to extract content from {file}")
                         else:
                              logger.warning(f"File not found: {full_path}")
                     except Exception as e:
@@ -626,9 +628,6 @@ async def stream_chunks(body):
 
                                     # Ensure it's a string
                                     text_to_yield = str(raw_text_content)
- 
-                                    # Log exactly what is being yielded
-                                    logger.debug(f"[STREAM DEBUG] Yielding text (repr): {repr(text_to_yield)}")
  
                                     # Accumulate for stop sentinel check (using the same reliable text)
                                     full_response += text
@@ -922,7 +921,14 @@ async def debug(request: Request):
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    return FileResponse('../templates/favicon.ico')
+    favicon_path = '../templates/favicon.ico'
+    if os.path.exists(favicon_path):
+        return FileResponse(favicon_path)
+    else:
+        # Return a 404 response instead of crashing
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
 
 
 # Cache for folder structure with timestamp
@@ -940,7 +946,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     Returns:
         Dict with folder structure including token counts
     """
-    from app.utils.file_utils import is_binary_file
+    from app.utils.file_utils import is_binary_file, is_document_file, is_processable_file, read_file_content
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     encoding = tiktoken.get_encoding("cl100k_base")
     
@@ -961,27 +967,39 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     def count_tokens(file_path: str) -> int:
         """Count tokens in a file using tiktoken."""
         try:
+            
             dir_start = time.time()
             # Skip binary files
-            if is_binary_file(file_path):
+            if not is_processable_file(file_path):
+                if is_document_file(file_path):
+                    logger.error(f"Document file {file_path} failed is_processable_file check")
+                dir_time = time.time() - dir_start
+                if dir_time > 0.1:  # Log if binary check takes >100ms
+                    logger.warning(f"Slow processable check for {file_path}: {dir_time:.2f}s")
+                return 0
+            if not is_processable_file(file_path):
                 dir_time = time.time() - dir_start
                 if dir_time > 0.1:  # Log if binary check takes >100ms
                     logger.warning(f"Slow binary check for {file_path}: {dir_time:.2f}s")
                 return 0
             scan_stats['files_processed'] += 1
                 
-            # Skip large files (>1MB)
-            if os.path.getsize(file_path) > 1024 * 1024:
-                return 0
-                
             # Read file and count tokens
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-                return len(encoding.encode(content))
+            content = read_file_content(file_path)
+            if content:
+                token_count = len(encoding.encode(content))
+                 # Skip files with excessive token counts (>50k tokens)
+                if token_count > 50000:
+                    logger.debug(f"Skipping file with excessive tokens {file_path}: {token_count} tokens")
+                    return 0
+                return token_count
+            else:
+                logger.debug(f"No content extracted from: {file_path}")
+                return 0
         except Exception as e:
             logger.debug(f"Error counting tokens in {file_path}: {e}")
-            return 0
-    
+        return 0
+
     def process_dir(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory recursively."""
         if depth > max_depth:
@@ -1012,7 +1030,6 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 continue
                 
             entry_path = os.path.join(path, entry)
-            
             if os.path.islink(entry_path):  # Skip symlinks
                 continue
                 
@@ -1041,6 +1058,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         
         # Log slow directory processing
         dir_time = time.time() - dir_start_time
+        if result['children']:
+            logger.debug(f"Directory {path} processed with {len(result['children'])} children, total tokens: {total_tokens}")
         if dir_time > 2.0:  # Log if directory takes >2s
             scan_stats['slow_directories'].append((path, dir_time, 'slow_directory'))
             logger.warning(f"Slow directory scan for {path}: {dir_time:.2f}s ({len(entries)} entries)")
@@ -1364,20 +1383,6 @@ async def chat_endpoint(request: Request):
 
         logger.info("=== File Processing Debug ===")
         logger.info(f"Files received: {files}")
-        if files:
-            for file_path in files:
-                try:
-                    full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
-                    if os.path.exists(full_path):
-                        if os.path.isdir(full_path):
-                            # Skip directories silently
-                            continue
-                        with open(full_path, 'r') as f:
-                            content = f.read()
-                    else:
-                        logger.warning(f"File not found: {full_path}")
-                except Exception as e:
-                    logger.error(f"Error reading file {file_path}: {e}")
         
         # Log message structure for debugging
         if messages and len(messages) > 0:
@@ -1506,6 +1511,7 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     current_time = time.time()
     cache_age = current_time - _folder_cache['timestamp']
 
+    logger.debug(f"Cache age: {cache_age}s, will refresh: {_folder_cache['data'] is None or cache_age > 10}")
     # Refresh cache if older than 10 seconds
     if _folder_cache['data'] is None or cache_age > 10:
         _folder_cache['data'] = get_folder_structure(directory, ignored_patterns, max_depth)
@@ -1521,7 +1527,28 @@ async def api_get_folders():
         user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
         max_depth = int(os.environ.get("ZIYA_MAX_DEPTH"))
         ignored_patterns: List[Tuple[str, str]] = get_ignored_patterns(user_codebase_dir)
-        return get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+
+        # Log a sample of the result to see if token counts are included
+        sample_files = []
+        def collect_sample(data, path=""):
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    current_path = f"{path}/{key}" if path else key
+                    if isinstance(value, dict) and 'token_count' in value:
+                        sample_files.append(f"{current_path}: {value['token_count']} tokens")
+                        if len(sample_files) >= 5:  # Only collect first 5 for logging
+                            return
+                    elif isinstance(value, dict) and 'children' in value:
+                        collect_sample(value['children'], current_path)
+        
+        collect_sample(result)
+        if sample_files:
+            logger.info(f"Sample files with token counts: {sample_files}")
+        else:
+            logger.warning("No files with token counts found in folder structure")
+        
+        return result
     except Exception as e:
         logger.error(f"Error in api_get_folders: {e}")
         return {"error": str(e)}

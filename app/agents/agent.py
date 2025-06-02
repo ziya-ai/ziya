@@ -45,7 +45,8 @@ from app.utils.sanitizer_util import clean_backtick_sequences
 from app.utils.context_enhancer import enhance_context_with_ast, get_ast_indexing_status
 from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
-from app.utils.file_utils import is_binary_file
+from app.utils.file_utils import is_binary_file, is_processable_file
+from app.utils.file_utils import read_file_content
 from app.utils.prompt_cache import get_prompt_cache
 from app.utils.file_state_manager import FileStateManager
 from app.utils.error_handlers import format_error_response, detect_error_type
@@ -998,6 +999,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
             logger.debug(f"Skipping directory: {full_path}")
             continue
         try:
+            from app.utils.file_utils import read_file_content
             # Get annotated content with change tracking
             logger.info(f"Getting annotated content for {file_path}")
             annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
@@ -1127,21 +1129,21 @@ def extract_codebase(x):
             if os.path.isdir(full_path):
                 logger.debug(f"Skipping directory: {file_path}")
                 continue
-            if is_binary_file(full_path):
+            if not is_processable_file(full_path):
                 logger.debug(f"Skipping binary file: {file_path}")
                 continue
-                
-            if os.path.isdir(full_path):
-                # Skip directories silently
-                continue
- 
-            with open(full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            
+            # Use the new read_file_content function
+            content = read_file_content(full_path)
+            if content:
                 file_contents[file_path] = content
-                logger.info(f"Successfully loaded {file_path} with {len(content.splitlines())} lines")
-        except (UnicodeDecodeError, IOError) as e:
-                logger.error(f"Error reading file {file_path}: {str(e)}")
-                continue
+                lines = len(content.splitlines()) if isinstance(content, str) else 0
+                logger.info(f"Successfully loaded {file_path} with {lines} lines")
+            else:
+                logger.warning(f"Failed to read content from {file_path}")
+        except Exception as e:
+            logger.error(f"Error reading file {file_path}: {str(e)}")
+            continue
  
     # Initialize conversation state immediately after loading files
     if conversation_id not in file_state_manager.conversation_states:
