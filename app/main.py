@@ -267,7 +267,6 @@ def print_models():
 
 def start_server(args):
     # Dynamically import these only when needed
-    from langchain_cli.cli import serve
     from app.utils.langchain_validation_util import validate_langchain_vars
     
     validate_langchain_vars()
@@ -304,14 +303,15 @@ def start_server(args):
             # This avoids the double initialization issue
             logger.info("Authentication successful, starting server...")
             
-            # Ensure we're in the right directory for langchain-cli to find modules
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            if os.getcwd() != project_root:
-                os.chdir(project_root)
-            
             # Pass the environment variable to child processes
             os.environ["ZIYA_SKIP_INIT"] = "true"
-            serve(host="0.0.0.0", port=args.port)
+            
+            # Import here to avoid circular imports
+            import uvicorn
+            from app.server import app
+            
+            # Use uvicorn directly instead of langchain_cli.serve()
+            uvicorn.run(app, host="0.0.0.0", port=args.port)
             
         except KnownCredentialException as e:
             # The exception will handle printing the message only once
