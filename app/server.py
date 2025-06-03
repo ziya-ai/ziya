@@ -141,8 +141,18 @@ def get_templates_dir():
         return dev_templates_dir
     
     # For installed packages, look in the package data
-    import pkg_resources
-    return pkg_resources.resource_filename('ziya', 'templates')
+    try:
+        # Try the modern approach first (Python 3.9+)
+        from importlib.resources import files
+        return str(files('ziya').joinpath('templates'))
+    except (ImportError, ModuleNotFoundError):
+        # Fall back to pkg_resources for older Python versions
+        try:
+            import pkg_resources
+            return pkg_resources.resource_filename('ziya', 'templates')
+        except (ImportError, ModuleNotFoundError):
+            # Last resort: try to find the templates relative to this file
+            return os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
 
 templates_dir = get_templates_dir()
 
@@ -921,13 +931,24 @@ async def debug(request: Request):
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    favicon_path = '../templates/favicon.ico'
-    if os.path.exists(favicon_path):
-        return FileResponse(favicon_path)
-    else:
-        # Return a 404 response instead of crashing
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Favicon not found")
+    # Try multiple possible locations for the favicon
+    possible_paths = [
+        os.path.join(templates_dir, 'favicon.ico'),  # From templates directory
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates', 'favicon.ico'),  # Relative to module
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'templates', 'favicon.ico'),  # Absolute path
+        '../templates/favicon.ico',  # Original path
+    ]
+    
+    # Try each path until we find one that exists
+    for favicon_path in possible_paths:
+        if os.path.exists(favicon_path):
+            logger.info(f"Found favicon at: {favicon_path}")
+            return FileResponse(favicon_path)
+    
+    # If we get here, no favicon was found
+    logger.warning("Favicon not found in any of the expected locations")
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail="Favicon not found")
 
 
 
