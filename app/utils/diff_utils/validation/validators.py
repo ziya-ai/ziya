@@ -31,7 +31,10 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
     for i, line in enumerate(diff_lines[:10]):
         logger.debug(f"Line {i}: {line[:100]}")  # Log first 100 chars of each line
 
-    # Look for any indication this is a new file
+    # Look for definitive indicators of new file creation
+    has_new_file_mode = False
+    has_dev_null_source = False
+    
     for i, line in enumerate(diff_lines[:10]):
         # Case 1: Standard git diff new file
         if line.startswith('@@ -0,0'):
@@ -40,13 +43,38 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
 
         # Case 2: Empty source file indicator
         if line == '--- /dev/null':
+            has_dev_null_source = True
             logger.debug("Detected new file from /dev/null source")
-            return True
 
         # Case 3: New file mode
         if 'new file mode' in line:
+            has_new_file_mode = True
             logger.debug("Detected new file from mode marker")
-            return True
+    
+    # Only consider it a new file if we have both indicators or the zero hunk marker
+    if has_new_file_mode and has_dev_null_source:
+        logger.debug("Confirmed new file creation: has both new file mode and /dev/null source")
+        return True
+
+    logger.debug("No new file indicators found")
+    return False
+
+    # Additional sanity checks - new files shouldn't have these characteristics
+    has_delete_lines = any(line.startswith('-') and not line.startswith('---') for line in diff_lines)
+    if has_delete_lines:
+        logger.debug("Found delete lines - not a new file creation")
+        return False
+    
+    # Count hunks - new files should only have one hunk
+    hunk_count = sum(1 for line in diff_lines if line.startswith('@@'))
+    if hunk_count > 1:
+        logger.debug(f"Found {hunk_count} hunks - new files should only have one hunk")
+        return False
+
+    # Only consider it a new file if we have both indicators or the zero hunk marker
+    if has_new_file_mode and has_dev_null_source:
+        logger.debug("Confirmed new file creation: has both new file mode and /dev/null source")
+        return True
 
     logger.debug("No new file indicators found")
     return False
