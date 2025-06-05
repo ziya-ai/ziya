@@ -105,6 +105,7 @@ def validate_model_and_endpoint(endpoint, model):
 
 
 def setup_environment(args):
+    import os
     os.environ["ZIYA_USER_CODEBASE_DIR"] = os.getcwd()
 
     additional_excluded_dirs = ','.join(args.exclude)
@@ -144,6 +145,13 @@ def setup_environment(args):
         os.environ["ZIYA_MODEL"] = model
 
     os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
+    
+    # Set path to templates directory
+    import os.path
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    templates_dir = os.path.join(current_dir, "templates")
+    os.environ["ZIYA_TEMPLATES_DIR"] = templates_dir
+    logger.info(f"Using templates directory: {templates_dir}")
     
     # Enable AST capabilities if requested
     if args.ast:

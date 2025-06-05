@@ -129,32 +129,107 @@ initialize_ast_if_enabled()
 active_websockets = set()
 hunk_status_updates = []
 
-# Get the directory of the current file
 def get_templates_dir():
     """Get the templates directory, handling both development and installed package scenarios."""
-    # First try relative to the current file (development mode)
+    # First check if templates directory is specified in environment
+    templates_env = os.environ.get("ZIYA_TEMPLATES_DIR")
+    if templates_env and os.path.exists(templates_env):
+        logger.info(f"Using templates directory from environment: {templates_env}")
+        return templates_env
+    
+    # Look for templates in the app package
     current_dir = os.path.dirname(os.path.abspath(__file__))
+    app_templates_dir = os.path.join(current_dir, "templates")
+    if os.path.exists(app_templates_dir):
+        logger.info(f"Found templates in app package: {app_templates_dir}")
+        return app_templates_dir
+    
+    # Look for templates in the parent directory (for when installed as a package)
     parent_dir = os.path.dirname(current_dir)
-    dev_templates_dir = os.path.join(parent_dir, "templates")
-    
-    if os.path.exists(dev_templates_dir):
-        return dev_templates_dir
-    
-    # For installed packages, look in the package data
-    try:
-        # Try the modern approach first (Python 3.9+)
-        from importlib.resources import files
-        return str(files('ziya').joinpath('templates'))
-    except (ImportError, ModuleNotFoundError):
-        # Fall back to pkg_resources for older Python versions
-        try:
-            import pkg_resources
-            return pkg_resources.resource_filename('ziya', 'templates')
-        except (ImportError, ModuleNotFoundError):
-            # Last resort: try to find the templates relative to this file
-            return os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
+    root_templates_dir = os.path.join(parent_dir, "templates")
+    if os.path.exists(root_templates_dir):
+        logger.info(f"Found templates in parent directory: {root_templates_dir}")
+        return root_templates_dir
 
+    # If templates don't exist, raise an error
+    raise RuntimeError(
+        "Templates directory not found. Please ensure the package was built correctly. "
+        "Run 'poetry run fbuild' before 'poetry build' to generate templates."
+    )
 templates_dir = get_templates_dir()
+
+# Log detailed information about the templates directory
+logger.info(f"Templates directory resolved to: {templates_dir}")
+logger.info(f"Templates directory exists: {os.path.exists(templates_dir)}")
+if os.path.exists(templates_dir):
+    try:
+        logger.info(f"Templates directory contents: {os.listdir(templates_dir)}")
+        index_html_path = os.path.join(templates_dir, 'index.html')
+        logger.info(f"index.html exists: {os.path.exists(index_html_path)}")
+    except Exception as e:
+        logger.error(f"Error listing templates directory: {e}")
+
+# Create a custom Jinja2 loader that can find templates in multiple locations
+class MultiLocationLoader:
+    def __init__(self, primary_dir, fallback_dirs=None):
+        self.primary_dir = primary_dir
+        self.fallback_dirs = fallback_dirs or []
+        self.loaders = {}
+        
+        # Initialize the primary loader
+        from jinja2 import FileSystemLoader
+        self.loaders[primary_dir] = FileSystemLoader(primary_dir)
+        
+        # Initialize fallback loaders
+        for dir_path in self.fallback_dirs:
+            if os.path.exists(dir_path):
+                self.loaders[dir_path] = FileSystemLoader(dir_path)
+    
+    def get_source(self, environment, template):
+        # Try the primary directory first
+        try:
+            return self.loaders[self.primary_dir].get_source(environment, template)
+        except Exception as e:
+            logger.warning(f"Failed to load template from primary directory: {e}")
+        
+        # Try fallback directories
+        for dir_path in self.fallback_dirs:
+            if dir_path in self.loaders:
+                try:
+                    return self.loaders[dir_path].get_source(environment, template)
+                except Exception:
+                    continue
+        
+        # If we get here, the template wasn't found
+        raise FileNotFoundError(f"Template '{template}' not found in any search path")
+    
+    def list_templates(self):
+        templates = set()
+        for loader in self.loaders.values():
+            try:
+                templates.update(loader.list_templates())
+            except Exception:
+                pass
+        return list(templates)
+
+# Define fallback directories
+fallback_dirs = [
+    os.path.join(os.path.dirname(__file__), 'templates'),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates'),
+    os.path.join(os.getcwd(), 'templates')
+]
+
+# Try to add site-packages directories
+try:
+    import site
+    for site_dir in site.getsitepackages():
+        fallback_dirs.append(os.path.join(site_dir, 'app', 'templates'))
+        fallback_dirs.append(os.path.join(site_dir, 'templates'))
+except Exception as e:
+    logger.warning(f"Error getting site-packages: {e}")
+
+# Create a custom loader
+custom_loader = MultiLocationLoader(templates_dir, fallback_dirs)
 
 # Mount templates/static if it exists (for frontend assets)
 templates_static_dir = os.path.join(templates_dir, "static")
@@ -162,7 +237,30 @@ if os.path.exists(templates_static_dir) and os.path.isdir(templates_static_dir):
     app.mount("/static", StaticFiles(directory=templates_static_dir), name="static")
     logger.info(f"Mounted templates/static directory at /static")
 else:
-    logger.warning(f"Templates static directory '{templates_static_dir}' does not exist - frontend assets may not load correctly")
+    # Try to find static directory in fallback locations
+    for dir_path in fallback_dirs:
+        static_dir = os.path.join(dir_path, "static")
+        if os.path.exists(static_dir) and os.path.isdir(static_dir):
+            app.mount("/static", StaticFiles(directory=static_dir), name="static")
+            logger.info(f"Mounted static directory from fallback location: {static_dir}")
+            break
+    else:
+        logger.warning(f"Templates static directory not found in any location - frontend assets may not load correctly")
+
+# Initialize Jinja2Templates with the custom loader
+from jinja2 import Environment
+env = Environment(loader=custom_loader)
+
+class CustomTemplates:
+    def __init__(self, env):
+        self.env = env
+    
+    def TemplateResponse(self, name, context, status_code=200):
+        template = self.env.get_template(name)
+        content = template.render(**context)
+        return fastapi.responses.HTMLResponse(content=content, status_code=status_code, headers={})
+
+templates = CustomTemplates(env)
 
 
 templates = Jinja2Templates(directory=templates_dir)
@@ -918,11 +1016,50 @@ async def stream_agent_response(body, request):
 
 @app.get("/")
 async def root(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "diff_view_type": os.environ.get("ZIYA_DIFF_VIEW_TYPE", "unified"),
-        "api_poth": "/ziya"
-    })
+    try:
+        # Log detailed information about templates
+        logger.info(f"Rendering index.html using custom template loader")
+        
+        # Create the context for the template
+        context = {
+            "request": request,
+            "diff_view_type": os.environ.get("ZIYA_DIFF_VIEW_TYPE", "unified"),
+            "api_poth": "/ziya"
+        }
+        
+        # Try to render the template
+        return templates.TemplateResponse("index.html", context)
+    except Exception as e:
+        logger.error(f"Error rendering index.html: {str(e)}")
+        # Return a simple HTML response as fallback
+        html_content = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Ziya</title>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+                h1 { color: #333; }
+                .container { max-width: 800px; margin: 0 auto; }
+                .error { color: #721c24; background-color: #f8d7da; padding: 10px; border-radius: 5px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Ziya</h1>
+                <div class="error">
+                    <p>Error loading template. Please check server logs.</p>
+                    <p>Error details: """ + str(e) + """</p>
+                </div>
+                <p>Please ensure that the templates directory is properly included in the package.</p>
+            </div>
+        </body>
+        </html>
+        """
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
 
 
 @app.get("/debug")
@@ -931,22 +1068,20 @@ async def debug(request: Request):
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    # Try multiple possible locations for the favicon
-    possible_paths = [
-        os.path.join(templates_dir, 'favicon.ico'),  # From templates directory
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates', 'favicon.ico'),  # Relative to module
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'templates', 'favicon.ico'),  # Absolute path
-        '../templates/favicon.ico',  # Original path
-    ]
+    # Try to find favicon in multiple locations using the custom loader
+    try:
+        # First check if the template loader can find it
+        template_name = "favicon.ico"
+        for dir_path in [custom_loader.primary_dir] + custom_loader.fallback_dirs:
+            favicon_path = os.path.join(dir_path, template_name)
+            if os.path.exists(favicon_path):
+                logger.info(f"Serving favicon from: {favicon_path}")
+                return FileResponse(favicon_path)
+    except Exception as e:
+        logger.warning(f"Error finding favicon using template loader: {e}")
     
-    # Try each path until we find one that exists
-    for favicon_path in possible_paths:
-        if os.path.exists(favicon_path):
-            logger.info(f"Found favicon at: {favicon_path}")
-            return FileResponse(favicon_path)
-    
-    # If we get here, no favicon was found
-    logger.warning("Favicon not found in any of the expected locations")
+    # Return a 404 response if favicon is not found
+    logger.warning("Favicon not found in any location")
     from fastapi import HTTPException
     raise HTTPException(status_code=404, detail="Favicon not found")
 
@@ -1104,26 +1239,13 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
 @app.post("/folder")
 async def get_folder(request: FolderRequest):
-    """Get the folder structure of a directory."""
+    """Get the folder structure of a directory with improved error handling."""
     start_time = time.time()
     logger.info(f"Starting folder scan for: {request.directory}")
     logger.info(f"Max depth: {request.max_depth}")
     
     try:
-        # Get the ignored patterns
-        ignored_patterns = get_ignored_patterns(request.directory)
-        logger.info(f"Ignore patterns loaded: {len(ignored_patterns)} patterns")
-        
-        # Log some sample patterns for debugging
-        if ignored_patterns:
-            sample_patterns = [p[0] for p in ignored_patterns[:5]]
-            logger.debug(f"Sample ignore patterns: {sample_patterns}")
-        
-        # Use the max_depth from the request, but ensure it's at least 15 if not specified
-        max_depth = request.max_depth if request.max_depth > 0 else int(os.environ.get("ZIYA_MAX_DEPTH", 15))
-        logger.info(f"Using max depth for folder structure: {max_depth}")
-        
-        # Check if directory exists and is accessible
+        # Validate the directory exists and is accessible
         if not os.path.exists(request.directory):
             logger.error(f"Directory does not exist: {request.directory}")
             return {"error": f"Directory does not exist: {request.directory}"}
@@ -1137,42 +1259,29 @@ async def get_folder(request: FolderRequest):
             os.listdir(request.directory)
         except PermissionError:
             logger.error(f"Permission denied accessing: {request.directory}")
-            return {"error": f"Permission denied accessing directory"}
+            return {"error": "Permission denied accessing directory"}
         except OSError as e:
             logger.error(f"OS error accessing {request.directory}: {e}")
             return {"error": f"Cannot access directory: {str(e)}"}
         
-        # Check if we have a cached result that's less than 5 seconds old
-        current_time = time.time()
-        if _folder_cache['timestamp'] > current_time - 5:
-            logger.info("Returning cached folder structure")
-            return _folder_cache['data']
-            
-        # Use thread pool with timeout for the actual scanning
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(get_folder_structure, request.directory, ignored_patterns, max_depth)
-            
-        # Get the folder structure
-        result = get_folder_structure(request.directory, ignored_patterns, max_depth)
+        # Get the ignored patterns
+        ignored_patterns = get_ignored_patterns(request.directory)
+        logger.info(f"Ignore patterns loaded: {len(ignored_patterns)} patterns")
         
-        # Cache the result
-        _folder_cache['timestamp'] = current_time
-        _folder_cache['data'] = result
-
-        try:
-            result = future.result(timeout=30)  # 30 second timeout
-            logger.info(f"Folder scan completed successfully in {time.time() - start_time:.2f}s")
-        except FutureTimeoutError:
-            logger.error(f"Folder scan timed out after 30s for: {request.directory}")
-            return {"error": "Directory scan timed out - directory may be too large or contain network mounts"}
-        except Exception as e:
-            logger.error(f"Error during folder scan: {str(e)}")
-            return {"error": f"Scan failed: {str(e)}"}
-    
-        # Cache the successful result
-        _folder_cache['timestamp'] = current_time
-        _folder_cache['data'] = result
+        # Use the max_depth from the request, but ensure it's at least 15 if not specified
+        max_depth = request.max_depth if request.max_depth > 0 else int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        logger.info(f"Using max depth for folder structure: {max_depth}")
         
+        # Use the improved cached folder structure function with timeout
+        from app.utils.directory_util import get_cached_folder_structure
+        result = get_cached_folder_structure(request.directory, ignored_patterns, max_depth, timeout=30)
+        
+        # Check if we got an error result
+        if isinstance(result, dict) and "error" in result:
+            logger.warning(f"Folder scan returned error: {result['error']}")
+            return result
+            
+        logger.info(f"Folder scan completed successfully in {time.time() - start_time:.2f}s")
         return result
     except Exception as e:
         logger.error(f"Error in get_folder: {e}")
@@ -1543,13 +1652,53 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
 
 @app.get('/api/folders')
 async def api_get_folders():
-    """Get the folder structure for API compatibility."""
+    """Get the folder structure for API compatibility with improved error handling."""
     try:
-        user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
-        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH"))
-        ignored_patterns: List[Tuple[str, str]] = get_ignored_patterns(user_codebase_dir)
-        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
-
+        # Get the user's codebase directory
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        if not user_codebase_dir:
+            logger.error("ZIYA_USER_CODEBASE_DIR environment variable not set")
+            return {"error": "Server configuration error: codebase directory not set"}
+            
+        # Validate the directory exists and is accessible
+        if not os.path.exists(user_codebase_dir):
+            logger.error(f"Codebase directory does not exist: {user_codebase_dir}")
+            return {"error": f"Directory does not exist: {user_codebase_dir}"}
+            
+        if not os.path.isdir(user_codebase_dir):
+            logger.error(f"Codebase path is not a directory: {user_codebase_dir}")
+            return {"error": f"Path is not a directory: {user_codebase_dir}"}
+            
+        # Test basic access
+        try:
+            os.listdir(user_codebase_dir)
+        except PermissionError:
+            logger.error(f"Permission denied accessing: {user_codebase_dir}")
+            return {"error": "Permission denied accessing directory"}
+        except OSError as e:
+            logger.error(f"OS error accessing {user_codebase_dir}: {e}")
+            return {"error": f"Cannot access directory: {str(e)}"}
+        
+        # Get max depth from environment or use default
+        try:
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        except ValueError:
+            logger.warning("Invalid ZIYA_MAX_DEPTH value, using default of 15")
+            max_depth = 15
+            
+        # Get ignored patterns
+        ignored_patterns = get_ignored_patterns(user_codebase_dir)
+        logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
+        
+        # Use the improved cached folder structure function with timeout
+        from app.utils.directory_util import get_cached_folder_structure
+        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth, timeout=30)
+        
+        # Check if we got an error result
+        if isinstance(result, dict) and "error" in result:
+            logger.warning(f"Folder scan returned error: {result['error']}")
+            return result
+            
         # Log a sample of the result to see if token counts are included
         sample_files = []
         def collect_sample(data, path=""):
@@ -1567,12 +1716,12 @@ async def api_get_folders():
         if sample_files:
             logger.info(f"Sample files with token counts: {sample_files}")
         else:
-            logger.warning("No files with token counts found in folder structure")
+            logger.debug("No files with token counts found in folder structure")
         
         return result
     except Exception as e:
         logger.error(f"Error in api_get_folders: {e}")
-        return {"error": str(e)}
+        return {"error": f"Unexpected error: {str(e)}"}
 
 @app.post('/api/set-model')
 async def set_model(request: SetModelRequest):
