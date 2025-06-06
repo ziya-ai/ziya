@@ -39,6 +39,7 @@ export const MUIFileExplorer = () => {
 
   const { isDarkMode } = useTheme();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [searchValue, setSearchValue] = useState('');
   const [filteredTreeData, setFilteredTreeData] = useState<any[]>([]);
   const [autoExpandParent, setAutoExpandParent] = useState(false);
@@ -78,6 +79,11 @@ export const MUIFileExplorer = () => {
         childCount: frontendNode.children ? frontendNode.children.length : 0,
         children: frontendNode.children?.slice(0, 3)
       });
+    }
+
+    // If we have tree data, we're no longer loading
+    if (treeData.length > 0) {
+      setIsLoading(false);
     }
 
     return treeData;
@@ -124,6 +130,7 @@ export const MUIFileExplorer = () => {
             alignItems: 'center',
             py: 0.25,
             pl: level * 2 + 1, // Reduced padding to move everything left
+            pr: 1, // Add right padding to prevent text from touching scrollbar
             position: 'relative',
             '&:hover': {
               backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.04)'
@@ -226,6 +233,36 @@ export const MUIFileExplorer = () => {
     );
   };
 
+  // Effect to load folders on component mount
+  useEffect(() => {
+    const loadFolders = async () => {
+      setIsLoading(true);
+      try {
+        const response = await fetch('/api/folders');
+        if (!response.ok) {
+          throw new Error(`Failed to load folders: ${response.status}`);
+        }
+        const data: Folders = await response.json();
+        
+        // Convert and sort data
+        const sortedData = sortTreeData(convertToTreeData(data));
+        setTreeData(sortedData);
+      } catch (err) {
+        console.error('Failed to load folders:', err);
+        message.error('Failed to load folder structure');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    // Only load folders if we don't already have them
+    if (!folders || Object.keys(folders).length === 0) {
+      loadFolders();
+    } else {
+      setIsLoading(false);
+    }
+  }, [folders, setTreeData]);
+
   // Debounced search function
   const debouncedSearch = useCallback(
     debounce((value) => {
@@ -243,6 +280,18 @@ export const MUIFileExplorer = () => {
     }, 300),
     [muiTreeData]
   );
+
+  // Sort the tree data recursively
+  const sortTreeData = (nodes) => {
+    return nodes.sort((a, b) =>
+      String(a.title).toLowerCase()
+        .localeCompare(String(b.title).toLowerCase())
+    )
+      .map(node => ({
+        ...node,
+        children: node.children ? sortTreeData(node.children) : undefined
+      }));
+  };
 
   // Handle search input change
   const handleSearchChange = (e) => {
@@ -349,7 +398,7 @@ export const MUIFileExplorer = () => {
     // Find the node in the tree
     const findNode = (nodes, id) => {
       for (const node of nodes) {
-        if (node.key === id) {
+        if (String(node.key) === String(id)) {
           return node;
         }
         if (node.children) {
@@ -378,12 +427,12 @@ export const MUIFileExplorer = () => {
         for (let i = 0; i < nodes.length; i++) {
           const node = nodes[i];
           if (node.children && node.children.some(child => String(child.key) === String(currentKey))) {
-            parentKeys.push(node.key);
+            parentKeys.push(String(node.key));
             return node.key;
           } else if (node.children) {
             const foundParent = findParent(currentKey, node.children);
             if (foundParent) {
-              parentKeys.push(node.key);
+              parentKeys.push(String(node.key));
               return foundParent;
             }
           }
@@ -411,6 +460,9 @@ export const MUIFileExplorer = () => {
         prev.map(String).filter(key => !keysToRemove.includes(key) && !parentKeys.includes(key))
       );
     }
+    
+    // Clear the token calculation cache when selections change
+    tokenCalculationCache.current.clear();
   };
 
   // Calculate token counts for a node
@@ -443,7 +495,8 @@ export const MUIFileExplorer = () => {
       }
     }
 
-    if (checkedKeys.includes(nodePath)) {
+    // Fix for base directories: if this directory is checked, all its tokens should be included
+    if (checkedKeys.includes(String(nodePath))) {
       directoryIncludedTokens = directoryTotalTokens;
     }
 
@@ -493,11 +546,26 @@ export const MUIFileExplorer = () => {
       </Box>
 
       <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
-        <Box sx={{ height: '100%', overflowY: 'auto' }}>
-          {(searchValue ? filteredTreeData : muiTreeData).map(node => (
-            <TreeNode key={node.key} node={node} level={0} />
-          ))}
-        </Box>
+        {isLoading ? (
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+            <LinearProgress sx={{ width: '80%', mb: 2 }} />
+            <Typography variant="body2" color="text.secondary">
+              Loading folder structure...
+            </Typography>
+          </Box>
+        ) : (
+          <Box sx={{ 
+            height: '100%', 
+            overflowY: 'auto',
+            '& .MuiBox-root': {
+              maxWidth: '100%'
+            }
+          }}>
+            {(searchValue ? filteredTreeData : muiTreeData).map(node => (
+              <TreeNode key={node.key} node={node} level={0} />
+            ))}
+          </Box>
+        )}
       </Box>
     </Box>
   );

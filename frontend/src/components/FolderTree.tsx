@@ -156,7 +156,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     flexDirection: 'column',
                     color: isDarkMode ? '#ffffff' : undefined,
                     overflow: 'hidden',
-                    margin: '0 -8px'
+                    margin: '0 -2px'  // Reduced from -4px to -2px
                 }}
                 onChange={setActiveTab}
                 items={[

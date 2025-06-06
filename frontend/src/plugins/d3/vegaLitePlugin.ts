@@ -230,9 +230,45 @@ export const vegaLitePlugin: D3RenderPlugin = {
         resize: true
       };
 
+      // Ensure axis labels are properly displayed without overriding user config
+      if (vegaSpec.layer) {
+        vegaSpec.layer.forEach(layer => {
+          if (layer.encoding?.x && !layer.encoding.x.axis) {
+            // Only add default axis config if none exists
+            layer.encoding.x.axis = {
+              labelAngle: 0,
+              labelLimit: 0, // No limit to prevent truncation
+              labelFontSize: 11
+            };
+          }
+          if (layer.encoding?.y && !layer.encoding.y.axis) {
+            // Ensure y-axis labels are also properly displayed
+            layer.encoding.y.axis = {
+              labelLimit: 0,
+              labelFontSize: 11
+            };
+          }
+        });
+      }
+
       // Ensure it has a schema if not present
       if (!vegaSpec.$schema) {
         vegaSpec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
+      }
+
+      // Fix radar chart specifications that use theta/radius encoding
+      if (vegaSpec.encoding?.theta && vegaSpec.encoding?.radius) {
+        // Convert to proper radar chart using arc mark
+        vegaSpec.mark = { type: "arc", innerRadius: 20, outerRadius: 100 };
+        vegaSpec.encoding = {
+          theta: { field: "level", type: "quantitative", scale: { type: "linear", range: [0, 6.28] } },
+          radius: { field: "level", type: "quantitative", scale: { type: "linear", range: [20, 100] } },
+          color: { field: "skill", type: "nominal" },
+          tooltip: [
+            { field: "skill", type: "nominal" },
+            { field: "level", type: "quantitative", title: "Mastery Level" }
+          ]
+        };
       }
 
       // Apply theme
@@ -606,6 +642,7 @@ ${svgData}`;
 
       // Add Source button
       let showingSource = false;
+      let originalVegaContainer = vegaContainer;
       const sourceButton = document.createElement('button');
       sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
       sourceButton.className = 'diagram-action-button vega-lite-source-button';
@@ -615,7 +652,7 @@ ${svgData}`;
 
         if (showingSource) {
           // Hide the vega container and show source
-          if (vegaContainer) {
+          if (originalVegaContainer && originalVegaContainer.parentNode === container) {
             vegaContainer.style.display = 'none';
           }
 
@@ -633,14 +670,21 @@ ${svgData}`;
           "><code>${JSON.stringify(vegaSpec, null, 2)}</code></pre>`;
 
           // Re-add the actions container after clearing innerHTML
-          container.insertBefore(actionsContainer, container.firstChild);
+          if (actionsContainer.parentNode !== container) {
+            container.insertBefore(actionsContainer, container.firstChild);
+          }
         } else {
-          // Clear container and restore the visualization
-          container.innerHTML = '';
-
-          // Check if vegaContainer is still valid
-          if (vegaContainer && vegaContainer.parentNode) {
-            container.appendChild(vegaContainer);
+          // Restore the visualization
+          const sourceView = container.querySelector('pre');
+          if (sourceView) {
+            container.removeChild(sourceView);
+          }
+          // Restore the vega container
+          if (originalVegaContainer) {
+            originalVegaContainer.style.display = '';
+            if (originalVegaContainer.parentNode !== container) {
+              container.appendChild(originalVegaContainer);
+            }
           } else {
             // Re-render the visualization if the container was lost
             embed(container, vegaSpec, embedOptions);
