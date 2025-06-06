@@ -1,12 +1,16 @@
 import glob
 import os
 import time
-from typing import List, Tuple, Dict
+import signal
+from typing import List, Tuple, Dict, Any, Optional
 from app.utils.logging_utils import logger
 
-from app.utils.file_utils import is_binary_file
+from app.utils.file_utils import is_binary_file, is_document_file, is_processable_file, read_file_content
 from app.utils.logging_utils import logger
+from app.utils.gitignore_parser import parse_gitignore_patterns
 
+# Simple global cache for folder structure with timestamp
+_folder_cache = {'timestamp': 0, 'data': None}
 
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", directory)
@@ -24,10 +28,14 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         ("venv", user_codebase_dir),  # Common virtual environment folder
         (".vscode", user_codebase_dir), # VSCode settings
         (".idea", user_codebase_dir),   # JetBrains IDE settings
-        *[(pattern, os.environ["ZIYA_USER_CODEBASE_DIR"])
-          for pattern in os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"].split(',')
-          if pattern]
     ]
+    
+    # Add additional exclude directories from environment variable if it exists
+    additional_excludes = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
+    if additional_excludes:
+        for pattern in additional_excludes.split(','):
+            if pattern:
+                ignored_patterns.append((pattern, user_codebase_dir))
 
     def read_gitignore(path: str) -> List[Tuple[str, str]]:
         gitignore_patterns: List[Tuple[str, str]] = []
@@ -81,3 +89,192 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], 
 def is_image_file(file_path: str) -> bool:
     image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.ico']
     return any(file_path.lower().endswith(ext) for ext in image_extensions)
+
+def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
+    """
+    Get the folder structure of a directory with token counts.
+    
+    Args:
+        directory: The directory to get the structure of
+        ignored_patterns: Patterns to ignore
+        max_depth: Maximum depth to traverse
+        
+    Returns:
+        Dict with folder structure including token counts
+    """
+    import tiktoken
+    should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
+    encoding = tiktoken.get_encoding("cl100k_base")
+    
+    # Ensure max_depth is at least 15 if not specified
+    if max_depth <= 0:
+        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+    
+    logger.debug(f"Getting folder structure for {directory} with max depth {max_depth}")
+    
+    # Track scanning progress
+    scan_stats = {
+        'directories_scanned': 0,
+        'files_processed': 0,
+        'start_time': time.time(),
+        'slow_directories': []
+    }
+    
+    # Set a maximum time limit for scanning (30 seconds)
+    max_scan_time = 30
+    
+    def count_tokens(file_path: str) -> int:
+        """Count tokens in a file using tiktoken."""
+        # Check if we've exceeded the time limit
+        if time.time() - scan_stats['start_time'] > max_scan_time:
+            return 0
+            
+        try:
+            dir_start = time.time()
+            # Skip binary files
+            if not is_processable_file(file_path):
+                if is_document_file(file_path):
+                    logger.debug(f"Document file {file_path} failed is_processable_file check")
+                dir_time = time.time() - dir_start
+                if dir_time > 0.1:  # Log if binary check takes >100ms
+                    logger.debug(f"Slow processable check for {file_path}: {dir_time:.2f}s")
+                return 0
+                
+            scan_stats['files_processed'] += 1
+                
+            # Read file and count tokens
+            content = read_file_content(file_path)
+            if content:
+                token_count = len(encoding.encode(content))
+                # Skip files with excessive token counts (>50k tokens)
+                if token_count > 50000:
+                    logger.debug(f"Skipping file with excessive tokens {file_path}: {token_count} tokens")
+                    return 0
+                return token_count
+            else:
+                logger.debug(f"No content extracted from: {file_path}")
+                return 0
+        except Exception as e:
+            logger.debug(f"Error counting tokens in {file_path}: {e}")
+        return 0
+
+    def process_dir(path: str, depth: int) -> Dict[str, Any]:
+        """Process a directory recursively."""
+        # Check if we've exceeded the time limit
+        if time.time() - scan_stats['start_time'] > max_scan_time:
+            return {'token_count': 0}
+            
+        if depth > max_depth:
+            return {'token_count': 0}
+            
+        scan_stats['directories_scanned'] += 1
+        dir_start_time = time.time()
+        result = {'token_count': 0, 'children': {}}
+        total_tokens = 0
+        
+        try:
+            entries = os.listdir(path)
+        except PermissionError:
+            logger.debug(f"Permission denied for {path}")
+            return {'token_count': 0}
+        except OSError as e:
+            logger.warning(f"OS error accessing {path}: {e}")
+            return {'token_count': 0}
+            
+        for entry in entries:
+            # Check if we've exceeded the time limit
+            if time.time() - scan_stats['start_time'] > max_scan_time:
+                break
+                
+            if entry.startswith('.'):  # Skip hidden files
+                continue
+                
+            entry_path = os.path.join(path, entry)
+            if os.path.islink(entry_path):  # Skip symlinks
+                continue
+                
+            if should_ignore_fn(entry_path):  # Skip ignored files
+                continue
+                
+            if os.path.isdir(entry_path):
+                if depth < max_depth:
+                    sub_result = process_dir(entry_path, depth + 1)
+                    if sub_result['token_count'] > 0 or sub_result.get('children'):
+                        result['children'][entry] = sub_result
+                        total_tokens += sub_result['token_count']
+            elif os.path.isfile(entry_path):
+                tokens = count_tokens(entry_path)
+                if tokens > 0:
+                    result['children'][entry] = {'token_count': tokens}
+                    total_tokens += tokens
+        
+        result['token_count'] = total_tokens
+        
+        # Log slow directory processing
+        dir_time = time.time() - dir_start_time
+        if dir_time > 2.0:  # Log if directory takes >2s
+            scan_stats['slow_directories'].append((path, dir_time, 'slow_directory'))
+            logger.warning(f"Slow directory scan for {path}: {dir_time:.2f}s ({len(entries)} entries)")
+            
+        return result
+    
+    # Process the root directory
+    root_result = process_dir(directory, 1)
+    
+    # Return just the children of the root to match expected format
+    total_time = time.time() - scan_stats['start_time']
+    logger.info(f"Folder scan completed: {scan_stats['directories_scanned']} dirs, "
+                f"{scan_stats['files_processed']} files in {total_time:.2f}s")
+    
+    if total_time >= max_scan_time:
+        logger.warning(f"Folder scan timed out after {max_scan_time}s - returning partial results")
+    
+    if scan_stats['slow_directories']:
+        logger.warning(f"Found {len(scan_stats['slow_directories'])} slow operations:")
+        for path, duration, reason in scan_stats['slow_directories'][:5]:  # Log top 5
+            logger.warning(f"  {path}: {duration:.2f}s ({reason})")
+            
+    return root_result.get('children', {})
+
+def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
+    """
+    Get folder structure with caching and timeout protection.
+    
+    This function will:
+    1. Return cached results if they're fresh (less than 10 seconds old)
+    2. Return an error message if scanning is taking too long
+    3. Cache results for future requests
+    
+    Args:
+        directory: The directory to scan
+        ignored_patterns: Patterns to ignore
+        max_depth: Maximum depth to traverse
+        
+    Returns:
+        Dict with folder structure or error message
+    """
+    global _folder_cache
+    
+    # Check if we already have a fresh cache (less than 10 seconds old)
+    current_time = time.time()
+    cache_age = current_time - _folder_cache['timestamp']
+    
+    # Return cached results if they're fresh
+    if _folder_cache['data'] is not None and cache_age < 10:
+        logger.debug(f"Returning cached folder structure (age: {cache_age:.1f}s)")
+        return _folder_cache['data']
+    
+    try:
+        # Perform the actual scan with timeout protection
+        logger.info(f"Starting folder scan for {directory}")
+        result = get_folder_structure(directory, ignored_patterns, max_depth)
+        
+        # Cache the successful result
+        _folder_cache['data'] = result
+        _folder_cache['timestamp'] = time.time()
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error during folder scan: {str(e)}")
+        # Return error but don't cache it
+        return {"error": f"Scan failed: {str(e)}"}
