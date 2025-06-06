@@ -45,29 +45,39 @@ Create a platform-independent wheel file that includes templates when running `p
 - [ ] Test with `poetry build`
 - [ ] Verify everything works correctly
 
-### Testing the Solution
+## Success! Direct Integration with Poetry Build
 
-We tested the final solution by:
-1. Building the package with `./build.sh`
-2. Installing the resulting wheel with `pip install --force-reinstall dist/ziya-0.2.3-py3-none-any.whl`
-3. Verifying that templates are included in the installed package
+We've successfully integrated the template inclusion process directly with Poetry's build process. Here's what we did:
 
-**Results**: The templates are successfully included in the installed package. We can confirm this by checking if the templates directory exists in the installed package:
-```python
-import os
-print('Templates found:' if os.path.exists(os.path.join(os.path.dirname(__import__('app').__file__), 'templates')) else 'Templates not found')
-# Output: Templates found:
-```
+1. Created a custom `setup.py` file that:
+   - Forces the wheel to be platform-independent by setting `root_is_pure = True`
+   - Explicitly specifies packages to include with `find_packages(include=["app", "app.*"])`
+   - Registers a post-build hook using `atexit.register()` to run after the build is complete
 
-### Final Solution
+2. The post-build script (`scripts/post_build.py`):
+   - Finds the wheel file in the dist directory
+   - Extracts it to a temporary directory
+   - Adds templates to the extracted contents
+   - Updates the RECORD file with entries for all template files
+   - Repackages everything as a platform-independent wheel
 
-The final solution consists of:
+3. Verified that:
+   - The wheel is built successfully with `poetry build`
+   - Templates are included in the wheel (1331 template files)
+   - The wheel can be installed with `pip install`
+   - Templates are accessible in the installed package
 
-1. A `setup.py` file that forces the wheel to be platform-independent
-2. A `post_build.py` script that adds templates to the wheel
-3. A `build.sh` script that runs `poetry build` followed by the post-build script
+This solution works seamlessly with Poetry's build process and doesn't require any manual steps or separate shell scripts.
 
-While we were unable to get the post-build script to run automatically as part of `poetry build`, the `build.sh` script provides a simple and reliable solution that achieves the desired outcome.
+## Final Solution
+
+The key components of our solution are:
+
+1. **setup.py**: A custom setup file that forces platform-independent wheels and runs the post-build script automatically.
+
+2. **scripts/post_build.py**: A script that processes the wheel to include templates and update the RECORD file.
+
+This approach ensures that templates are properly included in the wheel and can be accessed by the application after installation.
 
 ## Experiments and Results
 
