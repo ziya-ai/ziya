@@ -1,7 +1,2 @@
 recursive-include templates *
 recursive-include app/templates *
-recursive-include app/utils/ast_parser/ts_parser *
-include README.md
-include LICENSE
-include setup.py
-recursive-include scripts *

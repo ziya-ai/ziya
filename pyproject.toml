@@ -62,8 +62,8 @@ fstart = "app.ziya_exec:frontend_start"
 fbuild = "app.ziya_exec:frontend_build"
 
 [tool.poetry.build]
-script = "build_script.py"
 generate-setup-file = true
+script = "scripts/build_script.py"
 
 [build-system]
 requires = ["poetry-core>=1.0.0", "setuptools>=42", "wheel"]

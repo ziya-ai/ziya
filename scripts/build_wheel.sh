@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-# Build the frontend
-poetry run fbuild
-
 # Clean the dist directory
 rm -rf dist
 mkdir -p dist
@@ -14,4 +11,4 @@ poetry build
 # Run the post-build script
 python scripts/post_build.py
 
-echo "Build complete. Platform-independent wheel with templates is in the dist directory."
+echo "Build complete! Platform-independent wheel with templates is in the dist directory."

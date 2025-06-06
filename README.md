@@ -143,3 +143,18 @@ ziya --endpoint=bedrock --model=sonnet4.0 --profile=default --region=us-east-1 -
 # Example with Google Gemini
 ziya --endpoint=google --model=gemini-pro --exclude='node_modules,dist,*.pyc'
 ```
+
+## For Developers
+
+### Building from Source
+
+To build Ziya from source, use the provided build script:
+
+./build.sh
+
+This script:
+1. Builds the package with Poetry
+2. Processes the wheel to include templates
+3. Creates a platform-independent wheel file
+
+The resulting wheel file will be in the `dist` directory.
