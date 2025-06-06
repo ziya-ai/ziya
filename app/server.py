@@ -132,140 +132,34 @@ active_websockets = set()
 hunk_status_updates = []
 
 def get_templates_dir():
-    """Get the templates directory, handling both development and installed package scenarios."""
-    # First check if templates directory is specified in environment
-    templates_env = os.environ.get("ZIYA_TEMPLATES_DIR")
-    if templates_env and os.path.exists(templates_env):
-        logger.info(f"Using templates directory from environment: {templates_env}")
-        return templates_env
-    
-    # Look for templates in the app package
+    """Get the templates directory."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     app_templates_dir = os.path.join(current_dir, "templates")
+    
     if os.path.exists(app_templates_dir):
         logger.info(f"Found templates in app package: {app_templates_dir}")
         return app_templates_dir
     
-    # Look for templates in the parent directory (for when installed as a package)
-    parent_dir = os.path.dirname(current_dir)
-    root_templates_dir = os.path.join(parent_dir, "templates")
-    if os.path.exists(root_templates_dir):
-        logger.info(f"Found templates in parent directory: {root_templates_dir}")
-        return root_templates_dir
+    # Create minimal templates if none exist
+    os.makedirs(app_templates_dir, exist_ok=True)
+    index_html = os.path.join(app_templates_dir, 'index.html')
+    if not os.path.exists(index_html):
+        with open(index_html, 'w') as f:
+            f.write("""<!DOCTYPE html>
+<html><head><title>Ziya</title></head>
+<body><h1>Ziya</h1><p>API available at <a href="/docs">/docs</a></p></body>
+</html>""")
+    
+    return app_templates_dir
 
-    # If templates don't exist, raise an error
-    raise RuntimeError(
-        "Templates directory not found. Please ensure the package was built correctly. "
-        "Run 'poetry run fbuild' before 'poetry build' to generate templates."
-    )
 templates_dir = get_templates_dir()
-
-# Log detailed information about the templates directory
-logger.info(f"Templates directory resolved to: {templates_dir}")
-logger.info(f"Templates directory exists: {os.path.exists(templates_dir)}")
-if os.path.exists(templates_dir):
-    try:
-        logger.info(f"Templates directory contents: {os.listdir(templates_dir)}")
-        index_html_path = os.path.join(templates_dir, 'index.html')
-        logger.info(f"index.html exists: {os.path.exists(index_html_path)}")
-    except Exception as e:
-        logger.error(f"Error listing templates directory: {e}")
-
-# Create a custom Jinja2 loader that can find templates in multiple locations
-class MultiLocationLoader:
-    def __init__(self, primary_dir, fallback_dirs=None):
-        self.primary_dir = primary_dir
-        self.fallback_dirs = fallback_dirs or []
-        self.loaders = {}
-        
-        # Initialize the primary loader
-        from jinja2 import FileSystemLoader
-        self.loaders[primary_dir] = FileSystemLoader(primary_dir)
-        
-        # Initialize fallback loaders
-        for dir_path in self.fallback_dirs:
-            if os.path.exists(dir_path):
-                self.loaders[dir_path] = FileSystemLoader(dir_path)
-    
-    def get_source(self, environment, template):
-        # Try the primary directory first
-        try:
-            return self.loaders[self.primary_dir].get_source(environment, template)
-        except Exception as e:
-            logger.warning(f"Failed to load template from primary directory: {e}")
-        
-        # Try fallback directories
-        for dir_path in self.fallback_dirs:
-            if dir_path in self.loaders:
-                try:
-                    return self.loaders[dir_path].get_source(environment, template)
-                except Exception:
-                    continue
-        
-        # If we get here, the template wasn't found
-        raise FileNotFoundError(f"Template '{template}' not found in any search path")
-    
-    def list_templates(self):
-        templates = set()
-        for loader in self.loaders.values():
-            try:
-                templates.update(loader.list_templates())
-            except Exception:
-                pass
-        return list(templates)
-
-# Define fallback directories
-fallback_dirs = [
-    os.path.join(os.path.dirname(__file__), 'templates'),
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates'),
-    os.path.join(os.getcwd(), 'templates')
-]
-
-# Try to add site-packages directories
-try:
-    import site
-    for site_dir in site.getsitepackages():
-        fallback_dirs.append(os.path.join(site_dir, 'app', 'templates'))
-        fallback_dirs.append(os.path.join(site_dir, 'templates'))
-except Exception as e:
-    logger.warning(f"Error getting site-packages: {e}")
-
-# Create a custom loader
-custom_loader = MultiLocationLoader(templates_dir, fallback_dirs)
-
-# Mount templates/static if it exists (for frontend assets)
-templates_static_dir = os.path.join(templates_dir, "static")
-if os.path.exists(templates_static_dir) and os.path.isdir(templates_static_dir):
-    app.mount("/static", StaticFiles(directory=templates_static_dir), name="static")
-    logger.info(f"Mounted templates/static directory at /static")
-else:
-    # Try to find static directory in fallback locations
-    for dir_path in fallback_dirs:
-        static_dir = os.path.join(dir_path, "static")
-        if os.path.exists(static_dir) and os.path.isdir(static_dir):
-            app.mount("/static", StaticFiles(directory=static_dir), name="static")
-            logger.info(f"Mounted static directory from fallback location: {static_dir}")
-            break
-    else:
-        logger.warning(f"Templates static directory not found in any location - frontend assets may not load correctly")
-
-# Initialize Jinja2Templates with the custom loader
-from jinja2 import Environment
-env = Environment(loader=custom_loader)
-
-class CustomTemplates:
-    def __init__(self, env):
-        self.env = env
-    
-    def TemplateResponse(self, name, context, status_code=200):
-        template = self.env.get_template(name)
-        content = template.render(**context)
-        return fastapi.responses.HTMLResponse(content=content, status_code=status_code, headers={})
-
-templates = CustomTemplates(env)
-
-
 templates = Jinja2Templates(directory=templates_dir)
+
+# Mount static files from templates directory
+static_dir = os.path.join(templates_dir, "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    logger.info(f"Mounted static files from {static_dir}")
 
 # Add a route for the frontend
 add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log"], path="/ziya")
@@ -1070,19 +964,15 @@ async def debug(request: Request):
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    # Try to find favicon in multiple locations using the custom loader
+    # Look for favicon in the templates directory
     try:
-        # First check if the template loader can find it
-        template_name = "favicon.ico"
-        for dir_path in [custom_loader.primary_dir] + custom_loader.fallback_dirs:
-            favicon_path = os.path.join(dir_path, template_name)
-            if os.path.exists(favicon_path):
-                logger.info(f"Serving favicon from: {favicon_path}")
-                return FileResponse(favicon_path)
+        favicon_path = os.path.join(templates_dir, "favicon.ico")
+        if os.path.exists(favicon_path):
+            logger.info(f"Serving favicon from: {favicon_path}")
+            return FileResponse(favicon_path)
     except Exception as e:
-        logger.warning(f"Error finding favicon using template loader: {e}")
+        logger.warning(f"Error finding favicon: {e}")
     
-    # Return a 404 response if favicon is not found
     logger.warning("Favicon not found in any location")
     from fastapi import HTTPException
     raise HTTPException(status_code=404, detail="Favicon not found")
