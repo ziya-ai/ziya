@@ -98,6 +98,10 @@ def normalize_line_for_comparison(line: str) -> str:
     
     # Then normalize escape sequences - preserve literals for code comparison
     from ..core.escape_handling import normalize_escape_sequences
+    normalized = normalize_escape_sequences(normalized)
+    
+    # Finally strip whitespace
+    return normalized.strip()
     normalized = normalize_escape_sequences(normalized, preserve_literals=True)
     
     # Finally normalize whitespace - only trim leading/trailing

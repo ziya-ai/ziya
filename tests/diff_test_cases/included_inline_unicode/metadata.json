@@ -1,0 +1,6 @@
+{
+  "description": "Test handling of inline Unicode characters in TypeScript code",
+  "target_file": "frontend/src/plugins/d3/vegaLitePlugin.ts",
+  "expected_to_fail": false,
+  "apply_twice": false
+}
