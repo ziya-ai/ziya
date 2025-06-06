@@ -11,6 +11,9 @@ class CustomBdistWheel(bdist_wheel):
     def finalize_options(self):
         # Force the wheel to be platform-independent
         self.root_is_pure = True
+        # Ensure the wheel is tagged as py3-none-any
+        self.plat_name_supplied = True
+        self.plat_name = "any"
         bdist_wheel.finalize_options(self)
     
     def run(self):

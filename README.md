@@ -66,3 +66,18 @@ ziya
 ```bash
 ziya --exclude='tst,build,*.py' --profile=ziya --model=sonnet3.5 --port=8080
 ```
+
+## For Developers
+
+### Building from Source
+
+To build Ziya from source, use the provided build script:
+
+./build.sh
+
+This script:
+1. Builds the package with Poetry
+2. Processes the wheel to include templates
+3. Creates a platform-independent wheel file
+
+The resulting wheel file will be in the `dist` directory.

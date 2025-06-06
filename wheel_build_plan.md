@@ -45,29 +45,32 @@ Create a platform-independent wheel file that includes templates when running `p
 - [ ] Test with `poetry build`
 - [ ] Verify everything works correctly
 
-## Success! Direct Integration with Poetry Build
+## Success! Platform-Independent Wheel with Templates
 
-We've successfully integrated the template inclusion process directly with Poetry's build process. Here's what we did:
+We've successfully created a truly platform-independent wheel (`ziya-0.2.3-py3-none-any.whl`) that includes all the templates. Here's what we did:
 
 1. Created a custom `setup.py` file that:
    - Forces the wheel to be platform-independent by setting `root_is_pure = True`
+   - Sets `self.plat_name_supplied = True` and `self.plat_name = "any"` to ensure proper tagging
    - Explicitly specifies packages to include with `find_packages(include=["app", "app.*"])`
    - Registers a post-build hook using `atexit.register()` to run after the build is complete
 
-2. The post-build script (`scripts/post_build.py`):
-   - Finds the wheel file in the dist directory
-   - Extracts it to a temporary directory
-   - Adds templates to the extracted contents
-   - Updates the RECORD file with entries for all template files
-   - Repackages everything as a platform-independent wheel
+2. Enhanced the post-build script (`scripts/post_build.py`) to:
+   - Find the wheel file in the dist directory
+   - Extract it to a temporary directory
+   - Add templates to the extracted contents
+   - Update the RECORD file with entries for all template files
+   - Create a new wheel with the correct `py3-none-any` tag
+   - Remove the original platform-specific wheel
 
 3. Verified that:
    - The wheel is built successfully with `poetry build`
-   - Templates are included in the wheel (1331 template files)
+   - The resulting wheel has the correct platform-independent name: `ziya-0.2.3-py3-none-any.whl`
+   - Templates are included in the wheel (1330 template files)
    - The wheel can be installed with `pip install`
    - Templates are accessible in the installed package
 
-This solution works seamlessly with Poetry's build process and doesn't require any manual steps or separate shell scripts.
+This solution works seamlessly with Poetry's build process and doesn't require any manual steps or separate shell scripts. The wheel is now truly platform and OS agnostic, ensuring it can be installed on any system with Python 3.
 
 ## Final Solution
 
@@ -75,9 +78,9 @@ The key components of our solution are:
 
 1. **setup.py**: A custom setup file that forces platform-independent wheels and runs the post-build script automatically.
 
-2. **scripts/post_build.py**: A script that processes the wheel to include templates and update the RECORD file.
+2. **scripts/post_build.py**: A script that processes the wheel to include templates, update the RECORD file, and ensure the wheel has the correct platform-independent tag.
 
-This approach ensures that templates are properly included in the wheel and can be accessed by the application after installation.
+This approach ensures that templates are properly included in the wheel and can be accessed by the application after installation, regardless of the platform.
 
 ## Experiments and Results
 

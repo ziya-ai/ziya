@@ -12,6 +12,7 @@ import sys
 import csv
 import hashlib
 import base64
+import re
 
 def process_wheel():
     """
@@ -116,31 +117,27 @@ def process_wheel():
         
         # Always create a platform-independent wheel
         wheel_filename = os.path.basename(wheel_path)
-        parts = wheel_filename.split('-')
         
         # Extract the package name and version
-        if len(parts) >= 2:
-            package_name = parts[0]
-            version = parts[1]
-            new_filename = f"{package_name}-{version}-py3-none-any.whl"
-            new_wheel_path = os.path.join(os.path.dirname(wheel_path), new_filename)
-            
-            # Create the platform-independent wheel
-            with zipfile.ZipFile(new_wheel_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-                for root, dirs, files in os.walk(temp_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, temp_dir)
-                        zip_ref.write(file_path, arcname)
-            
-            print(f"Created platform-independent wheel: {new_filename}")
-            
-            # Remove the original wheel if it's different
-            if new_wheel_path != wheel_path and os.path.exists(wheel_path):
-                os.remove(wheel_path)
-                print(f"Removed platform-specific wheel: {wheel_path}")
-        else:
-            print(f"ERROR: Could not parse wheel filename: {wheel_filename}")
+        # Replace the platform-specific part with py3-none-any
+        package_name, version = wheel_filename.split('-')[:2]
+        new_filename = f"{package_name}-{version}-py3-none-any.whl"
+        new_wheel_path = os.path.join(os.path.dirname(wheel_path), new_filename)
+        
+        # Create the platform-independent wheel
+        with zipfile.ZipFile(new_wheel_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, temp_dir)
+                    zip_ref.write(file_path, arcname)
+        
+        print(f"Created platform-independent wheel: {new_filename}")
+        
+        # Remove the original wheel if it's different
+        if new_wheel_path != wheel_path and os.path.exists(wheel_path):
+            os.remove(wheel_path)
+            print(f"Removed platform-specific wheel: {wheel_path}")
 
 if __name__ == "__main__":
     process_wheel()
