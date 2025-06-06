@@ -145,7 +145,19 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                         yield f"data: {json.dumps(content)}\n\n"
                                     else:
                                         yield f"data: {content}\n\n"
-                        # If we couldn't extract content, skip this chunk
+                                yield f"data: {content}\n\n"
+                                continue
+                    
+                    # Handle DeepSeek format specifically
+                    if isinstance(chunk, dict) and "generation" in chunk:
+                        logger.info("Processing DeepSeek generation chunk")
+                        content = chunk["generation"]
+                        if content:
+                            chunk_content = content
+                            yield f"data: {content}\n\n"
+                            continue
+                    elif isinstance(raw_content, dict) and "generation" in raw_content:
+                        yield f"data: {raw_content['generation']}\n\n"
                         continue
                     
                     # Handle string chunks

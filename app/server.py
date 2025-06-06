@@ -1,6 +1,7 @@
 import os
 import os.path
 import re
+import signal
 import time
 import threading
 import json
@@ -8,6 +9,7 @@ import asyncio
 import uuid
 import traceback
 from typing import Dict, Any, List, Tuple, Optional, Union
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from starlette.background import BackgroundTask
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import signal
@@ -1090,152 +1092,9 @@ async def favicon():
 # Cache for folder structure with timestamp
 _folder_cache = {'timestamp': 0, 'data': None}
 
-def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
-    """
-    Get the folder structure of a directory with token counts.
-    
-    Args:
-        directory: The directory to get the structure of
-        ignored_patterns: Patterns to ignore
-        max_depth: Maximum depth to traverse
-        
-    Returns:
-        Dict with folder structure including token counts
-    """
-    from app.utils.file_utils import is_binary_file, is_document_file, is_processable_file, read_file_content
-    should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
-    encoding = tiktoken.get_encoding("cl100k_base")
-    
-    # Ensure max_depth is at least 15 if not specified
-    if max_depth <= 0:
-        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
-    
-    logger.debug(f"Getting folder structure for {directory} with max depth {max_depth}")
-    
-    # Track scanning progress
-    scan_stats = {
-        'directories_scanned': 0,
-        'files_processed': 0,
-        'start_time': time.time(),
-        'slow_directories': []
-    }
-    
-    def count_tokens(file_path: str) -> int:
-        """Count tokens in a file using tiktoken."""
-        try:
-            
-            dir_start = time.time()
-            # Skip binary files
-            if not is_processable_file(file_path):
-                if is_document_file(file_path):
-                    logger.error(f"Document file {file_path} failed is_processable_file check")
-                dir_time = time.time() - dir_start
-                if dir_time > 0.1:  # Log if binary check takes >100ms
-                    logger.warning(f"Slow processable check for {file_path}: {dir_time:.2f}s")
-                return 0
-            if not is_processable_file(file_path):
-                dir_time = time.time() - dir_start
-                if dir_time > 0.1:  # Log if binary check takes >100ms
-                    logger.warning(f"Slow binary check for {file_path}: {dir_time:.2f}s")
-                return 0
-            scan_stats['files_processed'] += 1
-                
-            # Read file and count tokens
-            content = read_file_content(file_path)
-            if content:
-                token_count = len(encoding.encode(content))
-                 # Skip files with excessive token counts (>50k tokens)
-                if token_count > 50000:
-                    logger.debug(f"Skipping file with excessive tokens {file_path}: {token_count} tokens")
-                    return 0
-                return token_count
-            else:
-                logger.debug(f"No content extracted from: {file_path}")
-                return 0
-        except Exception as e:
-            logger.debug(f"Error counting tokens in {file_path}: {e}")
-        return 0
 
-    def process_dir(path: str, depth: int) -> Dict[str, Any]:
-        """Process a directory recursively."""
-        if depth > max_depth:
-            return {'token_count': 0}
-            
-        scan_stats['directories_scanned'] += 1
-        dir_start_time = time.time()
-        result = {'token_count': 0, 'children': {}}
-        total_tokens = 0
-        
-        try:
-            entries = os.listdir(path)
-        except PermissionError:
-            logger.debug(f"Permission denied for {path}")
-            dir_time = time.time() - dir_start_time
-            if dir_time > 1.0:
-                scan_stats['slow_directories'].append((path, dir_time, 'permission_denied'))
-                logger.warning(f"Slow permission check for {path}: {dir_time:.2f}s")
-            return {'token_count': 0}
 
-        except OSError as e:
-            logger.warning(f"OS error accessing {path}: {e}")
-            return {'token_count': 0}
-            
-        for entry in entries:
-            entry_start = time.time()
-            if entry.startswith('.'):  # Skip hidden files
-                continue
-                
-            entry_path = os.path.join(path, entry)
-            if os.path.islink(entry_path):  # Skip symlinks
-                continue
-                
-            if should_ignore_fn(entry_path):  # Skip ignored files
-                continue
-                
-            # Log slow entry processing
-            entry_time = time.time() - entry_start
-            if entry_time > 0.5:  # Log if single entry takes >500ms
-                scan_stats['slow_directories'].append((entry_path, entry_time, 'slow_entry'))
-                logger.warning(f"Slow entry processing for {entry_path}: {entry_time:.2f}s")
-                
-            if os.path.isdir(entry_path):
-                if depth < max_depth:
-                    sub_result = process_dir(entry_path, depth + 1)
-                    if sub_result['token_count'] > 0 or sub_result.get('children'):
-                        result['children'][entry] = sub_result
-                        total_tokens += sub_result['token_count']
-            elif os.path.isfile(entry_path):
-                tokens = count_tokens(entry_path)
-                if tokens > 0:
-                    result['children'][entry] = {'token_count': tokens}
-                    total_tokens += tokens
-        
-        result['token_count'] = total_tokens
-        
-        # Log slow directory processing
-        dir_time = time.time() - dir_start_time
-        if result['children']:
-            logger.debug(f"Directory {path} processed with {len(result['children'])} children, total tokens: {total_tokens}")
-        if dir_time > 2.0:  # Log if directory takes >2s
-            scan_stats['slow_directories'].append((path, dir_time, 'slow_directory'))
-            logger.warning(f"Slow directory scan for {path}: {dir_time:.2f}s ({len(entries)} entries)")
-            
-        return result
-    
-    # Process the root directory
-    root_result = process_dir(directory, 1)
-    
-    # Return just the children of the root to match expected format
-    total_time = time.time() - scan_stats['start_time']
-    logger.info(f"Folder scan completed: {scan_stats['directories_scanned']} dirs, "
-                f"{scan_stats['files_processed']} files in {total_time:.2f}s")
-    
-    if scan_stats['slow_directories']:
-        logger.warning(f"Found {len(scan_stats['slow_directories'])} slow operations:")
-        for path, duration, reason in scan_stats['slow_directories'][:5]:  # Log top 5
-            logger.warning(f"  {path}: {duration:.2f}s ({reason})")
-            
-    return root_result.get('children', {})
+
 
 @app.post("/folder")
 async def get_folder(request: FolderRequest):
@@ -1245,6 +1104,14 @@ async def get_folder(request: FolderRequest):
     logger.info(f"Max depth: {request.max_depth}")
     
     try:
+        # Special handling for home directory
+        if request.directory == os.path.expanduser("~"):
+            logger.warning("Home directory scan requested - this may be slow or fail")
+            return {
+                "error": "Home directory scans are not recommended",
+                "suggestion": "Please use a specific project directory instead of your home directory"
+            }
+            
         # Validate the directory exists and is accessible
         if not os.path.exists(request.directory):
             logger.error(f"Directory does not exist: {request.directory}")
@@ -1272,13 +1139,15 @@ async def get_folder(request: FolderRequest):
         max_depth = request.max_depth if request.max_depth > 0 else int(os.environ.get("ZIYA_MAX_DEPTH", 15))
         logger.info(f"Using max depth for folder structure: {max_depth}")
         
-        # Use the improved cached folder structure function with timeout
-        from app.utils.directory_util import get_cached_folder_structure
-        result = get_cached_folder_structure(request.directory, ignored_patterns, max_depth, timeout=30)
+        # Use our enhanced cached folder structure function
+        result = get_cached_folder_structure(request.directory, ignored_patterns, max_depth)
         
         # Check if we got an error result
         if isinstance(result, dict) and "error" in result:
             logger.warning(f"Folder scan returned error: {result['error']}")
+            # Add helpful context for home directory scans
+            if "home" in request.directory.lower() or request.directory.endswith(os.path.expanduser("~")):
+                result["suggestion"] = "Home directory scans can be very slow. Consider using a specific project directory instead."
             return result
             
         logger.info(f"Folder scan completed successfully in {time.time() - start_time:.2f}s")
@@ -1638,17 +1507,70 @@ def get_model_id():
 
 
 def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
+    """
+    Get folder structure with caching and timeout protection.
+    
+    This function will:
+    1. Return cached results if they're fresh (less than 10 seconds old)
+    2. Implement timeout protection for large directories
+    3. Cache results for future requests
+    4. Handle errors gracefully
+    
+    Args:
+        directory: The directory to scan
+        ignored_patterns: Patterns to ignore
+        max_depth: Maximum depth to traverse
+        
+    Returns:
+        Dict with folder structure or error message
+    """
     current_time = time.time()
     cache_age = current_time - _folder_cache['timestamp']
 
-    logger.debug(f"Cache age: {cache_age}s, will refresh: {_folder_cache['data'] is None or cache_age > 10}")
-    # Refresh cache if older than 10 seconds
-    if _folder_cache['data'] is None or cache_age > 10:
-        _folder_cache['data'] = get_folder_structure(directory, ignored_patterns, max_depth)
+    # Return cached results if they're fresh (less than 10 seconds old)
+    if _folder_cache['data'] is not None and cache_age < 10:
+        logger.debug(f"Returning cached folder structure (age: {cache_age:.1f}s)")
+        return _folder_cache['data']
+    
+    try:
+        # Set a maximum time limit for scanning (30 seconds)
+        max_scan_time = 30
+        start_time = time.time()
+        
+        # Special handling for home directory
+        if directory == os.path.expanduser("~"):
+            logger.warning("Home directory scan requested - this may be slow or fail")
+            # Return a helpful error for home directory
+            return {
+                "error": "Home directory scans are not recommended",
+                "suggestion": "Please use a specific project directory instead of your home directory"
+            }
+        
+        # Import the folder structure function from directory_util
+        from app.utils.directory_util import get_folder_structure
+        
+        # Get the folder structure with timeout protection
+        result = get_folder_structure(directory, ignored_patterns, max_depth)
+        
+        # Check if scan took too long
+        scan_time = time.time() - start_time
+        if scan_time > max_scan_time:
+            logger.warning(f"Folder scan took too long: {scan_time:.1f}s")
+            return {
+                "error": f"Scan took too long ({scan_time:.1f}s)",
+                "suggestion": "Try scanning a smaller directory or increasing the timeout"
+            }
+        
+        # Cache the successful result
+        _folder_cache['data'] = result
         _folder_cache['timestamp'] = current_time
-        logger.info("Refreshed folder structure cache")
-
-    return _folder_cache['data']
+        logger.info(f"Refreshed folder structure cache in {scan_time:.2f}s")
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error during folder scan: {str(e)}")
+        # Return error but don't cache it
+        return {"error": f"Scan failed: {str(e)}"}
 
 @app.get('/api/folders')
 async def api_get_folders():
@@ -1690,9 +1612,8 @@ async def api_get_folders():
         ignored_patterns = get_ignored_patterns(user_codebase_dir)
         logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
         
-        # Use the improved cached folder structure function with timeout
-        from app.utils.directory_util import get_cached_folder_structure
-        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth, timeout=30)
+        # Use our enhanced cached folder structure function
+        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
         
         # Check if we got an error result
         if isinstance(result, dict) and "error" in result:
