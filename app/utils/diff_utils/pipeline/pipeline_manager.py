@@ -137,6 +137,18 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         logger.debug(f"Before parsing hunks, git_diff first 10 lines:\n{git_diff.splitlines()[:10]}")
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
         pipeline.initialize_hunks(hunks)
+        
+        # Check for whitespace-only changes
+        from ..application.whitespace_handler import is_whitespace_only_diff
+        whitespace_only_hunks = []
+        for i, h in enumerate(hunks):
+            if is_whitespace_only_diff(h):
+                whitespace_only_hunks.append(i+1)  # 1-based indexing for hunk IDs
+        
+        if whitespace_only_hunks:
+            logger.info(f"Detected whitespace-only changes in hunks: {whitespace_only_hunks}")
+            # For whitespace-only changes, we'll use a special flag
+            os.environ['ZIYA_WHITESPACE_HUNKS'] = ','.join(map(str, whitespace_only_hunks))
     except Exception as e:
         error = f"Error parsing diff: {str(e)}"
         logger.error(error)

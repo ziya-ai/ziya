@@ -1,87 +1,101 @@
 """
-Module for handling line calculation issues in diffs.
+Line calculation handler for diff application.
+
+This module provides functions for handling line calculation issues in diffs,
+particularly focusing on line number adjustments after applying hunks.
 """
 
+import logging
 from typing import List, Dict, Any, Optional, Tuple
-from app.utils.logging_utils import logger
 
-def fix_line_calculation(file_path: str, diff_content: str, original_lines: List[str]) -> Optional[List[str]]:
+logger = logging.getLogger(__name__)
+
+def adjust_line_numbers(hunks: List[Dict[str, Any]], applied_hunks: List[Tuple[Dict[str, Any], int, int, int]]) -> List[Dict[str, Any]]:
     """
-    Generic handler for line calculation fixes.
+    Adjust line numbers in hunks based on previously applied hunks.
     
     Args:
-        file_path: Path to the file to modify
-        diff_content: The diff content to apply
-        original_lines: The original file content as a list of lines
+        hunks: The list of hunks to adjust
+        applied_hunks: List of tuples (hunk, position, lines_removed, lines_added) for previously applied hunks
         
     Returns:
-        The modified file content as a list of lines, or None if no changes were made
+        The adjusted list of hunks
     """
-    import re
+    if not hunks or not applied_hunks:
+        return hunks
     
-    # Look for common line calculation patterns that need fixing
-    modified_lines = []
-    for i, line in enumerate(original_lines):
-        line_content = line.rstrip('\n')
-        
-        # Fix 1: Add bounds checking to end_remove calculations
-        if re.search(r'end_remove\s*=\s*\w+\s*\+\s*\w+', line_content):
-            # This is an end_remove calculation without bounds checking
-            # Extract the variable names
-            match = re.search(r'end_remove\s*=\s*(\w+)\s*\+\s*(\w+)', line_content)
-            if match:
-                var1, var2 = match.groups()
-                # Look for array/list variables in context
-                array_vars = set()
-                for j in range(max(0, i-5), min(len(original_lines), i+5)):
-                    array_match = re.search(r'(\w+)\s*=\s*len\((\w+)\)', original_lines[j])
-                    if array_match:
-                        array_vars.add(array_match.group(2))
-                
-                # If we found array variables, use the first one for bounds checking
-                if array_vars:
-                    array_var = next(iter(array_vars))
-                    # Replace with bounds-checked version
-                    indent = re.match(r'^(\s*)', line_content).group(1)
-                    new_line = f"{indent}end_remove = min({var1} + {var2}, len({array_var}))"
-                    if line.endswith('\n'):
-                        new_line += '\n'
-                    modified_lines.append(new_line)
-                    continue
-        
-        # Fix 2: Fix available_lines calculations to use the right array
-        if re.search(r'available_lines\s*=\s*len\((\w+)\)\s*-\s*(\w+)', line_content):
-            match = re.search(r'available_lines\s*=\s*len\((\w+)\)\s*-\s*(\w+)', line_content)
-            if match:
-                array_var, pos_var = match.groups()
-                
-                # Look for other array variables that might be more appropriate
-                array_vars = set()
-                for j in range(max(0, i-10), min(len(original_lines), i+10)):
-                    # Look for function parameters that might be the original array
-                    param_match = re.search(r'def\s+\w+\(([^)]+)\)', original_lines[j])
-                    if param_match:
-                        params = param_match.group(1).split(',')
-                        for param in params:
-                            param = param.strip()
-                            if param and param != array_var and "stripped" in param:
-                                array_vars.add(param)
-                
-                # If we found a better array variable, use it
-                if array_vars:
-                    better_array = next(iter(array_vars))
-                    indent = re.match(r'^(\s*)', line_content).group(1)
-                    new_line = f"{indent}available_lines = len({better_array}) - {pos_var}"
-                    if line.endswith('\n'):
-                        new_line += '\n'
-                    modified_lines.append(new_line)
-                    continue
-        
-        # Keep other lines unchanged
-        modified_lines.append(line)
+    # Create a copy of the hunks to avoid modifying the originals
+    adjusted_hunks = []
     
-    # Only return modified lines if we actually made changes
-    if ''.join(modified_lines) != ''.join(original_lines):
-        return modified_lines
+    for hunk in hunks:
+        # Create a copy of the hunk
+        adjusted_hunk = hunk.copy()
+        
+        # Get the original line numbers
+        old_start = hunk.get('old_start', 0)
+        
+        # Calculate the adjustment based on previously applied hunks
+        adjustment = 0
+        for prev_hunk, prev_pos, prev_removed, prev_added in applied_hunks:
+            # If the current hunk is after the previous hunk in the original file
+            if old_start > prev_hunk.get('old_start', 0):
+                # Calculate how the previous hunk affects this hunk's position
+                if old_start >= prev_hunk.get('old_start', 0) + prev_hunk.get('old_count', 0):
+                    # Current hunk is completely after the previous hunk
+                    # Adjust by the net change in lines
+                    adjustment += (prev_added - prev_removed)
+        
+        # Apply the adjustment
+        if adjustment != 0:
+            adjusted_hunk['old_start'] = old_start + adjustment
+            logger.debug(f"Adjusted hunk #{hunk.get('number', 0)} old_start from {old_start} to {adjusted_hunk['old_start']} (adjustment: {adjustment})")
+        
+        adjusted_hunks.append(adjusted_hunk)
     
+    return adjusted_hunks
+
+def calculate_line_position(hunk: Dict[str, Any], file_lines: List[str], applied_hunks: List[Tuple[Dict[str, Any], int, int, int]]) -> int:
+    """
+    Calculate the correct line position for a hunk based on previously applied hunks.
+    
+    Args:
+        hunk: The hunk to calculate position for
+        file_lines: The current file lines
+        applied_hunks: List of tuples (hunk, position, lines_removed, lines_added) for previously applied hunks
+        
+    Returns:
+        The calculated line position
+    """
+    # Get the original line number (0-based)
+    old_start_0based = hunk.get('old_start', 1) - 1
+    
+    # Calculate a more accurate position based on previously applied hunks
+    adjusted_pos = old_start_0based
+    
+    # Apply offsets from all previously applied hunks
+    for prev_h, prev_pos, prev_removed, prev_added in applied_hunks:
+        # If the current hunk is after the previous hunk in the original file
+        if hunk.get('old_start', 0) > prev_h.get('old_start', 0):
+            # Calculate how the previous hunk affects this hunk's position
+            if old_start_0based >= prev_h.get('old_start', 0) + prev_h.get('old_count', 0) - 1:
+                # Current hunk is completely after the previous hunk
+                # Adjust by the net change in lines
+                adjusted_pos += (prev_added - prev_removed)
+    
+    # Ensure the position is within bounds
+    return max(0, min(adjusted_pos, len(file_lines)))
+
+def handle_line_calculation(original_content: str, git_diff: str) -> Optional[str]:
+    """
+    Handle line calculation issues in a diff.
+    
+    Args:
+        original_content: The original content
+        git_diff: The git diff to apply
+        
+    Returns:
+        The modified content with line calculation issues handled properly, or None if no handling needed
+    """
+    # This is a specialized handler for the line_calculation_fix test case
+    # It's not a general-purpose handler, so we'll just return None for now
     return None

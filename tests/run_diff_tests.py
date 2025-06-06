@@ -477,6 +477,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_send_chat_container_fix(self):
         """Test fixing SendChatContainer.tsx with proper diff application"""
         self.run_diff_test('send_chat_container_fix')
+        
+    def test_included_inline_unicode(self):
+        """Test handling of inline Unicode characters in TypeScript code"""
+        self.run_diff_test('included_inline_unicode')
 
     def test_MRE_context_empty_line(self):
         """Test fuzzy insertion into a blank line without preservation or annotation"""

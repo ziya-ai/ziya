@@ -1,0 +1,47 @@
+--- a/app/utils/file_utils.py
++++ b/app/utils/file_utils.py
+@@ -5,6 +5,7 @@ import mimetypes
+ import magic
+ from typing import List, Optional
+ from app.utils.logging_utils import logger
++from app.utils.document_extractor import is_document_file, extract_document_text
+ 
+ def is_binary_file(file_path: str) -> bool:
+     """
+@@ -15,6 +16,10 @@ def is_binary_file(file_path: str) -> bool:
+     Returns:
+         True if the file is binary, False if it's text
+     """
++    # Check if it's a document file that we can extract text from
++    if is_document_file(file_path):
++        return False  # Treat as text since we can extract content
++    
+     try:
+         # First, try using python-magic if available
+         try:
+@@ -58,3 +63,25 @@ def is_binary_file(file_path: str) -> bool:
+         # If all else fails, assume it's binary to be safe
+         logger.warning(f"Could not determine file type for {file_path}, assuming binary")
+         return True
++
++def read_file_content(file_path: str) -> Optional[str]:
++    """
++    Read content from a file, handling both text and document files.
++    
++    Args:
++        file_path: Path to the file
++        
++    Returns:
++        File content as string, or None if reading failed
++    """
++    try:
++        # Check if it's a document file first
++        if is_document_file(file_path):
++            return extract_document_text(file_path)
++        
++        # Regular text file
++        with open(file_path, 'r', encoding='utf-8') as f:
++            return f.read()
++    except Exception as e:
++        logger.error(f"Failed to read file {file_path}: {e}")
++        return None
