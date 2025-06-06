@@ -69,11 +69,11 @@ ziya --exclude='tst,build,*.py' --profile=ziya --model=sonnet3.5 --port=8080
 
 ## For Developers
 
-### Building from Source
+### Building from Source (for distribution):
 
 To build Ziya from source, use the provided build script:
 
-./build.sh
+python ./ziya_build.py
 
 This script:
 1. Builds the package with Poetry
@@ -81,3 +81,16 @@ This script:
 3. Creates a platform-independent wheel file
 
 The resulting wheel file will be in the `dist` directory.
+
+### Building from Source (for development):
+
+poetry lock
+poetry install --with dev
+cd frontend
+npm install
+cd ..
+poetry run fbuild
+
+run with:
+
+PYTHONPATH=$(pwd) ZIYA_LOG_LEVEL=DEBUG poetry run python app/main.py
