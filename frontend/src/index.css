@@ -505,7 +505,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   box-sizing: border-box;
   height: calc(100vh - var(--header-height));
   overflow: hidden;
-  padding: 20px;
+  padding: 20px 5px 20px 10px; /* 10px left padding, 5px right padding */
   transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
   border-right: 2px solid #e8e8e8;
   flex-direction: column;
