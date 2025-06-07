@@ -920,30 +920,11 @@ async def stream_chunks(body):
                 # logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-                await cleanup_stream(conversation_id)
-
-                # yield f"data: {json.dumps({'done': True})}\n\n" # Middleware will send DONE
-                # done_marker_sent = True
-            raise # Re-raise for middleware to catch
-        # Update conversation state after streaming is complete
-        try:
-            # Note: update_conversation_state only takes 2 args (conversation_id and file_paths)
-            # We're not updating any files, so pass an empty list
-            update_conversation_state(conversation_id, [])
-        except Exception as e:
-            logger.error(f"stream_chunks error updating conversation state: {e}")
             await cleanup_stream(conversation_id)
-            
+            raise
+
     except Exception as e:
         raise # re-raise for middleware to catch        
-        # Update conversation state after streaming is complete
-        try:
-            # Note: update_conversation_state only takes 2 args (conversation_id and file_paths)
-            # We're not updating any files, so pass an empty list
-            update_conversation_state(conversation_id, [])
-        except Exception as e:
-            logger.error(f"[INSTRUMENTATION] stream_chunks error updating conversation state: {e}")
-            await cleanup_stream(conversation_id)
 
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")
