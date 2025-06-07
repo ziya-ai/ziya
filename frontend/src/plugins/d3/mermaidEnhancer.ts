@@ -197,6 +197,34 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['flowchart', 'graph']
   });
 
+  // Add a preprocessor to fix mixed node shapes in flowcharts
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'flowchart' && !def.startsWith('flowchart ') && !def.startsWith('graph ')) {
+      return def;
+    }
+
+    let finalDef = def;
+
+    // Normalize mixed node shapes - convert parentheses to square brackets for consistency
+    // This handles cases like: A[text] --> B(text) which can cause parsing issues
+    finalDef = finalDef.replace(/(\w+)\(([^)]+)\)/g, '$1["$2"]');
+    
+    // Fix node references in arrows that might have shape syntax
+    finalDef = finalDef.replace(/(\w+)\[([^\]]+)\]\s*-->\s*(\w+)\(([^)]+)\)/g, '$1["$2"] --> $3["$4"]');
+    
+    // Ensure all node labels are properly quoted if they contain special characters
+    finalDef = finalDef.replace(/(\w+)\[([^\]"]+[&(),/\s][^\]"]*)\]/g, (match, node, label) => {
+      // Only add quotes if not already quoted and contains special chars
+      return label.includes('"') ? match : `${node}["${label}"]`;
+    });
+
+    return finalDef;
+  }, {
+    name: 'mixed-node-shapes-fix',
+    priority: 135,
+    diagramTypes: ['flowchart', 'graph']
+  });
+
   // Add a preprocessor to fix issues with quoted text in node labels
   registerPreprocessor((def: string, type: string) => {
     let finalDef = def;

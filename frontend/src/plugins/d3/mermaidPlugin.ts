@@ -143,6 +143,15 @@ export const mermaidPlugin: D3RenderPlugin = {
 
             // Apply diagram-specific fixes
             if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
+                // Normalize node shapes first - convert parentheses to brackets for consistency
+                processedDefinition = processedDefinition.replace(/(\w+)\(([^)]+)\)/g, '$1["$2"]');
+
+                // Fix subgraph syntax - ensure proper spacing and formatting
+                processedDefinition = processedDefinition.replace(/subgraph\s+(\w+)\s*\n/g, 'subgraph $1\n    ');
+
+                // Ensure subgraph end statements are properly formatted
+                processedDefinition = processedDefinition.replace(/^\s*end\s*$/gm, '    end');
+
                 // Fix subgraph class syntax
                 processedDefinition = processedDefinition.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 style_$2');
                 processedDefinition = processedDefinition.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
@@ -160,12 +169,6 @@ export const mermaidPlugin: D3RenderPlugin = {
                 processedDefinition = processedDefinition.replace(/\bend\b\s*-->/g, 'endNode -->');
 
                 // Fix quoted text in node labels
-                processedDefinition = processedDefinition.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
-                    return `[${before}${quoted}${after}]`;
-                });
-            }
-            else if (diagramType === 'requirement') {
-                // Fix requirement diagram syntax
                 const lines = processedDefinition.split('\n');
                 const result: string[] = [];
 
