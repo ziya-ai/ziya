@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from app.utils.logging_utils import logger
+from app.mcp.manager import get_mcp_manager
 from app.utils.prompt_extensions import PromptExtensionManager
 from app.agents.prompts import original_template, conversational_prompt
 
@@ -31,6 +32,19 @@ def get_extended_prompt(model_name: Optional[str] = None,
     if context is None:
         context = {}
     
+    # Get MCP context information
+    mcp_context = {}
+    try:
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            available_tools = [tool.name for tool in mcp_manager.get_all_tools()]
+            mcp_context = {
+                "mcp_tools_available": len(available_tools) > 0,
+                "available_mcp_tools": available_tools
+            }
+    except Exception as e:
+        logger.debug(f"Could not get MCP context: {e}")
+    
     # Get the original template
     template = original_template
     
@@ -40,7 +54,7 @@ def get_extended_prompt(model_name: Optional[str] = None,
         model_name=model_name,
         model_family=model_family,
         endpoint=endpoint,
-        context=context
+        context={**context, **mcp_context}
     )
     
     # Create a new prompt template with the extended template

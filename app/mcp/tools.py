@@ -1,0 +1,218 @@
+"""
+MCP tools integration for Ziya's agent system.
+
+This module provides LangChain-compatible tools that wrap MCP server capabilities,
+allowing the agent to use MCP tools seamlessly.
+"""
+
+import re
+
+import asyncio
+from typing import Dict, List, Any, Optional, Type
+from pydantic import BaseModel, Field
+from langchain.tools import BaseTool
+from langchain.callbacks.manager import CallbackManagerForToolRun, AsyncCallbackManagerForToolRun
+
+from app.mcp.manager import get_mcp_manager
+from app.utils.logging_utils import logger
+
+def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse tool calls from content, supporting multiple formats.
+    
+    Supports both:
+    - <tool_call><name>tool_name</name><arguments>...</arguments></tool_call>
+    - <tool_call><invoke name="tool_name"><parameter name="param">value</parameter></invoke></tool_call>
+    
+    Returns:
+        Dict with tool_name and arguments, or None if no valid tool call found
+    """
+    # Format 1: <name> and <arguments>
+    name_args_pattern = r'<tool_call>\s*<name>([^<]+)</name>\s*<arguments>\s*({.*?})\s*</arguments>\s*</tool_call>'
+    match = re.search(name_args_pattern, content, re.DOTALL)
+    if match:
+        tool_name = match.group(1).strip()
+        try:
+            import json
+            arguments = json.loads(match.group(2))
+            return {"tool_name": tool_name, "arguments": arguments}
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to parse arguments for tool {tool_name}")
+    
+    # Format 2: <invoke> and <parameter>
+    invoke_pattern = r'<tool_call>\s*<invoke\s+name="([^"]+)">\s*(.*?)\s*</invoke>\s*</tool_call>'
+    match = re.search(invoke_pattern, content, re.DOTALL)
+    if match:
+        tool_name = match.group(1).strip()
+        params_content = match.group(2)
+        
+        # Parse parameters
+        param_pattern = r'<parameter\s+name="([^"]+)">([^<]*)</parameter>'
+        params = {}
+        for param_match in re.finditer(param_pattern, params_content):
+            param_name = param_match.group(1)
+            param_value = param_match.group(2).strip()
+            params[param_name] = param_value
+        
+        return {"tool_name": tool_name, "arguments": params}
+    
+    return None
+
+class MCPToolInput(BaseModel):
+    """Input schema for MCP tools."""
+    arguments: Dict[str, Any] = Field(description="Arguments to pass to the MCP tool")
+
+
+class MCPTool(BaseTool):
+    """
+    LangChain tool wrapper for MCP tools.
+    
+    This allows MCP tools to be used seamlessly within Ziya's agent system.
+    """
+    
+    name: str
+    description: str
+    mcp_tool_name: str
+    server_name: Optional[str] = None
+    args_schema: Type[BaseModel] = MCPToolInput
+    
+    def _run(
+        self,
+        arguments: Dict[str, Any],
+        run_manager: Optional[CallbackManagerForToolRun] = None,
+    ) -> str:
+        """Run the MCP tool synchronously."""
+        # Run the async version in a new event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(self._arun(arguments, None))
+    
+    async def _arun(
+        self,
+        arguments: Dict[str, Any],
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        """Run the MCP tool asynchronously."""
+        try:
+            mcp_manager = get_mcp_manager()
+            result = await mcp_manager.call_tool(
+                self.mcp_tool_name,
+                arguments,
+                self.server_name
+            )
+            
+            if result is None:
+                return f"Error: MCP tool '{self.mcp_tool_name}' not found or failed to execute"
+            
+            # Format the result for the agent
+            if isinstance(result, dict):
+                if "content" in result:
+                    content = result["content"]
+                    if isinstance(content, list):
+                        # Handle multiple content blocks
+                        text_parts = []
+                        for block in content:
+                            if isinstance(block, dict) and "text" in block:
+                                text_parts.append(block["text"])
+                            elif isinstance(block, str):
+                                text_parts.append(block)
+                        return "\n".join(text_parts)
+                    elif isinstance(content, str):
+                        return content
+                    else:
+                        return str(content)
+                else:
+                    return str(result)
+            else:
+                return str(result)
+                
+        except Exception as e:
+            logger.error(f"Error running MCP tool {self.mcp_tool_name}: {str(e)}")
+            return f"Error running MCP tool: {str(e)}"
+
+
+class MCPResourceTool(BaseTool):
+    """
+    LangChain tool for accessing MCP resources.
+    """
+    
+    name: str = "mcp_get_resource"
+    description: str = "Get content from an MCP resource by URI"
+    
+    class MCPResourceInput(BaseModel):
+        uri: str = Field(description="URI of the resource to retrieve")
+        server_name: Optional[str] = Field(None, description="Specific MCP server to query")
+    
+    args_schema: Type[BaseModel] = MCPResourceInput
+    
+    def _run(
+        self,
+        uri: str,
+        server_name: Optional[str] = None,
+        run_manager: Optional[CallbackManagerForToolRun] = None,
+    ) -> str:
+        """Get MCP resource content synchronously."""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(self._arun(uri, server_name, None))
+    
+    async def _arun(
+        self,
+        uri: str,
+        server_name: Optional[str] = None,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        """Get MCP resource content asynchronously."""
+        try:
+            mcp_manager = get_mcp_manager()
+            content = await mcp_manager.get_resource_content(uri, server_name)
+            
+            if content is None:
+                return f"Error: Resource '{uri}' not found"
+            
+            return content
+            
+        except Exception as e:
+            logger.error(f"Error getting MCP resource {uri}: {str(e)}")
+            return f"Error getting resource: {str(e)}"
+
+
+def create_mcp_tools() -> List[BaseTool]:
+    """
+    Create LangChain tools from available MCP tools.
+    
+    Returns:
+        List of LangChain-compatible tools
+    """
+    tools = []
+    
+    try:
+        mcp_manager = get_mcp_manager()
+        
+        # Add resource access tool
+        tools.append(MCPResourceTool())
+        
+        # Add tools from all connected MCP servers
+        for mcp_tool in mcp_manager.get_all_tools():
+            tool = MCPTool(
+                name=f"mcp_{mcp_tool.name}",
+                description=mcp_tool.description,
+                mcp_tool_name=mcp_tool.name,
+                server_name=getattr(mcp_tool, 'server', None)
+            )
+            tools.append(tool)
+            
+        logger.info(f"Created {len(tools)} MCP tools for agent")
+        
+    except Exception as e:
+        logger.error(f"Error creating MCP tools: {str(e)}")
+    
+    return tools

@@ -47,9 +47,17 @@ class ErrorHandlingMiddleware:
             
             await send(message)
         
+        # Track if we've started sending a response
+        response_started = False
+        
+        async def safe_send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send_wrapper(message)
         # Try to run the app, catch any exceptions
         try:
-            await self.app(scope, receive, send_wrapper)
+            await self.app(scope, receive, safe_send)
         except KnownCredentialException as exc:
             # For known credential issues, just return the message without traceback
             error_message = str(exc)
@@ -75,6 +83,7 @@ class ErrorHandlingMiddleware:
                         "headers": [
                             (b"content-type", b"text/event-stream"),
                             (b"cache-control", b"no-cache"),
+                            (b"connection", b"keep-alive"),
                         ]
                     })
                     
@@ -91,6 +100,7 @@ class ErrorHandlingMiddleware:
                         "body": f"data: {json.dumps(error_content)}\n\ndata: [DONE]\n\n".encode('utf-8'),
                         "more_body": False
                     })
+                    return
                 except Exception as e:
                     logger.error(f"Failed to send streaming error response: {e}")
             else:
@@ -106,6 +116,7 @@ class ErrorHandlingMiddleware:
                         status_code=status_code
                     )
                     await response(scope, receive, send)
+                    return
                 except Exception as e:
                     logger.error(f"Failed to send JSON response: {e}")
                     

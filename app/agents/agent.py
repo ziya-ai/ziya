@@ -52,6 +52,8 @@ from app.utils.file_state_manager import FileStateManager
 from app.utils.error_handlers import format_error_response, detect_error_type
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 
+from app.mcp.manager import get_mcp_manager
+from app.mcp.tools import create_mcp_tools
 # Wrap model initialization in try/except to catch credential errors early
 try:
     # Initialize the model
@@ -1345,6 +1347,16 @@ def create_agent_chain(chat_model: BaseChatModel):
     from app.agents.models import ModelManager
     ModelManager._state['llm_with_stop'] = llm_with_stop
     
+    # Initialize MCP tools if available
+    mcp_tools = []
+    try:
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            mcp_tools = create_mcp_tools()
+            logger.info(f"Added {len(mcp_tools)} MCP tools to agent")
+    except Exception as e:
+        logger.warning(f"Failed to initialize MCP tools: {str(e)}")
+    
     # Check if AST is enabled
     ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
     logger.info(f"Creating agent chain with AST enabled: {ast_enabled}")
@@ -1457,13 +1469,29 @@ def create_agent_executor(agent_chain: Runnable):
     """Create a new agent executor with the given agent."""
     from langchain_core.runnables import RunnableConfig, Runnable as LCRunnable
     from langchain_core.tracers.log_stream import RunLogPatch
+
+    # Get MCP tools for the executor
+    mcp_tools = []
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        
+        if mcp_manager.is_initialized:
+            mcp_tools = create_mcp_tools()
+            logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
+            for tool in mcp_tools:
+                logger.info(f"  - {tool.name}: {tool.description}")
+        else:
+            logger.info("MCP not initialized, no MCP tools available")
+    except Exception as e:
+        logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
     
     # Create the original executor
     original_executor = AgentExecutor(
         agent=agent_chain,
-        tools=[],
+        tools=mcp_tools,
         verbose=False,
-        handle_parsing_errors=True
+        handle_parsing_errors=True,
     ).with_types(input_type=AgentInput) | RunnablePassthrough.assign(output=update_and_return)
     
     # Create a Runnable wrapper class that adds our safe streaming

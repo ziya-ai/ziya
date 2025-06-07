@@ -241,8 +241,12 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     yield f"data: {json.dumps(error_msg)}\n\n"
                     continue
                     
-            # Send the [DONE] marker
-            yield "data: [DONE]\n\n"
+            # Ensure we end the stream properly
+            try:
+                # Send the [DONE] marker
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logger.error(f"Error sending DONE marker: {str(e)}")
             
         except Exception as e:
             logger.error(f"Error in safe_stream: {str(e)}")
@@ -252,4 +256,9 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 "detail": str(e)
             }
             yield f"data: {json.dumps(error_msg)}\n\n"
-            yield "data: [DONE]\n\n"
+            try:
+                yield "data: [DONE]\n\n"
+            except Exception as done_error:
+                logger.error(f"Error sending final DONE marker: {str(done_error)}")
+                # Don't re-raise here as it would cause more protocol errors
+                pass

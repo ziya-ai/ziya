@@ -20,6 +20,9 @@ def init_extensions():
     # Load prompt extensions
     PromptExtensionManager.load_extensions_from_directory(str(prompt_extensions_dir))
     
+    # Load MCP-specific prompt extensions
+    from app.extensions.prompt_extensions import mcp_prompt_extensions
+    
     # Initialize post-instructions
     from app.extensions.post_instructions import init_post_instructions
     init_post_instructions()
