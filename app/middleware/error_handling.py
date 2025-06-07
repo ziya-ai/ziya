@@ -41,26 +41,26 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
             if is_streaming:
                 # Check if the response has already started
                 if hasattr(request.state, "response_started") and request.state.response_started:
-                    logger.warning("Response already started, can only send body parts (streaming: True)")
-                    # Create an error message
                     logger.error(f"Error caught after response started: {str(e)}")
-                    error_msg = {
-                    "error": "stream_error",
-                        "detail": str(e),
-                        "status_code": 500
-                    }
-                    logger.info(f"Sent error as SSE data: {error_msg}")
-                    # We can't do anything here, the response has already started
-                    return Response(status_code=500, content=json.dumps(error_msg))
+                    logger.warning("Response already started. Error will be handled by lower-level ASGI middleware or client will see broken stream.")
+                    # Re-raise the exception to be caught by the ASGI ErrorMiddleware,
+                    # which is better equipped to send error chunks over an existing stream.
+                    raise e
                 
                 # Create a streaming response with the error
                 # Use a more descriptive error format for SSE
-                async def error_stream(error_message):
-                    yield f"data: Error: {str(e)}\n\n"
+                async def error_stream(error_message_detail: str): # Pass detail
+                    # Consistent error structure
+                    error_payload = {
+                        "error": "stream_error", # Or detect_error_type(error_message_detail)[0]
+                        "detail": error_message_detail,
+                        "status_code": 500
+                    }
+                    yield f"data: {json.dumps(error_payload)}\n\n"
                     yield "data: [DONE]\n\n"
                 
                 response = StreamingResponse(
-                    error_stream(),
+                    error_stream(str(e)), # Pass the error detail
                     media_type="text/event-stream",
                     status_code=500
                 )
