@@ -241,12 +241,15 @@ class MCPManager:
         for server_name, client in self.clients.items():
             if client.is_connected:
                 for tool in client.tools:
-                    # Add server name to tool for identification
-                    tool_dict = {
-                        **tool.__dict__,
-                        "server": server_name
-                    }
-                    tools.append(MCPTool(**tool_dict))
+                    # Create MCPTool without server parameter
+                    mcp_tool = MCPTool(
+                        name=tool.name,
+                        description=tool.description,
+                        inputSchema=tool.inputSchema
+                    )
+                    # Store server name as an attribute for reference
+                    mcp_tool._server_name = server_name
+                    tools.append(mcp_tool)
         return tools
     
     def get_all_prompts(self) -> List[MCPPrompt]:
@@ -299,6 +302,11 @@ class MCPManager:
         Returns:
             Tool result or None if tool not found
         """
+        # Remove mcp_ prefix if present for internal tool lookup
+        internal_tool_name = tool_name
+        if tool_name.startswith("mcp_"):
+            internal_tool_name = tool_name[4:]
+        
         if server_name:
             client = self.clients.get(server_name)
             if client and client.is_connected:

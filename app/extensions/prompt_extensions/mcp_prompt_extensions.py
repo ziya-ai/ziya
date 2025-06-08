@@ -44,12 +44,14 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
 
 You have access to MCP (Model Context Protocol) tools that provide additional capabilities:
 
+**AVAILABLE TOOL NAMES (use these exact names):**
 ### Available MCP Tools:
 """ + "\n".join([f"- **{tool}**: Use for {_get_tool_description(tool)}" for tool in available_tools]) + """
 
-### MCP Usage Best Practices:
 
 **TOOL CALLING FORMAT - USE EXACTLY THIS SYNTAX:**
+
+For shell commands, use EXACTLY this format:
 ```
 <tool_call>
 <name>mcp_run_shell_command</name>
@@ -58,6 +60,18 @@ You have access to MCP (Model Context Protocol) tools that provide additional ca
 </arguments>
 </tool_call>
 ```
+
+For time queries, use EXACTLY this format:
+```
+<tool_call>
+<name>mcp_get_current_time</name>
+<arguments>
+{"format": "readable"}
+</arguments>
+</tool_call>
+```
+
+### MCP Usage Best Practices:
 
 **CRITICAL: You MUST actually execute tools when requested, not describe what you would do. When a user asks you to run a command or check something, USE THE TOOLS.**
 
@@ -72,11 +86,13 @@ You have access to MCP (Model Context Protocol) tools that provide additional ca
      [actual stdout/stderr output]
      ```
    - **DO NOT FABRICATE COMMAND OUTPUT - Always use the actual tool results**
+   - mcp_run_shell_command (NOT run_shell_command)
 
 2. **Time/Date Tools - USE mcp_get_current_time**: When checking time:
    - Use for scheduling, logging, or time-sensitive operations
    - Consider timezone context when relevant
    - **Always use the tool rather than guessing the current time**
+   - mcp_get_current_time (NOT get_current_time)
 
 3. **General MCP Tool Usage**:
    - **MANDATORY: Use MCP tools instead of making assumptions about system state**
@@ -93,15 +109,15 @@ You have access to MCP (Model Context Protocol) tools that provide additional ca
 def _get_tool_description(tool_name: str) -> str:
     """Get a brief description of what an MCP tool is used for."""
     descriptions = {
-        "get_current_time": "checking current system time and date",
-        "run_shell_command": "executing safe shell commands to inspect system state",
+        "mcp_get_current_time": "checking current system time and date",
+        "mcp_run_shell_command": "executing safe shell commands to inspect system state",
         "mcp_get_resource": "accessing MCP resources and content"
     }
     return descriptions.get(tool_name, "specialized system operations")
 
-def register_prompt_extensions(manager):
+def register_extensions(manager):
     """
-    Register all prompt extensions in this module.
+    Register all extensions in this module with the extension manager.
     
     Args:
         manager: The PromptExtensionManager instance

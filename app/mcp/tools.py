@@ -73,7 +73,6 @@ class MCPTool(BaseTool):
     name: str
     description: str
     mcp_tool_name: str
-    server_name: Optional[str] = None
     args_schema: Type[BaseModel] = MCPToolInput
     
     def _run(
@@ -82,6 +81,7 @@ class MCPTool(BaseTool):
         run_manager: Optional[CallbackManagerForToolRun] = None,
     ) -> str:
         """Run the MCP tool synchronously."""
+        logger.info(f"MCPTool._run called for {self.mcp_tool_name} with args: {arguments}")
         # Run the async version in a new event loop
         try:
             loop = asyncio.get_event_loop()
@@ -97,14 +97,15 @@ class MCPTool(BaseTool):
         run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
     ) -> str:
         """Run the MCP tool asynchronously."""
+        logger.info(f"MCPTool._arun called for {self.mcp_tool_name} with args: {arguments}")
         try:
             mcp_manager = get_mcp_manager()
             result = await mcp_manager.call_tool(
                 self.mcp_tool_name,
-                arguments,
-                self.server_name
+                arguments
             )
             
+            logger.info(f"MCPTool._arun result for {self.mcp_tool_name}: {result}")
             if result is None:
                 return f"Error: MCP tool '{self.mcp_tool_name}' not found or failed to execute"
             
@@ -205,8 +206,7 @@ def create_mcp_tools() -> List[BaseTool]:
             tool = MCPTool(
                 name=f"mcp_{mcp_tool.name}",
                 description=mcp_tool.description,
-                mcp_tool_name=mcp_tool.name,
-                server_name=getattr(mcp_tool, 'server', None)
+                mcp_tool_name=mcp_tool.name
             )
             tools.append(tool)
             
