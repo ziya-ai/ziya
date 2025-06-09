@@ -203,63 +203,6 @@ export const TokenCountDisplay = memo(() => {
         handleAstResolutionChange(key);
     };
 
-    const handleAstResolutionChange = useCallback(async (newResolution: string) => {
-        setAstResolutionLoading(true);
-        console.log('AST resolution change requested:', newResolution);
-        try {
-            // Update the token count immediately with the estimated value for instant feedback
-            if (astResolutions[newResolution]) {
-                setAstTokenCount(astResolutions[newResolution].token_count);
-                setCurrentAstResolution(newResolution);
-            }
-
-            // Call the API to change resolution and trigger re-indexing
-            const response = await fetch('/api/ast/change-resolution', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ resolution: newResolution }),
-            });
-
-            if (response.ok) {
-                message.success(`AST resolution changed to ${newResolution}. Re-indexing in progress.`);
-            } else {
-                throw new Error('Failed to change AST resolution');
-            }
-        } catch (error) {
-            message.error('Failed to change AST resolution');
-            // Revert the UI changes on error
-            if (astResolutions[currentAstResolution]) {
-                setAstTokenCount(astResolutions[currentAstResolution].token_count);
-            }
-        } finally {
-            setAstResolutionLoading(false);
-        }
-    }, [astResolutions, currentAstResolution]);
-    // Create menu items for AST resolution dropdown
-    const astMenuItems = useMemo(() => {
-        console.log('Creating AST resolution menu, resolutions loaded:', astResolutionsLoaded, 'resolutions:', astResolutions);
-        if (Object.keys(astResolutions).length === 0) return [];
-
-        return Object.entries(astResolutions).map(([key, data]: [string, any]) => ({
-            key,
-            label: (
-                <span style={{ display: 'flex', justifyContent: 'space-between', minWidth: 120 }}>
-                    <span style={{ textTransform: 'capitalize' }}>{key}</span>
-                    <span style={{ color: '#666', fontSize: '11px' }}>
-                        {Math.round(data.token_count / 1000)}k
-                    </span>
-                </span>
-            ),
-        }));
-    }, [astResolutions, astResolutionsLoaded]);
-
-    const handleMenuClick = ({ key }: { key: string }) => {
-        console.log('Menu item clicked:', key);
-        handleAstResolutionChange(key);
-    };
-
     // Monitor container width for responsive layout
     useLayoutEffect(() => {
         if (!containerRef.current) return;

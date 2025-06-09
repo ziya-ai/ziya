@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from starlette.background import BackgroundTask
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import signal
+from starlette.requests import Request
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import tiktoken
@@ -124,6 +125,25 @@ app.add_middleware(HunkStatusMiddleware)
 from app.routes.ast_routes import router as ast_router
 app.include_router(ast_router)
 
+# Add connection state tracking middleware
+@app.middleware("http")
+async def connection_state_middleware(request: Request, call_next):
+    """Track connection state to handle disconnections gracefully."""
+    try:
+        # Initialize connection state
+        request.state.disconnected = False
+        
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        # Check if this is a connection-related error
+        error_str = str(e).lower()
+        if any(term in error_str for term in ['connection', 'broken pipe', 'client disconnect']):
+            logger.debug(f"Connection error detected: {e}")
+            request.state.disconnected = True
+        raise
+
+
 # Import and include MCP routes
 from app.routes.mcp_routes import router as mcp_router
 app.include_router(mcp_router)
@@ -185,6 +205,8 @@ async def startup_event():
             # Reinitialize the agent chain now that MCP is available
             logger.info("Reinitializing agent chain with MCP tools...")
             global agent, agent_executor
+            # Force garbage collection to ensure clean state
+            import gc; gc.collect()
             from app.agents.agent import create_agent_chain, create_agent_executor, model
             agent = create_agent_chain(model.get_model())
             agent_executor = create_agent_executor(agent)
@@ -325,7 +347,13 @@ async def cleanup_stream(conversation_id: str):
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
     # Send heartbeat to keep connection alive (don't send processing message as it appears in the UI)
-    yield f"data: {json.dumps({'heartbeat': True})}\n\n"
+    yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
+    
+    # Track if we've successfully sent any data
+    data_sent = False
+    
+    # Set up connection monitoring
+    connection_active = True
     
     try:
         # Get the question from the request body
@@ -528,6 +556,13 @@ async def stream_chunks(body):
         try:
             async for chunk in model_with_stop.astream(messages, config=config):
 
+                # Check connection status before processing each chunk
+                if not connection_active:
+                    logger.info("Connection lost, stopping stream processing")
+                    break
+                
+                data_sent = True
+                
                 # Check if client disconnected
                 if conversation_id not in active_streams:
                     logger.info(f"Client disconnected for conversation: {conversation_id}")
@@ -765,6 +800,11 @@ async def stream_chunks(body):
             # If the loop finished normally (no error break) and we sent content, send DONE
             if not done_marker_sent and chunk_count > 0 and not is_error_chunk:
                 await cleanup_stream(conversation_id)
+                
+                # Only send DONE if we successfully sent data
+                if not data_sent:
+                    logger.debug("No data was sent, skipping DONE marker")
+                    return
 
                 yield f"data: {json.dumps({'done': True})}\n\n"
 
@@ -796,7 +836,6 @@ async def stream_chunks(body):
             logger.info(f"Sending credential error as SSE: {error_response}")
             yield f"data: {json.dumps(error_response)}\n\n"
             
-            # Always send the done marker for credential errors
             if not done_marker_sent:
                 logger.info("Sending done marker after credential error")
                 yield f"data: {json.dumps({'done': True})}\n\n"
@@ -807,16 +846,27 @@ async def stream_chunks(body):
                 
         except Exception as e:
             # Handle any exceptions during streaming
+            logger.error(f"Error in agent stream processing: {str(e)}", exc_info=True)
             if not done_marker_sent:
-                # Let the middleware handle formatting this unexpected error and sending DONE
-                # logger.info("[INSTRUMENTATION] stream_chunks sending done marker after exception")
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                yield f"data: {json.dumps({'error': 'stream_processing_error', 'detail': str(e)})}\n\n"
+                yield "data: [DONE]\n\n" # Ensure DONE is sent
+                done_marker_sent = True
 
             await cleanup_stream(conversation_id)
             raise
 
+    except ConnectionError as e:
+        logger.info(f"Connection error in stream_chunks: {e}")
+        connection_active = False
+        await cleanup_stream(conversation_id)
+        # Don't re-raise connection errors as they're expected when clients disconnect
+        
     except Exception as e:
+        logger.error(f"Unhandled exception in stream_chunks: {str(e)}", exc_info=True)
+        if conversation_id: # Ensure cleanup if conversation_id was set
+            await cleanup_stream(conversation_id)
         raise # re-raise for middleware to catch        
+
 
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")

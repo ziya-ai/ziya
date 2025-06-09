@@ -37,7 +37,25 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             arguments = json.loads(match.group(2))
             return {"tool_name": tool_name, "arguments": arguments}
         except json.JSONDecodeError:
-            logger.warning(f"Failed to parse arguments for tool {tool_name}")
+            logger.warning(f"Failed to parse arguments for tool {tool_name}: {match.group(2)}")
+            return None
+
+    # Format 2: <invoke> and <parameter>
+    invoke_pattern = r'<tool_call>\s*<invoke\s+name="([^"]+)">\s*(.*?)\s*</invoke>\s*</tool_call>'
+    match = re.search(invoke_pattern, content, re.DOTALL)
+    if match:
+        tool_name = match.group(1).strip()
+        params_content = match.group(2)
+        
+        # Parse parameters
+        param_pattern = r'<parameter\s+name="([^"]+)">([^<]*)</parameter>'
+        params = {}
+        for param_match in re.finditer(param_pattern, params_content):
+            param_name = param_match.group(1)
+            param_value = param_match.group(2).strip()
+            params[param_name] = param_value
+        
+        return {"tool_name": tool_name, "arguments": params}
     
     # Format 2: <invoke> and <parameter>
     invoke_pattern = r'<tool_call>\s*<invoke\s+name="([^"]+)">\s*(.*?)\s*</invoke>\s*</tool_call>'
@@ -55,6 +73,10 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             params[param_name] = param_value
         
         return {"tool_name": tool_name, "arguments": params}
+    
+    # Log if no tool call pattern was found
+    if '<tool_call>' in content:
+        logger.warning(f"Found <tool_call> tag but couldn't parse it. Content: {content[:200]}...")
     
     return None
 
@@ -98,12 +120,19 @@ class MCPTool(BaseTool):
     ) -> str:
         """Run the MCP tool asynchronously."""
         logger.info(f"MCPTool._arun called for {self.mcp_tool_name} with args: {arguments}")
+        logger.info(f"🔍 MCPTool._arun: About to execute MCP tool {self.mcp_tool_name}")
+        logger.info(f"🔍 MCPTool._arun: MCP manager initialized: {mcp_manager.is_initialized if 'mcp_manager' in globals() else 'No manager'}")
         try:
+            # Verify MCP manager is initialized
+            if not mcp_manager.is_initialized:
+                return f"Error: MCP manager not initialized"
+            
             mcp_manager = get_mcp_manager()
             result = await mcp_manager.call_tool(
                 self.mcp_tool_name,
                 arguments
             )
+            logger.info(f"🔍 MCPTool._arun: Got result from MCP manager: {result}")
             
             logger.info(f"MCPTool._arun result for {self.mcp_tool_name}: {result}")
             if result is None:
@@ -202,11 +231,15 @@ def create_mcp_tools() -> List[BaseTool]:
         tools.append(MCPResourceTool())
         
         # Add tools from all connected MCP servers
+        logger.info(f"Creating MCP tools from {len(mcp_manager.get_all_tools())} available tools")
         for mcp_tool in mcp_manager.get_all_tools():
+            # Ensure tool name has mcp_ prefix for consistency
+            tool_name = f"mcp_{mcp_tool.name}" if not mcp_tool.name.startswith("mcp_") else mcp_tool.name
+            logger.info(f"Creating tool: {tool_name} from MCP tool: {mcp_tool.name}")
             tool = MCPTool(
-                name=f"mcp_{mcp_tool.name}",
+                name=tool_name,
                 description=mcp_tool.description,
-                mcp_tool_name=mcp_tool.name
+                mcp_tool_name=mcp_tool.name  # Keep original name for actual MCP calls
             )
             tools.append(tool)
             
@@ -214,5 +247,6 @@ def create_mcp_tools() -> List[BaseTool]:
         
     except Exception as e:
         logger.error(f"Error creating MCP tools: {str(e)}")
+        logger.error(f"MCP manager initialized: {mcp_manager.is_initialized if 'mcp_manager' in locals() else 'No manager'}")
     
     return tools

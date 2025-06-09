@@ -37,14 +37,21 @@ def get_extended_prompt(model_name: Optional[str] = None,
     try:
         mcp_manager = get_mcp_manager()
         if mcp_manager.is_initialized:
-            available_tools = [tool.name for tool in mcp_manager.get_all_tools()]
+            logger.info(f"MCP manager is initialized with {len(mcp_manager.get_all_tools())} tools for prompt extension")
+            # Get tools reported by servers
+            server_tools = [tool.name for tool in mcp_manager.get_all_tools()]
+            # Manually add the client-side MCPResourceTool if it's always available to the agent
+            available_tools = list(set(server_tools + ["mcp_get_resource"])) # Use set to avoid duplicates
+            
             logger.info(f"MCP tools available for prompt extension: {available_tools}")
             mcp_context = {
                 "mcp_tools_available": len(available_tools) > 0,
                 "available_mcp_tools": available_tools
             }
+            
         else:
             logger.info("MCP manager not initialized for prompt extensions")
+            logger.info(f"MCP manager state: initialized={mcp_manager.is_initialized if mcp_manager else 'No manager'}")
     except Exception as e:
         logger.debug(f"Could not get MCP context: {e}")
     

@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.responses import Response, JSONResponse
 from app.utils.logging_utils import logger
+from h11._util import LocalProtocolError
 from app.utils.error_handlers import detect_error_type, format_error_response, is_critical_error
 from app.utils.custom_exceptions import KnownCredentialException
 
@@ -35,6 +36,12 @@ class ErrorHandlingMiddleware:
         async def send_wrapper(message):
             nonlocal response_started, is_streaming_response
             
+            # Check for H11 protocol errors and handle gracefully
+            try:
+                await send(message)
+            except LocalProtocolError as e:
+                logger.debug(f"H11 protocol error (expected during client disconnect): {e}")
+                return  # Silently ignore protocol errors
             # Check if this is a response start message
             if message["type"] == "http.response.start":
                 response_started = True
@@ -45,7 +52,6 @@ class ErrorHandlingMiddleware:
                         is_streaming_response = True
                         break
             
-            await send(message)
         
         # Track if we've started sending a response
         response_started = False
@@ -53,6 +59,11 @@ class ErrorHandlingMiddleware:
         async def safe_send(message):
             nonlocal response_started
             if message["type"] == "http.response.start":
+                try:
+                    await send_wrapper(message)
+                except LocalProtocolError as e:
+                    logger.debug(f"Protocol error on response start: {e}")
+                    return  # Connection is broken, can't send
                 response_started = True
             await send_wrapper(message)
         # Try to run the app, catch any exceptions
@@ -79,6 +90,21 @@ class ErrorHandlingMiddleware:
                     # Send headers
                     await send({
                         "type": "http.response.start",
+                            "status": 200,
+                            "headers": [
+                                (b"content-type", b"text/event-stream"),
+                                (b"cache-control", b"no-cache"),
+                            ]
+                            "status": 200,
+                            "headers": [
+                                (b"content-type", b"text/event-stream"),
+                                (b"cache-control", b"no-cache"),
+                            ]
+                            "status": 200,
+                            "headers": [
+                                (b"content-type", b"text/event-stream"),
+                                (b"cache-control", b"no-cache"),
+                            ]
                         "status": 200,
                         "headers": [
                             (b"content-type", b"text/event-stream"),
@@ -121,6 +147,11 @@ class ErrorHandlingMiddleware:
                     logger.error(f"Failed to send JSON response: {e}")
                     
         except Exception as exc:
+            # Handle H11 protocol errors specifically
+            if isinstance(exc, LocalProtocolError):
+                logger.debug(f"H11 protocol error (client likely disconnected): {exc}")
+                return  # Don't try to send a response for protocol errors
+            
             error_message = str(exc)
             logger.error(f"ErrorHandlingMiddleware caught: {error_message}")
             
@@ -188,6 +219,11 @@ class ErrorHandlingMiddleware:
                         # Send headers
                         await send({
                             "type": "http.response.start",
+                            "status": 200,
+                            "headers": [
+                                (b"content-type", b"text/event-stream"),
+                                (b"cache-control", b"no-cache"),
+                            ]
                             "status": 200,
                             "headers": [
                                 (b"content-type", b"text/event-stream"),

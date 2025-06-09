@@ -36,9 +36,15 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     available_tools = context.get("available_mcp_tools", [])
     
     if not mcp_tools_available or not available_tools:
+        logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.") # ADD THIS
         return prompt
     
     mcp_guidelines = """
+
+**CRITICAL MCP TOOL VERIFICATION:**
+Before using any MCP tool, verify the exact tool names available. The tools are prefixed with "mcp_" in the agent system.
+
+**ACTUAL AVAILABLE TOOLS:** """ + str(available_tools) + """
 
 ## MCP Tool Usage Guidelines - CRITICAL INSTRUCTIONS
 
@@ -104,14 +110,21 @@ For time queries, use EXACTLY this format:
 
 """
     
-    return prompt + mcp_guidelines
+    logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}") # ADD THIS
+    logger.info(f"MCP_GUIDELINES: Appending guidelines. Available tools: {available_tools}") # ADD THIS
+    modified_prompt = prompt + mcp_guidelines
+    logger.info(f"MCP_GUIDELINES: Modified prompt length: {len(modified_prompt)}") # ADD THIS
+    logger.info(f"MCP_GUIDELINES: Last 500 chars of modified prompt: ...{modified_prompt[-500:]}") # ADD THIS
+    return modified_prompt
 
 def _get_tool_description(tool_name: str) -> str:
     """Get a brief description of what an MCP tool is used for."""
     descriptions = {
         "mcp_get_current_time": "checking current system time and date",
-        "mcp_run_shell_command": "executing safe shell commands to inspect system state",
-        "mcp_get_resource": "accessing MCP resources and content"
+        "mcp_run_shell_command": "executing safe shell commands to inspect system state", 
+        "mcp_get_resource": "accessing MCP resources and content",
+        "get_current_time": "checking current system time and date (legacy name)",
+        "run_shell_command": "executing safe shell commands to inspect system state (legacy name)"
     }
     return descriptions.get(tool_name, "specialized system operations")
 

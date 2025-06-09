@@ -42,7 +42,6 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
             if (line.startsWith('--- a/') && !line.includes('/dev/null')) {
                 return line.substring(6);
             }
-            if ((oldPath !== undefined && newPath !== undefined) || line.startsWith('@@ ')) break;
         }
         return null;
     };

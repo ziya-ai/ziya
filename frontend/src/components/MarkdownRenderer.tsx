@@ -423,262 +423,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
         console.error("Error extracting single file diff:", error);
         return fullDiff.trim(); // Return the full diff as a fallback
     }
-
-    // Fallback for any other cases
-    return 'Unknown file operation';
-};
-
-
-const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
-    // If the diff doesn't contain multiple files, return it as is
-    if (!fullDiff.includes("diff --git") || fullDiff.indexOf("diff --git") === fullDiff.lastIndexOf("diff --git")) {
-        return fullDiff;
-    }
-
-    try {
-        // Split the diff into sections by diff --git headers
-        const lines: string[] = fullDiff.split('\n');
-        const result: string[] = [];
-
-        // Clean up file path for matching
-        const cleanFilePath = filePath.replace(/^[ab]\//, '');
-
-        let currentFile: { oldPath: string; newPath: string } | null = null;
-        let currentFileIndex = -1;
-        let inTargetFile = false;
-        let collectingHunk = false;
-        let currentHunkHeader: string | null = null;
-        let currentHunkContent: string[] = [];
-
-        // Process each line
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const nextLine = i < lines.length - 1 ? lines[i + 1] : '';
-
-            // Check for file header
-            if (line.startsWith('diff --git')) {
-                // If we were collecting a hunk, add it to the result
-                if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
-                    result.push(currentHunkHeader);
-                    result.push(...currentHunkContent);
-                }
-
-                // Reset state for new file
-                collectingHunk = false;
-                currentHunkHeader = null;
-                currentFileIndex++;
-                currentHunkContent = [];
-                inTargetFile = false;
-
-                // Check if this is our target file
-                const fileMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
-                if (fileMatch) {
-                    const oldPath = fileMatch[1];
-                    const newPath = fileMatch[2];
-
-                    // Check if this file matches our target by exact path
-                    if (oldPath === cleanFilePath || newPath === cleanFilePath ||
-                        oldPath.endsWith(`/${cleanFilePath}`) || newPath.endsWith(`/${cleanFilePath}`)) {
-                        inTargetFile = true;
-                        currentFile = { oldPath, newPath };
-                        result.push(line);
-
-                        // Also check the next line for index info
-                        if (nextLine.startsWith('index ')) {
-                            result.push(nextLine);
-                            i++; // Skip this line in the next iteration
-                        }
-                    } else {
-                        inTargetFile = false;
-                        currentFile = null;
-
-                        // Log for debugging
-                        console.debug(`Skipping file: old=${oldPath}, new=${newPath}, target=${cleanFilePath}`);
-                    }
-                }
-            }
-            // If we're in the target file, collect all headers and content
-            else if (inTargetFile) {
-                // File headers (index, ---, +++)
-                if (line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
-                    result.push(line);
-                }
-                // Hunk header
-                else if (line.startsWith('@@ ')) {
-                    // If we were collecting a previous hunk, add it to the result
-                    if (collectingHunk && currentHunkHeader !== null) {
-                        result.push(currentHunkHeader);
-                        result.push(...currentHunkContent);
-                    }
-
-                    // Start collecting a new hunk
-                    collectingHunk = true;
-                    currentHunkHeader = line;
-                    currentHunkContent = [];
-                }
-                // Hunk content (context, additions, deletions)
-                else if (collectingHunk && (line.startsWith(' ') || line.startsWith('+') || line.startsWith('-') || line.startsWith('\\'))) {
-                    currentHunkContent.push(line);
-                }
-                // Empty lines within a hunk
-                else if (collectingHunk && line.trim() === '') {
-                    currentHunkContent.push(line);
-                }
-            }
-        }
-
-        // Log the extraction results
-        console.debug(`Extracted diff for ${filePath}:`, {
-            targetFileFound: inTargetFile || result.length > 0,
-            extractedLines: result.length
-        });
-        // Add the last hunk if we were collecting one
-        if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
-            result.push(currentHunkHeader!);
-            result.push(...currentHunkContent);
-        }
-
-        // If we found our target file, return the extracted diff
-        if (result.length > 0) {
-            return result.join('\n').trim();
-        }
-
-        // If we didn't find the target file, return the original diff
-        console.warn(`Could not find file ${cleanFilePath} in the diff`);
-        return fullDiff;
-
-    } catch (error) {
-        console.error("Error extracting single file diff:", error);
-        return fullDiff.trim(); // Return the full diff as a fallback
-    }
-
-    // Fallback for any other cases
-    return 'Unknown file operation';
-};
-
-
-const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
-    // If the diff doesn't contain multiple files, return it as is
-    if (!fullDiff.includes("diff --git") || fullDiff.indexOf("diff --git") === fullDiff.lastIndexOf("diff --git")) {
-        return fullDiff;
-    }
-
-    try {
-        // Split the diff into sections by diff --git headers
-        const lines: string[] = fullDiff.split('\n');
-        const result: string[] = [];
-
-        // Clean up file path for matching
-        const cleanFilePath = filePath.replace(/^[ab]\//, '');
-
-        let currentFile: { oldPath: string; newPath: string } | null = null;
-        let currentFileIndex = -1;
-        let inTargetFile = false;
-        let collectingHunk = false;
-        let currentHunkHeader: string | null = null;
-        let currentHunkContent: string[] = [];
-
-        // Process each line
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const nextLine = i < lines.length - 1 ? lines[i + 1] : '';
-
-            // Check for file header
-            if (line.startsWith('diff --git')) {
-                // If we were collecting a hunk, add it to the result
-                if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
-                    result.push(currentHunkHeader);
-                    result.push(...currentHunkContent);
-                }
-
-                // Reset state for new file
-                collectingHunk = false;
-                currentHunkHeader = null;
-                currentFileIndex++;
-                currentHunkContent = [];
-                inTargetFile = false;
-
-                // Check if this is our target file
-                const fileMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
-                if (fileMatch) {
-                    const oldPath = fileMatch[1];
-                    const newPath = fileMatch[2];
-
-                    // Check if this file matches our target by exact path
-                    if (oldPath === cleanFilePath || newPath === cleanFilePath ||
-                        oldPath.endsWith(`/${cleanFilePath}`) || newPath.endsWith(`/${cleanFilePath}`)) {
-                        inTargetFile = true;
-                        currentFile = { oldPath, newPath };
-                        result.push(line);
-
-                        // Also check the next line for index info
-                        if (nextLine.startsWith('index ')) {
-                            result.push(nextLine);
-                            i++; // Skip this line in the next iteration
-                        }
-                    } else {
-                        inTargetFile = false;
-                        currentFile = null;
-
-                        // Log for debugging
-                        console.debug(`Skipping file: old=${oldPath}, new=${newPath}, target=${cleanFilePath}`);
-                    }
-                }
-            }
-            // If we're in the target file, collect all headers and content
-            else if (inTargetFile) {
-                // File headers (index, ---, +++)
-                if (line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
-                    result.push(line);
-                }
-                // Hunk header
-                else if (line.startsWith('@@ ')) {
-                    // If we were collecting a previous hunk, add it to the result
-                    if (collectingHunk && currentHunkHeader !== null) {
-                        result.push(currentHunkHeader);
-                        result.push(...currentHunkContent);
-                    }
-
-                    // Start collecting a new hunk
-                    collectingHunk = true;
-                    currentHunkHeader = line;
-                    currentHunkContent = [];
-                }
-                // Hunk content (context, additions, deletions)
-                else if (collectingHunk && (line.startsWith(' ') || line.startsWith('+') || line.startsWith('-') || line.startsWith('\\'))) {
-                    currentHunkContent.push(line);
-                }
-                // Empty lines within a hunk
-                else if (collectingHunk && line.trim() === '') {
-                    currentHunkContent.push(line);
-                }
-            }
-        }
-
-        // Log the extraction results
-        console.debug(`Extracted diff for ${filePath}:`, {
-            targetFileFound: inTargetFile || result.length > 0,
-            extractedLines: result.length
-        });
-        // Add the last hunk if we were collecting one
-        if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
-            result.push(currentHunkHeader!);
-            result.push(...currentHunkContent);
-        }
-
-        // If we found our target file, return the extracted diff
-        if (result.length > 0) {
-            return result.join('\n').trim();
-        }
-
-        // If we didn't find the target file, return the original diff
-        console.warn(`Could not find file ${cleanFilePath} in the diff`);
-        return fullDiff;
-
-    } catch (error) {
-        console.error("Error extracting single file diff:", error);
-        return fullDiff.trim(); // Return the full diff as a fallback
-    }
 };
 
 // Helper function to check if this is a deletion diff
@@ -703,12 +447,6 @@ const normalizeGitDiff = (diff: string): string => {
         const lines: string[] = diff.split('\n');
         const normalizedLines: string[] = [];
         let fileIndex = 0;
-
-        console.log('=== normalizeGitDiff Debug ===');
-        console.log('Input diff preview:', diff.split('\n').slice(0, 5));
-
-        console.log('=== normalizeGitDiff Debug ===');
-        console.log('Input diff preview:', diff.split('\n').slice(0, 5));
 
         // Check if this is a properly formatted diff
         const hasDiffHeaders = lines.some(line =>
@@ -1216,14 +954,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             return <div className="diff-empty-hunks">No changes found in this diff.</div>;
         }
 
-        if (!hunks || hunks.length === 0) {
-            return <div className="diff-empty-hunks">No changes found in this diff.</div>;
-        }
-
-        if (!hunks || hunks.length === 0) {
-            return <div className="diff-empty-hunks">No changes found in this diff.</div>;
-        }
-
         return (
             <table className={tableClassName}>
                 <colgroup>
@@ -1328,7 +1058,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 <tr className="hunk-content-wrapper">
                                     <td colSpan={viewType === 'split' ? 4 : 3} style={{
                                         padding: 0,
-                                        borderTop: status ? `1px solid ${isApplied ?
+                                        border: status ? `1px solid ${isApplied ?
                                             (isAlreadyApplied ? '#faad14' : '#52c41a') :
                                             '#ff4d4f'}` : 'none',
                                         borderLeft: status ? `3px solid ${isApplied ?
@@ -1541,42 +1271,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         .hunk-content-wrapper {
             margin-bottom: 12px;
             margin-top: 4px;
-        }
-
-        /* Fix for line number alignment */
-        .diff-gutter-col {
-            width: 50px !important;
-            min-width: 50px !important;
-            max-width: 50px !important;
-            text-align: right !important;
-            padding-right: 10px !important;
-            box-sizing: border-box !important;
-            user-select: none !important;
-        }
-
-        /* Fix for nested tables */
-        .hunk-content-wrapper table {
-            table-layout: fixed !important;
-            width: 100% !important;
-            border-collapse: collapse !important;
-        }
-
-        /* Fix for line number alignment */
-        .diff-gutter-col {
-            width: 50px !important;
-            min-width: 50px !important;
-            max-width: 50px !important;
-            text-align: right !important;
-            padding-right: 10px !important;
-            box-sizing: border-box !important;
-            user-select: none !important;
-        }
-
-        /* Fix for nested tables */
-        .hunk-content-wrapper table {
-            table-layout: fixed !important;
-            width: 100% !important;
-            border-collapse: collapse !important;
         }
         
         .hunk-status-indicator {
@@ -2593,7 +2287,6 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
     }, [contentRef.current, isStreaming]);
 
 
-    // Don't render the DiffViewWrapper during streaming to avoid re-renders
     //if (isDiffValid) {
     if (true) {
 
@@ -2708,56 +2401,6 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
 
         return 'Unknown file';
     }, []);
-
-    useEffect(() => {
-        const observer = new IntersectionObserver(([entry]) => {
-            setIsVisible(entry.isIntersecting);
-        }, { threshold: 0.01, rootMargin: '200px 0px' });
-
-        if (containerRef.current) {
-            observer.observe(containerRef.current);
-        }
-        return () => {
-            observer.disconnect();
-        };
-    }, []);
-
-    // Cleanup async operations
-    useEffect(() => {
-        return () => {
-            if (parseTimeoutRef.current) {
-                clearTimeout(parseTimeoutRef.current);
-            }
-        };
-    }, []);
-
-    // Track component visibility
-    const containerRef = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        const observer = new IntersectionObserver(([entry]) => {
-            setIsVisible(entry.isIntersecting);
-        }, { threshold: 0.01, rootMargin: '200px 0px' });
-
-        if (containerRef.current) {
-            observer.observe(containerRef.current);
-        }
-        return () => {
-            observer.disconnect();
-        };
-    }, []);
-
-    // Cleanup async operations
-    useEffect(() => {
-        return () => {
-            if (parseTimeoutRef.current) {
-                clearTimeout(parseTimeoutRef.current);
-            }
-        };
-    }, []);
-
-    // Track component visibility
-    const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         const observer = new IntersectionObserver(([entry]) => {

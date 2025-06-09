@@ -11,7 +11,7 @@ import json
 import subprocess
 import sys
 from typing import Dict, List, Optional, Any, Union, AsyncGenerator
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields # Import fields
 from pathlib import Path
 import uuid
 import time
@@ -82,19 +82,34 @@ class MCPClient:
                 logger.error(f"No command specified for MCP server: {self.server_config.get('name', 'unknown')}")
                 return False
             
-            logger.info(f"Starting MCP server with command: {command}")
-                
-            logger.info(f"Starting MCP server: {' '.join(command)}")
-            
             # Set working directory to project root (parent of app directory)
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             project_root = os.path.dirname(app_dir)
             working_dir = project_root if os.path.exists(os.path.join(project_root, 'mcp_servers')) else os.getcwd()
             
+            # Set working directory to project root (parent of app directory)
+            app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            project_root = os.path.dirname(app_dir)
+            working_dir = project_root
+            
+            logger.info(f"Starting MCP server with command: {command}")
+                
+            # Resolve command paths
+            resolved_command = []
+            for part in command:
+                if part.endswith('.py') and not os.path.isabs(part):
+                    # Make relative Python scripts absolute
+                    resolved_path = os.path.join(working_dir, part)
+                    resolved_command.append(resolved_path)
+                else:
+                    resolved_command.append(part)
+            
+            logger.info(f"Starting MCP server: {' '.join(resolved_command)}")
+            
             logger.info(f"Using working directory: {working_dir}")
             
             self.process = subprocess.Popen(
-                command,
+                resolved_command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,  # Keep stderr separate for debugging
@@ -241,34 +256,70 @@ class MCPClient:
     async def _load_server_capabilities(self):
         """Load resources, tools, and prompts from the MCP server."""
         try:
+            mcp_resource_fields = {f.name for f in fields(MCPResource)}
+            mcp_tool_fields = {f.name for f in fields(MCPTool)}
+            mcp_prompt_fields = {f.name for f in fields(MCPPrompt)}
+
+            server_name_for_log = self.server_config.get('name', 'unknown')
+
             # Load resources
             if self.capabilities.get("resources"):
                 resources_result = await self._send_request("resources/list")
                 if resources_result and "resources" in resources_result:
-                    self.resources = [
-                        MCPResource(**resource) for resource in resources_result["resources"]
-                    ]
+                    if server_name_for_log == 'everything' or 'everything' in str(server_name_for_log).lower():
+                        logger.info(f"DEBUG_MCP_CLIENT ({server_name_for_log}): Raw resources data: {json.dumps(resources_result['resources'], indent=2)}")
+                    valid_resources = []
+                    for res_data in resources_result["resources"]:
+                        if not isinstance(res_data, dict):
+                            logger.warning(f"Skipping non-dict resource item from {server_name_for_log}: {res_data}")
+                            continue
+                        filtered_data = {k: v for k, v in res_data.items() if k in mcp_resource_fields}
+                        try:
+                            valid_resources.append(MCPResource(**filtered_data))
+                        except TypeError as e:
+                            logger.error(f"Failed to create MCPResource for server {server_name_for_log}, FILTERED data {filtered_data} (original: {res_data}): {e}")
+                    self.resources = valid_resources
             
             # Load tools
             if self.capabilities.get("tools"):
                 tools_result = await self._send_request("tools/list")
                 if tools_result and "tools" in tools_result:
-                    self.tools = [
-                        MCPTool(**tool) for tool in tools_result["tools"]
-                    ]
+                    if server_name_for_log == 'everything' or 'everything' in str(server_name_for_log).lower():
+                         logger.info(f"DEBUG_MCP_CLIENT ({server_name_for_log}): Raw tools data: {json.dumps(tools_result['tools'], indent=2)}")
+                    valid_tools = []
+                    for tool_data in tools_result["tools"]:
+                        if not isinstance(tool_data, dict):
+                            logger.warning(f"Skipping non-dict tool item from {server_name_for_log}: {tool_data}")
+                            continue
+                        filtered_data = {k: v for k, v in tool_data.items() if k in mcp_tool_fields}
+                        try:
+                            valid_tools.append(MCPTool(**filtered_data))
+                        except TypeError as e:
+                            logger.error(f"Failed to create MCPTool for server {server_name_for_log}, FILTERED data {filtered_data} (original: {tool_data}): {e}")
+                    self.tools = valid_tools
             
             # Load prompts
+            logger.info(f"Loading prompts for server: {server_name_for_log}")
             if self.capabilities.get("prompts"):
                 prompts_result = await self._send_request("prompts/list")
                 if prompts_result and "prompts" in prompts_result:
-                    self.prompts = [
-                        MCPPrompt(**prompt) for prompt in prompts_result["prompts"]
-                    ]
-                    
-            logger.info(f"Loaded MCP capabilities: {len(self.resources)} resources, {len(self.tools)} tools, {len(self.prompts)} prompts")
-            
+                    valid_prompts = []
+                    for prompt_data in prompts_result["prompts"]:
+                        if not isinstance(prompt_data, dict):
+                            logger.warning(f"Skipping non-dict prompt item from {server_name_for_log}: {prompt_data}")
+                            continue
+                        filtered_data = {k: v for k, v in prompt_data.items() if k in mcp_prompt_fields}
+                        try:
+                            valid_prompts.append(MCPPrompt(**filtered_data))
+                        except TypeError as e:
+                            logger.error(f"Failed to create MCPPrompt for server {server_name_for_log}, FILTERED data {filtered_data} (original: {prompt_data}): {e}")
+                    self.prompts = valid_prompts
+
+            logger.info(f"Loaded MCP capabilities for {server_name_for_log}: {len(self.resources)} resources, {len(self.tools)} tools, {len(self.prompts)} prompts")
+            logger.info(f"Tool names for {server_name_for_log}: {[tool.name for tool in self.tools]}")
+
         except Exception as e:
-            logger.error(f"Error loading MCP server capabilities: {str(e)}")
+            logger.error(f"Error loading MCP server capabilities for {self.server_config.get('name', 'unknown')}: {str(e)}", exc_info=True)
     
     async def get_resource(self, uri: str) -> Optional[str]:
         """Get the content of a resource by URI."""
@@ -276,11 +327,11 @@ class MCPClient:
             result = await self._send_request("resources/read", {"uri": uri})
             if result and "contents" in result:
                 contents = result["contents"]
-                if contents and len(contents) > 0:
+                if contents and len(contents) > 0 and isinstance(contents[0], dict):
                     return contents[0].get("text", "")
             return None
         except Exception as e:
-            logger.error(f"Error getting MCP resource {uri}: {str(e)}")
+            logger.error(f"Error getting MCP resource {uri} from {self.server_config.get('name', 'unknown')}: {str(e)}")
             return None
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -292,7 +343,7 @@ class MCPClient:
             })
             return result
         except Exception as e:
-            logger.error(f"Error calling MCP tool {name}: {str(e)}")
+            logger.error(f"Error calling MCP tool {name} on {self.server_config.get('name', 'unknown')}: {str(e)}")
             return None
     
     async def get_prompt(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -307,13 +358,14 @@ class MCPClient:
                 # Combine all message content
                 content_parts = []
                 for message in result["messages"]:
-                    if "content" in message:
-                        if isinstance(message["content"], str):
-                            content_parts.append(message["content"])
-                        elif isinstance(message["content"], dict) and "text" in message["content"]:
-                            content_parts.append(message["content"]["text"])
+                    if isinstance(message, dict) and "content" in message:
+                        content = message["content"]
+                        if isinstance(content, str):
+                            content_parts.append(content)
+                        elif isinstance(content, dict) and "text" in content:
+                            content_parts.append(content["text"])
                 return "\n".join(content_parts)
             return None
         except Exception as e:
-            logger.error(f"Error getting MCP prompt {name}: {str(e)}")
+            logger.error(f"Error getting MCP prompt {name} from {self.server_config.get('name', 'unknown')}: {str(e)}")
             return None

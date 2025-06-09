@@ -327,12 +327,12 @@ def start_server(args):
             sys.exit(1)
         except ValueError as e:
             # Use a class variable to track if we've already displayed an error
-            if not getattr(ValueError, "_error_displayed", False):
+            if not hasattr(start_server, "_error_displayed"):
                 print("\n" + "=" * 80)
                 print(f"⚠️ ERROR: {str(e)}")
                 print("=" * 80 + "\n")
-                setattr(ValueError, "_error_displayed", True)
-                
+                start_server._error_displayed = True
+            
             logger.error("Server startup aborted due to configuration error.")
             sys.exit(1)
     except ValueError as e:

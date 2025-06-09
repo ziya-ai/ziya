@@ -143,15 +143,6 @@ export const mermaidPlugin: D3RenderPlugin = {
 
             // Apply diagram-specific fixes
             if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
-                // Normalize node shapes first - convert parentheses to brackets for consistency
-                processedDefinition = processedDefinition.replace(/(\w+)\(([^)]+)\)/g, '$1["$2"]');
-
-                // Fix subgraph syntax - ensure proper spacing and formatting
-                processedDefinition = processedDefinition.replace(/subgraph\s+(\w+)\s*\n/g, 'subgraph $1\n    ');
-
-                // Ensure subgraph end statements are properly formatted
-                processedDefinition = processedDefinition.replace(/^\s*end\s*$/gm, '    end');
-
                 // Fix subgraph class syntax
                 processedDefinition = processedDefinition.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 style_$2');
                 processedDefinition = processedDefinition.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
@@ -169,6 +160,12 @@ export const mermaidPlugin: D3RenderPlugin = {
                 processedDefinition = processedDefinition.replace(/\bend\b\s*-->/g, 'endNode -->');
 
                 // Fix quoted text in node labels
+                processedDefinition = processedDefinition.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
+                    return `[${before}${quoted}${after}]`;
+                });
+            }
+            else if (diagramType === 'requirement') {
+                // Fix requirement diagram syntax
                 const lines = processedDefinition.split('\n');
                 const result: string[] = [];
 
@@ -353,180 +350,6 @@ export const mermaidPlugin: D3RenderPlugin = {
             const svgElement = wrapper.querySelector('svg');
             if (!svgElement) {
                 throw new Error('Failed to get SVG element after rendering');
-            }
-
-            // Helper function to apply custom styles from the diagram definition
-            const applyCustomStyles = (svgElement: SVGElement) => {
-                // Process all style directives in the SVG
-                const styleElements = svgElement.querySelectorAll('style');
-                styleElements.forEach(styleEl => {
-                    // Extract class names and their style definitions
-                    const styleText = styleEl.textContent || '';
-                    const styleRules = styleText.match(/\.(\w+)\s*{([^}]*)}/g) || [];
-
-                    styleRules.forEach(rule => {
-                        // Apply these styles directly to the elements with matching classes
-                        const classMatch = rule.match(/\.(\w+)\s*{/);
-                        const styleMatch = rule.match(/{([^}]*)}/);
-
-                        if (classMatch && styleMatch) {
-                            const className = classMatch[1];
-                            const styles = styleMatch[1].trim();
-
-                            // Find elements with this class and apply styles directly
-                            svgElement.querySelectorAll(`.${className}`).forEach(el => {
-                                // Parse individual style properties
-                                styles.split(';').forEach(style => {
-                                    const [prop, value] = style.split(':').map(s => s.trim());
-                                    if (prop && value) {
-                                        (el as SVGElement).style.setProperty(prop, value);
-                                    }
-                                });
-                            });
-                        }
-                    });
-                });
-            };
-
-            // Enhance dark theme visibility for specific elements
-            if (isDarkMode && svgElement) {
-                requestAnimationFrame(() => {
-                    // Enhance specific elements that might still have poor contrast
-                    svgElement.querySelectorAll('.edgePath path').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5px');
-                    });
-
-                    // Fix for arrow markers in dark mode
-                    svgElement.querySelectorAll('defs marker path').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('fill', '#88c0d0');
-                    });
-
-                    // Fix for all SVG paths and lines
-                    svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5px');
-                    });
-
-                    // Text on darker backgrounds should be black for contrast
-                    svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
-                        el.setAttribute('fill', '#000000');
-                    });
-
-                    // Text on lighter backgrounds should be white for contrast
-                    svgElement.querySelectorAll('.edgeLabel text, text:not(.node .label text):not(.cluster .label text)').forEach(el => {
-                        el.setAttribute('fill', '#eceff4');
-                    });
-
-                    svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5px');
-                    });
-
-                    svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
-                        el.setAttribute('stroke', '#81a1c1');
-                        el.setAttribute('fill', '#5e81ac');
-                    });
-
-                    svgElement.querySelectorAll('.cluster rect').forEach(el => {
-                        el.setAttribute('stroke', '#81a1c1');
-                        el.setAttribute('fill', '#4c566a');
-                    });
-
-                    // Apply custom styles from the diagram definition
-                    applyCustomStyles(svgElement);
-                });
-            } else {
-                // Even in light mode, apply custom styles
-                applyCustomStyles(svgElement);
-            }
-
-            // Helper function to apply custom styles from the diagram definition
-            const applyCustomStyles = (svgElement: SVGElement) => {
-                // Process all style directives in the SVG
-                const styleElements = svgElement.querySelectorAll('style');
-                styleElements.forEach(styleEl => {
-                    // Extract class names and their style definitions
-                    const styleText = styleEl.textContent || '';
-                    const styleRules = styleText.match(/\.(\w+)\s*{([^}]*)}/g) || [];
-
-                    styleRules.forEach(rule => {
-                        // Apply these styles directly to the elements with matching classes
-                        const classMatch = rule.match(/\.(\w+)\s*{/);
-                        const styleMatch = rule.match(/{([^}]*)}/);
-
-                        if (classMatch && styleMatch) {
-                            const className = classMatch[1];
-                            const styles = styleMatch[1].trim();
-
-                            // Find elements with this class and apply styles directly
-                            svgElement.querySelectorAll(`.${className}`).forEach(el => {
-                                // Parse individual style properties
-                                styles.split(';').forEach(style => {
-                                    const [prop, value] = style.split(':').map(s => s.trim());
-                                    if (prop && value) {
-                                        (el as SVGElement).style.setProperty(prop, value);
-                                    }
-                                });
-                            });
-                        }
-                    });
-                });
-            };
-
-            // Enhance dark theme visibility for specific elements
-            if (isDarkMode && svgElement) {
-                requestAnimationFrame(() => {
-                    // Enhance specific elements that might still have poor contrast
-                    svgElement.querySelectorAll('.edgePath path').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5px');
-                    });
-
-                    // Fix for arrow markers in dark mode
-                    svgElement.querySelectorAll('defs marker path').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('fill', '#88c0d0');
-                    });
-
-                    // Fix for all SVG paths and lines
-                    svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5px');
-                    });
-
-                    // Text on darker backgrounds should be black for contrast
-                    svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
-                        el.setAttribute('fill', '#000000');
-                    });
-
-                    // Text on lighter backgrounds should be white for contrast
-                    svgElement.querySelectorAll('.edgeLabel text, text:not(.node .label text):not(.cluster .label text)').forEach(el => {
-                        el.setAttribute('fill', '#eceff4');
-                    });
-
-                    svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
-                        el.setAttribute('stroke', '#88c0d0');
-                        el.setAttribute('stroke-width', '1.5px');
-                    });
-
-                    svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
-                        el.setAttribute('stroke', '#81a1c1');
-                        el.setAttribute('fill', '#5e81ac');
-                    });
-
-                    svgElement.querySelectorAll('.cluster rect').forEach(el => {
-                        el.setAttribute('stroke', '#81a1c1');
-                        el.setAttribute('fill', '#4c566a');
-                    });
-
-                    // Apply custom styles from the diagram definition
-                    applyCustomStyles(svgElement);
-                });
-            } else {
-                // Even in light mode, apply custom styles
-                applyCustomStyles(svgElement);
             }
 
             // Helper function to apply custom styles from the diagram definition

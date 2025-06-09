@@ -244,6 +244,14 @@ line's content, not as a new line in the file.
 
 Do not include any explanatory text within the diff blocks. If you need to provide explanations or comments, do so outside the diff blocks.
 
+AVAILABLE TOOLS:
+You have access to the following tools:
+
+{tools}
+
+To use a tool, format your request as:
+<tool_call><name>tool_name</name><arguments>{"key": "value"}</arguments></tool_call>
+
 The codebase is provided at the end of this prompt in a specific format. 
 The code that the user has given to you for context is in the format like below where first line has the File path and then the content follows.
 Each file starts with "File: <filepath>" followed by its content on subsequent lines. 
@@ -340,10 +348,6 @@ conversational_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", template),
         MessagesPlaceholder(variable_name="chat_history", optional=True),
-<<<<<<< HEAD
-=======
-
->>>>>>> 839af8b (Backend minor fixes (#26))
         ("user", "{question}"),
         MessagesPlaceholder(variable_name="agent_scratchpad", optional=True),
     ]

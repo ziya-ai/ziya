@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Post-build script to convert platform-specific wheel to platform-independent wheel
+Post-build script to convert platform-specific wheel to platform-independent wheel,
 and include templates.
 """
 
@@ -64,6 +64,18 @@ def process_wheel():
         print(f"Copying templates from {templates_src} to {app_templates_dir}")
         shutil.copytree(templates_src, app_templates_dir)
         
+        # --- Handle mcp_servers ---
+        mcp_servers_src = os.path.join(os.getcwd(), 'mcp_servers')
+        app_mcp_servers_dir = os.path.join(app_dir, 'mcp_servers')
+        
+        if os.path.exists(mcp_servers_src) and os.path.isdir(mcp_servers_src):
+            if os.path.exists(app_mcp_servers_dir):
+                shutil.rmtree(app_mcp_servers_dir)
+            shutil.copytree(mcp_servers_src, app_mcp_servers_dir)
+            print(f"Copied MCP servers from {mcp_servers_src} to {app_mcp_servers_dir}")
+        else:
+            print(f"WARNING: mcp_servers directory not found at {mcp_servers_src}, built-in MCP servers might not work.")
+        
         # Find the RECORD file
         dist_info_dir = None
         for item in os.listdir(temp_dir):
@@ -87,11 +99,11 @@ def process_wheel():
             for row in reader:
                 records.append(row)
         
-        # Add entries for template files
-        template_records = []
+        # Add entries for template files - (Existing logic, ensure it's compatible with mcp_servers addition)
+        asset_records = [] # Combined list for templates and mcp_servers
         for root, dirs, files in os.walk(app_templates_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
+            for file_item in files: # Renamed 'file' to 'file_item'
+                file_path = os.path.join(root, file_item)
                 rel_path = os.path.relpath(file_path, temp_dir)
                 
                 # Calculate hash
@@ -103,17 +115,19 @@ def process_wheel():
                 file_size = os.path.getsize(file_path)
                 
                 # Add to records
-                template_records.append([rel_path, f"sha256={hash_digest}", str(file_size)])
+                asset_records.append([rel_path, f"sha256={hash_digest}", str(file_size)])
         
         # Write the updated RECORD file
         with open(record_file, 'w', newline='') as f:
             writer = csv.writer(f)
-            for row in records:
-                writer.writerow(row)
-            for row in template_records:
+            existing_non_asset_records = [r for r in records if not (r[0].startswith('app/templates/') or r[0].startswith('app/mcp_servers/'))]
+            # Add the RECORD file itself to the list of records to write, without hash and size
+            record_rel_path = os.path.relpath(record_file, temp_dir).replace(os.sep, '/')
+            all_records_to_write = sorted(existing_non_asset_records + asset_records + [[record_rel_path, "", ""]], key=lambda x: x[0])
+            for row in all_records_to_write:
                 writer.writerow(row)
         
-        print(f"Added {len(template_records)} template files to RECORD")
+        print(f"Updated RECORD file with {len(asset_records)} asset file entries (templates and mcp_servers).")
         
         # Always create a platform-independent wheel
         wheel_filename = os.path.basename(wheel_path)

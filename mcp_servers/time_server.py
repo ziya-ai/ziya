@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple MCP server that provides current time functionality.
+MCP server that provides current time functionality.
 """
 
 import asyncio
@@ -99,7 +99,7 @@ class TimeServer:
                     if format_type == "iso":
                         time_str = local_now.isoformat()
                     elif format_type == "timestamp":
-                        time_str = str(int(system_time))
+                        time_str = str(int(time.time()))
                 
                 return {
                     "jsonrpc": "2.0",

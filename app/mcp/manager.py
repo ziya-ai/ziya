@@ -117,6 +117,24 @@ class MCPManager:
                 if not server_config.get("enabled", True):
                     logger.info(f"MCP server {server_name} is disabled, skipping")
                     continue
+                
+                # Verify server command exists
+                command = server_config.get("command", [])
+                if command:
+                    # Check if the main script exists
+                    script_path = command[-1] if command else ""
+                    if script_path.endswith('.py'):
+                        # Check both absolute and relative to project root
+                        if not os.path.isabs(script_path):
+                            app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                            project_root = os.path.dirname(app_dir)
+                            full_script_path = os.path.join(project_root, script_path)
+                        else:
+                            full_script_path = script_path
+                        
+                        if not os.path.exists(full_script_path):
+                            logger.error(f"MCP server script not found: {full_script_path}")
+                            continue
                     
                 client = MCPClient(server_config)
                 self.clients[server_name] = client
@@ -131,6 +149,16 @@ class MCPManager:
                 builtin_count = sum(1 for config in merged_servers.values() if config.get("builtin", False))
                 user_count = len(merged_servers) - builtin_count
                 logger.info(f"MCP Manager initialized: {successful_connections}/{len(connection_tasks)} servers connected")
+                
+                # Debug server status
+                for server_name, client in self.clients.items():
+                    if client.is_connected:
+                        logger.info(f"✅ {server_name}: {len(client.tools)} tools, {len(client.resources)} resources")
+                        for tool in client.tools:
+                            logger.info(f"   - Tool: {tool.name}")
+                    else:
+                        logger.warning(f"❌ {server_name}: Connection failed")
+                
                 logger.info(f"Server breakdown: {builtin_count} built-in, {user_count} user-configured")
             
             self.is_initialized = True
