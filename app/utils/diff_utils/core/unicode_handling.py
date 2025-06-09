@@ -38,6 +38,17 @@ INVISIBLE_UNICODE_CHARS = [
     '\u202C',  # Pop directional formatting
     '\u202D',  # Left-to-right override
     '\u202E',  # Right-to-left override
+    # Additional zero-width characters and variation selectors
+    '\uFE00', '\uFE01', '\uFE02', '\uFE03', '\uFE04', '\uFE05', '\uFE06', '\uFE07',  # Variation selectors
+    '\uFE08', '\uFE09', '\uFE0A', '\uFE0B', '\uFE0C', '\uFE0D', '\uFE0E', '\uFE0F',  # Variation selectors
+    '\u034F',  # Combining grapheme joiner
+    '\u061C',  # Arabic letter mark
+    '\u115F',  # Hangul choseong filler
+    '\u1160',  # Hangul jungseong filler
+    '\u17B4',  # Khmer vowel inherent AQ
+    '\u17B5',  # Khmer vowel inherent AA
+    '\u3164',  # Hangul filler
+    '\uFFA0',  # Halfwidth hangul filler
 ]
 
 def contains_invisible_chars(text: str) -> bool:
@@ -50,6 +61,9 @@ def contains_invisible_chars(text: str) -> bool:
     Returns:
         True if the text contains invisible Unicode characters, False otherwise
     """
+    if not text:
+        return False
+        
     return any(char in text for char in INVISIBLE_UNICODE_CHARS)
 
 def normalize_unicode(text: str) -> str:
@@ -115,13 +129,30 @@ def handle_invisible_unicode(original_content: str, git_diff: str) -> str:
         return None
     
     import re
-    from app.utils.diff_utils.application.difflib_apply import apply_diff_with_difflib
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug("Handling invisible Unicode characters in diff")
     
     # Use the standard difflib apply function to apply the diff
     # This will handle the basic diff application
-    modified_content = apply_diff_with_difflib(original_content, git_diff)
+    from ..application.patch_apply import apply_diff_with_difflib
     
-    return modified_content
+    try:
+        # First try to apply the diff normally
+        modified_content = apply_diff_with_difflib(original_content, git_diff)
+        
+        # Check if the result contains invisible characters
+        if contains_invisible_chars(modified_content):
+            logger.debug("Modified content contains invisible Unicode characters")
+            
+            # Preserve invisible characters from the original content where possible
+            modified_content = preserve_invisible_chars(original_content, modified_content)
+            
+        return modified_content
+    except Exception as e:
+        logger.error(f"Error handling invisible Unicode characters: {str(e)}")
+        # Fall back to standard handling
+        return None
 
 def extract_invisible_chars(text: str) -> str:
     """
@@ -133,6 +164,9 @@ def extract_invisible_chars(text: str) -> str:
     Returns:
         A string containing only the invisible characters
     """
+    if not text:
+        return ""
+        
     result = ""
     for char in text:
         if char in INVISIBLE_UNICODE_CHARS:
@@ -151,6 +185,9 @@ def preserve_invisible_chars(original: str, modified: str) -> str:
     Returns:
         The modified text with invisible characters preserved
     """
+    if not original or not modified:
+        return modified
+        
     if not contains_invisible_chars(original):
         return modified
     
@@ -164,6 +201,7 @@ def preserve_invisible_chars(original: str, modified: str) -> str:
     
     # For different content, use the mapping approach for better preservation
     return map_invisible_chars(original, modified)
+
 def map_invisible_chars(original: str, modified: str) -> str:
     """
     Map invisible Unicode characters from the original text to the modified text
@@ -176,6 +214,12 @@ def map_invisible_chars(original: str, modified: str) -> str:
     Returns:
         The modified text with invisible characters mapped from the original
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if not original or not modified:
+        return modified
+        
     if not contains_invisible_chars(original):
         return modified
     
@@ -228,5 +272,21 @@ def map_invisible_chars(original: str, modified: str) -> str:
                 # Insert the invisible characters
                 result.insert(result_pos + 1, invisible_chars)
                 inserted += 1
+                logger.debug(f"Inserted invisible characters at position {result_pos + 1}")
+    
+    # Also check for invisible characters at the beginning of the original string
+    if original and original[0] in INVISIBLE_UNICODE_CHARS:
+        # Find all leading invisible characters
+        leading_invisible = ""
+        i = 0
+        while i < len(original) and original[i] in INVISIBLE_UNICODE_CHARS:
+            leading_invisible += original[i]
+            i += 1
+        
+        if leading_invisible:
+            # Insert at the beginning of the result
+            result.insert(0, leading_invisible)
+            inserted += 1
+            logger.debug(f"Inserted leading invisible characters")
     
     return ''.join(result)

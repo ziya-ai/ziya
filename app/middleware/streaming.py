@@ -145,7 +145,19 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                         yield f"data: {json.dumps(content)}\n\n"
                                     else:
                                         yield f"data: {content}\n\n"
-                        # If we couldn't extract content, skip this chunk
+                                yield f"data: {content}\n\n"
+                                continue
+                    
+                    # Handle DeepSeek format specifically
+                    if isinstance(chunk, dict) and "generation" in chunk:
+                        logger.info("Processing DeepSeek generation chunk")
+                        content = chunk["generation"]
+                        if content:
+                            chunk_content = content
+                            yield f"data: {content}\n\n"
+                            continue
+                    elif isinstance(raw_content, dict) and "generation" in raw_content:
+                        yield f"data: {raw_content['generation']}\n\n"
                         continue
                     
                     # Handle string chunks
@@ -229,8 +241,12 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     yield f"data: {json.dumps(error_msg)}\n\n"
                     continue
                     
-            # Send the [DONE] marker
-            yield "data: [DONE]\n\n"
+            # Ensure we end the stream properly
+            try:
+                # Send the [DONE] marker
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logger.error(f"Error sending DONE marker: {str(e)}")
             
         except Exception as e:
             logger.error(f"Error in safe_stream: {str(e)}")
@@ -240,4 +256,9 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 "detail": str(e)
             }
             yield f"data: {json.dumps(error_msg)}\n\n"
-            yield "data: [DONE]\n\n"
+            try:
+                yield "data: [DONE]\n\n"
+            except Exception as done_error:
+                logger.error(f"Error sending final DONE marker: {str(done_error)}")
+                # Don't re-raise here as it would cause more protocol errors
+                pass

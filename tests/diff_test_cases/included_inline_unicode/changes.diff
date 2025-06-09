@@ -1,0 +1,51 @@
+--- a/frontend/src/plugins/d3/vegaLitePlugin.ts
++++ b/frontend/src/plugins/d3/vegaLitePlugin.ts
+@@ -450,6 +450,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
+       // Add Source button
+       let showingSource = false;
++      const originalContent = vegaContainer?.innerHTML || '';
+       const sourceButton = document.createElement('button');
+       sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
+       sourceButton.className = 'diagram-action-button vega-lite-source-button';
+@@ -459,7 +460,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
+ 
+         if (showingSource) {
+           // Hide the vega container and show source
+-          if (vegaContainer) {
++          if (vegaContainer && vegaContainer.parentNode === container) {
+             vegaContainer.style.display = 'none';
+           }
+ 
+@@ -476,18 +477,25 @@ export const vegaLitePlugin: D3RenderPlugin = {
+           }><code>${JSON.stringify(vegaSpec, null, 2)}</code></pre>`;
+ 
+           // Re-add the actions container after clearing innerHTML
+-          container.insertBefore(actionsContainer, container.firstChild);
++          if (actionsContainer.parentNode !== container) {
++            container.insertBefore(actionsContainer, container.firstChild);
++          }
+         } else {
+-          // Clear container and restore the visualization
+-          container.innerHTML = '';
++          // Restore the visualization
++          const sourceView = container.querySelector('pre');
++          if (sourceView) {
++            container.removeChild(sourceView);
++          }
+ 
+-          // Check if vegaContainer is still valid
+-          if (vegaContainer && vegaContainer.parentNode) {
+-            container.appendChild(vegaContainer);
++          // Restore the vega container
++          if (vegaContainer) {
++            vegaContainer.style.display = '';
++            if (vegaContainer.parentNode !== container) {
++              container.appendChild(vegaContainer);
++            }
+           } else {
+             // Re-render the visualization if the container was lost
+-            embed(container, vegaSpec, embedOptions);
++            embed(container, vegaSpec, embedOptions).then(result => vegaViewRef.current = result.view);
+           }
+ 
+           // Re-add the actions container

@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from app.utils.logging_utils import logger
+from app.mcp.manager import get_mcp_manager
 from app.utils.prompt_extensions import PromptExtensionManager
 from app.agents.prompts import original_template, conversational_prompt
 
@@ -31,6 +32,29 @@ def get_extended_prompt(model_name: Optional[str] = None,
     if context is None:
         context = {}
     
+    # Get MCP context information
+    mcp_context = {}
+    try:
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            logger.info(f"MCP manager is initialized with {len(mcp_manager.get_all_tools())} tools for prompt extension")
+            # Get tools reported by servers
+            server_tools = [tool.name for tool in mcp_manager.get_all_tools()]
+            # Manually add the client-side MCPResourceTool if it's always available to the agent
+            available_tools = list(set(server_tools + ["mcp_get_resource"])) # Use set to avoid duplicates
+            
+            logger.info(f"MCP tools available for prompt extension: {available_tools}")
+            mcp_context = {
+                "mcp_tools_available": len(available_tools) > 0,
+                "available_mcp_tools": available_tools
+            }
+            
+        else:
+            logger.info("MCP manager not initialized for prompt extensions")
+            logger.info(f"MCP manager state: initialized={mcp_manager.is_initialized if mcp_manager else 'No manager'}")
+    except Exception as e:
+        logger.debug(f"Could not get MCP context: {e}")
+    
     # Get the original template
     template = original_template
     
@@ -40,7 +64,7 @@ def get_extended_prompt(model_name: Optional[str] = None,
         model_name=model_name,
         model_family=model_family,
         endpoint=endpoint,
-        context=context
+        context={**context, **mcp_context}
     )
     
     # Create a new prompt template with the extended template

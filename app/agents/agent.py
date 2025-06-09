@@ -20,10 +20,11 @@ try:
     from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
     from google.api_core.exceptions import ResourceExhausted
     from langchain_community.document_loaders import TextLoader
-    from langchain_core.agents import AgentFinish
+    from langchain_core.agents import AgentFinish, AgentAction
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, BaseMessage
     from langchain_core.outputs import Generation
+    from langchain_core.output_parsers import BaseOutputParser
     from langchain_core.runnables import RunnablePassthrough, Runnable
 except KnownCredentialException as e:
     # Print clean error message without traceback
@@ -52,6 +53,8 @@ from app.utils.file_state_manager import FileStateManager
 from app.utils.error_handlers import format_error_response, detect_error_type
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 
+from app.mcp.manager import get_mcp_manager
+from app.mcp.tools import create_mcp_tools, parse_tool_call
 # Wrap model initialization in try/except to catch credential errors early
 try:
     # Initialize the model
@@ -206,6 +209,51 @@ def parse_output(message):
         # Provide a safe fallback
         return AgentFinish(return_values={"output": content}, log=content)
 
+class MCPToolOutputParser(BaseOutputParser):
+    """
+    Parses LLM output for MCP tool calls or final answers.
+    Handles both <name>/<arguments> and <invoke>/<parameter> formats.
+    """
+    def parse(self, llm_output: str) -> Union[AgentAction, AgentFinish]:
+        text_to_log = llm_output  # Log the raw output
+
+        logger.info(f"🔍 MCPToolOutputParser.parse() called with output length: {len(llm_output)}")
+        logger.info(f"🔍 MCPToolOutputParser raw output preview: {llm_output[:500]}...")
+        logger.info(f"MCPToolOutputParser parsing output: {llm_output[:200]}...")
+        
+        # Use the dual-format parser from app.mcp.tools
+        parsed_call = parse_tool_call(llm_output)
+
+        if parsed_call:
+            tool_name = parsed_call["tool_name"] # This should be the name registered with AgentExecutor (e.g., "mcp_run_shell_command")
+            logger.info(f"🔍 MCPToolOutputParser detected tool call: {tool_name}")
+            tool_input_dict = parsed_call["arguments"]
+            
+            # Log the actual tool call for debugging
+            logger.info(f"MCPToolOutputParser: Executing tool call: {tool_name} with args: {tool_input_dict}")
+            
+            # Ensure the tool name has the mcp_ prefix for consistency
+            if not tool_name.startswith("mcp_"):
+                tool_name = f"mcp_{tool_name}"
+            
+            tool_input_dict = parsed_call["arguments"]
+            
+            logger.info(f"MCPToolOutputParser: Detected tool call: {tool_name} with args: {tool_input_dict}")
+            return AgentAction(tool=tool_name, tool_input=tool_input_dict, log=text_to_log)
+        else:
+            logger.info(f"🔍 MCPToolOutputParser: No tool call detected, treating as final answer")
+            # If no tool call is found, assume it's a final answer.
+            # The llm_output here is the raw string from the model, which might be complex.
+            # It needs to be processed by _extract_content.
+            logger.info(f"MCPToolOutputParser: No tool call detected in: {llm_output[:100]}...")
+            logger.info("MCPToolOutputParser: No tool call detected, treating as final answer.")
+            final_answer = _extract_content(llm_output) # _extract_content is already defined in agent.py
+            return AgentFinish(return_values={"output": final_answer}, log=text_to_log)
+
+    @property
+    def _type(self) -> str:
+        return "mcp_tool_output_parser"
+
 # Create a wrapper class that adds retries
 class RetryingChatBedrock(Runnable):
     def __init__(self, model):
@@ -270,6 +318,7 @@ class RetryingChatBedrock(Runnable):
             self.__class__._binding_logged = True
             
         return RetryingChatBedrock(self.model.bind(**supported_kwargs))
+
 
 
     def get_num_tokens(self, text: str) -> int:
@@ -556,6 +605,64 @@ class RetryingChatBedrock(Runnable):
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
         
+        # Create a copy of kwargs to avoid modifying the original
+        filtered_kwargs = {}
+
+        # If max_tokens is specified in kwargs, use that instead
+        if "max_tokens" in kwargs:
+            max_tokens = kwargs["max_tokens"]
+        elif max_tokens:
+            # Add max_tokens to kwargs if it's not already there
+            filtered_kwargs["max_tokens"] = max_tokens
+            logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
+        from app.agents.models import ModelManager
+        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
+        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+
+        for key, value in kwargs.items():
+            if key != "max_tokens":  # We've already handled max_tokens
+                filtered_kwargs[key] = value
+        # Filter kwargs based on supported parameters
+        filtered_kwargs = ModelManager.filter_model_kwargs(filtered_kwargs, model_config)
+        logger.info(f"Filtering model kwargs: {filtered_kwargs}")
+        
+        # Extract conversation_id from config for caching
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get('conversation_id')
+            if conversation_id:
+                filtered_kwargs["conversation_id"] = conversation_id
+                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
+        
+        # Use filtered kwargs for the rest of the method
+        kwargs = filtered_kwargs
+        # Extract conversation_id from config for caching, but don't pass it to the model
+        conversation_id = None
+        if config and isinstance(config, dict):
+            conversation_id = config.get('conversation_id')
+            if conversation_id:
+                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
+        
+        # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
+        if "conversation_id" in filtered_kwargs:
+            del filtered_kwargs["conversation_id"]
+            logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
+        
+        # Use filtered kwargs for the model call
+        kwargs = filtered_kwargs
+        
+        # Add AWS credential debugging
+        from app.utils.aws_utils import debug_aws_credentials
+        # debug_aws_credentials()
+        
+        # Ensure each stream has its own conversation tracking
+        #stream_id = f"stream_{id(self)}_{hash(str(messages))}"
+        stream_id = "unbound"
+
+        # Get max_tokens from environment variables
+        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
+        
         # Filter kwargs based on model's supported parameters
         from app.agents.models import ModelManager
         endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
@@ -609,6 +716,18 @@ class RetryingChatBedrock(Runnable):
                     if not messages:
                         raise ValueError("No valid messages with content")
                     logger.debug(f"Filtered to {len(messages)} non-empty messages")
+
+                logger.info("LLM_INPUT_DEBUG: Preparing to call LLM.") # ADD THIS BLOCK
+                for i, msg in enumerate(messages): # ADD THIS BLOCK
+                    if hasattr(msg, 'content'): # ADD THIS BLOCK
+                        logger.info(f"LLM_INPUT_DEBUG: Message {i} ({type(msg)}): Content length {len(msg.content)}") # ADD THIS BLOCK
+                        if isinstance(msg, SystemMessage): # ADD THIS BLOCK
+                            logger.info(f"LLM_INPUT_DEBUG: System Message Content: ...{msg.content[-1000:]}") # ADD THIS BLOCK
+                    else: # ADD THIS BLOCK
+                        logger.info(f"LLM_INPUT_DEBUG: Message {i} ({type(msg)}) has no content attribute.") # ADD THIS BLOCK
+
+
+
                 
                 # Debug the Bedrock client being used
                 if hasattr(self.model, 'client'):
@@ -1273,17 +1392,23 @@ def log_codebase_wrapper(x):
     logger.info(f"Codebase before prompt: {len(codebase)} chars")
     file_count = len([l for l in codebase.split('\n') if l.startswith('File: ')])
     logger.info(f"Number of files in codebase before prompt: {file_count}")
-    logger.info(f"Files in codebase before prompt:\n{chr(10).join([l for l in codebase.split('\n') if l.startswith('File: ')])}")
+    file_lines = [l for l in codebase.split('\n') if l.startswith('File: ')]
+    logger.info("Files in codebase before prompt:\n" + "\n".join(file_lines))
     return codebase
 
 def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
-    # Bind the stop sequence to the model
-    llm_with_stop = chat_model.bind(stop=["</tool_input"])
+    from langchain.agents import create_xml_agent
+    
+    # Bind the stop sequence to the model  
+    llm_with_stop = chat_model.bind(stop=["</tool_call>"])
     
     # Store the model with stop in the ModelManager state
     from app.agents.models import ModelManager
     ModelManager._state['llm_with_stop'] = llm_with_stop
+    
+    # Initialize MCP tools if available
+    mcp_tools = []
     
     # Check if AST is enabled
     ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
@@ -1331,22 +1456,56 @@ def create_agent_chain(chat_model: BaseChatModel):
         logger.info("AST context not added to agent chain (disabled)")
         # Add empty AST context to avoid template errors
         input_mapping["ast_context"] = lambda x: {}
+
+    # Get MCP tools
+    try:
+        from app.mcp.manager import get_mcp_manager
+        from app.mcp.tools import create_mcp_tools
+        mcp_manager = get_mcp_manager()
+        # Ensure MCP is initialized before creating tools
+        if not mcp_manager.is_initialized:
+            logger.warning("MCP manager not initialized during agent creation, attempting initialization...")
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If we're in an async context, we can't wait for initialization
+                logger.warning("Cannot initialize MCP synchronously in async context")
+            else:
+                loop.run_until_complete(mcp_manager.initialize())
+        
+        if mcp_manager.is_initialized:
+
+            mcp_tools = create_mcp_tools()
+            logger.info(f"Created {len(mcp_tools)} MCP tools for XML agent")
+        else:
+            logger.warning("MCP manager not initialized, no MCP tools available")
+    except Exception as e:
+        logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
     
-    chain = (
-        input_mapping
-        | prompt_template  # Use the extended prompt template with model-specific extensions
-        | llm_with_stop  # Use the stored llm_with_stop instead of recreating it
-        | (lambda x: AgentFinish(
-            return_values={"output": _extract_content(x)},
-            log=_extract_content(x)
-        ))
-    )
+    # Create the XML agent directly with input preprocessing
+    # Use custom output parser for MCP tool detection
+    agent = create_xml_agent(llm_with_stop, mcp_tools, prompt_template)
     
-    # Log information about AST context if enabled
-    if ast_enabled:
-        logger.info("AST context enhancement enabled for agent chain")
+    # Create a preprocessing chain that applies input mapping
+    def preprocess_input(input_data):
+        """Apply input mapping to transform input data."""
+        mapped_input = {}
+        for key, mapper in input_mapping.items():
+            try:
+                mapped_input[key] = mapper(input_data)
+            except Exception as e:
+                logger.error(f"Error applying input mapping for {key}: {e}")
+                mapped_input[key] = ""
+        return mapped_input
     
-    return chain
+    # Create a chain that preprocesses input then calls the agent
+    from langchain_core.runnables import RunnableLambda
+    preprocessing_chain = RunnableLambda(preprocess_input)
+    agent_chain = preprocessing_chain | agent
+    
+    logger.info(f"Created XML agent with {len(mcp_tools)} tools and input mapping")
+    logger.info(f"Input mapping keys: {list(input_mapping.keys())}") 
+    return agent_chain
  
 # Initialize the agent chain
 agent = create_agent_chain(model)
@@ -1397,14 +1556,51 @@ def create_agent_executor(agent_chain: Runnable):
     """Create a new agent executor with the given agent."""
     from langchain_core.runnables import RunnableConfig, Runnable as LCRunnable
     from langchain_core.tracers.log_stream import RunLogPatch
-    
+
+    # Get MCP tools for the executor
+    mcp_tools = []
+    try:
+        logger.info("Attempting to get MCP tools for agent executor...")
+        
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        
+        if mcp_manager.is_initialized:
+            mcp_tools = create_mcp_tools()
+            logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
+            for tool in mcp_tools:
+                logger.info(f"  - {tool.name}: {tool.description}")
+        else:
+            logger.info("MCP not initialized, no MCP tools available")
+    except Exception as e:
+        logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        
     # Create the original executor
+    logger.info(f"Creating AgentExecutor with agent type: {type(agent_chain)}")
     original_executor = AgentExecutor(
+        verbose=True,  # Enable verbose logging
         agent=agent_chain,
-        tools=[],
-        verbose=False,
-        handle_parsing_errors=True
+        tools=mcp_tools,
+        handle_parsing_errors=True,
+        return_intermediate_steps=True,  # This helps with debugging
+        max_iterations=3,  # Limit iterations to prevent infinite loops
     ).with_types(input_type=AgentInput) | RunnablePassthrough.assign(output=update_and_return)
+    
+    # Wrap the executor to add debugging
+    class DebuggingAgentExecutor:
+        def __init__(self, wrapped_executor):
+            self.executor = wrapped_executor
+            
+        async def astream(self, input_data, config=None, **kwargs):
+            logger.info(f"🔍 DebuggingAgentExecutor.astream called with question: {input_data.get('question', 'N/A')}")
+            async for chunk in self.executor.astream(input_data, config, **kwargs):
+                logger.info(f"🔍 DebuggingAgentExecutor yielding chunk type: {type(chunk)}")
+                yield chunk
+                
+        def __getattr__(self, name):
+            return getattr(self.executor, name)
     
     # Create a Runnable wrapper class that adds our safe streaming
     class SafeAgentExecutor(LCRunnable):

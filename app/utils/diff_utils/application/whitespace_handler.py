@@ -1,241 +1,99 @@
 """
-Utilities for handling whitespace-specific changes in diffs.
+Specialized handler for whitespace changes in diffs.
+
+This module provides functions for detecting and handling whitespace-only changes
+in diffs, improving the robustness of the diff application pipeline.
 """
 
+import logging
 import re
-import difflib
-from typing import List, Tuple, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
-from app.utils.logging_utils import logger
+# Configure logging
+logger = logging.getLogger(__name__)
 
-def normalize_whitespace(content: str) -> str:
+def is_whitespace_only_diff(hunk: Dict[str, Any]) -> bool:
     """
-    Normalize whitespace in content to make whitespace-only changes more detectable.
+    Check if a hunk contains only whitespace changes.
     
     Args:
-        content: The content to normalize
+        hunk: The hunk to check
         
     Returns:
-        Normalized content
+        True if the hunk only contains whitespace changes, False otherwise
     """
-    # Replace tabs with spaces (4 spaces per tab)
-    content = content.replace('\t', '    ')
+    # Extract the removed and added lines
+    removed_lines = []
+    added_lines = []
     
-    # Normalize line endings
-    content = content.replace('\r\n', '\n')
+    # Extract from old_block and new_block
+    if 'old_block' in hunk and 'new_block' in hunk:
+        for line in hunk.get('old_block', []):
+            if line.startswith('-'):
+                removed_lines.append(line[1:])
+        for line in hunk.get('new_block', []):
+            if line.startswith('+'):
+                added_lines.append(line[1:])
     
-    # Handle invisible Unicode characters
-    content = content.replace('\u200b', '')  # Zero-width space
-    content = content.replace('\u200c', '')  # Zero-width non-joiner
-    content = content.replace('\u200d', '')  # Zero-width joiner
-    content = content.replace('\u2060', '')  # Word joiner
-    content = content.replace('\ufeff', '')  # Zero-width no-break space (BOM)
-    
-    return content
-
-def is_whitespace_only_change(old_line: str, new_line: str) -> bool:
-    """
-    Check if the difference between two lines is only whitespace.
-    
-    Args:
-        old_line: Original line
-        new_line: New line
-        
-    Returns:
-        True if the only difference is whitespace
-    """
-    # Handle tab vs space differences
-    normalized_old = old_line.replace('\t', '    ')
-    normalized_new = new_line.replace('\t', '    ')
-    
-    # If they're equal after tab normalization, it's a whitespace change
-    if normalized_old == normalized_new:
-        return True
-    
-    # Remove all whitespace and compare
-    old_no_space = re.sub(r'\s+', '', old_line)
-    new_no_space = re.sub(r'\s+', '', new_line)
-    
-    return old_no_space == new_no_space
-
-def extract_whitespace_changes(old_content: str, new_content: str) -> List[Tuple[int, str, str]]:
-    """
-    Extract lines that differ only in whitespace.
-    
-    Args:
-        old_content: Original content
-        new_content: New content
-        
-    Returns:
-        List of tuples (line_number, old_line, new_line)
-    """
-    old_lines = old_content.splitlines()
-    new_lines = new_content.splitlines()
-    
-    whitespace_changes = []
-    
-    # Find common prefix length
-    min_len = min(len(old_lines), len(new_lines))
-    for i in range(min_len):
-        if old_lines[i] != new_lines[i] and is_whitespace_only_change(old_lines[i], new_lines[i]):
-            whitespace_changes.append((i+1, old_lines[i], new_lines[i]))
-    
-    return whitespace_changes
-
-def apply_whitespace_changes(content: str, changes: List[Tuple[int, str, str]]) -> str:
-    """
-    Apply whitespace-only changes to content.
-    
-    Args:
-        content: Original content
-        changes: List of (line_number, old_line, new_line) tuples
-        
-    Returns:
-        Content with whitespace changes applied
-    """
-    lines = content.splitlines()
-    
-    for line_num, old_line, new_line in changes:
-        if line_num <= len(lines) and lines[line_num-1] == old_line:
-            lines[line_num-1] = new_line
-    
-    return '\n'.join(lines)
-
-def is_whitespace_only_diff(diff_content: str) -> bool:
-    """
-    Check if a diff contains only whitespace changes.
-    
-    Args:
-        diff_content: The diff content to check
-        
-    Returns:
-        True if the diff only contains whitespace changes
-    """
-    # Extract the actual changes from the diff
-    changes = []
-    for line in diff_content.splitlines():
-        if line.startswith('+') and not line.startswith('+++'):
-            changes.append(('add', line[1:]))
-        elif line.startswith('-') and not line.startswith('---'):
-            changes.append(('remove', line[1:]))
-    
-    # Group additions and removals
-    additions = [line for op, line in changes if op == 'add']
-    removals = [line for op, line in changes if op == 'remove']
-    
-    # If we have different numbers of additions and removals, it's not just whitespace
-    if len(additions) != len(removals):
+    # If no changes, not a whitespace-only change
+    if not removed_lines and not added_lines:
         return False
     
-    # Check each pair of addition/removal
-    for add_line, remove_line in zip(additions, removals):
-        if not is_whitespace_only_change(remove_line, add_line):
+    # Special case: empty lines being added or removed
+    if all(not line.strip() for line in removed_lines) or all(not line.strip() for line in added_lines):
+        return True
+    
+    # If different number of non-empty lines, not just whitespace
+    non_empty_removed = [line for line in removed_lines if line.strip()]
+    non_empty_added = [line for line in added_lines if line.strip()]
+    
+    if len(non_empty_removed) != len(non_empty_added):
+        return False
+    
+    # Compare the non-whitespace content of each pair
+    for removed, added in zip(non_empty_removed, non_empty_added):
+        if re.sub(r'\s+', '', removed) != re.sub(r'\s+', '', added):
             return False
     
     return True
 
-def process_whitespace_changes(original_content: str, diff_content: str) -> Optional[str]:
+def normalize_whitespace_for_comparison(text: str) -> str:
     """
-    Process whitespace changes from a diff and apply them to the original content.
+    Normalize whitespace in text for comparison purposes.
     
     Args:
-        original_content: Original file content
-        diff_content: Diff content to apply
+        text: The text to normalize
         
     Returns:
-        Content with whitespace changes applied, or None if not a whitespace-only diff
+        Normalized text with consistent whitespace
     """
-    # Quick check if this is a whitespace-only diff
-    if not is_whitespace_only_diff(diff_content):
-        return None
+    # Replace tabs with spaces
+    normalized = text.replace('\t', '    ')
     
-    # Parse the diff to extract line numbers and changes
-    whitespace_changes = []
-    current_line = 0
+    # Normalize line endings
+    normalized = normalized.replace('\r\n', '\n').replace('\r', '\n')
     
-    # Split the diff into lines for processing
-    diff_lines = diff_content.splitlines()
+    # Collapse multiple spaces to a single space
+    normalized = re.sub(r' +', ' ', normalized)
     
-    # First pass: identify all removed and added lines
-    removed_lines = []
-    added_lines = []
+    # Trim leading/trailing whitespace
+    normalized = normalized.strip()
     
-    for i, line in enumerate(diff_lines):
-        if line.startswith('-') and not line.startswith('---'):
-            removed_lines.append((i, line[1:]))
-        elif line.startswith('+') and not line.startswith('+++'):
-            added_lines.append((i, line[1:]))
+    return normalized
+
+def compare_ignoring_whitespace(text1: str, text2: str) -> bool:
+    """
+    Compare two text strings ignoring whitespace differences.
     
-    # Second pass: match removed and added lines that are whitespace-only changes
-    matched_indices = set()
-    
-    for r_idx, (r_line_idx, r_line) in enumerate(removed_lines):
-        for a_idx, (a_line_idx, a_line) in enumerate(added_lines):
-            if a_idx in matched_indices:
-                continue
-                
-            if is_whitespace_only_change(r_line, a_line):
-                # Find the line number in the original file
-                line_num = 0
-                for i in range(r_line_idx):
-                    if diff_lines[i].startswith('@@'):
-                        match = re.search(r'@@ -(\d+)', diff_lines[i])
-                        if match:
-                            line_num = int(match.group(1)) - 1
-                    elif diff_lines[i].startswith(' '):
-                        line_num += 1
-                    elif diff_lines[i].startswith('-') and not diff_lines[i].startswith('---'):
-                        line_num += 1
-                
-                whitespace_changes.append((line_num, r_line, a_line))
-                matched_indices.add(a_idx)
-                break
-    
-    # Apply the whitespace changes
-    if whitespace_changes:
-        logger.info(f"Applying {len(whitespace_changes)} whitespace-only changes")
-        return apply_whitespace_changes(original_content, whitespace_changes)
-    
-    # If we couldn't extract changes, try a direct approach
-    original_lines = original_content.splitlines()
-    expected_lines = original_lines.copy()
-    
-    # Apply the diff directly
-    try:
-        # Create a temporary file with the original content
-        import tempfile
-        import os
+    Args:
+        text1: First text to compare
+        text2: Second text to compare
         
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
-            temp_file.write(original_content)
-            temp_path = temp_file.name
-        
-        try:
-            # Apply the diff using the patch command
-            import subprocess
-            patch_process = subprocess.run(
-                ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '-i', '-'],
-                input=diff_content,
-                encoding='utf-8',
-                cwd=os.path.dirname(temp_path),
-                capture_output=True,
-                text=True
-            )
-            
-            # Read the patched content
-            with open(temp_path, 'r') as f:
-                patched_content = f.read()
-            
-            # Check if the changes are whitespace-only
-            whitespace_changes = extract_whitespace_changes(original_content, patched_content)
-            if len(whitespace_changes) > 0:
-                logger.info(f"Detected {len(whitespace_changes)} whitespace-only changes")
-                return patched_content
-        finally:
-            # Clean up the temporary file
-            os.unlink(temp_path)
-    except Exception as e:
-        logger.error(f"Error applying whitespace changes: {str(e)}")
+    Returns:
+        True if the texts are equivalent ignoring whitespace, False otherwise
+    """
+    # Remove all whitespace and compare
+    text1_no_ws = re.sub(r'\s+', '', text1)
+    text2_no_ws = re.sub(r'\s+', '', text2)
     
-    # If we get here, it's not a whitespace-only change
-    return None
+    return text1_no_ws == text2_no_ws

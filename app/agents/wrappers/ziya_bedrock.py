@@ -711,6 +711,19 @@ class ZiyaBedrock(Runnable):
                 yield chunk.message.content
     
     # Forward LangChain BaseChatModel required methods
+    def _extract_streaming_content(self, chunk):
+        """Extract content from streaming chunks based on model type."""
+        # Get model ID to determine provider
+        model_id = self.model_id.lower() if hasattr(self, 'model_id') else ""
+        
+        # Handle DeepSeek format
+        if "deepseek" in model_id and isinstance(chunk, dict):
+            if "generation" in chunk:
+                return chunk["generation"]
+            
+        # Default extraction for other models
+        return chunk
+    
     @property
     def _llm_type(self) -> str:
         """Return the type of LLM."""

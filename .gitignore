@@ -4,7 +4,6 @@ __pycache__
 dist
 frontend/build
 frontend/node_modules
-templates/
 *.swp
 *.rej
 *.orig
@@ -13,3 +12,4 @@ templates/
 */node_modules
 node_modules/
 **/node_modules/
+templates/
