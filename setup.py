@@ -40,7 +40,7 @@ def run_post_build():
 setup(
     name="ziya",
     version="0.2.3",
-    packages=find_packages(include=["app", "app.*"]),
+    packages=find_packages(include=["app", "app.*", "mcp_servers"]),
     include_package_data=True,
     zip_safe=False,
     cmdclass={

@@ -4,6 +4,7 @@ API routes for MCP (Model Context Protocol) management.
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+import os
 import json
 from typing import Dict, List, Any, Optional
 
@@ -35,6 +36,16 @@ async def get_mcp_status():
         Dictionary with MCP server status information
     """
     try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            return {
+                "initialized": False,
+                "disabled": True,
+                "message": "MCP is disabled. Use --mcp flag to enable MCP integration.",
+                "servers": {},
+                "config_path": None
+            }
+            
         mcp_manager = get_mcp_manager()
         
         if not mcp_manager.is_initialized:
@@ -68,6 +79,10 @@ async def get_mcp_resources():
         List of MCP resources from all connected servers
     """
     try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            return {"resources": [], "disabled": True}
+            
         mcp_manager = get_mcp_manager()
         
         if not mcp_manager.is_initialized:
@@ -102,6 +117,10 @@ async def get_mcp_tools():
         List of MCP tools from all connected servers
     """
     try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            return {"tools": [], "disabled": True}
+            
         mcp_manager = get_mcp_manager()
         
         if not mcp_manager.is_initialized:
@@ -135,6 +154,10 @@ async def get_mcp_prompts():
         List of MCP prompts from all connected servers
     """
     try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            return {"prompts": [], "disabled": True}
+            
         mcp_manager = get_mcp_manager()
         
         if not mcp_manager.is_initialized:
@@ -168,6 +191,13 @@ async def initialize_mcp():
         Success status and connection results
     """
     try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            return {
+                "success": False,
+                "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
+            }
+            
         mcp_manager = get_mcp_manager()
         
         # Shutdown existing connections
@@ -203,6 +233,14 @@ async def get_shell_config():
         Current shell server configuration
     """
     try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            return {
+                "enabled": False,
+                "disabled": True,
+                "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
+            }
+            
         mcp_manager = get_mcp_manager()
         
         if not mcp_manager.is_initialized:
@@ -247,6 +285,13 @@ async def update_shell_config(config: ShellConfig):
     Update shell configuration and restart the shell server instantly.
     """
     try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            return {
+                "success": False,
+                "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
+            }
+            
         mcp_manager = get_mcp_manager()
         
         if not mcp_manager.is_initialized:

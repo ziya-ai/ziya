@@ -85,8 +85,16 @@ class MCPClient:
             # Set working directory to project root (parent of app directory)
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             project_root = os.path.dirname(app_dir)
-            working_dir = project_root if os.path.exists(os.path.join(project_root, 'mcp_servers')) else os.getcwd()
             
+            # For built-in servers, check multiple possible locations
+            possible_roots = [
+                project_root,  # Development mode
+                os.getcwd(),   # Current working directory
+                os.path.dirname(os.path.dirname(app_dir)),  # Installed package mode
+                os.path.dirname(app_dir)  # Package root (where mcp_servers would be alongside app/)
+            ]
+            
+            working_dir = project_root
             # Set working directory to project root (parent of app directory)
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             project_root = os.path.dirname(app_dir)
@@ -96,10 +104,23 @@ class MCPClient:
                 
             # Resolve command paths
             resolved_command = []
+            script_found = False
             for part in command:
                 if part.endswith('.py') and not os.path.isabs(part):
-                    # Make relative Python scripts absolute
-                    resolved_path = os.path.join(working_dir, part)
+                    # Try to find the script in possible locations
+                    for root in possible_roots:
+                        potential_path = os.path.join(root, part)
+                        if os.path.exists(potential_path):
+                            resolved_path = potential_path
+                            working_dir = root
+                            script_found = True
+                            logger.info(f"Found MCP server script at: {resolved_path}")
+                            break
+                    
+                    if not script_found:
+                        resolved_path = os.path.join(working_dir, part)
+                        logger.warning(f"MCP server script not found, using default path: {resolved_path}")
+                    
                     resolved_command.append(resolved_path)
                 else:
                     resolved_command.append(part)

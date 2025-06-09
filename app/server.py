@@ -190,6 +190,11 @@ if os.path.exists(static_dir):
 @app.on_event("startup")
 async def startup_event():
     """Initialize MCP manager when the server starts."""
+    # Check if MCP is enabled
+    if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        logger.info("MCP integration is disabled. Use --mcp flag to enable.")
+        return
+        
     try:
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
@@ -224,6 +229,10 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup MCP manager when the server shuts down."""
+    # Only shutdown if MCP was enabled
+    if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        return
+        
     try:
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()

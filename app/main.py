@@ -73,6 +73,8 @@ def parse_arguments():
                         help="Enable AST-based code understanding capabilities")
     parser.add_argument("--ast-resolution", choices=['disabled', 'minimal', 'medium', 'detailed', 'comprehensive'], 
                        default='medium', help="AST context resolution level (default: medium)")
+    parser.add_argument("--mcp", action="store_true",
+                       help="Enable MCP (Model Context Protocol) server integration")
     return parser.parse_args()
 
 
@@ -180,8 +182,11 @@ def setup_environment(args):
         logger.info(f"AST resolution level: {args.ast_resolution}")
         os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
         logger.info(f"Using max depth for AST: {args.max_depth}")
-
-
+    # Set MCP enablement flag
+    if args.mcp:
+        os.environ["ZIYA_ENABLE_MCP"] = "true"
+        logger.info("MCP (Model Context Protocol) integration enabled")
+    
 def check_version_and_upgrade():
     current_version = get_current_version()
     latest_version = get_latest_version()

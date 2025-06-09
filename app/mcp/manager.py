@@ -81,6 +81,12 @@ class MCPManager:
         Returns:
             bool: True if initialization successful
         """
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            logger.info("MCP is disabled. Use --mcp flag to enable MCP integration.")
+            self.is_initialized = False
+            return False
+            
         try:
             # Load configuration
             config = self._load_config()
@@ -121,19 +127,28 @@ class MCPManager:
                 # Verify server command exists
                 command = server_config.get("command", [])
                 if command:
-                    # Check if the main script exists
+                    # Check if the main script exists for built-in servers
                     script_path = command[-1] if command else ""
                     if script_path.endswith('.py'):
-                        # Check both absolute and relative to project root
-                        if not os.path.isabs(script_path):
+                        script_exists = False
+                        
+                        if os.path.isabs(script_path):
+                            script_exists = os.path.exists(script_path)
+                        else:
+                            # For relative paths, check multiple possible locations
                             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                             project_root = os.path.dirname(app_dir)
-                            full_script_path = os.path.join(project_root, script_path)
-                        else:
-                            full_script_path = script_path
+                            possible_locations = [
+                                os.path.join(project_root, script_path),
+                                os.path.join(os.getcwd(), script_path),
+                                os.path.join(os.path.dirname(project_root), script_path)
+                            ]
+                            script_exists = any(os.path.exists(path) for path in possible_locations)
                         
-                        if not os.path.exists(full_script_path):
-                            logger.error(f"MCP server script not found: {full_script_path}")
+                        if not script_exists and server_config.get("builtin", False):
+                            logger.warning(f"Built-in MCP server script not found: {script_path}, but will attempt to start anyway")
+                        elif not script_exists:
+                            logger.error(f"MCP server script not found: {script_path}")
                             continue
                     
                 client = MCPClient(server_config)

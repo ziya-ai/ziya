@@ -1478,7 +1478,7 @@ def create_agent_chain(chat_model: BaseChatModel):
             mcp_tools = create_mcp_tools()
             logger.info(f"Created {len(mcp_tools)} MCP tools for XML agent")
         else:
-            logger.warning("MCP manager failed to initialize, no MCP tools available")
+            logger.warning("MCP manager not initialized, no MCP tools available")
     except Exception as e:
         logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
     

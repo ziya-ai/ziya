@@ -121,7 +121,9 @@ export const App: React.FC = () => {
 
     const [showShellConfig, setShowShellConfig] = useState(false);
     const [showMCPStatus, setShowMCPStatus] = useState(false);
-    // Set initial CSS variable on mount
+    const [mcpEnabled, setMcpEnabled] = useState(false);
+
+    // Check MCP status on mount
     useEffect(() => {
         document.documentElement.style.setProperty('--folder-panel-width', `25vw`);
         document.documentElement.style.setProperty('--model-display-height', '35px');
@@ -131,6 +133,24 @@ export const App: React.FC = () => {
             handlePanelResize(panelWidth);
         }, 300);
     }, []);
+
+    // Check MCP status on mount
+    useEffect(() => {
+        const checkMCPStatus = async () => {
+            try {
+                const response = await fetch('/api/mcp/status');
+                if (response.ok) {
+                    const data = await response.json();
+                    // MCP is enabled only if it's not explicitly disabled
+                    setMcpEnabled(!data.disabled);
+                }
+            } catch (error) {
+                console.error('Failed to check MCP status:', error);
+            }
+        };
+        checkMCPStatus();
+    }, []);
+    console.log('Current mcpEnabled state:', mcpEnabled);
 
     // Add scroll event listener to detect manual scrolling
     useEffect(() => {
@@ -396,12 +416,16 @@ export const App: React.FC = () => {
                                 <Tooltip title="Toggle theme">
                                     <Button icon={<BulbOutlined />} onClick={toggleTheme} />
                                 </Tooltip>
-                                <Tooltip title="Shell Configuration">
-                                    <Button icon={<CodeOutlined />} onClick={() => setShowShellConfig(true)} />
-                                </Tooltip>
-                                <Tooltip title="MCP Servers">
-                                    <Button icon={<ApiOutlined />} onClick={() => setShowMCPStatus(true)} />
-                                </Tooltip>
+                                {mcpEnabled && (
+                                    <>
+                                        <Tooltip title="Shell Configuration">
+                                            <Button icon={<CodeOutlined />} onClick={() => setShowShellConfig(true)} />
+                                        </Tooltip>
+                                        <Tooltip title="MCP Servers">
+                                            <Button icon={<ApiOutlined />} onClick={() => setShowMCPStatus(true)} />
+                                        </Tooltip>
+                                    </>
+                                )}
                                 <Tooltip title="New Chat">
                                     <Button icon={<PlusOutlined />} onClick={handleNewChat} />
                                 </Tooltip>
@@ -430,16 +454,20 @@ export const App: React.FC = () => {
                     <Suspense fallback={null}>
                         <AstStatusIndicator />
                     </Suspense>
-                    
+
                     <Suspense fallback={null}>
-                        <ShellConfigModal 
-                            visible={showShellConfig}
-                            onClose={() => setShowShellConfig(false)}
-                        />
-                        <MCPStatusModal 
-                            visible={showMCPStatus}
-                            onClose={() => setShowMCPStatus(false)}
-                        />
+                        {mcpEnabled && (
+                            <>
+                                <ShellConfigModal
+                                    visible={showShellConfig}
+                                    onClose={() => setShowShellConfig(false)}
+                                />
+                                <MCPStatusModal
+                                    visible={showMCPStatus}
+                                    onClose={() => setShowMCPStatus(false)}
+                                />
+                            </>
+                        )}
                     </Suspense>
 
                 </ConfigProvider>
