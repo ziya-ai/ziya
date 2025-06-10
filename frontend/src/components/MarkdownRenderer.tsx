@@ -70,6 +70,77 @@ interface ApplyChangesButtonProps {
     setHunkStatuses?: (updater: (prev: Map<string, HunkStatus>) => Map<string, HunkStatus>) => void;
 }
 
+interface ToolBlockProps {
+    toolName: string;
+    content: string;
+    isDarkMode: boolean;
+}
+
+const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
+    const isShellCommand = toolName === 'mcp_run_shell_command';
+
+    // Color scheme based on tool type
+    const getToolColors = () => {
+        if (isShellCommand) {
+            return {
+                bg: isDarkMode ? '#0f1419' : '#f8f9fa',
+                border: isDarkMode ? '#1e2328' : '#e9ecef',
+                headerBg: isDarkMode ? '#1e2328' : '#e9ecef',
+                headerText: isDarkMode ? '#7dd3fc' : '#0369a1',
+                contentText: isDarkMode ? '#e2e8f0' : '#1e293b'
+            };
+        } else {
+            return {
+                bg: isDarkMode ? '#1a1a2e' : '#f0f4f8',
+                border: isDarkMode ? '#2d2d44' : '#cbd5e0',
+                headerBg: isDarkMode ? '#2d2d44' : '#cbd5e0',
+                headerText: isDarkMode ? '#a78bfa' : '#6b46c1',
+                contentText: isDarkMode ? '#e2e8f0' : '#1e293b'
+            };
+        }
+    };
+
+    const colors = getToolColors();
+
+    return (
+        <div style={{
+            backgroundColor: colors.bg,
+            border: `2px solid ${colors.border}`,
+            borderRadius: '12px',
+            margin: '16px 0',
+            overflow: 'hidden',
+            fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace',
+            fontSize: '14px',
+            boxShadow: isDarkMode
+                ? '0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2)'
+                : '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
+        }}>
+            <div style={{
+                backgroundColor: colors.headerBg,
+                padding: '8px 16px',
+                borderBottom: `1px solid ${colors.border}`,
+                color: colors.headerText,
+                fontWeight: 'bold',
+                fontSize: '12px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px'
+            }}>
+                {isShellCommand ? '🔧 Shell Command' : `🛠️ ${toolName.replace('mcp_', '')}`}
+            </div>
+            <pre style={{
+                margin: 0,
+                padding: '16px',
+                color: colors.contentText,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word'
+            }}>
+                {content}
+            </pre>
+        </div>
+    );
+};
+
+
 export type RenderPath = 'full' | 'prismOnly' | 'diffOnly' | 'raw';
 
 // Define the Change types to match react-diff-view's internal types
@@ -115,6 +186,7 @@ interface TokenWithText extends BaseToken {
     tokens?: TokenWithText[];
     task?: boolean;
     checked?: boolean;
+    toolName?: string;
 }
 
 interface ErrorBoundaryProps {
@@ -2758,7 +2830,13 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 };
 
 // Define the possible determined types
-type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' | 'd3' | 'mermaid' | 'file-operation' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' | 'br' | 'list_item' | 'unknown';
+type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
+    'd3' | 'mermaid' | 'file-operation' | 'tool' |
+    'code' | 'html' | 'text' | 'list' | 'table' | 'escape' |
+    'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' |
+    'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
+    'br' | 'list_item' |
+    'unknown';
 
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
@@ -2786,6 +2864,17 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     // 2. Handle Code Blocks with explicit lang tags
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
+
+        // Debug logging for tool detection
+        console.log('Code block detected with lang:', lang, 'content preview:', (token as TokenWithText).text?.substring(0, 50));
+
+        // Check for MCP tool blocks first
+        if (lang.startsWith('tool:')) {
+            const toolName = lang.substring(5); // Remove 'tool:' prefix
+            (token as TokenWithText).toolName = toolName;
+            console.log('Tool block detected:', toolName);
+            return 'tool';
+        }
 
         // Check for JSON code blocks that might contain Vega-Lite specs
         if (lang === 'json' && 'text' in token && typeof token.text === 'string') {
@@ -2818,6 +2907,15 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
         const trimmedText = text.trim();
+
+        // Check for tool blocks by content if lang detection failed
+        if (trimmedText.startsWith('$ ') || trimmedText.includes('🔧') || trimmedText.includes('🛠️')) {
+            // This might be a tool result that wasn't properly tagged
+            console.log('Potential tool content detected without proper lang tag:', trimmedText.substring(0, 50));
+            // Try to infer tool type from content
+            (token as TokenWithText).toolName = trimmedText.startsWith('$ ') ? 'mcp_run_shell_command' : 'unknown_tool';
+            return 'tool';
+        }
 
         // Check for Vega-Lite JSON specifications with better error handling
         if (trimmedText.startsWith('{')) {
@@ -3014,6 +3112,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (!hasText(tokenWithText)) return null;
                     return (
                         <D3Renderer key={index} spec={tokenWithText.text} type="d3" isStreaming={isStreaming} />
+                    );
+
+                case 'tool':
+                    if (!hasText(tokenWithText) || !tokenWithText.toolName) return null;
+                    return (
+                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
                     );
 
                 case 'code':

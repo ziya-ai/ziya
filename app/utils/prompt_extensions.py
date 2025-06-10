@@ -108,6 +108,7 @@ class PromptExtensionManager:
                     continue
                     
                 modified_prompt = extension_fn(modified_prompt, extension_context)
+                logger.info(f"Applied global extension '{name}' - new length: {len(modified_prompt)}")
                 logger.debug(f"Applied global extension '{name}'")
             except Exception as e:
                 logger.error(f"Error applying global extension '{name}': {e}")
@@ -122,6 +123,7 @@ class PromptExtensionManager:
                     logger.debug(f"Skipping disabled endpoint extension for '{endpoint}'")
                 else:
                     modified_prompt = extension_fn(modified_prompt, extension_context)
+                    logger.info(f"Applied endpoint extension for '{endpoint}' - new length: {len(modified_prompt)}")
                     logger.debug(f"Applied endpoint extension for '{endpoint}'")
             except Exception as e:
                 logger.error(f"Error applying endpoint extension for '{endpoint}': {e}")
@@ -136,6 +138,7 @@ class PromptExtensionManager:
                     logger.debug(f"Skipping disabled family extension for '{model_family}'")
                 else:
                     modified_prompt = extension_fn(modified_prompt, extension_context)
+                    logger.info(f"Applied family extension for '{model_family}' - new length: {len(modified_prompt)}")
                     logger.debug(f"Applied family extension for '{model_family}'")
             except Exception as e:
                 logger.error(f"Error applying family extension for '{model_family}': {e}")
@@ -150,6 +153,7 @@ class PromptExtensionManager:
                     logger.debug(f"Skipping disabled model extension for '{model_name}'")
                 else:
                     modified_prompt = extension_fn(modified_prompt, extension_context)
+                    logger.info(f"Applied model extension for '{model_name}' - new length: {len(modified_prompt)}")
                     logger.debug(f"Applied model extension for '{model_name}'")
             except Exception as e:
                 logger.error(f"Error applying model extension for '{model_name}': {e}")

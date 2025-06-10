@@ -67,6 +67,10 @@ def get_extended_prompt(model_name: Optional[str] = None,
         context={**context, **mcp_context}
     )
     
+    logger.info(f"PROMPT_MANAGER: Original template length: {len(template)}")
+    logger.info(f"PROMPT_MANAGER: Extended template length: {len(extended_template)}")
+    logger.info(f"PROMPT_MANAGER: Template was modified: {len(extended_template) != len(template)}")
+    
     # Create a new prompt template with the extended template
     extended_prompt = ChatPromptTemplate.from_messages(
         [

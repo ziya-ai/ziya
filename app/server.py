@@ -6,6 +6,7 @@ import signal
 import time
 import threading
 import json
+import hashlib
 import asyncio
 import uuid
 import traceback
@@ -242,7 +243,7 @@ async def shutdown_event():
         logger.warning(f"MCP shutdown failed: {str(e)}")
 
 # Add a route for the frontend
-add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log"], path="/ziya")
+add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log", "stream", "invoke"], path="/ziya")
 
 # Add custom stream_log endpoint for compatibility
 @app.post("/ziya/stream_log")
@@ -353,13 +354,212 @@ async def cleanup_stream(conversation_id: str):
     else:
         logger.warning(f"Attempted to clean up non-existent stream: {conversation_id}")
 
+async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Optional[set] = None) -> str:
+    """
+    Detect MCP tool calls in the complete response and execute them.
+    
+    Args:
+        full_response: The complete response text from the model
+        
+    Returns:
+        Response with tool calls executed and results inserted
+    """
+    # Initialize processed_calls if not provided
+    if processed_calls is None:
+        processed_calls = set()
+
+    from app.mcp.tools import parse_tool_call
+    from app.mcp.manager import get_mcp_manager
+    import re
+    
+    # Check if response contains tool calls
+    if '<tool_call>' not in full_response:
+        return full_response
+    
+    
+    # Find all tool call blocks
+    tool_call_pattern = r'<tool_call>.*?</tool_call>'
+    tool_calls = re.findall(tool_call_pattern, full_response, re.DOTALL)
+    
+    if not tool_calls:
+        return full_response
+    
+    modified_response = full_response
+    
+    for tool_call_block in tool_calls:
+        logger.debug(f"🔍 MCP: Processing tool call block: {tool_call_block[:100]}...")
+
+        # Create a signature for this tool call to detect duplicates
+        tool_signature = hashlib.md5(tool_call_block.encode()).hexdigest()
+        
+        # Skip if we've already processed this exact tool call
+        if tool_signature in processed_calls:
+            logger.debug(f"🔍 MCP: Skipping previously processed tool call: {tool_signature[:8]}")
+            continue
+        processed_calls.add(tool_signature)
+        
+        # Parse the tool call
+        parsed_call = parse_tool_call(tool_call_block)
+        if not parsed_call:
+            logger.warning("🔍 MCP: Could not parse tool call")
+            continue
+        
+        tool_name = parsed_call["tool_name"]
+        arguments = parsed_call["arguments"]
+        
+        logger.debug(f"🔍 MCP: Executing tool {tool_name} with args: {arguments}")
+        
+        try:
+            # Get MCP manager and execute the tool
+            mcp_manager = get_mcp_manager()
+            if not mcp_manager.is_initialized:
+                logger.error("🔍 MCP: Manager not initialized")
+                continue
+            
+            # Execute the tool (remove mcp_ prefix if present for internal lookup)
+            internal_tool_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+            result = await mcp_manager.call_tool(internal_tool_name, arguments)
+            
+            if result is None:
+                logger.error(f"🔍 MCP: Tool {internal_tool_name} returned None")
+                continue
+            
+            # Format the result
+            if isinstance(result, dict) and "content" in result:
+                if isinstance(result["content"], list) and len(result["content"]) > 0:
+                    tool_output = result["content"][0].get("text", str(result["content"]))
+                else:
+                    tool_output = str(result["content"])
+            else:
+                tool_output = str(result)
+            
+            logger.debug(f"🔍 MCP: Tool executed successfully, output: {tool_output[:100]}...")
+            
+            # Replace the tool call with a clean result format
+            replacement = f"\n\n**Tool Result:**\n{tool_output}\n\n"
+            modified_response = modified_response.replace(tool_call_block, replacement)
+            
+        except Exception as e:
+            logger.error(f"🔍 MCP: Error executing tool {tool_name}: {str(e)}")
+            # Replace tool call with error message
+            error_msg = f"\n\n**Tool Error:** {str(e)}\n\n"
+            modified_response = modified_response.replace(tool_call_block, error_msg)
+    
+    return modified_response
+
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
+    logger.info("🔍 STREAM_CHUNKS: Function called")
     # Send heartbeat to keep connection alive (don't send processing message as it appears in the UI)
     yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
     
     # Track if we've successfully sent any data
     data_sent = False
+
+    # Prepare messages for the model
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+    # Extract all needed variables from request body
+    question = body.get("question", "")
+    chat_history = body.get("chat_history", [])
+    config_data = body.get("config", {})
+    files = config_data.get("files", [])
+    
+    # Extract conversation_id from multiple possible locations
+    conversation_id = body.get("conversation_id")
+    if not conversation_id:
+        conversation_id = config_data.get("conversation_id")
+    if not conversation_id:
+        conversation_id = f"stream_{uuid.uuid4().hex[:8]}"
+        
+    logger.info(f"🔍 STREAM_CHUNKS: Using conversation_id: {conversation_id}")
+
+    # Build messages list
+    messages = []
+
+    # Get the extended prompt template that includes MCP guidelines
+    from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
+    model_info = get_model_info_from_config()
+
+    # Apply extensions directly to the original template to get the extended content
+    from app.agents.prompts import original_template
+    from app.utils.prompt_extensions import PromptExtensionManager
+    
+    # Get MCP tools for context
+    mcp_tools_available = False
+    available_mcp_tools = []
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            available_mcp_tools = [tool.name for tool in mcp_manager.get_all_tools()]
+            mcp_tools_available = len(available_mcp_tools) > 0
+    except Exception as e:
+        logger.warning(f"Could not get MCP tools for system template: {e}")
+    
+    # Apply all extensions to get the complete system template
+    system_template = PromptExtensionManager.apply_extensions(
+        prompt=original_template,
+        model_name=model_info["model_name"],
+        model_family=model_info["model_family"],
+        endpoint=model_info["endpoint"],
+        context={
+            "mcp_tools_available": mcp_tools_available,
+            "available_mcp_tools": available_mcp_tools
+        }
+    )
+    
+    logger.info(f"🔍 STREAM_CHUNKS: Using extended system template with length: {len(system_template)}")
+    system_content_parts = []
+    system_content_parts.append(system_template)
+    
+    # Add file context if available
+    if files:
+        from app.agents.agent import get_combined_docs_from_files
+        file_context = get_combined_docs_from_files(files, conversation_id)
+        system_content_parts.append(f"\n\nCodebase Context:\n{file_context}")
+    
+    # Create system message with combined content
+    if system_content_parts:
+        combined_system_content = "\n".join(system_content_parts)
+        logger.info(f"🔍 STREAM_CHUNKS: Final system message length: {len(combined_system_content)}")
+        messages.append(SystemMessage(content="\n".join(system_content_parts)))
+    
+    # Add chat history
+    if chat_history:
+        for msg_pair in chat_history:
+            if isinstance(msg_pair, (list, tuple)) and len(msg_pair) >= 2:
+                human_msg, ai_msg = msg_pair[0], msg_pair[1]
+                if human_msg and ai_msg:
+                    messages.append(HumanMessage(content=str(human_msg)))
+                    messages.append(AIMessage(content=str(ai_msg)))
+    
+    # Add current question
+    if question:
+        messages.append(HumanMessage(content=question))
+
+    # Log the complete system message for debugging
+    for i, msg in enumerate(messages):
+        if isinstance(msg, SystemMessage):
+            logger.info(f"=== COMPLETE SYSTEM MESSAGE {i} ===")
+            logger.info(f"System message length: {len(msg.content)} characters")
+            logger.info(f"System message content:\n{msg.content}")
+            logger.info(f"=== END SYSTEM MESSAGE {i} ===")
+            break  # Only log the first system message to avoid spam
+
+    # Create config dict with conversation_id for caching
+    config = {"conversation_id": conversation_id} if conversation_id else {}
+        
+    logger.info(f"Prepared {len(messages)} messages for agent iteration")
+    
+    # Check if MCP tools are available
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            logger.info(f"MCP tools available: {[tool.name for tool in mcp_manager.get_all_tools()]}")
+    except Exception as e:
+        logger.warning(f"Could not check MCP status: {e}")
     
     # Set up connection monitoring
     connection_active = True
@@ -422,40 +622,44 @@ async def stream_chunks(body):
         # Add system message with file context if available
         if files:
             from langchain_core.messages import SystemMessage
-            logger.info("=== System Message Content Debug ===")
-            file_context = "Here are the files in the codebase:\n\n"
+            # Get the extended system template instead of creating a simple file context
+            from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
+            model_info = get_model_info_from_config()
             
-            # Count string files to avoid excessive logging
-            string_file_count = 0
+            # Get MCP tools for context
+            mcp_tools_available = False
+            available_mcp_tools = []
+            try:
+                from app.mcp.manager import get_mcp_manager
+                mcp_manager = get_mcp_manager()
+                if mcp_manager.is_initialized:
+                    available_mcp_tools = [tool.name for tool in mcp_manager.get_all_tools()]
+                    mcp_tools_available = len(available_mcp_tools) > 0
+            except Exception as e:
+                logger.warning(f"Could not get MCP tools for system template: {e}")
             
-            for i, file in enumerate(files):
-                # Check if file is a dictionary with path and content
-                if isinstance(file, dict):
-                    file_path = file.get("path", "")
-                    file_content = file.get("content", "")
-                    if file_path and file_content:
-                        file_context += f"File: {file_path}\n```\n{file_content}\n```\n\n"
-                # Handle case where file might be a string or other format
-                elif isinstance(file, str):
-                    try:
-                        full_path = os.path.join(os.environ.get("ZIYA_USER_CODEBASE_DIR", ""), file)
-                        if os.path.exists(full_path):
-                             if os.path.isdir(full_path):
-                                 # Skip directories silently
-                                 continue
-                             content = read_file_content(full_path)
-                             if content:
-                                file_context += f"File: {file}\n```\n{content}\n```\n\n"
-                                logger.info(f"Successfully loaded content from {file}: {len(content)} chars")
-                             else:
-                                logger.warning(f"Failed to extract content from {file}")
-                        else:
-                             logger.warning(f"File not found: {full_path}")
-                    except Exception as e:
-                         logger.error(f"Error reading file {file}: {str(e)}")
+            # Apply all extensions to get the complete system template
+            from app.utils.prompt_extensions import PromptExtensionManager
+            from app.agents.prompts import original_template
             
-            # Add system message with file context
-            messages.append(SystemMessage(content=file_context))
+            system_template = PromptExtensionManager.apply_extensions(
+                prompt=original_template,
+                model_name=model_info["model_name"],
+                model_family=model_info["model_family"],
+                endpoint=model_info["endpoint"],
+                context={
+                    "mcp_tools_available": mcp_tools_available,
+                    "available_mcp_tools": available_mcp_tools
+                }
+            )
+            
+            # Add file context to the extended template
+            # Use the existing codebase extraction logic
+            from app.agents.agent import extract_codebase
+            file_context = extract_codebase({"config": {"files": files}, "conversation_id": conversation_id})
+            complete_system_content = system_template.replace("{codebase}", file_context)
+            
+            messages.append(SystemMessage(content=complete_system_content))
         
         # Add chat history if available
         if chat_history:
@@ -548,321 +752,211 @@ async def stream_chunks(body):
         chunk_count = 0
         full_response = ""
 
-        # Flag to track if we've sent the done marker
+        # Initialize variables for agent iteration loop
+        processed_tool_calls = set()
+        max_iterations = 5
+        iteration = 0
+        messages_for_model = []
+        all_tool_results = []  # Track all tool results across iterations
+
+        logger.info(f"🔍 STREAM_CHUNKS: Using model instance type: {type(model.get_model())}")
+        logger.info(f"🔍 STREAM_CHUNKS: Model has tools: {hasattr(model.get_model(), 'tools') if hasattr(model.get_model(), 'tools') else 'No tools attribute'}")
+        logger.info("🔍 STREAM_CHUNKS: About to start model streaming")
+
         done_marker_sent = False
         
+        processed_tool_calls = set()  # Track which tool calls we've already processed
         # Create a background task for cleanup when the stream ends
         # Set up the model with the stop sequence
         # This ensures the model will properly stop at the sentinel
         model_with_stop = model_instance.bind(stop=["</tool_input>"])
 
-        # Create config dict with conversation_id for caching
-        config = {"conversation_id": conversation_id}
-        logger.info(f"Passing conversation_id to model: {conversation_id}")
-        
-        # Ensure conversation_id is available for context enhancement
-        
+        # Get MCP tools for the iteration
+        mcp_tools = []
         try:
-            async for chunk in model_with_stop.astream(messages, config=config):
+            from app.mcp.tools import create_mcp_tools
+            mcp_tools = create_mcp_tools()
+            logger.info(f"🔍 STREAM_CHUNKS: Created {len(mcp_tools)} MCP tools for iteration")
+        except Exception as e:
+            logger.warning(f"Failed to get MCP tools for iteration: {e}")
+        logger.info(f"🔍 STREAM_CHUNKS: model_with_stop type: {type(model_with_stop)}")
 
-                # Check connection status before processing each chunk
-                if not connection_active:
-                    logger.info("Connection lost, stopping stream processing")
+        # Agent iteration loop for tool execution
+        while iteration < max_iterations:
+            iteration += 1
+            logger.info(f"🔍 AGENT ITERATION {iteration}: Starting iteration")
+
+            current_response = ""
+            tool_executed = False
+        
+            try:                
+                # Use model with stop sequence for tool detection
+                model_to_use = model_with_stop
+                logger.info(f"🔍 AGENT ITERATION {iteration}: Available tools: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
+
+                async for chunk in model_to_use.astream(messages, config=config):
+                    # Check connection status
+                    logger.debug(f"🔍 AGENT: Received chunk type: {type(chunk)}")
+                    if not connection_active:
+                        logger.info("Connection lost during agent iteration")
+                        break
+                    # Process chunk content
+                    logger.debug(f"🔍 AGENT: Received chunk type: {type(chunk)}")
+
+                    if hasattr(chunk, 'content'):
+                        content = chunk.content() if callable(chunk.content) else chunk.content
+                        content_str = str(content) if content else ""
+                        logger.debug(f"🔍 AGENT: Chunk content: '{content_str}' (length: {len(content_str)})")
+                    else:
+                        content_str = str(chunk)
+                        logger.debug(f"🔍 AGENT: Chunk as string: '{content_str}' (length: {len(content_str)})")
+
+                    # Skip empty chunks
+                    if not content_str: 
+                        continue
+
+                    # Always accumulate content in current_response for tool detection
+                    current_response += content_str
+                    logger.debug(f"🔍 AGENT: Accumulated response length: {len(current_response)}")
+ 
+                    # Check if we should suppress this content from streaming
+                    should_suppress = (
+                        '<tool_call>' in current_response or 
+                        '</tool_call>' in current_response or
+                        content_str.strip().startswith('<tool') or
+                        '**Tool' in content_str or
+                        'Result:**' in content_str
+                    )
+                    
+                    if not should_suppress:
+
+                        ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
+                        yield f"data: {json.dumps({'ops': ops})}\n\n"
+                        logger.debug(f"🔍 AGENT: Streamed content chunk to frontend: '{content_str[:50]}...'")
+                    else:
+                        logger.debug(f"🔍 AGENT: Suppressed tool call content from frontend")
+
+                    # Check for complete tool call - must have both opening and closing tags
+                    if '<tool_call>' in current_response and '</tool_call>' in current_response:
+                        logger.info("🔍 AGENT: Complete tool call detected, stopping generation")
+                        tool_executed = True
+                        break
+
+                logger.info(f"🔍 AGENT: Finished streaming loop for iteration {iteration}")
+
+                # If this is the first iteration and no tool was executed, 
+                logger.info(f"🔍 AGENT: Iteration {iteration} complete. current_response length: {len(current_response)}, tool_executed: {tool_executed}")
+
+                # Always update full_response with current_response content
+                if current_response and not full_response:
+                    full_response = current_response
+                    logger.info(f"🔍 AGENT: Updated full_response from current_response: {len(full_response)} chars")
+
+                # the model has completed its response normally
+                if iteration == 1 and not tool_executed:
+                    logger.info("🔍 AGENT: First iteration complete, no tool calls - normal response")
                     break
                 
-                data_sent = True
+                # If no tool was executed in this iteration, we're done
+                if not tool_executed:
+                    logger.info("🔍 AGENT: No tool call detected in iteration {iteration}, ending iterations")
+                    break
                 
-                # Check if client disconnected
-                if conversation_id not in active_streams:
-                    logger.info(f"Client disconnected for conversation: {conversation_id}")
-                    return
+                # Execute the tool
+                logger.info("🔍 AGENT: Executing tool call")
+                processed_response = await detect_and_execute_mcp_tools(current_response, processed_tool_calls)
                 
-                # Check if the chunk contains a structured error message
-                is_error_chunk = False
-                error_data = None
-                if hasattr(chunk, 'content'):
-                    content_str = str(chunk.content) if callable(chunk.content) else str(chunk.content)
-                    if content_str.startswith('{') and '"error":' in content_str:
-                        try:
-                            error_data = json.loads(content_str)
-                            if "error" in error_data and "detail" in error_data:
-                                is_error_chunk = True
-                        except json.JSONDecodeError:
-                            # Check for repetition marker
-                            if "[STREAM_END_REPETITION_DETECTED]" in content_str:
-                                logger.warning("Detected repetition marker in stream, ending stream")
-                                # Send warning message
-                                warning_msg = {
-                                    "warning": "repetitive_content",
-                                    "detail": "Response was interrupted because repetitive content was detected."
-                                }
-                                warning_sse_data = f"data: {json.dumps(warning_msg)}\n\n"
-                                logger.info(f"Yielding SSE Warning: {warning_sse_data.strip()}")
-                                yield warning_sse_data
-                                
-                                # Send DONE marker immediately after warning
-                                yield "data: [DONE]\n\n"
-                                done_marker_sent = True
-                                break
-                            pass # Not a valid JSON error structure
-
-                if is_error_chunk and error_data:
-                    logger.warning(f"[INSTRUMENTATION] stream_chunks detected structured error chunk: {error_data}")
-                    # Ensure we yield the error data correctly formatted for SSE
-                    error_sse_data = f"data: {json.dumps(error_data)}\n\n"
-                    logger.info(f"[INSTRUMENTATION] Yielding SSE Error: {error_sse_data.strip()}")
-                    yield error_sse_data # Send formatted error
-                    yield "data: [DONE]\n\n" # Send DONE marker immediately after error
-                    done_marker_sent = True # Mark as sent
-                    break # Terminate the stream after sending error and DONE
-                # Skip processing if we've already sent the done marker
-                if done_marker_sent:
-                    # Check if chunk is already an SSE message
-                    if isinstance(chunk, str) and chunk.startswith('data: {"error"'):
-                        yield chunk
-                        continue
-                    continue
+                if processed_response != current_response:
+                    # The processed_response contains the formatted result, extract it properly
+                    # Look for the "**Tool Result:**" section
+                    # Extract tool name from the current response
+                    import re
+                    tool_match = re.search(r'<name>([^<]+)</name>', current_response)
+                    tool_name = tool_match.group(1) if tool_match else "unknown"
                     
-                chunk_count += 1 # Only increment for non-error chunks
-                
-                # Extract content from the chunk
-                # Handle Nova's array format directly
-                if isinstance(chunk, list):
-                    logger.info("Detected chunk as list, likely Nova format")
-                    combined_text = ""
-                    raw_items = []
-                    for item in chunk:
-                        if isinstance(item, dict) and 'text' in item:
-                            raw_items.append(item)
-                                    
-                            # Use NovaFormatter to process the entire chunk properly
-                            if raw_items:
-                                from app.agents.wrappers.nova_formatter import NovaFormatter
-                                combined_text = NovaFormatter.parse_response({"output": {"message": {"content": raw_items}}})
-                                logger.info(f"Used NovaFormatter directly in stream_chunks: {combined_text[:50]}...")
-                    
-                    if combined_text:
-                        # Use the format that the frontend expects for streamed output
-                        ops = [
-                            {
-                                "op": "add",
-                                "path": "/streamed_output_str/-",
-                                "value": combined_text
-                            }
-                        ]
-                        
-                        logger.info(f"Sending ops to client with text: {combined_text[:50]}...")
-                        yield f"data: {json.dumps({'ops': ops})}\n\n"
-                        # Update full_response for stop sentinel check
-                        full_response += combined_text
-                        continue
-                
-                # Continue with regular chunk processing
-                if hasattr(chunk, 'content'):
-                    content = chunk.content
-                    
-                    # Handle callable content
-                    if callable(content):
-                        content = content()
-                    
-                    # Check for stop sentinel in the content
-                    content_str = str(content) if content else ""
-                    if "</tool_input>" in content_str:
-                        # Send the done marker and stop processing more chunks
-                        if not done_marker_sent:
-                            yield f"data: {json.dumps({'done': True})}\n\n"
-                            done_marker_sent = True
-                            break  # Exit the loop but not the function
-                    
-                    # Check if this chunk has generation_info with stop_reason
-                    if hasattr(chunk, 'generation_info') and chunk.generation_info:
-                        gen_info = chunk.generation_info
-                        if 'finish_reason' in gen_info or 'stop_reason' in gen_info:
-                            stop_reason = gen_info.get('finish_reason') or gen_info.get('stop_reason')
-                            if stop_reason:
-                                logger.info(f"[INSTRUMENTATION] stream_chunks detected stop_reason: {stop_reason}")
-                                # Send the done marker and stop processing more chunks
-                                if not done_marker_sent:
-                                    logger.info("[INSTRUMENTATION] stream_chunks sending done marker after stop reason detected")
-                                    yield f"data: {json.dumps({'done': True})}\n\n"
-                                    done_marker_sent = True
-                                    break  # Exit the loop but not the function
-                
-                    # Handle Nova model format (list of content blocks)
-                    if isinstance(content, list) and len(content) > 0:
-                        for content_block in content:
-                            if isinstance(content_block, dict) and 'text' in content_block:
-                                text = content_block.get('text', '')
-                                # Clean up the text - remove any [] markers
-                                if text == "[]":
-                                    continue  # Skip empty brackets
-                            
-                                # Remove [] from the beginning and end of the text if present
-                                # text = text.strip("[]")
-                                # commented out as this seems to be too aggressively clipping square brackets
-                                
-                                if text:  # Only send non-empty text
-                                    # Get the raw text content, preferring .content
-                                    raw_text_content = ""
-                                    if hasattr(chunk, 'content'):
-                                        # Special handling for structured thinking mode content
-                                        if isinstance(chunk.content, dict) and ('thinking' in chunk.content or 'reasoning' in chunk.content):
-                                            logger.info("Detected structured thinking mode content")
-                                            # Preserve the structure by yielding as JSON
-                                            ops = [
-                                                {"op": "add", "path": "/thinking", "value": chunk.content}
-                                            ]
-                                            yield f"data: {json.dumps({'ops': ops})}\n\n"
-                                            continue
-
-                                        raw_text_content = chunk.content
-                                        if callable(raw_text_content):
-                                            raw_text_content = raw_text_content()
-                                    elif hasattr(chunk, 'text'): # Fallback for Generation-like objects
-                                        raw_text_content = chunk.text
-                                    else:
-                                        raw_text_content = str(chunk) # Last resort
-
-                                    # Ensure it's a string
-                                    text_to_yield = str(raw_text_content)
- 
-                                    # Accumulate for stop sentinel check (using the same reliable text)
-                                    full_response += text
-                                    
-                                    # Use the format that the frontend expects for streamed output
-                                    ops = [
-                                        {
-                                            "op": "add",
-                                            "path": "/streamed_output_str/-",
-                                            "value": text_to_yield
-                                        }
-                                    ]
-                                    
-                                    yield f"data: {json.dumps({'ops': ops})}\n\n"
+                    if "**Tool Result:**" in processed_response:
+                        tool_result_start = processed_response.find("**Tool Result:**")
+                        tool_result = processed_response[tool_result_start:]
                     else:
-                        # Handle standard text content
-                        # Get the raw text content, preferring .content
-                        raw_text_content = ""
-                        if hasattr(chunk, 'content'):
-                            raw_text_content = chunk.content
-                            if callable(raw_text_content):
-                                raw_text_content = raw_text_content()
-                        elif hasattr(chunk, 'text'): # Fallback for Generation-like objects
-                            raw_text_content = chunk.text
-                        else:
-                            raw_text_content = str(chunk) # Last resort
+                        # Fallback: use the difference between responses
+                        tool_result = processed_response.replace(current_response.split('<tool_call>')[0], '').strip()
 
-                        # Check if client disconnected
-                        if conversation_id not in active_streams:
-                            logger.info(f"Client disconnected for conversation: {conversation_id}")
-                            return
-
-                        # Ensure text_to_yield is a string                         
-                        # Use the already extracted raw_text_content for the actual value
-                        text_to_yield = str(raw_text_content)
-
-                        if text_to_yield:
-                            # Log exactly what is being yielded
-                            full_response += text_to_yield
-                            
-                            # Use the format that the frontend expects for streamed output
-                            ops = [
-                                {
-                                    "op": "add",
-                                    "path": "/streamed_output_str/-",
-                                    "value": text_to_yield
-                                }
-                            ]
-                            
-                            yield f"data: {json.dumps({'ops': ops})}\n\n"
-                
-            # Check for stop sentinel in the full response so far
-            if "</tool_input>" in full_response and not done_marker_sent:
-                # Send the done marker and stop processing more chunks
-                yield f"data: {json.dumps({'done': True})}\n\n"
-                done_marker_sent = True
-
-                # Clean up this specific stream without affecting others
-                await cleanup_stream(conversation_id)
-
-                # We need to break out of the async for loop
-                return  # Exit the entire generator function
+                    logger.info(f"🔍 AGENT: Tool executed")
+                    logger.info(f"🔍 AGENT: current_response length: {len(current_response)}")
+                    logger.info(f"🔍 AGENT: processed_response length: {len(processed_response)}")
+                    logger.info(f"🔍 AGENT: tool_result length: {len(tool_result)}")
+                    logger.info(f"🔍 AGENT: processed_response content: {processed_response}")
+                    logger.info(f"🔍 AGENT: tool_result content: {tool_result}")
                     
-            # End of the async for loop iteration
-            
-            # After successful streaming, log the complete response
-            if full_response:
-                logger.info("=== FULL SERVER RESPONSE ===")
-                
-                # Clean brackets from the full response
-                if full_response.startswith("[]") or full_response.endswith("[]"):
-                    cleaned_response = full_response.strip("[]")
-                    if cleaned_response != full_response:
-                        logger.info("Cleaned brackets from full server response")
-                        full_response = cleaned_response
-                        currentContent = cleaned_response
-                
-                logger.info(f"Response length: {len(full_response)}")
-                logger.info(f"Response content:\n{full_response}")
-                logger.info("=== END SERVER RESPONSE ===")
-            
-            # If the loop finished normally (no error break) and we sent content, send DONE
-            if not done_marker_sent and chunk_count > 0 and not is_error_chunk:
-                await cleanup_stream(conversation_id)
-                
-                # Only send DONE if we successfully sent data
-                if not data_sent:
-                    logger.debug("No data was sent, skipping DONE marker")
-                    return
+                    # Format the tool result with a cleaner header
+                    if tool_result.startswith("**Tool Result:**"):
+                        # Remove the generic header and add tool-specific formatting
+                        clean_result = tool_result.replace("**Tool Result:**", "").strip()
+                        formatted_result = f"```tool:{tool_name}\n{clean_result}\n```"
+                    else:
+                        formatted_result = f"```tool:{tool_name}\n{tool_result}\n```"
+                    
+                    # Add tool call and result to messages for next iteration
+                    from langchain_core.messages import AIMessage
+                    messages.append(AIMessage(content=current_response.strip()))  # The tool call
+                    messages.append(AIMessage(content=formatted_result.strip()))  # The tool result
+                    logger.info("🔍 AGENT: Added tool call and result to messages for next iteration")
+                    # Format shell command results for terminal display
+                    display_result = formatted_result
 
-                yield f"data: {json.dumps({'done': True})}\n\n"
+                    # Update full response and continue to next iteration
+                    full_response = processed_response
+                    
+                    # Store this tool result for the final summary
+                    all_tool_results.append(formatted_result)
 
-        except ChatGoogleGenerativeAIError as e:
-            error_msg = {
-                "error": "server_error",
-                "detail": str(e),
-                "status_code": 500
-            }
-            yield f"data: {json.dumps(error_msg)}\n\n"
-            # Send DONE only if not already sent
-            if not done_marker_sent:
-                yield "data: [DONE]\n\n"
+                    # Stream each tool result immediately as it's executed with flush
+                    ops = [{"op": "add", "path": "/streamed_output_str/-", "value": formatted_result}]
+                    sse_data = f"data: {json.dumps({'ops': ops})}\n\n"
+                    yield sse_data
+                    logger.info(f"🔍 AGENT: Streamed tool result to frontend: {formatted_result[:100]}...")
 
-            # Clean up the stream
-            await cleanup_stream(conversation_id)
-            return
-            
-        except (CredentialRetrievalError, BotoCoreError) as e:
-            # Handle AWS credential errors specifically
-            from app.utils.error_handlers import _handle_aws_credential_error, create_sse_error_response
-            
-            # Get appropriate error message
-            error_message = str(e)
-            error_type, detail, status_code, _ = _handle_aws_credential_error(error_message)
-            
-            # Create and send the error response
-            error_response = create_sse_error_response(error_type, detail)
-            logger.info(f"Sending credential error as SSE: {error_response}")
-            yield f"data: {json.dumps(error_response)}\n\n"
-            
-            if not done_marker_sent:
-                logger.info("Sending done marker after credential error")
-                yield f"data: {json.dumps({'done': True})}\n\n"
-                done_marker_sent = True
+                    # Add a small delay to ensure the data is flushed
+                    await asyncio.sleep(0.01)
+                    
+                    logger.info("🔍 AGENT: Added tool result to context, breaking stream, should submit results back to model next")
+                else:
+                    logger.warning("🔍 AGENT: Tool execution failed or no change")
+                    # Tool execution failed or no change - still update full_response
+                    if current_response and len(current_response) > len(full_response):
+                        full_response = current_response
+                        logger.info(f"🔍 AGENT: Updated full_response after failed tool execution: {len(full_response)} chars")
 
-            await cleanup_stream(conversation_id)
-            return
-                
-        except Exception as e:
-            # Handle any exceptions during streaming
-            logger.error(f"Error in agent stream processing: {str(e)}", exc_info=True)
-            if not done_marker_sent:
-                yield f"data: {json.dumps({'error': 'stream_processing_error', 'detail': str(e)})}\n\n"
-                yield "data: [DONE]\n\n" # Ensure DONE is sent
-                done_marker_sent = True
+                    break
 
-            await cleanup_stream(conversation_id)
-            raise
+            except Exception as e:
+                logger.error(f"Error in agent iteration {iteration}: {str(e)}", exc_info=True)
+                break
+
+        # Log why the iteration loop ended
+        logger.info(f"🔍 AGENT: Iteration loop ended after {iteration} iterations")
+        logger.info(f"🔍 AGENT: Final iteration < max_iterations: {iteration < max_iterations}")
+        
+        # Log final response
+        logger.info("=== FULL SERVER RESPONSE ===")
+        logger.info(f"Response length: {len(full_response)}")
+        logger.info(f"Response content:\n{full_response}")
+        logger.info("=== END SERVER RESPONSE ===")
+
+        # Send DONE marker and cleanup
+        # Initialize data_sent flag
+        # Ensure we always send a DONE marker to complete the stream properly
+        logger.info("🔍 AGENT: Sending final DONE marker")
+        data_sent = len(full_response) > 0
+        if not done_marker_sent:
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            done_marker_sent = True
+        else:
+            # Send another DONE marker to ensure stream completion
+            yield f"data: {json.dumps({'stream_complete': True})}\n\n"
+        
+        await cleanup_stream(conversation_id)
+        return
 
     except ConnectionError as e:
         logger.info(f"Connection error in stream_chunks: {e}")
@@ -881,6 +975,8 @@ async def stream_chunks(body):
 @app.post("/ziya/stream")
 async def stream_endpoint(request: Request, body: dict):
     """Stream endpoint with centralized error handling."""
+    logger.info(f"🔍 STREAM_ENDPOINT: Direct /ziya/stream called - this should be using stream_chunks")
+    logger.info(f"🔍 STREAM_ENDPOINT: Request body keys: {body.keys()}")
     try:
         # Debug logging
         logger.info("[INSTRUMENTATION] /ziya/stream received request")
@@ -935,12 +1031,13 @@ async def stream_endpoint(request: Request, body: dict):
         
         # Convert to ChatPromptValue if needed
         if isinstance(body, dict) and "messages" in body:
+            logger.info(f"[INSTRUMENTATION] /ziya/stream converting {len(body['messages'])} messages to ChatPromptValue")
             from langchain_core.prompt_values import ChatPromptValue
             from langchain_core.messages import HumanMessage
-            logger.info(f"[INSTRUMENTATION] /ziya/stream converting {len(body['messages'])} messages to ChatPromptValue")
-            body["messages"] = [HumanMessage(content=msg) for msg in body["messages"]]
-            body = ChatPromptValue(messages=body["messages"])
-            logger.info(f"[INSTRUMENTATION] /ziya/stream converted body to {type(body)}")
+            messages = [HumanMessage(content=msg) for msg in body["messages"]]
+            prompt_value = ChatPromptValue(messages=messages)
+            # Keep body as dict but store the prompt value for later use if needed
+            logger.info(f"[INSTRUMENTATION] /ziya/stream created ChatPromptValue with {len(messages)} messages")
         
         # Return the streaming response
         logger.info("[INSTRUMENTATION] /ziya/stream calling stream_chunks()")
@@ -1383,6 +1480,7 @@ async def chat_endpoint(request: Request):
         
         logger.info(f"[INSTRUMENTATION] /api/chat formatted body structure: {formatted_body.keys()}")
         logger.info(f"[INSTRUMENTATION] /api/chat forwarding to /ziya/stream")
+
         
         # Forward the request to the /ziya/stream endpoint
         # This ensures all validation and normalization logic is applied

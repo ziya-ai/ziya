@@ -8,6 +8,8 @@ with MCP (Model Context Protocol) servers and tools.
 from app.utils.prompt_extensions import prompt_extension
 from app.utils.logging_utils import logger
 
+logger.info("MCP_GUIDELINES: mcp_prompt_extensions.py module being imported")
+
 @prompt_extension(
     name="mcp_usage_guidelines",
     extension_type="global",
@@ -27,7 +29,10 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     Returns:
         str: Modified prompt with MCP guidelines
     """
+    logger.info("MCP_GUIDELINES: @prompt_extension decorator applied to mcp_usage_guidelines")
+    logger.info("MCP_GUIDELINES: mcp_usage_guidelines function called")
     if not context.get("config", {}).get("enabled", True):
+        logger.info("MCP_GUIDELINES: Extension disabled by config, returning original prompt")
         return prompt
     
     # Check if MCP tools are available in the context
@@ -44,7 +49,9 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
 **CRITICAL MCP TOOL VERIFICATION:**
 Before using any MCP tool, verify the exact tool names available. The tools are prefixed with "mcp_" in the agent system.
 
-**ACTUAL AVAILABLE TOOLS:** """ + str(available_tools) + """
+**ACTUAL AVAILABLE TOOLS:** """ + str([f"mcp_{tool}" if not tool.startswith("mcp_") else tool for tool in available_tools]) + """
+
+Note: All tool names must be prefixed with "mcp_" when calling them.
 
 ## MCP Tool Usage Guidelines - CRITICAL INSTRUCTIONS
 
@@ -52,7 +59,8 @@ You have access to MCP (Model Context Protocol) tools that provide additional ca
 
 **AVAILABLE TOOL NAMES (use these exact names):**
 ### Available MCP Tools:
-""" + "\n".join([f"- **{tool}**: Use for {_get_tool_description(tool)}" for tool in available_tools]) + """
+""" + "\n".join([f"- **mcp_{tool}**: Use for {_get_tool_description(tool)}" for tool in available_tools if not tool.startswith("mcp_")]) + """
+""" + "\n".join([f"- **{tool}**: Use for {_get_tool_description(tool)}" for tool in available_tools if tool.startswith("mcp_")]) + """
 
 
 **TOOL CALLING FORMAT - USE EXACTLY THIS SYNTAX:**

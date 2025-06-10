@@ -1137,6 +1137,7 @@ file_state_manager = FileStateManager()
 
 def get_combined_docs_from_files(files, conversation_id: str = "default") -> str:
     logger.info("=== get_combined_docs_from_files called ===")
+    logger.info(f"🔍 FILES_DEBUG: Called with {len(files)} files: {files[:5]}..." if len(files) > 5 else f"🔍 FILES_DEBUG: Called with files: {files}")
     logger.info(f"Called with files: {files}")
     combined_contents: str = ""
     logger.debug("Processing files:")
@@ -1155,6 +1156,11 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
     for file_path in files:
         full_path = os.path.join(user_codebase_dir, file_path)
+        
+        # Check if this is an MCP server file that shouldn't be in the codebase
+        if 'mcp_servers' in file_path:
+            logger.warning(f"🔍 FILES_DEBUG: MCP server file detected in file list: {file_path}")
+        
         # Skip directories
         if os.path.isdir(full_path):
             logger.debug(f"Skipping directory: {full_path}")
@@ -1174,15 +1180,10 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
 
-    print(f"Codebase word count: {len(combined_contents.split()):,}")
-    token_count = len(tiktoken.get_encoding("cl100k_base").encode(combined_contents))
-    print(f"Codebase token count: {token_count:,}")
-    
     # Log the first and last part of combined contents
     logger.info(f"Combined contents starts with:\n{combined_contents[:500]}")
     logger.info(f"Combined contents ends with:\n{combined_contents[-500:]}")
-    print(f"Max Claude Token limit: 200,000")
-    print("--------------------------------------------------------")
+    
     return combined_contents
 
 def extract_file_paths_from_input(x) -> List[str]:
@@ -1423,11 +1424,20 @@ def create_agent_chain(chat_model: BaseChatModel):
     logger.info(f"Creating agent chain for model: {model_name}, family: {model_family}, endpoint: {endpoint}")
     
     # Get the extended prompt with model-specific extensions
+
+    mcp_tools = []
     prompt_template = get_extended_prompt(
         model_name=model_name,
         model_family=model_family,
         endpoint=endpoint
     )
+    
+    logger.info(f"AGENT_CHAIN: Received prompt template type: {type(prompt_template)}")
+    logger.info(f"AGENT_CHAIN: Prompt template messages: {len(prompt_template.messages)}")
+    for i, msg in enumerate(prompt_template.messages):
+        if hasattr(msg, 'prompt') and hasattr(msg.prompt, 'template'):
+            logger.info(f"AGENT_CHAIN: Message {i} template length: {len(msg.prompt.template)}")
+            logger.info(f"AGENT_CHAIN: Message {i} last 200 chars: {msg.prompt.template[-200:]}")
     
     # Define the input mapping with conditional AST context
     input_mapping = {
@@ -1476,7 +1486,7 @@ def create_agent_chain(chat_model: BaseChatModel):
         if mcp_manager.is_initialized:
 
             mcp_tools = create_mcp_tools()
-            logger.info(f"Created {len(mcp_tools)} MCP tools for XML agent")
+            logger.info(f"Created {len(mcp_tools)} MCP tools for XML agent: {[tool.name for tool in mcp_tools]}")
         else:
             logger.warning("MCP manager not initialized, no MCP tools available")
     except Exception as e:
@@ -1485,6 +1495,16 @@ def create_agent_chain(chat_model: BaseChatModel):
     # Create the XML agent directly with input preprocessing
     # Use custom output parser for MCP tool detection
     agent = create_xml_agent(llm_with_stop, mcp_tools, prompt_template)
+
+    # Log the tools that were actually passed to the agent
+    logger.info(f"XML agent created with {len(mcp_tools)} tools: {[tool.name for tool in mcp_tools]}")
+    
+    # Check if agent has output_parser attribute before logging it
+    if hasattr(agent, 'output_parser'):
+        logger.info(f"Created XML agent with output parser: {agent.output_parser.__class__.__name__}")
+    else:
+        # For RunnableSequence objects that don't have output_parser
+        logger.info(f"Created XML agent of type: {type(agent).__name__}")
     
     # Create a preprocessing chain that applies input mapping
     def preprocess_input(input_data):
@@ -1806,7 +1826,7 @@ def initialize_langserve(app, executor):
     add_routes(
         new_app,
         executor,
-        disabled_endpoints=["playground"],
+        disabled_endpoints=["playground", "stream", "invoke"],
         path="/ziya"
     )
     

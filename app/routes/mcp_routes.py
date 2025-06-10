@@ -120,13 +120,22 @@ async def get_mcp_tools():
         # Check if MCP is enabled
         if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
             return {"tools": [], "disabled": True}
+        
+        # Add detailed status information for debugging
+        mcp_manager = get_mcp_manager()
+        status = mcp_manager.get_server_status()
+        connected_servers = [name for name, info in status.items() if info["connected"]]
+        logger.info(f"MCP tools request - Connected servers: {connected_servers}")
+        logger.info(f"MCP tools request - Server details: {status}")
             
         mcp_manager = get_mcp_manager()
         
         if not mcp_manager.is_initialized:
+            logger.warning("MCP manager not initialized when tools requested")
             return {"tools": []}
         
         tools = mcp_manager.get_all_tools()
+        logger.info(f"Retrieved {len(tools)} tools for frontend")
         
         return {
             "tools": [
@@ -134,10 +143,15 @@ async def get_mcp_tools():
                     "name": tool.name,
                     "description": tool.description,
                     "inputSchema": tool.inputSchema,
-                    "server": getattr(tool, 'server', 'unknown')
+                    "server": getattr(tool, '_server_name', 'unknown')
                 }
                 for tool in tools
-            ]
+            ],
+            "debug_info": {
+                "total_tools": len(tools),
+                "connected_servers": len([c for c in mcp_manager.clients.values() if c.is_connected]),
+                "server_status": status
+            }
         }
         
     except Exception as e:

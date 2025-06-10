@@ -27,6 +27,10 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     Returns:
         Dict with tool_name and arguments, or None if no valid tool call found
     """
+    # Log the content being parsed for debugging
+    if '<tool_call>' in content:
+        logger.debug(f"🔍 PARSE: Attempting to parse tool call from content: {content[:200]}...")
+    
     # Format 1: <name> and <arguments>
     name_args_pattern = r'<tool_call>\s*<name>([^<]+)</name>\s*<arguments>\s*({.*?})\s*</arguments>\s*</tool_call>'
     match = re.search(name_args_pattern, content, re.DOTALL)
@@ -35,6 +39,7 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
         try:
             import json
             arguments = json.loads(match.group(2))
+            logger.debug(f"🔍 PARSE: Successfully parsed format 1 - tool: {tool_name}, args: {arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
         except json.JSONDecodeError:
             logger.warning(f"Failed to parse arguments for tool {tool_name}: {match.group(2)}")
@@ -72,6 +77,7 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             param_value = param_match.group(2).strip()
             params[param_name] = param_value
         
+        logger.debug(f"🔍 PARSE: Successfully parsed format 2 - tool: {tool_name}, args: {params}")
         return {"tool_name": tool_name, "arguments": params}
     
     # Log if no tool call pattern was found
@@ -145,7 +151,7 @@ class MCPTool(BaseTool):
                     if isinstance(content, list):
                         # Handle multiple content blocks
                         text_parts = []
-                        for block in content:
+                        for block in content[:1]: # only use the first content block to avoid duplicates
                             if isinstance(block, dict) and "text" in block:
                                 text_parts.append(block["text"])
                             elif isinstance(block, str):

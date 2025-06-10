@@ -203,6 +203,9 @@ class ZiyaBedrock(Runnable):
                 if context_split:
                     # Replace the single large message with split messages
                     logger.info(f"✅ CACHE: Successfully split context into {len(context_split)} messages")
+                    # Log the content of each split message to verify completeness
+                    for i, msg in enumerate(context_split):
+                        logger.info(f"Split message {i} ends with: {msg.content[-200:] if hasattr(msg, 'content') else 'No content'}")
                     prepared_messages.extend(context_split)
                     continue
                 elif self.context_cache_manager.should_cache_context(message.content, model_config):

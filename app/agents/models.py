@@ -1042,8 +1042,16 @@ class ModelManager:
         model_config = cls.get_model_config(endpoint, model_name)
         model_id = model_config.get("model_id", model_name)
         
+        # Handle both string and dict model IDs
+        model_id_str = ""
+        if isinstance(model_id, dict):
+            # For dict model IDs, get a representative string
+            model_id_str = next(iter(model_id.values())) if model_id else ""
+        else:
+            model_id_str = str(model_id)
+        
         # For Claude models, we need to remove the stop parameter
-        if "claude" in model_id.lower():
+        if "claude" in model_id_str.lower():
             logger.info(f"Removing unsupported parameter 'stop' for model {model_id}")
             logger.info(f"Binding with filtered kwargs: {{}}")
             return model

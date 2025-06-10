@@ -124,6 +124,11 @@ class MCPManager:
                     logger.info(f"MCP server {server_name} is disabled, skipping")
                     continue
                 
+                # Set environment variables for the server process
+                server_env = os.environ.copy()
+                if "env" in server_config:
+                    server_env.update(server_config["env"])
+                
                 # Verify server command exists
                 command = server_config.get("command", [])
                 if command:
@@ -151,7 +156,10 @@ class MCPManager:
                             logger.error(f"MCP server script not found: {script_path}")
                             continue
                     
-                client = MCPClient(server_config)
+                # Pass the environment to the client
+                enhanced_config = server_config.copy()
+                enhanced_config["env"] = server_env
+                client = MCPClient(enhanced_config)
                 self.clients[server_name] = client
                 connection_tasks.append(self._connect_server(server_name, client))
             
@@ -283,6 +291,7 @@ class MCPManager:
         tools = []
         for server_name, client in self.clients.items():
             if client.is_connected:
+                logger.info(f"Processing tools from server: {server_name}")
                 for tool in client.tools:
                     # Create MCPTool without server parameter
                     mcp_tool = MCPTool(
@@ -292,7 +301,10 @@ class MCPManager:
                     )
                     # Store server name as an attribute for reference
                     mcp_tool._server_name = server_name
+                    logger.info(f"Adding tool to collection: {tool.name} from server {server_name}")
                     tools.append(mcp_tool)
+        
+        logger.info(f"Total tools collected: {len(tools)} from {len([c for c in self.clients.values() if c.is_connected])} connected servers")
         return tools
     
     def get_all_prompts(self) -> List[MCPPrompt]:
@@ -343,12 +355,21 @@ class MCPManager:
             server_name: Specific server to use (if None, tries all servers)
             
         Returns:
-            Tool result or None if tool not found
         """
         # Remove mcp_ prefix if present for internal tool lookup
         internal_tool_name = tool_name
         if tool_name.startswith("mcp_"):
             internal_tool_name = tool_name[4:]
+        
+        logger.info(f"🔍 MCP_MANAGER: Looking for tool '{internal_tool_name}' (original: '{tool_name}')")
+        logger.info(f"🔍 MCP_MANAGER: Available tools: {[tool.name for client in self.clients.values() if client.is_connected for tool in client.tools]}")
+        
+        if server_name:
+            client = self.clients.get(server_name)
+        logger.info(f"🔍 MCP_MANAGER: Looking for tool '{internal_tool_name}' (original: '{tool_name}')")
+        logger.info(f"🔍 MCP_MANAGER: Available tools: {[tool.name for client in self.clients.values() if client.is_connected for tool in client.tools]}")
+        
+        logger.info(f"🔍 MCP_MANAGER: Looking for tool '{internal_tool_name}' (original: '{tool_name}')")
         
         if server_name:
             client = self.clients.get(server_name)
@@ -358,9 +379,16 @@ class MCPManager:
             # Try all connected servers
             for client in self.clients.values():
                 if client.is_connected:
-                    # Check if this server has the tool
-                    if any(tool.name == tool_name for tool in client.tools):
-                        return await client.call_tool(tool_name, arguments)
+                    # Check if this server has the tool (try both original and internal names)
+                    tool_names_to_try = [tool_name, internal_tool_name]
+                    for name_to_try in tool_names_to_try:
+                        if any(tool.name == name_to_try for tool in client.tools):
+                            logger.info(f"🔍 MCP_MANAGER: Found tool '{name_to_try}' in server, executing...")
+                            result = await client.call_tool(name_to_try, arguments)
+                            logger.info(f"🔍 MCP_MANAGER: Tool execution result: {result}")
+                            return result
+            
+            logger.warning(f"🔍 MCP_MANAGER: Tool '{internal_tool_name}' not found in any connected server")
         return None
     
     async def get_prompt_content(self, prompt_name: str, arguments: Optional[Dict[str, Any]] = None, server_name: Optional[str] = None) -> Optional[str]:

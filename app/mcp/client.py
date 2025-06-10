@@ -129,6 +129,11 @@ class MCPClient:
             
             logger.info(f"Using working directory: {working_dir}")
             
+            # Get environment variables for the process
+            process_env = self.server_config.get("env", {})
+            full_env = os.environ.copy()
+            full_env.update(process_env)
+            
             self.process = subprocess.Popen(
                 resolved_command,
                 stdin=subprocess.PIPE,
@@ -136,6 +141,7 @@ class MCPClient:
                 stderr=subprocess.PIPE,  # Keep stderr separate for debugging
                 cwd=working_dir,  # Set working directory to project root
                 text=True,
+                env=full_env,
                 bufsize=0
             )
             
@@ -304,6 +310,7 @@ class MCPClient:
             # Load tools
             if self.capabilities.get("tools"):
                 tools_result = await self._send_request("tools/list")
+                logger.info(f"Tools list response from {server_name_for_log}: {tools_result}")
                 if tools_result and "tools" in tools_result:
                     if server_name_for_log == 'everything' or 'everything' in str(server_name_for_log).lower():
                          logger.info(f"DEBUG_MCP_CLIENT ({server_name_for_log}): Raw tools data: {json.dumps(tools_result['tools'], indent=2)}")
@@ -318,6 +325,9 @@ class MCPClient:
                         except TypeError as e:
                             logger.error(f"Failed to create MCPTool for server {server_name_for_log}, FILTERED data {filtered_data} (original: {tool_data}): {e}")
                     self.tools = valid_tools
+                    logger.info(f"Successfully loaded {len(valid_tools)} tools for server {server_name_for_log}")
+                else:
+                    logger.warning(f"No tools found in response from {server_name_for_log}: {tools_result}")
             
             # Load prompts
             logger.info(f"Loading prompts for server: {server_name_for_log}")
