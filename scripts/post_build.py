@@ -65,7 +65,7 @@ def process_wheel():
         shutil.copytree(templates_src, app_templates_dir)
         
         # --- Handle mcp_servers ---
-        mcp_servers_src = os.path.join(os.getcwd(), 'mcp_servers')
+        mcp_servers_src = os.path.join(os.getcwd(), 'app', 'mcp_servers')
         app_mcp_servers_dir = os.path.join(app_dir, 'mcp_servers')
         
         if os.path.exists(mcp_servers_src) and os.path.isdir(mcp_servers_src):
@@ -101,21 +101,30 @@ def process_wheel():
         
         # Add entries for template files - (Existing logic, ensure it's compatible with mcp_servers addition)
         asset_records = [] # Combined list for templates and mcp_servers
-        for root, dirs, files in os.walk(app_templates_dir):
-            for file_item in files: # Renamed 'file' to 'file_item'
-                file_path = os.path.join(root, file_item)
-                rel_path = os.path.relpath(file_path, temp_dir)
-                
-                # Calculate hash
-                with open(file_path, 'rb') as f:
-                    file_hash = hashlib.sha256(f.read()).digest()
-                    hash_digest = base64.urlsafe_b64encode(file_hash).rstrip(b'=').decode('ascii')
-                
-                # Get file size
-                file_size = os.path.getsize(file_path)
-                
-                # Add to records
-                asset_records.append([rel_path, f"sha256={hash_digest}", str(file_size)])
+        
+        # Helper to add asset records
+        def add_asset_records(asset_dir):
+            for root, dirs, files_in_dir in os.walk(asset_dir): # Renamed 'files' to 'files_in_dir'
+                for file_item in files_in_dir: # Renamed 'file' to 'file_item'
+                    file_path = os.path.join(root, file_item)
+                    rel_path = os.path.relpath(file_path, temp_dir).replace(os.sep, '/') # Normalize path separators
+                    
+                    # Calculate hash
+                    with open(file_path, 'rb') as f_content: # Renamed 'f' to 'f_content'
+                        file_hash = hashlib.sha256(f_content.read()).digest()
+                        hash_digest = base64.urlsafe_b64encode(file_hash).rstrip(b'=').decode('ascii')
+                    
+                    # Get file size
+                    file_size = os.path.getsize(file_path)
+                    
+                    # Add to records
+                    asset_records.append([rel_path, f"sha256={hash_digest}", str(file_size)])
+
+        # Add records for templates
+        add_asset_records(app_templates_dir)
+        # Add records for mcp_servers
+        if os.path.exists(app_mcp_servers_dir): # Check if mcp_servers were copied
+            add_asset_records(app_mcp_servers_dir)
         
         # Write the updated RECORD file
         with open(record_file, 'w', newline='') as f:

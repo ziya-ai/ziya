@@ -4,6 +4,9 @@ from app.utils.logging_utils import logger
 import os
 import importlib.util
 
+# IMPORT MCP capabilities if available
+from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+
 # Import AST capabilities if available
 try:
     # First check if the required packages are installed
@@ -137,10 +140,6 @@ CRITICAL: ALWAYS format code changes using the specified git diff format.
 CRITICAL: VISUALIZATION CAPABILITIES:
 You can generate inline diagrams using ```graphviz``` or ```mermaid``` or ```vega-lite``` code blocks.
 Actively look for opportunities to enhance explanations with visual representations
-=======
-You can generate inline diagrams using either ```graphviz code blocks. 
-Actively look for opportunities to enhance explanations with visual representations 
->>>>>>> 839af8b (Backend minor fixes (#26))
 when they would provide clearer understanding, especially for:
 - System architectures
 - Flow diagrams (Flowcharts, Sequence Diagrams)
@@ -250,7 +249,7 @@ You have access to the following tools:
 {tools}
 
 To use a tool, format your request as:
-<tool_call><name>tool_name</name><arguments>{"key": "value"}</arguments></tool_call>
+{TOOL_SENTINEL_OPEN}<name>tool_name</name><arguments>{{"key": "value"}}</arguments>{TOOL_SENTINEL_CLOSE}
 
 The codebase is provided at the end of this prompt in a specific format. 
 The code that the user has given to you for context is in the format like below where first line has the File path and then the content follows.

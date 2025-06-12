@@ -278,20 +278,6 @@ class ZiyaBedrock(Runnable):
         return messages
     
     def _extract_file_paths_from_content(self, content: str) -> List[str]:
-        """Extract file paths from context content."""
-        import re
-        file_paths = []
-        
-        # Look for "File: " markers
-        for line in content.split('\n'):
-            if line.startswith('File: '):
-                file_path = line[6:].strip()
-                if file_path:
-                    file_paths.append(file_path)
-                    
-        return file_paths
-
-    def _extract_file_paths_from_content(self, content: str) -> List[str]:
         """Extract file paths from system message content."""
         import re
         file_paths = []
@@ -354,10 +340,6 @@ class ZiyaBedrock(Runnable):
             logger.debug(f"Added temperature={self.ziya_temperature} to _generate kwargs")
         
         # Only add top_k if it's not None (model supports it)
-        if self.ziya_top_k is not None and "top_k" not in kwargs:
-            kwargs["top_k"] = self.ziya_top_k
-            logger.debug(f"Added temperature={self.ziya_temperature} to _generate kwargs")
-        
         if self.ziya_top_k is not None and "top_k" not in kwargs:
             kwargs["top_k"] = self.ziya_top_k
             logger.debug(f"Added top_k={self.ziya_top_k} to _generate kwargs")
@@ -888,20 +870,10 @@ class ZiyaBedrock(Runnable):
         conversation_id = kwargs.get("conversation_id")
         if not conversation_id and config and isinstance(config, dict):
             conversation_id = config.get("conversation_id")
+            logger.debug(f"Found conversation_id in config: {conversation_id}")
 
         # Prepare messages with caching if supported
         messages = self._prepare_messages_with_smart_caching(messages, conversation_id, config)
-
-        # Ensure system messages are properly ordered after caching
-        messages = self._ensure_system_message_ordering(messages)
-
-        # Extract conversation_id from config if not in kwargs
-        if not conversation_id and config and isinstance(config, dict):
-            conversation_id = config.get("conversation_id")
-            logger.debug(f"Found conversation_id in config: {conversation_id}")
-        elif hasattr(input, 'get'):
-            conversation_id = input.get('conversation_id')
-            logger.debug(f"Found conversation_id in input: {conversation_id}")
             
         # Add our stored parameters to kwargs if not already present
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:

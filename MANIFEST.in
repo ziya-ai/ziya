@@ -1,6 +1,6 @@
 include LICENSE
 include README.md
-recursive-include mcp_servers *.py
+recursive-include app/mcp_servers *
 recursive-include app/utils/ast_parser/ts_parser *
 global-exclude *.pyc
 global-exclude __pycache__

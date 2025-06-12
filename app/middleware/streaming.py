@@ -233,13 +233,61 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     
                 except Exception as chunk_error:
                     logger.error(f"Error processing chunk: {str(chunk_error)}")
-                    # Send error as SSE data instead of raising
-                    error_msg = {
-                        "error": "chunk_processing_error",
-                        "detail": str(chunk_error)
-                    }
+                    # Check if this looks like a JSON error message that should be formatted as SSE
+                    
+                    # Handle the case where we get a validation error as plain JSON
+                    if isinstance(chunk, str) and '"error": "validation_error"' in chunk:
+                        logger.info("Converting validation error JSON to SSE format")
+                        try:
+                            # Extract the JSON part
+                            json_start = chunk.find('{"error"')
+                            json_end = chunk.find('}', json_start) + 1
+                            if json_start >= 0 and json_end > json_start:
+                                error_json = chunk[json_start:json_end]
+                                error_data = json.loads(error_json)
+                                yield f"data: {json.dumps(error_data)}\n\n"
+                                yield "data: [DONE]\n\n"
+                                return
+                        except Exception as e:
+                            logger.warning(f"Failed to convert validation error to SSE: {e}")
+                    
+                    chunk_str = str(chunk)
+                    if chunk_str.startswith('{"error":'):
+                        # This is an error response that needs proper SSE formatting
+                        try:
+                            # Find where the JSON ends - look for various patterns
+                            if 'data: [DONE]' in chunk_str:
+                                json_part = chunk_str.split('data: [DONE]')[0].strip()
+                            elif '}data:' in chunk_str:
+                                json_part = chunk_str.split('}data:')[0] + '}'
+                            else:
+                                # Look for the end of the JSON object
+                                brace_count = 0
+                                json_end = 0
+                                for i, char in enumerate(chunk_str):
+                                    if char == '{':
+                                        brace_count += 1
+                                    elif char == '}':
+                                        brace_count -= 1
+                                        if brace_count == 0:
+                                            json_end = i + 1
+                                            break
+                                json_part = chunk_str[:json_end] if json_end > 0 else chunk_str
+                                
+                            # Clean up any trailing characters that aren't part of JSON
+                            json_part = json_part.rstrip()
+                            error_data = json.loads(json_part)
+                            yield f"data: {json.dumps(error_data)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse error JSON: {json_part}")
+                    
+                    # Fallback: treat as regular chunk processing error
+                    error_msg = {"error": "chunk_processing_error", "detail": str(chunk_error)}
                     yield f"data: {json.dumps(error_msg)}\n\n"
-                    continue
+                    yield "data: [DONE]\n\n"
+                    return
                     
             # Ensure we end the stream properly
             try:

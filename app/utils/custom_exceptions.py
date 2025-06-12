@@ -45,6 +45,10 @@ class ExpiredTokenException(Exception):
         
     def __str__(self):
         return self.message
+
+class ValidationError(Exception):
+    """Exception raised when input validation fails."""
+    pass
         
 class KnownCredentialException(SystemExit):
     """

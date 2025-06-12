@@ -6,6 +6,7 @@ allowing the agent to use MCP tools seamlessly.
 """
 
 import re
+import json
 
 import asyncio
 from typing import Dict, List, Any, Optional, Type
@@ -15,24 +16,26 @@ from langchain.callbacks.manager import CallbackManagerForToolRun, AsyncCallback
 
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger
+from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 
 def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     """
     Parse tool calls from content, supporting multiple formats.
     
     Supports both:
-    - <tool_call><name>tool_name</name><arguments>...</arguments></tool_call>
-    - <tool_call><invoke name="tool_name"><parameter name="param">value</parameter></invoke></tool_call>
+    - {TOOL_SENTINEL_OPEN}<name>tool_name</name><arguments>...</arguments>{TOOL_SENTINEL_CLOSE}
+    - {TOOL_SENTINEL_OPEN}<invoke name="tool_name"><parameter name="param">value</parameter></invoke>{TOOL_SENTINEL_CLOSE}
     
     Returns:
         Dict with tool_name and arguments, or None if no valid tool call found
     """
     # Log the content being parsed for debugging
-    if '<tool_call>' in content:
+    if TOOL_SENTINEL_OPEN in content:
         logger.debug(f"🔍 PARSE: Attempting to parse tool call from content: {content[:200]}...")
-    
+
     # Format 1: <name> and <arguments>
-    name_args_pattern = r'<tool_call>\s*<name>([^<]+)</name>\s*<arguments>\s*({.*?})\s*</arguments>\s*</tool_call>'
+    name_args_pattern = re.escape(TOOL_SENTINEL_OPEN) + r'\s*<name>([^<]+)</name>\s*<arguments>\s*(\{.*?\})\s*</arguments>\s*' + re.escape(TOOL_SENTINEL_CLOSE)
+
     match = re.search(name_args_pattern, content, re.DOTALL)
     if match:
         tool_name = match.group(1).strip()
@@ -46,7 +49,7 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             return None
 
     # Format 2: <invoke> and <parameter>
-    invoke_pattern = r'<tool_call>\s*<invoke\s+name="([^"]+)">\s*(.*?)\s*</invoke>\s*</tool_call>'
+    invoke_pattern = rf'{re.escape(TOOL_SENTINEL_OPEN)}\s*<invoke\s+name="([^"]+)">\s*(.*?)\s*</invoke>\s*{re.escape(TOOL_SENTINEL_CLOSE)}'
     match = re.search(invoke_pattern, content, re.DOTALL)
     if match:
         tool_name = match.group(1).strip()
@@ -61,28 +64,10 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             params[param_name] = param_value
         
         return {"tool_name": tool_name, "arguments": params}
-    
-    # Format 2: <invoke> and <parameter>
-    invoke_pattern = r'<tool_call>\s*<invoke\s+name="([^"]+)">\s*(.*?)\s*</invoke>\s*</tool_call>'
-    match = re.search(invoke_pattern, content, re.DOTALL)
-    if match:
-        tool_name = match.group(1).strip()
-        params_content = match.group(2)
-        
-        # Parse parameters
-        param_pattern = r'<parameter\s+name="([^"]+)">([^<]*)</parameter>'
-        params = {}
-        for param_match in re.finditer(param_pattern, params_content):
-            param_name = param_match.group(1)
-            param_value = param_match.group(2).strip()
-            params[param_name] = param_value
-        
-        logger.debug(f"🔍 PARSE: Successfully parsed format 2 - tool: {tool_name}, args: {params}")
-        return {"tool_name": tool_name, "arguments": params}
-    
+
     # Log if no tool call pattern was found
-    if '<tool_call>' in content:
-        logger.warning(f"Found <tool_call> tag but couldn't parse it. Content: {content[:200]}...")
+    if TOOL_SENTINEL_OPEN in content:
+        logger.warning(f"Found {TOOL_SENTINEL_OPEN} tag but couldn't parse it. Content: {content[:200]}...")
     
     return None
 
@@ -129,10 +114,6 @@ class MCPTool(BaseTool):
         logger.info(f"🔍 MCPTool._arun: About to execute MCP tool {self.mcp_tool_name}")
         logger.info(f"🔍 MCPTool._arun: MCP manager initialized: {mcp_manager.is_initialized if 'mcp_manager' in globals() else 'No manager'}")
         try:
-            # Verify MCP manager is initialized
-            if not mcp_manager.is_initialized:
-                return f"Error: MCP manager not initialized"
-            
             mcp_manager = get_mcp_manager()
             result = await mcp_manager.call_tool(
                 self.mcp_tool_name,

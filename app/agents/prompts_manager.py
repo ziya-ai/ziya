@@ -31,42 +31,23 @@ def get_extended_prompt(model_name: Optional[str] = None,
     """
     if context is None:
         context = {}
-    
-    # Get MCP context information
-    mcp_context = {}
-    try:
-        mcp_manager = get_mcp_manager()
-        if mcp_manager.is_initialized:
-            logger.info(f"MCP manager is initialized with {len(mcp_manager.get_all_tools())} tools for prompt extension")
-            # Get tools reported by servers
-            server_tools = [tool.name for tool in mcp_manager.get_all_tools()]
-            # Manually add the client-side MCPResourceTool if it's always available to the agent
-            available_tools = list(set(server_tools + ["mcp_get_resource"])) # Use set to avoid duplicates
-            
-            logger.info(f"MCP tools available for prompt extension: {available_tools}")
-            mcp_context = {
-                "mcp_tools_available": len(available_tools) > 0,
-                "available_mcp_tools": available_tools
-            }
-            
-        else:
-            logger.info("MCP manager not initialized for prompt extensions")
-            logger.info(f"MCP manager state: initialized={mcp_manager.is_initialized if mcp_manager else 'No manager'}")
-    except Exception as e:
-        logger.debug(f"Could not get MCP context: {e}")
+    logger.error(f"🔍 EXECUTION_TRACE: get_extended_prompt() called for model: {model_name}")
     
     # Get the original template
     template = original_template
     
+    logger.error(f"🔍 EXECUTION_TRACE: Original template length: {len(template)}")
     # Apply extensions
     extended_template = PromptExtensionManager.apply_extensions(
         prompt=template,
         model_name=model_name,
         model_family=model_family,
         endpoint=endpoint,
-        context={**context, **mcp_context}
+        context=context
     )
     
+    logger.error(f"🔍 EXECUTION_TRACE: Extended template length: {len(extended_template)}")
+    logger.info(f"PROMPT_MANAGER: Final extended template length: {len(extended_template)}")
     logger.info(f"PROMPT_MANAGER: Original template length: {len(template)}")
     logger.info(f"PROMPT_MANAGER: Extended template length: {len(extended_template)}")
     logger.info(f"PROMPT_MANAGER: Template was modified: {len(extended_template) != len(template)}")

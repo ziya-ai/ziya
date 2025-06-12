@@ -101,41 +101,55 @@ class MCPClient:
             working_dir = project_root
             
             logger.info(f"Starting MCP server with command: {command}")
-                
+
             # Resolve command paths
             resolved_command = []
-            script_found = False
+            # This flag tracks if we've found any script to potentially update working_dir
+            # based on the first script encountered.
+            initial_script_found_for_working_dir_update = False
+
             for part in command:
                 if part.endswith('.py') and not os.path.isabs(part):
+                    # This part is a relative Python script, try to find it
+                    current_part_resolved_path = part # Default if not found in special locations
+                    found_this_part_in_roots = False
                     # Try to find the script in possible locations
                     for root in possible_roots:
                         potential_path = os.path.join(root, part)
                         if os.path.exists(potential_path):
-                            resolved_path = potential_path
-                            working_dir = root
-                            script_found = True
-                            logger.info(f"Found MCP server script at: {resolved_path}")
-                            break
+                            current_part_resolved_path = potential_path
+                            if not initial_script_found_for_working_dir_update: # Set working_dir based on the first script found
+                                working_dir = root # This updates working_dir for Popen
+                                initial_script_found_for_working_dir_update = True
+                            found_this_part_in_roots = True
+                            logger.info(f"Found MCP server script '{part}' at: {current_part_resolved_path}")
+                            break # Found the script for this part
                     
-                    if not script_found:
-                        resolved_path = os.path.join(working_dir, part)
-                        logger.warning(f"MCP server script not found, using default path: {resolved_path}")
-                    
-                    resolved_command.append(resolved_path)
+                    if not found_this_part_in_roots:
+                        # If not found in special locations, construct path relative to current `working_dir`
+                        current_part_resolved_path = os.path.join(working_dir, part)
+                        logger.warning(f"MCP server script '{part}' not found in special roots, using path relative to current CWD ({working_dir}): {current_part_resolved_path}")
+                    resolved_command.append(current_part_resolved_path)
                 else:
+                    # This part is not a relative Python script (e.g., "node", "python", or an absolute path)
                     resolved_command.append(part)
-            
-            logger.info(f"Starting MCP server: {' '.join(resolved_command)}")
-            
+
+            # Combine resolved command with arguments from server_config
+            final_popen_command = list(resolved_command) # Start with the resolved executable and its direct flags
+            server_specific_args = self.server_config.get("args", [])
+            final_popen_command.extend(server_specific_args)
+
+            logger.info(f"Starting MCP server with command: {' '.join(final_popen_command)}")
+
             logger.info(f"Using working directory: {working_dir}")
-            
+
             # Get environment variables for the process
             process_env = self.server_config.get("env", {})
             full_env = os.environ.copy()
             full_env.update(process_env)
-            
+
             self.process = subprocess.Popen(
-                resolved_command,
+                final_popen_command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,  # Keep stderr separate for debugging

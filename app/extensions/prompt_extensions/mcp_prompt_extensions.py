@@ -6,6 +6,7 @@ with MCP (Model Context Protocol) servers and tools.
 """
 
 from app.utils.prompt_extensions import prompt_extension
+from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from app.utils.logging_utils import logger
 
 logger.info("MCP_GUIDELINES: mcp_prompt_extensions.py module being imported")
@@ -46,78 +47,22 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     
     mcp_guidelines = """
 
-**CRITICAL MCP TOOL VERIFICATION:**
-Before using any MCP tool, verify the exact tool names available. The tools are prefixed with "mcp_" in the agent system.
+## MCP Tool Usage - CRITICAL INSTRUCTIONS
+**EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**
 
-**ACTUAL AVAILABLE TOOLS:** """ + str([f"mcp_{tool}" if not tool.startswith("mcp_") else tool for tool in available_tools]) + """
+**Available Tools:**
+""" + _get_tool_descriptions_from_mcp(available_tools) + """
 
-Note: All tool names must be prefixed with "mcp_" when calling them.
+""" + _get_tool_call_formats_from_mcp(available_tools) + """
 
-## MCP Tool Usage Guidelines - CRITICAL INSTRUCTIONS
-
-You have access to MCP (Model Context Protocol) tools that provide additional capabilities:
-
-**AVAILABLE TOOL NAMES (use these exact names):**
-### Available MCP Tools:
-""" + "\n".join([f"- **mcp_{tool}**: Use for {_get_tool_description(tool)}" for tool in available_tools if not tool.startswith("mcp_")]) + """
-""" + "\n".join([f"- **{tool}**: Use for {_get_tool_description(tool)}" for tool in available_tools if tool.startswith("mcp_")]) + """
-
-
-**TOOL CALLING FORMAT - USE EXACTLY THIS SYNTAX:**
-
-For shell commands, use EXACTLY this format:
-```
-<tool_call>
-<name>mcp_run_shell_command</name>
-<arguments>
-{"command": "your_command_here"}
-</arguments>
-</tool_call>
-```
-
-For time queries, use EXACTLY this format:
-```
-<tool_call>
-<name>mcp_get_current_time</name>
-<arguments>
-{"format": "readable"}
-</arguments>
-</tool_call>
-```
-
-### MCP Usage Best Practices:
-
-**CRITICAL: You MUST actually execute tools when requested, not describe what you would do. When a user asks you to run a command or check something, USE THE TOOLS.**
-
-1. **Shell Commands - EXECUTE THESE WHEN REQUESTED**: When using shell/command execution tools (mcp_run_shell_command):
-   - Always explain what command you're running and why
-   - Use safe, read-only commands when possible (ls, cat, grep, etc.)
-   - Be cautious with write operations and always confirm intent
-   - Respect the allowed command whitelist
-   - **Format shell output as interactive session**: Present the output as if it were executed in a terminal:
-     ```
-     $ command_here
-     [actual stdout/stderr output]
-     ```
-   - **DO NOT FABRICATE COMMAND OUTPUT - Always use the actual tool results**
-   - mcp_run_shell_command (NOT run_shell_command)
-
-2. **Time/Date Tools - USE mcp_get_current_time**: When checking time:
-   - Use for scheduling, logging, or time-sensitive operations
-   - Consider timezone context when relevant
-   - **Always use the tool rather than guessing the current time**
-   - mcp_get_current_time (NOT get_current_time)
-
-3. **General MCP Tool Usage**:
-   - **MANDATORY: Use MCP tools instead of making assumptions about system state**
-   - Use tools to verify information rather than guessing
-   - Combine multiple tools when needed for comprehensive analysis
-   - Always handle tool errors gracefully and explain what went wrong
-   - **If a tool call fails, show the actual error and try alternative approaches**
-   - **Never simulate or fabricate tool responses - always wait for and use actual results**
-
+**Usage Rules:**
+1. **Always use actual tool results** - Never fabricate output
+2. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
+3. **Time queries**: Always use tool rather than guessing current time
+4. **Error handling**: Show actual errors and try alternatives
+5. **Verification**: Use tools to verify system state rather than making assumptions    
 """
-    
+
     logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}") # ADD THIS
     logger.info(f"MCP_GUIDELINES: Appending guidelines. Available tools: {available_tools}") # ADD THIS
     modified_prompt = prompt + mcp_guidelines
@@ -130,11 +75,153 @@ def _get_tool_description(tool_name: str) -> str:
     descriptions = {
         "mcp_get_current_time": "checking current system time and date",
         "mcp_run_shell_command": "executing safe shell commands to inspect system state", 
-        "mcp_get_resource": "accessing MCP resources and content",
-        "get_current_time": "checking current system time and date (legacy name)",
-        "run_shell_command": "executing safe shell commands to inspect system state (legacy name)"
     }
     return descriptions.get(tool_name, "specialized system operations")
+
+def _get_tool_descriptions_from_mcp(available_tools: list) -> str:
+    """Get tool descriptions from actual MCP tool definitions."""
+    tool_descriptions = []
+    
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        
+        if mcp_manager.is_initialized:
+            # Get all MCP tools with their descriptions
+            mcp_tools = mcp_manager.get_all_tools()
+            tool_map = {tool.name: tool.description for tool in mcp_tools}
+            
+            for tool_name in available_tools:
+                # Handle both prefixed and non-prefixed tool names
+                clean_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+                description = tool_map.get(clean_name, "Specialized system operations")
+                
+                display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
+                tool_descriptions.append(f"- **{display_name}**: {description}")
+        else:
+            # Fallback if MCP manager not initialized
+            for tool_name in available_tools:
+                display_name = f"mcp_{tool_name}" if not tool_name.startswith("mcp_") else tool_name
+                tool_descriptions.append(f"- **{display_name}**: Specialized system operations")
+                
+    except Exception as e:
+        logger.warning(f"Could not get MCP tool descriptions: {e}")
+        # Fallback to generic descriptions
+        for tool_name in available_tools:
+            display_name = f"mcp_{tool_name}" if not tool_name.startswith("mcp_") else tool_name
+            tool_descriptions.append(f"- **{display_name}**: Specialized system operations")
+    
+    return "\n".join(tool_descriptions)
+
+def _get_tool_call_formats_from_mcp(available_tools: list) -> str:
+    """Generate tool call format examples from actual MCP tool schemas."""
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        
+        if not mcp_manager.is_initialized:
+            return _get_fallback_tool_formats(available_tools)
+            
+        # Get all MCP tools with their schemas
+        mcp_tools = mcp_manager.get_all_tools()
+        tool_schemas = {tool.name: tool.inputSchema for tool in mcp_tools}
+        
+        format_sections = []
+        
+        for tool_name in available_tools:
+            clean_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+            display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
+            
+            schema = tool_schemas.get(clean_name)
+            if schema and "properties" in schema:
+                # Generate example arguments from schema
+                example_args = _generate_example_args_from_schema(schema, clean_name)
+                
+                format_sections.append(f"""**{display_name} Format:**
+```
+{TOOL_SENTINEL_OPEN}
+<name>{display_name}</name>
+<arguments>{example_args}</arguments>
+{TOOL_SENTINEL_CLOSE}
+```""")
+        
+        if format_sections:
+            return "\n\n".join(format_sections)
+        else:
+            return _get_fallback_tool_formats(available_tools)
+            
+    except Exception as e:
+        logger.warning(f"Could not get MCP tool schemas: {e}")
+        return _get_fallback_tool_formats(available_tools)
+ 
+def _generate_example_args_from_schema(schema: dict, tool_name: str) -> str:
+    """Generate example arguments JSON from tool schema."""
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    
+    example_args = {}
+    for prop_name, prop_info in properties.items():
+        if prop_name in required or len(properties) <= 2:  # Include all if few properties
+            example_value = _get_example_value_for_property(prop_info, prop_name, tool_name)
+            example_args[prop_name] = example_value
+    
+    import json
+    # Escape curly braces for template formatting
+    json_str = json.dumps(example_args, indent=2)
+    # Double the braces to escape them in Python string formatting
+    escaped_json = json_str.replace('{', '{{').replace('}', '}}')
+    return escaped_json
+ 
+def _get_example_value_for_property(prop_info: dict, prop_name: str, tool_name: str) -> str:
+    """Generate appropriate example value based on property info and context."""
+    prop_type = prop_info.get("type", "string")
+    description = prop_info.get("description", "").lower()
+    
+    # Tool-specific examples
+    if tool_name == "run_shell_command" and prop_name == "command":
+        return "ls -la"
+    elif tool_name == "get_current_time" and prop_name == "format":
+        return "readable"
+    
+    # Generic examples based on type and description
+    if prop_type == "string":
+        if "command" in description or prop_name == "command":
+            return "your_command_here"
+        elif "format" in description or prop_name == "format":
+            return "readable"
+        else:
+            return f"your_{prop_name}_here"
+    elif prop_type == "boolean":
+        return "true"
+    elif prop_type == "number" or prop_type == "integer":
+        return "1"
+    else:
+        return f"your_{prop_name}_here"
+ 
+def _get_fallback_tool_formats(available_tools: list) -> str:
+    """Fallback tool format examples when schema info isn't available."""
+    formats = []
+    
+    for tool_name in available_tools:
+        clean_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+        display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
+        
+        if clean_name == "run_shell_command":
+            example_args = '{{"command": "ls -la"}}'
+        elif clean_name == "get_current_time":
+            example_args = '{{"format": "readable"}}'
+        else:
+            example_args = '{{"key": "value"}}'
+            
+        formats.append(f"""**{display_name} Format:**
+```
+{TOOL_SENTINEL_OPEN}
+<name>{display_name}</name>
+<arguments>{example_args}</arguments>
+{TOOL_SENTINEL_CLOSE}
+```""")
+    
+    return "\n\n".join(formats)
 
 def register_extensions(manager):
     """

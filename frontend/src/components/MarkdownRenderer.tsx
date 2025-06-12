@@ -640,15 +640,6 @@ const normalizeGitDiff = (diff: string): string => {
     return diff;
 };
 
-// Helper function to detect streaming diffs
-const isStreamingDiff = (content: string) => {
-    return content.includes('diff --git') &&
-        (!content.includes('\n\n') ||
-            content.split('\n').slice(-1)[0].startsWith('+') ||
-            content.split('\n').slice(-1)[0].startsWith('-') ||
-            content.endsWith('\n'));
-};
-
 const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex }) => {
     const [isLoading, setIsLoading] = useState(true);
     const [tokenizedHunks, setTokenizedHunks] = useState<any>(null);
@@ -783,30 +774,17 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
             // Check if this update is for our diff element
             let isForThisDiff = false;
-            // First check if the targetDiffElementId matches our diffId
-            if (event.detail.targetDiffElementId === diffId) {
-                isForThisDiff = true;
-                console.log(`Direct match for diffId ${diffId}`);
-            }
 
             // Also check if the request ID maps to our diff ID
-            if (event.detail.requestId && diffRequestMap.get(event.detail.requestId) === diffId) {
+            if (event.detail.requestId && diffRequestMap.get(event.detail.requestId) === diffId || event.detail.targetDiffElementId === diffId) {
                 isForThisDiff = true;
                 console.log(`direct match for diffId ${diffId}`);
 
                 // Apply the hunk statuses directly to our component state
-
-                // Also check if the request ID maps to our diff ID
-                if (event.detail.requestId && diffRequestMap.get(event.detail.requestId) === diffId) {
-                    isForThisDiff = true;
-                    console.log(`direct match for diffId ${diffId}`);
-
-                    // Apply the hunk statuses directly to our component state
-                    if (event.detail.hunkStatuses) {
-                        Object.entries(event.detail.hunkStatuses).forEach(([hunkId, status]) => {
-                            updateHunkStatuses({ [hunkId]: status }, diffId);
-                        });
-                    }
+                if (event.detail.hunkStatuses) {
+                    Object.entries(event.detail.hunkStatuses).forEach(([hunkId, status]) => {
+                        updateHunkStatuses({ [hunkId]: status }, diffId);
+                    });
                 }
 
                 // If not a match, skip processing
@@ -1475,7 +1453,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         {viewType === 'unified' && file.hunks.map((hunk: ExtendedHunk, hunkIndex: number) => {
                             const hunkKey = `${fileIndex}-${hunkIndex}`;
                             const status = instanceHunkStatusMap.get(hunkKey);
-                            const hunkId = hunkIndex + 1;
                             const isApplied = status?.applied;
                             const isAlreadyApplied = status?.alreadyApplied;
                             const statusReason = status?.reason || '';
@@ -1498,9 +1475,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 </span>
                             );
 
-                            // Extract hunk header information
-                            const hunkHeaderInfo = hunk.content?.match(/^(@@.*@@)/)?.[1] ||
-                                `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`;
 
                             // Calculate lines between hunks for ellipsis display
                             const previousHunk = hunkIndex > 0 ? (file.hunks[hunkIndex - 1] as ExtendedHunk) : null;
@@ -2317,66 +2291,15 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         }
     }, [token.text]);
 
-    const isDiffValid = useMemo(() => {
-        // During streaming, always attempt to render as diff if it looks like one
-        if (isStreaming) {
-            const trimmedText = token.text?.trim() || '';
-            if (trimmedText.startsWith('diff --git') || trimmedText.startsWith('--- a/')) {
-                console.debug('Forcing diff render during streaming');
-                return true;
-            }
-        }
-
-        const trimmedText = token.text?.trim();
-        // Allow diffs starting with 'diff --git' OR '--- a/' OR '--- /dev/null' (file creation)
-        if (!trimmedText || (!trimmedText.startsWith('diff --git') && !trimmedText.startsWith('--- a/') && !trimmedText.startsWith('--- /dev/null'))) {
-            return false;
-        }
-
-        // Check if we're in a streaming response - only do this once per component
-        if (!streamingCheckedRef.current) {
-            streamingCheckedRef.current = true;
-            const streamingElement = isStreaming; // Use context value
-            if (streamingElement) {
-                // During streaming, we'll still try to render what we have so far
-                setStreamingContent(trimmedText);
-                // Return true to allow rendering attempt
-                return true;
-            }
-        }
-
-        try {
-            // Ensure token.text is a string before passing
-            const diffInput = typeof contentRef.current === 'string' ? contentRef.current : ''; // This is the streaming content
-            // During streaming, we assume it's a valid diff if it starts like one,
-            // even if parseDiff would fail on the incomplete content.
-            // The DiffViewWrapper will handle the actual parsing and fallback.
-            return diffInput.startsWith('diff --git') || diffInput.startsWith('--- a/') || diffInput.startsWith('+++ b/');
-        } catch (e) {
-            console.error('Error parsing diff:', e);
-            return false;
-        }
-    }, [contentRef.current, isStreaming]);
-
-
-    //if (isDiffValid) {
-    if (true) {
-
-        return (
-            <DiffViewWrapper
-                token={token}
-                index={index}
-                elementId={diffId}
-                enableCodeApply={enableCodeApply}
-                isStreaming={isStreaming}
-            />
-        );
-    } else {
-        // Fallback: Render as a plain code block if parseDiff failed or returned no files/hunks
-        console.warn("DiffToken: Rendering as plain code block because isDiffValid is false.", { textPreview: token.text?.substring(0, 100) });
-        const rawCodeText = decodeHtmlEntities(token.text || '');
-        return <CodeBlock key={`code-${index}`} token={{ ...token, text: rawCodeText, lang: 'plaintext' }} index={index} />;
-    }
+    return (
+        <DiffViewWrapper
+            token={token}
+            index={index}
+            elementId={diffId}
+            enableCodeApply={enableCodeApply}
+            isStreaming={isStreaming}
+        />
+    );
 });
 
 const BasicDiffView = ({ diff }: { diff: string }) => {
@@ -2801,7 +2724,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     }
 
     // Only escape if the content isn't already escaped
-    const codeText = token.text;
     return (
         <ErrorBoundary type="code">
             <pre
@@ -2865,10 +2787,19 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
 
+        // Debug logging for ALL code blocks
+        console.log('determineTokenType - Code block with lang:', lang, 'tokenType:', tokenType);
+
         // Debug logging for tool detection
         console.log('Code block detected with lang:', lang, 'content preview:', (token as TokenWithText).text?.substring(0, 50));
 
         // Check for MCP tool blocks first
+        if (lang.startsWith('tool:mcp_')) {
+            const toolName = lang.substring(5); // Remove 'tool:' prefix to get 'mcp_...'
+            (token as TokenWithText).toolName = toolName;
+            console.log('MCP tool block detected:', toolName);
+            return 'tool';
+        }
         if (lang.startsWith('tool:')) {
             const toolName = lang.substring(5); // Remove 'tool:' prefix
             (token as TokenWithText).toolName = toolName;
@@ -3481,7 +3412,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         try {
             markdownRef.current = markdown;
             // During streaming, if we already have a diff being rendered, keep it stable
-            if (false && (externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
+            if ((externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
                 const hasDiff = previousTokensRef.current?.some(token =>
                     token.type === 'code' && (token as TokenWithText).lang === 'diff');
                 if (hasDiff && false) { // Disable this optimization to allow streaming diffs
@@ -3491,9 +3422,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Use marked.lexer directly
             let processedMarkdown = markdown;
-
-            // Debug the lexer output
-            // const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
 
             // Pre-process MathML blocks to prevent fragmentation
             const mathMLRegex = /<math[^>]*>[\s\S]*?<\/math>/gi;

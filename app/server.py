@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langserve import add_routes
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from app.agents.agent import model, RetryingChatBedrock, initialize_langserve
 from app.agents.agent import agent, agent_executor, create_agent_chain, create_agent_executor
 from app.agents.agent import update_conversation_state, update_and_return, parse_output
@@ -35,6 +36,7 @@ from pydantic import BaseModel, Field
 # Import configuration
 import app.config as config
 from app.agents.models import ModelManager
+from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from app.agents.wrappers.nova_wrapper import NovaBedrock  # Import NovaBedrock for isinstance check
 from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
 from botocore.exceptions import EventStreamError
@@ -63,10 +65,96 @@ from app.utils.error_handlers import (
 )
 from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
+from app.utils.custom_exceptions import ValidationError
 from app.utils.file_utils import read_file_content
 from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
+
+def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str) -> List[BaseMessage]:
+    """
+    Build messages for streaming using the extended prompt template.
+    This centralizes message construction to avoid duplication.
+    """
+    from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
+    from app.agents.agent import get_combined_docs_from_files, _format_chat_history
+    
+    model_info = get_model_info_from_config()
+    
+    # Get MCP context
+    mcp_context = {}
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            available_tools = [tool.name for tool in mcp_manager.get_all_tools()]
+            mcp_context = {
+                "mcp_tools_available": len(available_tools) > 0,
+                "available_mcp_tools": available_tools
+            }
+    except Exception as e:
+        logger.warning(f"Could not get MCP tools: {e}")
+    
+    # Get file context
+    file_context = get_combined_docs_from_files(files, conversation_id) if files else ""
+    
+    # Apply post-instructions to the question once here
+    from app.utils.post_instructions import PostInstructionManager
+    modified_question = PostInstructionManager.apply_post_instructions(
+        query=question,
+        model_name=model_info["model_name"],
+        model_family=model_info["model_family"],
+        endpoint=model_info["endpoint"]
+    )
+    
+    # Get the extended prompt and format it properly
+    extended_prompt = get_extended_prompt(
+        model_name=model_info["model_name"],
+        model_family=model_info["model_family"],
+        endpoint=model_info["endpoint"],
+        context=mcp_context
+    )
+    
+    # Get available tools for the template
+    tools_list = []
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            tools_list = [f"- {tool.name}: {tool.description}" for tool in mcp_manager.get_all_tools()]
+    except Exception as e:
+        logger.warning(f"Could not get tools for template: {e}")
+    
+    # Format messages using the extended prompt template
+    return extended_prompt.format_messages(
+        codebase=file_context,
+        question=modified_question,
+        chat_history=_format_chat_history(chat_history),
+        ast_context="",  # Will be enhanced if AST is enabled
+        tools="\n".join(tools_list) if tools_list else "No tools available",
+        TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
+        TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
+    )
+    
+    # Log the context construction details
+    logger.info("CONTEXT CONSTRUCTION DETAILS:")
+    logger.info(f"File context length: {len(file_context)} characters")
+    logger.info(f"Modified question length: {len(modified_question)} characters")
+    logger.info(f"Chat history items: {len(chat_history)}")
+    logger.info(f"Available tools: {len(tools_list)}")
+    logger.info(f"MCP tools available: {mcp_context.get('mcp_tools_available', False)}")
+    
+    formatted_messages = extended_prompt.format_messages(
+        codebase=file_context,
+        question=modified_question,
+        chat_history=_format_chat_history(chat_history),
+        ast_context="",  # Will be enhanced if AST is enabled
+        tools="\n".join(tools_list) if tools_list else "No tools available",
+        TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
+        TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
+    )
+    
+    return formatted_messages
 
 # Dictionary to track active streaming tasks
 active_streams = {}
@@ -355,6 +443,18 @@ async def cleanup_stream(conversation_id: str):
         logger.warning(f"Attempted to clean up non-existent stream: {conversation_id}")
 
 async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Optional[set] = None) -> str:
+    def clean_internal_sentinels(text: str) -> str:
+        """Remove any tool sentinel fragments that might have leaked into the response."""
+        import re
+        # Remove complete tool sentinels
+        text = text.replace(TOOL_SENTINEL_OPEN, "")
+        text = text.replace(TOOL_SENTINEL_CLOSE, "")
+        # Remove partial fragments
+        text = re.sub(r'<TOOL_[^>]*>', '', text)
+        text = re.sub(r'<name>[^<]*</name>', '', text)
+        text = re.sub(r'<arguments>[^<]*</arguments>', '', text)
+        # Preserve ```tool: blocks - they are the expected frontend format
+        return text
     """
     Detect MCP tool calls in the complete response and execute them.
     
@@ -373,12 +473,11 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
     import re
     
     # Check if response contains tool calls
-    if '<tool_call>' not in full_response:
+    if TOOL_SENTINEL_OPEN not in full_response:
         return full_response
     
-    
     # Find all tool call blocks
-    tool_call_pattern = r'<tool_call>.*?</tool_call>'
+    tool_call_pattern = re.escape(TOOL_SENTINEL_OPEN) + r'.*?' + re.escape(TOOL_SENTINEL_CLOSE)
     tool_calls = re.findall(tool_call_pattern, full_response, re.DOTALL)
     
     if not tool_calls:
@@ -435,8 +534,9 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
             
             logger.debug(f"🔍 MCP: Tool executed successfully, output: {tool_output[:100]}...")
             
-            # Replace the tool call with a clean result format
-            replacement = f"\n\n**Tool Result:**\n{tool_output}\n\n"
+            # Replace the tool call with properly formatted tool block
+            clean_output = clean_internal_sentinels(tool_output)
+            replacement = f"\n```tool:{tool_name}\n{clean_output.strip()}\n```\n"
             modified_response = modified_response.replace(tool_call_block, replacement)
             
         except Exception as e:
@@ -445,10 +545,11 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
             error_msg = f"\n\n**Tool Error:** {str(e)}\n\n"
             modified_response = modified_response.replace(tool_call_block, error_msg)
     
-    return modified_response
-
+    # Final cleanup to ensure no fragments remain
+    return clean_internal_sentinels(modified_response)
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
+    logger.error("🔍 EXECUTION_TRACE: stream_chunks() called - ENTRY POINT")
     logger.info("🔍 STREAM_CHUNKS: Function called")
     # Send heartbeat to keep connection alive (don't send processing message as it appears in the UI)
     yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
@@ -474,92 +575,43 @@ async def stream_chunks(body):
         
     logger.info(f"🔍 STREAM_CHUNKS: Using conversation_id: {conversation_id}")
 
-    # Build messages list
-    messages = []
-
-    # Get the extended prompt template that includes MCP guidelines
-    from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
-    model_info = get_model_info_from_config()
-
-    # Apply extensions directly to the original template to get the extended content
-    from app.agents.prompts import original_template
-    from app.utils.prompt_extensions import PromptExtensionManager
+    # Use centralized message construction to eliminate all duplication
+    messages = build_messages_for_streaming(question, chat_history, files, conversation_id)
     
-    # Get MCP tools for context
-    mcp_tools_available = False
-    available_mcp_tools = []
-    try:
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        if mcp_manager.is_initialized:
-            available_mcp_tools = [tool.name for tool in mcp_manager.get_all_tools()]
-            mcp_tools_available = len(available_mcp_tools) > 0
-    except Exception as e:
-        logger.warning(f"Could not get MCP tools for system template: {e}")
+    # COMPLETE CONTEXT OUTPUT - Log the entire context being sent to the model
+    logger.info("=" * 100)
+    logger.info("COMPLETE MODEL CONTEXT OUTPUT - FINAL STAGE BEFORE MODEL")
+    logger.info("=" * 100)
+    logger.info(f"Conversation ID: {conversation_id}")
+    logger.info(f"Question: {question}")
+    logger.info(f"Total Messages: {len(messages)}")
+    logger.info(f"Files Count: {len(files)}")
+    logger.info(f"Chat History Length: {len(chat_history)}")
+    logger.info("-" * 80)
     
-    # Apply all extensions to get the complete system template
-    system_template = PromptExtensionManager.apply_extensions(
-        prompt=original_template,
-        model_name=model_info["model_name"],
-        model_family=model_info["model_family"],
-        endpoint=model_info["endpoint"],
-        context={
-            "mcp_tools_available": mcp_tools_available,
-            "available_mcp_tools": available_mcp_tools
-        }
-    )
+    for i, message in enumerate(messages):
+        logger.info(f"MESSAGE {i+1}/{len(messages)} - TYPE: {message.type}")
+        logger.info(f"ROLE: {getattr(message, 'role', 'N/A')}")
+        logger.info(f"CONTENT LENGTH: {len(message.content) if hasattr(message, 'content') and message.content else 0} characters")
+        logger.info("CONTENT START:")
+        logger.info("▼" * 50)
+        if hasattr(message, 'content') and message.content:
+            # Log first 500 and last 500 characters for very long content
+            content = message.content
+            if len(content) > 1000:
+                logger.info(content[:500])
+                logger.info(f"... [TRUNCATED - {len(content) - 1000} characters omitted] ...")
+                logger.info(content[-500:])
+            else:
+                logger.info(content)
+        logger.info("▲" * 50)
+        logger.info("CONTENT END")
+        logger.info("-" * 40)
     
-    logger.info(f"🔍 STREAM_CHUNKS: Using extended system template with length: {len(system_template)}")
-    system_content_parts = []
-    system_content_parts.append(system_template)
-    
-    # Add file context if available
-    if files:
-        from app.agents.agent import get_combined_docs_from_files
-        file_context = get_combined_docs_from_files(files, conversation_id)
-        system_content_parts.append(f"\n\nCodebase Context:\n{file_context}")
-    
-    # Create system message with combined content
-    if system_content_parts:
-        combined_system_content = "\n".join(system_content_parts)
-        logger.info(f"🔍 STREAM_CHUNKS: Final system message length: {len(combined_system_content)}")
-        messages.append(SystemMessage(content="\n".join(system_content_parts)))
-    
-    # Add chat history
-    if chat_history:
-        for msg_pair in chat_history:
-            if isinstance(msg_pair, (list, tuple)) and len(msg_pair) >= 2:
-                human_msg, ai_msg = msg_pair[0], msg_pair[1]
-                if human_msg and ai_msg:
-                    messages.append(HumanMessage(content=str(human_msg)))
-                    messages.append(AIMessage(content=str(ai_msg)))
-    
-    # Add current question
-    if question:
-        messages.append(HumanMessage(content=question))
-
-    # Log the complete system message for debugging
-    for i, msg in enumerate(messages):
-        if isinstance(msg, SystemMessage):
-            logger.info(f"=== COMPLETE SYSTEM MESSAGE {i} ===")
-            logger.info(f"System message length: {len(msg.content)} characters")
-            logger.info(f"System message content:\n{msg.content}")
-            logger.info(f"=== END SYSTEM MESSAGE {i} ===")
-            break  # Only log the first system message to avoid spam
-
+    logger.info(f"Built {len(messages)} messages using centralized construction")
+ 
     # Create config dict with conversation_id for caching
     config = {"conversation_id": conversation_id} if conversation_id else {}
-        
-    logger.info(f"Prepared {len(messages)} messages for agent iteration")
-    
-    # Check if MCP tools are available
-    try:
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        if mcp_manager.is_initialized:
-            logger.info(f"MCP tools available: {[tool.name for tool in mcp_manager.get_all_tools()]}")
-    except Exception as e:
-        logger.warning(f"Could not check MCP status: {e}")
     
     # Set up connection monitoring
     connection_active = True
@@ -795,25 +847,47 @@ async def stream_chunks(body):
                 logger.info(f"🔍 AGENT ITERATION {iteration}: Available tools: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
 
                 async for chunk in model_to_use.astream(messages, config=config):
+                    # Log the actual messages being sent to model on first iteration
+                    if iteration == 1 and not hasattr(stream_chunks, '_logged_model_input'):
+                        stream_chunks._logged_model_input = True
+                        logger.info("🔥" * 50)
+                        logger.info("FINAL MODEL INPUT - ACTUAL MESSAGES SENT TO MODEL")
+                        logger.info("🔥" * 50)
+                        for idx, msg in enumerate(messages):
+                            logger.info(f"FINAL MESSAGE {idx+1}: {type(msg).__name__}")
+                            logger.info(f"CONTENT: {msg.content}")
+                            if hasattr(msg, 'additional_kwargs') and msg.additional_kwargs:
+                                logger.info(f"ADDITIONAL_KWARGS: {msg.additional_kwargs}")
+                            logger.info("-" * 30)
+                        logger.info("🔥" * 50)
+                    
                     # Check connection status
-                    logger.debug(f"🔍 AGENT: Received chunk type: {type(chunk)}")
                     if not connection_active:
                         logger.info("Connection lost during agent iteration")
                         break
                     # Process chunk content
-                    logger.debug(f"🔍 AGENT: Received chunk type: {type(chunk)}")
 
                     if hasattr(chunk, 'content'):
                         content = chunk.content() if callable(chunk.content) else chunk.content
                         content_str = str(content) if content else ""
-                        logger.debug(f"🔍 AGENT: Chunk content: '{content_str}' (length: {len(content_str)})")
                     else:
                         content_str = str(chunk)
-                        logger.debug(f"🔍 AGENT: Chunk as string: '{content_str}' (length: {len(content_str)})")
 
                     # Skip empty chunks
                     if not content_str: 
                         continue
+
+                    # Check if this content is actually an error response that should be handled specially
+                    if content_str.strip().startswith('{"error":') and '"validation_error"' in content_str:
+                        logger.info("🔍 AGENT: Detected validation error in model response, converting to proper error handling")
+                        try:
+                            error_data = json.loads(content_str.strip().replace('[DONE]', ''))
+                            # Don't stream this as content, instead raise an exception to be handled by middleware
+                            from app.utils.custom_exceptions import ValidationError
+                            raise ValidationError(error_data.get('detail', 'Validation error occurred'))
+                        except (json.JSONDecodeError, ValueError):
+                            logger.warning("Failed to parse error JSON, treating as regular content")
+                            # Fall through to normal processing
 
                     # Always accumulate content in current_response for tool detection
                     current_response += content_str
@@ -821,11 +895,15 @@ async def stream_chunks(body):
  
                     # Check if we should suppress this content from streaming
                     should_suppress = (
-                        '<tool_call>' in current_response or 
-                        '</tool_call>' in current_response or
-                        content_str.strip().startswith('<tool') or
-                        '**Tool' in content_str or
-                        'Result:**' in content_str
+                        TOOL_SENTINEL_OPEN in current_response or 
+                        TOOL_SENTINEL_CLOSE in current_response or
+                        content_str.strip().startswith('<TOOL') or
+                        content_str.strip().endswith('_call') or
+                        TOOL_SENTINEL_CLOSE.lstrip('<') in content_str or
+                        # Only suppress internal tool sentinels, not frontend tool blocks
+                        '<TOOL_' in content_str or
+                        any(marker in content_str for marker in ['<name>', '</name>', '<arguments>', '</arguments>'])
+                        # Note: We preserve ```tool: blocks as they are the expected frontend format
                     )
                     
                     if not should_suppress:
@@ -837,7 +915,7 @@ async def stream_chunks(body):
                         logger.debug(f"🔍 AGENT: Suppressed tool call content from frontend")
 
                     # Check for complete tool call - must have both opening and closing tags
-                    if '<tool_call>' in current_response and '</tool_call>' in current_response:
+                    if TOOL_SENTINEL_OPEN in current_response and TOOL_SENTINEL_CLOSE in current_response:
                         logger.info("🔍 AGENT: Complete tool call detected, stopping generation")
                         tool_executed = True
                         break
@@ -879,7 +957,7 @@ async def stream_chunks(body):
                         tool_result = processed_response[tool_result_start:]
                     else:
                         # Fallback: use the difference between responses
-                        tool_result = processed_response.replace(current_response.split('<tool_call>')[0], '').strip()
+                        tool_result = processed_response.replace(current_response.split(TOOL_SENTINEL_OPEN)[0], '').strip()
 
                     logger.info(f"🔍 AGENT: Tool executed")
                     logger.info(f"🔍 AGENT: current_response length: {len(current_response)}")
@@ -887,15 +965,20 @@ async def stream_chunks(body):
                     logger.info(f"🔍 AGENT: tool_result length: {len(tool_result)}")
                     logger.info(f"🔍 AGENT: processed_response content: {processed_response}")
                     logger.info(f"🔍 AGENT: tool_result content: {tool_result}")
-                    
-                    # Format the tool result with a cleaner header
+                   
+                    # Format the tool result properly for frontend consumption
                     if tool_result.startswith("**Tool Result:**"):
-                        # Remove the generic header and add tool-specific formatting
-                        clean_result = tool_result.replace("**Tool Result:**", "").strip()
-                        formatted_result = f"```tool:{tool_name}\n{clean_result}\n```"
+                        clean_result = tool_result.replace("", "").strip()
                     else:
-                        formatted_result = f"```tool:{tool_name}\n{tool_result}\n```"
+                        clean_result = tool_result.strip()
                     
+                    # Remove only internal tool sentinels, preserve other content
+                    import re
+                    clean_result = re.sub(r'<TOOL_[^>]*?>', '', clean_result)
+                    clean_result = re.sub(r'</?(?:name|arguments)>[^<]*', '', clean_result)
+                    # Format with proper leading newline for frontend processing
+                    formatted_result = f"\n```tool:{tool_name}\n{clean_result.strip()}\n```"
+
                     # Add tool call and result to messages for next iteration
                     from langchain_core.messages import AIMessage
                     messages.append(AIMessage(content=current_response.strip()))  # The tool call
@@ -931,6 +1014,24 @@ async def stream_chunks(body):
 
             except Exception as e:
                 logger.error(f"Error in agent iteration {iteration}: {str(e)}", exc_info=True)
+                
+                # Handle ValidationError specifically by sending proper SSE error
+                if isinstance(e, ValidationError):
+                    logger.info("🔍 AGENT: Handling ValidationError in streaming context, sending SSE error")
+                    error_data = {
+                        "error": "validation_error",
+                        "detail": str(e),
+                        "status_code": 413
+                    }
+                    
+                    # Send error as direct SSE data
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    yield f"data: [DONE]\n\n"
+                    
+                    # Clean up and return
+                    await cleanup_stream(conversation_id)
+                    return
+                
                 break
 
         # Log why the iteration loop ended
@@ -940,6 +1041,16 @@ async def stream_chunks(body):
         # Log final response
         logger.info("=== FULL SERVER RESPONSE ===")
         logger.info(f"Response length: {len(full_response)}")
+        logger.info("=== CONTEXT PROCESSING SUMMARY ===")
+        logger.info(f"Conversation ID: {conversation_id}")
+        logger.info(f"Total iterations: {iteration}")
+        logger.info(f"Final response length: {len(full_response)} characters")
+        logger.info(f"Tool calls processed: {len(processed_tool_calls)}")
+        logger.info(f"Messages sent to model: {len(messages)}")
+        logger.info(f"Files in context: {len(files)}")
+        logger.info(f"Chat history items: {len(chat_history)}")
+        logger.info("=" * 50)
+        
         logger.info(f"Response content:\n{full_response}")
         logger.info("=== END SERVER RESPONSE ===")
 
@@ -968,8 +1079,6 @@ async def stream_chunks(body):
         logger.error(f"Unhandled exception in stream_chunks: {str(e)}", exc_info=True)
         if conversation_id: # Ensure cleanup if conversation_id was set
             await cleanup_stream(conversation_id)
-        raise # re-raise for middleware to catch        
-
 
 # Override the stream endpoint with our error handling
 @app.post("/ziya/stream")

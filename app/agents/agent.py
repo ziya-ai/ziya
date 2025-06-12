@@ -54,6 +54,7 @@ from app.utils.error_handlers import format_error_response, detect_error_type
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 
 from app.mcp.manager import get_mcp_manager
+from app.config import TOOL_SENTINEL_CLOSE
 from app.mcp.tools import create_mcp_tools, parse_tool_call
 # Wrap model initialization in try/except to catch credential errors early
 try:
@@ -602,63 +603,27 @@ class RetryingChatBedrock(Runnable):
         #stream_id = f"stream_{id(self)}_{hash(str(messages))}"
         stream_id = "unbound"
 
-        # Get max_tokens from environment variables
-        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
-        
-        # Create a copy of kwargs to avoid modifying the original
-        filtered_kwargs = {}
-
-        # If max_tokens is specified in kwargs, use that instead
-        if "max_tokens" in kwargs:
-            max_tokens = kwargs["max_tokens"]
-        elif max_tokens:
-            # Add max_tokens to kwargs if it's not already there
-            filtered_kwargs["max_tokens"] = max_tokens
-            logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
-        from app.agents.models import ModelManager
-        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
-        model_config = ModelManager.get_model_config(endpoint, model_name)
-
-        for key, value in kwargs.items():
-            if key != "max_tokens":  # We've already handled max_tokens
-                filtered_kwargs[key] = value
-        # Filter kwargs based on supported parameters
-        filtered_kwargs = ModelManager.filter_model_kwargs(filtered_kwargs, model_config)
-        logger.info(f"Filtering model kwargs: {filtered_kwargs}")
-        
-        # Extract conversation_id from config for caching
-        conversation_id = None
-        if config and isinstance(config, dict):
-            conversation_id = config.get('conversation_id')
-            if conversation_id:
-                filtered_kwargs["conversation_id"] = conversation_id
-                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
-        
-        # Use filtered kwargs for the rest of the method
-        kwargs = filtered_kwargs
-        # Extract conversation_id from config for caching, but don't pass it to the model
-        conversation_id = None
-        if config and isinstance(config, dict):
-            conversation_id = config.get('conversation_id')
-            if conversation_id:
-                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
-        
-        # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
-        if "conversation_id" in filtered_kwargs:
-            del filtered_kwargs["conversation_id"]
-            logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
-        
-        # Use filtered kwargs for the model call
-        kwargs = filtered_kwargs
-        
-        # Add AWS credential debugging
-        from app.utils.aws_utils import debug_aws_credentials
-        # debug_aws_credentials()
-        
-        # Ensure each stream has its own conversation tracking
-        #stream_id = f"stream_{id(self)}_{hash(str(messages))}"
-        stream_id = "unbound"
+        logger.info(f"RETRYING_CHAT_BEDROCK.astream: Input type: {type(input)}")
+        if hasattr(self.model, 'tools'): # Check if the underlying model has 'tools'
+            logger.info(f"RETRYING_CHAT_BEDROCK.astream: Underlying model tools: {[tool.name for tool in self.model.tools] if self.model.tools else 'No tools attribute or empty'}")
+        elif hasattr(self.model, 'agent') and hasattr(self.model.agent, 'tools'): # Check if it's an AgentExecutor like structure
+             logger.info(f"RETRYING_CHAT_BEDROCK.astream: Agent tools: {[tool.name for tool in self.model.agent.tools] if self.model.agent.tools else 'No tools'}")
+        elif hasattr(self.model, '_lc_kwargs') and 'tools' in self.model._lc_kwargs: # LangChain sometimes stores tools in _lc_kwargs
+            logger.info(f"RETRYING_CHAT_BEDROCK.astream: Tools from _lc_kwargs: {[tool.name for tool in self.model._lc_kwargs['tools']] if self.model._lc_kwargs['tools'] else 'No tools in _lc_kwargs'}")
+        else:
+            logger.info(f"RETRYING_CHAT_BEDROCK.astream: No direct 'tools' attribute found. Model type: {type(self.model)}")
+ 
+        if isinstance(input, list) and all(isinstance(m, BaseMessage) for m in input):
+            logger.info("RETRYING_CHAT_BEDROCK.astream: Final messages to LLM:")
+            for i, msg in enumerate(input):
+                logger.info(f"  Msg {i} ({type(msg).__name__}): {str(msg.content)[:200]}...")
+        elif hasattr(input, 'to_messages'): # Handle ChatPromptValue
+             final_messages_for_llm = input.to_messages()
+             logger.info("RETRYING_CHAT_BEDROCK.astream: Final messages to LLM (from ChatPromptValue):")
+             for i, msg in enumerate(final_messages_for_llm):
+                logger.info(f"  Msg {i} ({type(msg).__name__}): {str(msg.content)[:200]}...")
+        else:
+            logger.info(f"RETRYING_CHAT_BEDROCK.astream: Input to LLM is not a list of BaseMessages or ChatPromptValue. Type: {type(input)}")
 
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
@@ -796,11 +761,15 @@ class RetryingChatBedrock(Runnable):
 
             except ChatGoogleGenerativeAIError as e:
                 # Format Gemini errors as structured error payload within a chunk
+                logger.error(f"ChatGoogleGenerativeAI error: {str(e)}")
                 error_msg = {
                     "error": "server_error",
                     "detail": str(e),
                     "status_code": 500
                 }
+                # Log the error message we're about to send
+                logger.info(f"Sending Gemini error as structured chunk: {error_msg}")
+                
                 # Yield the error payload as content in an AIMessageChunk
                 yield AIMessageChunk(content=json.dumps(error_msg))
                 return
@@ -827,7 +796,7 @@ class RetryingChatBedrock(Runnable):
                 logger.info(f"[ERROR_TRACE] Preparing error response JSON: {error_json}")
                 
                 # Yield the error payload as content in an AIMessageChunk
-                # sse_message = f"data: {error_json}\n\n" # Don't format here
+                # The error_json will be properly formatted by the streaming middleware
                 logger.info(f"[ERROR_SSE] Yielding structured error chunk: {error_json}")
                 
                 # Log the exact message we're about to yield
@@ -836,8 +805,7 @@ class RetryingChatBedrock(Runnable):
                 logger.info("[ERROR_TRACE] Yielded error chunk")
                 
                 # Send DONE marker as proper SSE message
-                done_message = "data: [DONE]\n\n"
-                logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
+                done_message = "[DONE]"
                 yield AIMessageChunk(content=done_message)
                 logger.info("[ERROR_TRACE] Yielded DONE marker")
                 return
@@ -861,14 +829,12 @@ class RetryingChatBedrock(Runnable):
                     error_json = json.dumps(error_message)
                     logger.info(f"[ERROR_TRACE] Yielding structured throttling error response: {error_json}")
                     
-                    # Format as proper SSE message
-                    # sse_message = f"data: {error_json}\n\n" # Don't format here
+                    # Let the streaming middleware handle SSE formatting
                     logger.info(f"[ERROR_SSE] Yielding throttling error chunk: {error_json}")
                     yield AIMessageChunk(content=error_json)
                     
                     # Send DONE marker chunk
-                    done_message = "data: [DONE]\n\n"
-                    logger.info(f"[ERROR_SSE] Sending DONE marker: {done_message}")
+                    done_message = "[DONE]"
                     yield AIMessageChunk(content=done_message)
                     return
 
@@ -876,6 +842,7 @@ class RetryingChatBedrock(Runnable):
                 error_type, detail, status_code, retry_after = detect_error_type(error_str)
                 logger.info(f"Detected error type: {error_type}, status: {status_code}")
                 
+                # For final attempt failures, ensure proper error formatting
                 if attempt < max_retries - 1:
                     # Exponential backoff and retry
                     retry_delay = base_retry_delay * (2 ** attempt)
@@ -891,13 +858,16 @@ class RetryingChatBedrock(Runnable):
                 if retry_after:
                     error_message["retry_after"] = retry_after
                 
-                logger.info(f"Yielding final error response: {error_message}")
+                error_json = json.dumps(error_message)
+                logger.info(f"Yielding final error response: {error_json}")
+                
                 # Yield the error payload as content in an AIMessageChunk
-                yield AIMessageChunk(content=json.dumps(error_message))
+                yield AIMessageChunk(content=error_json)
+                
+                logger.info("Yielded final error chunk, sending DONE marker")
                 
                 # Send DONE marker chunk
-                done_message = "data: [DONE]\n\n"
-                yield AIMessageChunk(content=done_message)
+                yield AIMessageChunk(content="[DONE]")
                 return
 
     def _format_messages(self, input_messages: List[Any]) -> List[Dict[str, str]]:
@@ -943,26 +913,8 @@ class RetryingChatBedrock(Runnable):
         # Apply post-instructions if input is a user query
         if isinstance(input, str):
             from app.utils.post_instructions import PostInstructionManager
-            from app.agents.prompts_manager import get_model_info_from_config
-            
-            # Get model information
-            model_info = get_model_info_from_config()
-            model_name = model_info.get("model_name")
-            model_family = model_info.get("model_family")
-            endpoint = model_info.get("endpoint")
-            
-            # Log thinking mode status
-            thinking_mode_enabled = os.environ.get("ZIYA_THINKING_MODE") == "1"
-            logger.info(f"Stream chunks thinking mode enabled: {thinking_mode_enabled}")
-            logger.info(f"Model supports thinking: {model_info.get('supports_thinking', False)}")
-            
-            # Apply post-instructions
-            input = PostInstructionManager.apply_post_instructions(
-                query=input,
-                model_name=model_name,
-                model_family=model_family,
-                endpoint=endpoint
-            )
+            # Post-instructions are now applied in the centralized message construction
+            # This eliminates duplication since they're applied once during template extension
 
         # Extract conversation_id from config for caching
         conversation_id = None
@@ -1400,9 +1352,10 @@ def log_codebase_wrapper(x):
 def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
     from langchain.agents import create_xml_agent
+    logger.error("🔍 EXECUTION_TRACE: create_agent_chain() called")
     
     # Bind the stop sequence to the model  
-    llm_with_stop = chat_model.bind(stop=["</tool_call>"])
+    llm_with_stop = chat_model.bind(stop=[TOOL_SENTINEL_CLOSE])
     
     # Store the model with stop in the ModelManager state
     from app.agents.models import ModelManager
@@ -1431,6 +1384,7 @@ def create_agent_chain(chat_model: BaseChatModel):
         model_family=model_family,
         endpoint=endpoint
     )
+    logger.error(f"🔍 EXECUTION_TRACE: Agent chain using extended prompt template of length: {len(str(prompt_template))}")
     
     logger.info(f"AGENT_CHAIN: Received prompt template type: {type(prompt_template)}")
     logger.info(f"AGENT_CHAIN: Prompt template messages: {len(prompt_template.messages)}")
@@ -1492,6 +1446,7 @@ def create_agent_chain(chat_model: BaseChatModel):
     except Exception as e:
         logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
     
+    logger.info(f"AGENT_CHAIN: Tools being passed to create_xml_agent: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
     # Create the XML agent directly with input preprocessing
     # Use custom output parser for MCP tool detection
     agent = create_xml_agent(llm_with_stop, mcp_tools, prompt_template)
@@ -1596,6 +1551,8 @@ def create_agent_executor(agent_chain: Runnable):
         logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
+
+    logger.info(f"AGENT_EXECUTOR: Tools being passed to AgentExecutor: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
         
     # Create the original executor
     logger.info(f"Creating AgentExecutor with agent type: {type(agent_chain)}")

@@ -107,13 +107,6 @@ def parse_output(message: Any) -> AgentFinish:
             log=content,
         )
     except Exception as e:
-        logger.error(f"Error in parse_output: {e}")
-        return AgentFinish(
-            return_values={"output": str(message)},
-            log=str(message),
-        )
-
-    except Exception as e:
         logger.error(f"Error in parse_output initial processing: {str(e)}")
         # Provide a safe fallback
         return AgentFinish(return_values={"output": f"Error processing response: {str(e)}"}, 

@@ -12,12 +12,18 @@ from langchain.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
 import app.config as config
 from app.config import get_supported_parameters  # Import the function explicitly
-import google.auth.exceptions
 import google.auth
+import google.auth.exceptions
 from dotenv import load_dotenv
 from dotenv.main import find_dotenv
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 from app.agents.callbacks import EmptyMessageFilter
+
+# Load environment variables from .env at the module level
+dotenv_path = find_dotenv()
+if dotenv_path:
+    load_dotenv(dotenv_path, override=True)
+    logger.info(f"MODELS.PY: Loaded environment variables from {dotenv_path}")
 
 from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
@@ -356,31 +362,38 @@ class ModelManager:
         return filtered_kwargs
             
     @classmethod
-    def get_model_settings(cls, model_instance=None):
+    def get_model_settings(cls, config_or_model=None) -> Dict[str, Any]:
         """
-        Get the current model settings.
+        Get model settings from environment variables or config.
+        Handles parameter mapping and type conversion automatically.
         
         Args:
-            model_instance: Optional model instance to get settings from
+            config_or_model: Either a config dict, model instance, or None
             
         Returns:
-            dict: The complete model settings
+            dict: Model settings with proper parameter mappings and filtering
         """
-        # Get endpoint and model from environment variables
-        endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS.get(endpoint))
-        
-        # Get model configuration
-        try:
+        # Determine config source and get model configuration
+        if hasattr(config_or_model, 'model_id'):
+            # Model instance provided
+            endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
+            model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
             model_config = cls.get_model_config(endpoint, model_name)
-            
-            # Copy all relevant settings from model_config
-            # Start with all settings from the model config
+        elif isinstance(config_or_model, dict):
+            # Config dict provided
+            model_config = config_or_model
+        else:
+            # No specific config provided, use environment variables
+            endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
+            model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
+            model_config = cls.get_model_config(endpoint, model_name)
+        
+        try:
+            # Start with base settings from model config
             settings = {}
             
-            # Copy all relevant settings from model_config
+            # Copy all relevant settings from model_config (excluding metadata)
             for key, value in model_config.items():
-                # Skip internal/metadata keys
                 if key not in ["name", "model_id", "parameter_mappings"]:
                     settings[key] = value
             
@@ -389,19 +402,27 @@ class ModelManager:
                 settings["token_limit"] = model_config["token_limit"]
                 logger.info(f"Including token_limit in settings: {model_config['token_limit']}")
             
-            # Override with environment variables if they exist
+            # Apply environment variable overrides with proper type conversion
             for env_var, config_key in config.ENV_VAR_MAPPING.items():
                 if env_var in os.environ:
-                    # Handle type conversion based on the expected type
                     value = os.environ[env_var]
-                    if isinstance(settings.get(config_key), bool):
-                        settings[config_key] = value.lower() in ("true", "1", "yes")
+                    
+                    # Convert to appropriate type based on existing value or config
+                    if config_key in model_config:
+                        if isinstance(model_config[config_key], bool):
+                            value = value.lower() in ('true', 'yes', '1', 't', 'y')
+                        elif isinstance(model_config[config_key], int):
+                            value = int(value)
+                        elif isinstance(model_config[config_key], float):
+                            value = float(value)
+                    elif isinstance(settings.get(config_key), bool):
+                        value = value.lower() in ("true", "1", "yes")
                     elif isinstance(settings.get(config_key), int):
                         settings[config_key] = int(value)
                     elif isinstance(settings.get(config_key), float):
                         settings[config_key] = float(value)
-                    else:
-                        settings[config_key] = value
+                    
+                    settings[config_key] = value
             
             # Add thinking_mode from environment if it exists
             if "ZIYA_THINKING_MODE" in os.environ:
@@ -420,7 +441,45 @@ class ModelManager:
                 # Fall back to maximum value
                 settings["max_output_tokens"] = model_config.get("max_output_tokens", 4096)
             
-            return settings
+            # Get supported parameters for filtering
+            supported_params = []
+            model_params = model_config.get('supported_parameters', [])
+            if model_params:
+                supported_params.extend(model_params)
+            
+            # If model has a family, get parameters from family hierarchy
+            if 'family' in model_config:
+                family_name = model_config['family']
+                if family_name in config.MODEL_FAMILIES:
+                    family_config = config.MODEL_FAMILIES[family_name]
+                    
+                    # Get parameters from family
+                    family_params = family_config.get('supported_parameters', [])
+                    if family_params:
+                        supported_params.extend(family_params)
+                        
+                    # Check for parent family parameters
+                    if 'parent' in family_config and family_config['parent'] in config.MODEL_FAMILIES:
+                        parent_family = config.MODEL_FAMILIES[family_config['parent']]
+                        parent_params = parent_family.get('supported_parameters', [])
+                        if parent_params:
+                            supported_params.extend(parent_params)
+            
+            # Filter settings to only include supported parameters
+            filtered_settings = {}
+            for key, value in settings.items():
+                if key in supported_params or key not in ['top_k', 'top_p']:  # Always include non-model parameters
+                    filtered_settings[key] = value
+            
+            # Apply parameter mappings
+            parameter_mappings = model_config.get("parameter_mappings", {})
+            for source_param, target_params in parameter_mappings.items():
+                if source_param in filtered_settings:
+                    for target_param in target_params:
+                        if target_param != source_param:  # Avoid duplicate assignments
+                            filtered_settings[target_param] = filtered_settings[source_param]
+            
+            return filtered_settings
         except ValueError:
             # If validation fails, return default settings
             logger.warning("Failed to get model config, returning default settings")
@@ -967,19 +1026,35 @@ class ModelManager:
             temperature = settings["temperature"]
         if "max_output_tokens" in settings:
             max_output_tokens = settings["max_output_tokens"]
-            
-        logger.info(f"Initializing Google model: {model_id} with kwargs: {{'temperature': {temperature}, 'max_output_tokens': {max_output_tokens}}}")
         
-        # Check Google credentials
-        cls._check_google_credentials()
+        # Check Google credentials (this also loads GOOGLE_API_KEY if not already set)
+        cls._check_google_credentials() 
+        
+        # Explicitly get the API key after checking credentials
+        google_api_key = os.environ.get("GOOGLE_API_KEY")
+        if google_api_key:
+            logger.info(f"GOOGLE_API_KEY found, length: {len(google_api_key)}, first 5 chars: {google_api_key[:5]}...")
+            if not google_api_key.strip(): # Check if the key is just whitespace
+                logger.warning("GOOGLE_API_KEY is present but empty or whitespace. Treating as not set to allow ADC.")
+                google_api_key = None
+        else:
+            logger.info("GOOGLE_API_KEY not found in environment. ADC will be used by the library if configured.")
+            # This case should ideally be caught by _check_google_credentials,
+            # but as a safeguard:
+            # If _check_google_credentials didn't raise an error, it means ADC might be available.
+            # So, we explicitly set google_api_key to None to let the library use ADC.
+            google_api_key = None
+        
+        logger.info(f"Initializing Google model: {model_id} with kwargs: {{'temperature': {temperature}, 'max_output_tokens': {max_output_tokens}}}")
         
         # Create the model
         model = ZiyaChatGoogleGenerativeAI(
             model=model_id,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
-            convert_system_message_to_human=convert_system_message,
-            callbacks=[EmptyMessageFilter()]
+            convert_system_message_to_human=False, # Explicitly set to False for Gemini
+            callbacks=[EmptyMessageFilter()],
+            google_api_key=google_api_key # Pass it explicitly
         )
         
         return model
@@ -987,7 +1062,7 @@ class ModelManager:
     @classmethod
     def _check_google_credentials(cls) -> None:
         """
-        Check if Google credentials are available and valid.
+            Check if Google credentials (API key or ADC) are available and valid.
         
         Raises:
             ValueError: If credentials are not available or invalid

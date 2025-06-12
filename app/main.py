@@ -113,6 +113,12 @@ def setup_environment(args):
     additional_excluded_dirs = ','.join(args.exclude)
     os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] = additional_excluded_dirs
 
+    # Check for conflicting arguments before setting AWS profile
+    if args.endpoint == "google" and args.profile:
+        logger.error("The --profile argument is for AWS Bedrock and cannot be used with --endpoint google.")
+        logger.error("Please remove the --profile argument or use --endpoint bedrock.")
+        sys.exit(1)
+
     if args.profile:
         os.environ["ZIYA_AWS_PROFILE"] = args.profile
         logger.info(f"Using AWS profile: {args.profile}")
@@ -284,7 +290,9 @@ def start_server(args):
     
     validate_langchain_vars()
     
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    # Store the original working directory before any imports that might change it
+    original_cwd = os.getcwd()
+    logger.info(f"Preserving original working directory: {original_cwd}")
     # Override the default server location from 127.0.0.1 to 0.0.0.0
     # This allows the server to be accessible from other machines on the network
     try:
@@ -322,6 +330,9 @@ def start_server(args):
             # Import here to avoid circular imports
             import uvicorn
             from app.server import app
+            
+            # Restore the original working directory before starting the server
+            os.chdir(original_cwd)
             
             # Use uvicorn directly instead of langchain_cli.serve()
             uvicorn.run(app, host="0.0.0.0", port=args.port)
