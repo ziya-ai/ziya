@@ -79,6 +79,14 @@ interface ToolBlockProps {
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
     const isShellCommand = toolName === 'mcp_run_shell_command';
 
+    // Clean up content by removing any literal tool markers
+    const cleanContent = content
+        .replace(/^```tool:mcp_\w+\s*\n?/gm, '')
+        .replace(/\n?```\s*$/gm, '')
+        .replace(/^```tool:mcp_\w+\s*/gm, '')
+        .replace(/```$/gm, '')
+        .trim();
+
     // Color scheme based on tool type
     const getToolColors = () => {
         if (isShellCommand) {
@@ -134,7 +142,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word'
             }}>
-                {content}
+                {cleanContent}
             </pre>
         </div>
     );
@@ -2579,6 +2587,7 @@ interface CodeBlockProps {
 const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const tokenRef = useRef<TokenWithText>(token);
     const contentRef = useRef<HTMLDivElement>(null);
+
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
@@ -2586,22 +2595,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const [debugInfo, setDebugInfo] = useState<any>({});
 
     const { isStreaming: isGlobalStreaming } = useChatContext();
-
-    console.debug('CodeBlock rendering:', {
-        id: index,
-        tokenType: token.type,
-        language: token.lang,
-        isStreaming: token.text?.endsWith('\n'),
-        contentLength: token.text?.length,
-        contentPreview: token.text?.substring(0, 50)
-    });
-
-    // Get the effective language for highlighting
-    const getEffectiveLang = (rawLang: string | undefined): string => {
-        if (!rawLang) return 'plaintext';
-        if (rawLang === 'typescript jsx') return 'tsx';
-        return rawLang;
-    };
 
     // Normalize the language identifier
     const normalizedLang = useMemo(() => {
@@ -2613,49 +2606,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         return token.lang;
     }, [token.lang]);
 
-    // Store token in ref to avoid unnecessary re-renders
-    useEffect(() => {
-        tokenRef.current = token;
-        if (contentRef.current) highlightCodeIfNeeded();
-    }, [token]);
-
-    useEffect(() => {
-        if (token.lang !== undefined && !prismInstance) {
-            const loadLanguage = async () => {
-                setIsLanguageLoaded(false);
-                try {
-                    console.debug('CodeBlock language info:', {
-                        originalLang: token.lang,
-                        effectiveLang: getEffectiveLang(token.lang),
-                        tokenType: token.type,
-                        prismLoaded: Boolean(window.Prism),
-                        availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
-                        tokenContent: token.text.substring(0, 100) + '...'
-                    });
-                    // Load language and get Prism instance
-                    await loadPrismLanguage(normalizedLang);
-                    setPrismInstance(window.Prism);
-                    const effectiveLang = getEffectiveLang(token.lang);
-                    setDebugInfo({
-                        loadedLang: token.lang,
-                        prismAvailable: Boolean(window.Prism),
-                        languagesAfterLoad: window.Prism ? Object.keys(window.Prism.languages) : [],
-                        grammarAvailable: window.Prism?.languages[effectiveLang] ? true : false
-                    });
-                } catch (error: unknown) {
-                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-                    setLoadError(`Error loading language ${normalizedLang}: ${errorMessage}`);
-                    console.error(`Error loading language ${normalizedLang}:`, error);
-                } finally {
-                    setIsLanguageLoaded(true);
-                }
-            };
-            loadLanguage();
-        } else {
-            setIsLanguageLoaded(true);
-        }
-    }, [normalizedLang]);
-
+    // Get the highlighted code callback  
     const getHighlightedCode = useCallback((content: string): string => {
         // Ensure content is a string
         const codeToHighlight = typeof content === 'string' ? content : '';
@@ -2705,6 +2656,72 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
             }
         }
     }, [getHighlightedCode, isLanguageLoaded, normalizedLang, prismInstance]);
+
+    // Store token in ref to avoid unnecessary re-renders
+    useEffect(() => {
+        tokenRef.current = token;
+        if (contentRef.current) highlightCodeIfNeeded();
+    }, [token]);
+
+    useEffect(() => {
+        if (token.lang !== undefined && !prismInstance) {
+            const loadLanguage = async () => {
+                setIsLanguageLoaded(false);
+                try {
+                    console.debug('CodeBlock language info:', {
+                        originalLang: token.lang,
+                        effectiveLang: getEffectiveLang(token.lang),
+                        tokenType: token.type,
+                        prismLoaded: Boolean(window.Prism),
+                        availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
+                        tokenContent: token.text.substring(0, 100) + '...'
+                    });
+                    // Load language and get Prism instance
+                    await loadPrismLanguage(normalizedLang);
+                    setPrismInstance(window.Prism);
+                    const effectiveLang = getEffectiveLang(token.lang);
+                    setDebugInfo({
+                        loadedLang: token.lang,
+                        prismAvailable: Boolean(window.Prism),
+                        languagesAfterLoad: window.Prism ? Object.keys(window.Prism.languages) : [],
+                        grammarAvailable: window.Prism?.languages[effectiveLang] ? true : false
+                    });
+                } catch (error: unknown) {
+                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                    setLoadError(`Error loading language ${normalizedLang}: ${errorMessage}`);
+                    console.error(`Error loading language ${normalizedLang}:`, error);
+                } finally {
+                    setIsLanguageLoaded(true);
+                }
+            };
+            loadLanguage();
+        } else {
+            setIsLanguageLoaded(true);
+        }
+    }, [normalizedLang]);
+
+    //  Check if this should be a tool block instead
+    if (token.lang?.startsWith('tool:')) {
+        const toolName = token.lang.substring(5);
+        console.log('🔧 CodeBlock redirecting to ToolBlock:', toolName);
+        return <ToolBlock toolName={toolName} content={token.text || ''} isDarkMode={isDarkMode} />;
+    }
+
+    console.debug('CodeBlock rendering:', {
+        id: index,
+        tokenType: token.type,
+        language: token.lang,
+        isStreaming: token.text?.endsWith('\n'),
+        contentLength: token.text?.length,
+        contentPreview: token.text?.substring(0, 50)
+    });
+
+    // Get the effective language for highlighting
+    const getEffectiveLang = (rawLang: string | undefined): string => {
+        if (!rawLang) return 'plaintext';
+        if (rawLang === 'typescript jsx') return 'tsx';
+        return rawLang;
+    };
 
     const highlightedHtml = getHighlightedCode(tokenRef.current.text || '');
 
@@ -2763,6 +2780,12 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
+    
+    // Debug logging for problematic tokens
+    if (tokenType === 'code' && 'text' in token && (!token.lang || token.lang === '')) {
+        console.log('Code block without lang detected:', { text: (token.text || '').substring(0, 100), hasLang: !!token.lang, lang: token.lang });
+    }
+    console.log(`determineTokenType called: tokenType=${tokenType}, lang=${(token as any).lang}`);
 
     // 1. Prioritize content-based detection for diffs, regardless of lang tag
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
@@ -2787,6 +2810,7 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
 
+        console.log('Processing code block with lang:', lang);
         // Debug logging for ALL code blocks
         console.log('determineTokenType - Code block with lang:', lang, 'tokenType:', tokenType);
 
@@ -2835,6 +2859,28 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     }
 
     // 2. Content-based detection for code blocks *without* specific lang tags
+    if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
+        const text = token.text;
+        const trimmedText = text.trim();
+
+        // Enhanced tool block detection by content
+        // Look for tool block markers that might have been missed by lang detection
+        if (trimmedText.startsWith('```tool:mcp_') || 
+            trimmedText.includes('```tool:mcp_') ||
+            (trimmedText.startsWith('$ ') && trimmedText.length > 10) ||
+            trimmedText.match(/^[A-Z_]+:\s*\S+/) || // Environment variables or command outputs
+            trimmedText.includes('🔧') || 
+            trimmedText.includes('🛠️')) {
+            
+            // Try to extract tool name from content
+            const toolMatch = trimmedText.match(/```?tool:(mcp_\w+)/);
+            const toolName = toolMatch ? toolMatch[1] : 'mcp_run_shell_command';
+            (token as TokenWithText).toolName = toolName;
+            (token as TokenWithText).lang = `tool:${toolName}`;
+            return 'tool';
+        }
+    }
+
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
         const trimmedText = text.trim();
@@ -2933,10 +2979,14 @@ const decodeHtmlEntities = (text: string): string => {
 };
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
-
     return tokens.map((token, index) => {
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
+        console.log(`Token ${index}: type=${token.type}, lang=${(token as any).lang}, determinedType=${determinedType}`);
+
+        if ((token as any).lang?.startsWith('tool:')) {
+            console.log(`Tool token processing - originalType: ${token.type}, determinedType: ${determinedType}, lang: ${(token as any).lang}`);
+        }
         const tokenWithText = token as TokenWithText; // Helper cast
 
         try {
@@ -3039,6 +3089,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         />
                     );
 
+                case 'tool':
+                    if (!hasText(tokenWithText) || !tokenWithText.toolName) {
+                        console.warn('Tool token missing toolName or text:', { hasText: hasText(tokenWithText), toolName: tokenWithText.toolName });
+                        return null;
+                    }
+                    console.log('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
+                    return (
+                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
+                    );
+
                 case 'd3':
                     if (!hasText(tokenWithText)) return null;
                     return (
@@ -3047,12 +3107,26 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'tool':
                     if (!hasText(tokenWithText) || !tokenWithText.toolName) return null;
+                    console.log('Rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
                     return (
                         <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
                     );
 
                 case 'code':
                     if (!isCodeToken(tokenWithText)) return null; // Type guard
+
+                    // Skip empty code blocks
+                    if (!tokenWithText.text || tokenWithText.text.trim() === '') {
+                        console.log('Skipping empty code block');
+                        return null;
+                    }
+
+                    // Add safety check for tool blocks that might have slipped through
+                    if (tokenWithText.lang?.startsWith('tool:')) {
+                        console.error('CRITICAL ERROR: Tool block reached code case!', { lang: tokenWithText.lang, determinedType });
+                        // Force redirect to tool rendering
+                        return <ToolBlock key={index} toolName={tokenWithText.lang.substring(5)} content={tokenWithText.text} isDarkMode={isDarkMode} />;
+                    }
 
                     // Check for file operations first
                     if (detectFileOperationSyntax(tokenWithText.text)) {
@@ -3423,6 +3497,22 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Use marked.lexer directly
             let processedMarkdown = markdown;
 
+            // Don't process empty or whitespace-only markdown during streaming
+            if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
+                console.log('Skipping empty markdown during streaming');
+                return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
+            }
+
+            // Pre-process tool blocks to clean up literal inclusions
+            processedMarkdown = processedMarkdown.replace(
+                /```tool:(mcp_\w+)\s*```tool:(mcp_\w+)/g, 
+                '```tool:$1'
+            );
+            processedMarkdown = processedMarkdown.replace(
+                /^```tool:(mcp_\w+)\s*$/gm,
+                '```tool:$1'
+            );
+
             // Pre-process MathML blocks to prevent fragmentation
             const mathMLRegex = /<math[^>]*>[\s\S]*?<\/math>/gi;
             const mathMLBlocks = processedMarkdown.match(mathMLRegex);
@@ -3442,6 +3532,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
             return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
         } catch (error) {
+            // During streaming, if parsing fails but we have previous valid tokens, keep using them
+            if ((externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
+                console.log('Parse error during streaming, keeping previous tokens:', error);
+                return previousTokensRef.current;
+            }
+            
+            // Don't create fallback code blocks for empty content
+            if (!markdown || markdown.trim() === '') {
+                return [];
+            }
             console.error("Error lexing markdown:", error);
             // Fallback to rendering the raw markdown in a code block on error
             return [{ type: 'code', lang: 'text', text: markdown }] as TokenWithText[];

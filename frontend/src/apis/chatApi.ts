@@ -178,7 +178,8 @@ export const sendPayload = async (
     setIsStreaming: Dispatch<SetStateAction<boolean>>,
     removeStreamingConversation: (id: string) => void,
     addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void,
-    isStreamingToCurrentConversation: boolean = true
+    isStreamingToCurrentConversation: boolean = true,
+    setProcessingState?: Dispatch<SetStateAction<string>>
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
@@ -362,6 +363,11 @@ export const sendPayload = async (
                         // Process operations if present
                         const ops = jsonData.ops || [];
                         for (const op of ops) {
+                            if (op.op === 'add' && op.path === '/processing_state' && typeof setProcessingState === 'function') {
+                                // Handle processing state updates
+                                setProcessingState(op.value);
+                                continue;
+                            } 
                             if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
                                 const newContent = op.value || '';
                                 if (!newContent) continue;
@@ -604,7 +610,10 @@ export const sendPayload = async (
 async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal) {
     const messageTuples: string[][] = [];
 
-    for (const message of messages) {
+    // Filter out muted messages before sending to API
+    const activeMessages = messages.filter(message => !message.muted);
+
+    for (const message of activeMessages) {
         messageTuples.push([message.role, message.content]);
     }
 

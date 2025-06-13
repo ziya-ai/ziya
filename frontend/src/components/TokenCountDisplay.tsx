@@ -464,7 +464,8 @@ export const TokenCountDisplay = memo(() => {
 
         setIsLoading(true);
         try {
-            const allText = currentMessages.map(msg => msg.content).join('\n');
+            // Only count tokens for non-muted messages
+            const allText = currentMessages.filter(msg => !msg.muted).map(msg => msg.content).join('\n');
             const tokens = await getTokenCount(allText);
             setChatTokenCount(tokens);
             lastMessageCount.current = currentMessages.length;
@@ -503,6 +504,19 @@ export const TokenCountDisplay = memo(() => {
             updateChatTokens();
         }
     }, [currentMessages, updateChatTokens, currentConversationId, hasMessagesChanged, isStreaming]);
+
+    // Listen for mute state changes to trigger token count updates
+    useEffect(() => {
+        const handleMuteChange = (event: CustomEvent) => {
+            if (event.detail.conversationId === currentConversationId) {
+                console.log('Token counter: Mute state changed, updating chat tokens');
+                updateChatTokens();
+            }
+        };
+        
+        window.addEventListener('messagesMutedChanged', handleMuteChange as EventListener);
+        return () => window.removeEventListener('messagesMutedChanged', handleMuteChange as EventListener);
+    }, [currentConversationId, updateChatTokens]);
 
     const getProgressStatus = (count: number): ProgressProps['status'] => {
         if (count >= dangerThreshold) return 'exception';

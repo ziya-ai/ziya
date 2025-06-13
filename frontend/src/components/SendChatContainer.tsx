@@ -148,7 +148,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         });
 
         // Include the new message in messages for the API
-        const messagesToSend = isRetry ? currentMessages : [...currentMessages, newHumanMessage!];
+        const baseMessages = isRetry ? currentMessages : [...currentMessages, newHumanMessage!];
+        const messagesToSend = baseMessages.filter(msg => !msg.muted);
         addStreamingConversation(currentConversationId);
         const targetConversationId = currentConversationId;
 

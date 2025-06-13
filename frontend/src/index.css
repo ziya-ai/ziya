@@ -2058,3 +2058,23 @@ body:not(.dark) .token.attr-name {
     border-color: #444;
     color: #fff;
 }
+
+.message.muted {
+  opacity: 0.5;
+  background-color: rgba(128, 128, 128, 0.1);
+  border-left: 3px solid #ccc;
+}
+
+.message.human:hover .ant-btn[title*="Resubmit"] {
+  opacity: 1;
+  visibility: visible;
+}
+ 
+.message.human .ant-btn[title*="Resubmit"] {
+  opacity: 0.6;
+  transition: all 0.2s ease;
+}
+ 
+.message.human .ant-btn[title*="Resubmit"]:hover {
+  transform: translateY(-1px);
+}

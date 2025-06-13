@@ -76,7 +76,16 @@ def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, s
     try:
         cleaned = []
         for human, ai in chat_history:
-            # Skip pairs with empty messages
+            # Handle case where the tuple is actually (role, content) instead of (human_content, ai_content)
+            if human == "human" or human == "user":
+                # This is a role indicator, skip this malformed entry
+                logger.warning(f"Skipping malformed chat history entry: role='{human}', content='{ai}'")
+                continue
+            elif human == "ai" or human == "assistant":
+                # This is a role indicator, skip this malformed entry  
+                logger.warning(f"Skipping malformed chat history entry: role='{human}', content='{ai}'")
+                continue
+            
             if not isinstance(human, str) or not isinstance(ai, str):
                 logger.warning(f"Skipping invalid message pair: human='{human}', ai='{ai}'")
                 continue
@@ -94,23 +103,32 @@ def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, s
 
 def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[HumanMessage, AIMessage]]:
     logger.info(f"Chat history type: {type(chat_history)}")
-    cleaned_history = clean_chat_history(chat_history)
+    # chat_history is already cleaned by the stream endpoint, don't clean again
     buffer = []
     logger.debug("Message format before conversion:")
     try:
-        for human, ai in cleaned_history:
-            if human and isinstance(human, str):
-                logger.debug(f"Human message type: {type(human)}, content: {human[:100]}")
+        # Handle the case where chat_history is a list of dicts with 'type' and 'content'
+        for item in chat_history:
+            if isinstance(item, dict) and 'type' in item and 'content' in item:
+                msg_type = item['type']
+                content = item['content']
+                logger.debug(f"Processing message: type={msg_type}, content={content[:100]}...")
                 try:
-                    buffer.append(HumanMessage(content=str(human)))
+                    if msg_type in ['human', 'user']:
+                        buffer.append(HumanMessage(content=str(content)))
+                    elif msg_type in ['ai', 'assistant']:
+                        buffer.append(AIMessage(content=str(content)))
                 except Exception as e:
-                    logger.error(f"Error creating HumanMessage: {str(e)}")
-            if ai and isinstance(ai, str):
-                logger.debug(f"AI message type: {type(ai)}, content: {ai[:100]}")
-                try:
-                    buffer.append(AIMessage(content=str(ai)))
-                except Exception as e:
-                    logger.error(f"Error creating AIMessage: {str(e)}")
+                    logger.error(f"Error creating message: {str(e)}")
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                # Handle legacy tuple format (human_content, ai_content)
+                human_content, ai_content = item
+                if human_content and isinstance(human_content, str):
+                    buffer.append(HumanMessage(content=str(human_content)))
+                if ai_content and isinstance(ai_content, str):
+                    buffer.append(AIMessage(content=str(ai_content)))
+            else:
+                logger.warning(f"Unknown chat history format: {type(item)} - {item}")
     except Exception as e:
         logger.error(f"Error formatting chat history: {str(e)}")
         logger.error(f"Problematic chat history: {chat_history}")
@@ -716,7 +734,7 @@ class RetryingChatBedrock(Runnable):
                 model_config = config.copy() if config else {}
                 if conversation_id:
                     model_config["conversation_id"] = conversation_id
-                
+                    
                 async for chunk in self.model.astream(messages, model_config, **kwargs):
                     # Check if this is an error chunk that should terminate this specific stream
                     if isinstance(chunk, ChatGoogleGenerativeAIError):

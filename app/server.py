@@ -1035,6 +1035,12 @@ async def stream_chunks(body):
                     # Add a small delay to ensure the data is flushed
                     await asyncio.sleep(0.01)
                     
+                    # Signal that we're about to submit tool results back to the model
+                    processing_signal = {"op": "add", "path": "/processing_state", "value": "awaiting_model_response"}
+                    yield f"data: {json.dumps({'ops': [processing_signal]})}\n\n"
+                    logger.info("🔍 AGENT: Signaled frontend that we're awaiting model response")
+                    await asyncio.sleep(0.01)  # Small delay to ensure signal is processed
+                    
                     logger.info("🔍 AGENT: Added tool result to context, breaking stream, should submit results back to model next")
                 else:
                     logger.warning("🔍 AGENT: Tool execution failed or no change")
@@ -1069,6 +1075,10 @@ async def stream_chunks(body):
 
         # Log why the iteration loop ended
         logger.info(f"🔍 AGENT: Iteration loop ended after {iteration} iterations")
+        
+        # Signal that processing is complete
+        completion_signal = {"op": "add", "path": "/processing_state", "value": "complete"}
+        yield f"data: {json.dumps({'ops': [completion_signal]})}\n\n"
         logger.info(f"🔍 AGENT: Final iteration < max_iterations: {iteration < max_iterations}")
         
         # Log final response

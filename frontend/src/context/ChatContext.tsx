@@ -9,6 +9,8 @@ interface ChatContext {
     streamedContentMap: Map<string, string>;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
+    processingState: string;
+    setProcessingState: Dispatch<SetStateAction<string>>;
     isStreamingAny: boolean;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
@@ -40,6 +42,9 @@ interface ChatContext {
     setFolderFileSelections: Dispatch<SetStateAction<Map<string, string[]>>>;
     deleteFolder: (id: string) => Promise<void>;
     setDisplayMode: (conversationId: string, mode: 'raw' | 'pretty') => void;
+    toggleMessageMute: (conversationId: string, messageIndex: number) => void;
+    editingMessageIndex: number | null;
+    setEditingMessageIndex: (index: number | null) => void;
 }
 
 const chatContext = createContext<ChatContext | undefined>(undefined);
@@ -54,6 +59,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
     const [isStreamingAny, setIsStreamingAny] = useState(false);
+    const [processingState, setProcessingState] = useState<string>('idle');
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [currentResponse, setCurrentResponse] = useState<Message | null>(null);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
@@ -79,6 +85,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
+    const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
 
     // Monitor ChatProvider render performance
     useLayoutEffect(() => {
@@ -761,9 +768,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
     }, []);
 
+    const toggleMessageMute = useCallback((conversationId: string, messageIndex: number) => {
+        setConversations(prev => {
+            const updated = prev.map(conv => {
+                if (conv.id === conversationId) {
+                    const updatedMessages = [...conv.messages];
+                    if (updatedMessages[messageIndex]) {
+                        updatedMessages[messageIndex] = {
+                            ...updatedMessages[messageIndex],
+                            muted: !updatedMessages[messageIndex].muted
+                        };
+                    }
+                    return { ...conv, messages: updatedMessages, _version: Date.now() };
+                }
+                return conv;
+            });
+            queueSave(updated).catch(console.error);
+            return updated;
+        });
+    }, []);
+
     const value = useMemo(() => ({
         streamedContentMap,
         setStreamedContentMap,
+        processingState,
+        setProcessingState,
         isStreaming,
         isStreamingAny,
         streamingConversations,
@@ -795,10 +824,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setDisplayMode,
         moveConversationToFolder,
         dbError,
-        isLoadingConversation
+        isLoadingConversation,
+        toggleMessageMute,
+        editingMessageIndex,
+        setEditingMessageIndex,
     }), [
         streamedContentMap,
         setStreamedContentMap,
+        processingState,
+        setProcessingState,
         isStreaming,
         isStreamingAny,
         streamingConversations,
@@ -830,7 +864,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setDisplayMode,
         moveConversationToFolder,
         dbError,
-        isLoadingConversation
+        isLoadingConversation,
+        toggleMessageMute,
+        editingMessageIndex,
+        setEditingMessageIndex,
     ]);
 
     // Temporary debug command

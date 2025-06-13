@@ -95,8 +95,10 @@ class ContextCacheManager:
         # Extract just the codebase section after "Below is the current codebase of the user:"
         codebase_start = full_context.find("Below is the current codebase of the user:")
         if codebase_start == -1:
-            # If we can't find the codebase section, don't split
-            return ContextSplit(stable_content="", stable_files=[], dynamic_content=full_context, dynamic_files=[])
+            # If we can't find the codebase section, disable caching
+            logger.warning("Could not find codebase section for caching, disabling cache split")
+            return ContextSplit(stable_content="", stable_files=[], 
+                              dynamic_content=full_context, dynamic_files=file_paths)
         
         codebase_content = full_context[codebase_start:]
         
@@ -135,6 +137,16 @@ class ContextCacheManager:
         
         # Calculate token savings
         if stable_content_parts:
+            # DEBUG: Check what's actually in stable vs dynamic content
+            stable_joined = "\n\n".join(stable_content_parts)
+            dynamic_joined = "\n\n".join(dynamic_content_parts)
+            
+            print(f"=== CACHE CONTENT ANALYSIS ===")
+            print(f"Stable files: {len(unchanged_files)}, content: {len(stable_joined)} chars")
+            print(f"Dynamic files: {len(changed_files)}, content: {len(dynamic_joined)} chars")
+            print(f"Stable file markers: {stable_joined.count('File: ')}")
+            print(f"Dynamic file markers: {dynamic_joined.count('File: ')}")
+            
             import tiktoken
             try:
                 encoding = tiktoken.get_encoding("cl100k_base")
@@ -145,9 +157,9 @@ class ContextCacheManager:
                 pass
         
         return ContextSplit(
-            stable_content="\n\n".join(stable_content_parts),
+            stable_content="\n".join(stable_content_parts),  # Use single newline, not double
             stable_files=list(unchanged_files),
-            dynamic_content="\n\n".join(dynamic_content_parts),
+            dynamic_content="\n".join(dynamic_content_parts),  # Use single newline, not double
             dynamic_files=list(changed_files)
         )
     

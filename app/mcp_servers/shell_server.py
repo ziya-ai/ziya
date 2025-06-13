@@ -89,7 +89,14 @@ class ShellServer:
             
             if tool_name == "run_shell_command":
                 command = arguments.get("command")
-                timeout = arguments.get("timeout", 10)
+                # Handle timeout parameter - convert string to number if needed
+                timeout_param = arguments.get("timeout", 10)
+                try:
+                    timeout = float(timeout_param) if timeout_param is not None else 10
+                except (ValueError, TypeError):
+                    # If conversion fails, use default timeout
+                    timeout = 10
+                    print(f"Warning: Invalid timeout value '{timeout_param}', using default 10 seconds", file=sys.stderr)
                 
                 if not command:
                     return {

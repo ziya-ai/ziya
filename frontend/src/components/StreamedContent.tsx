@@ -21,7 +21,9 @@ export const StreamedContent: React.FC = () => {
     const {
         streamedContentMap,
         isStreaming,
+        processingState,
         setIsStreaming,
+        setProcessingState,
         currentConversationId,
         isStreamingAny,
         streamingConversations,
@@ -145,10 +147,14 @@ export const StreamedContent: React.FC = () => {
     const LoadingIndicator = () => (
         <Space>
             <div style={{
+                visibility: processingState === 'awaiting_model_response' || 
+                            (!hasStreamedContent && streamingConversations.has(currentConversationId))
+                            ? 'visible' : 'hidden',
+                opacity: processingState === 'awaiting_model_response' ? 1 : 0.8,
+                transition: 'opacity 0.3s ease',
                 padding: '10px 20px',
                 textAlign: 'left',
                 color: 'var(--loading-color, #1890ff)',
-                width: '100%',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
@@ -157,16 +163,25 @@ export const StreamedContent: React.FC = () => {
                 <Space align="center">
                     <div className="ressage-sender" style={{ marginRight: '8px' }}>AI:</div>
                     <RobotOutlined style={{ fontSize: '20px', animation: 'pulse 2s infinite' }} />
-                    <LoadingOutlined spin />
+                    <LoadingOutlined
+                        spin
+                        style={{
+                            color: processingState === 'awaiting_model_response'
+                                ? '#faad14' : '#1890ff' // Orange for tool processing, blue for initial
+                        }}
+                    />
                     <span style={{
+                        color: processingState === 'awaiting_model_response' ? '#faad14' : '#1890ff',
                         animation: 'fadeInOut 2s infinite',
                         verticalAlign: 'middle',
                         marginLeft: '4px',
-                        display: 'inline-block' // Always show when loading indicator is present
-                    }}>Processing response...</span>
+                        display: 'inline-block'
+                    }}>
+                        {processingState === 'awaiting_model_response'
+                            ? 'Processing tool results...' : 'Processing response...'}
+                    </span>
 
                 </Space>
-
                 {/* Only show stop button here if we don't have content yet */}
                 {!hasStreamedContent && (
                     <div style={{ marginLeft: 'auto' }}>
@@ -421,8 +436,9 @@ export const StreamedContent: React.FC = () => {
                         </div>
                         <Suspense fallback={<div>Loading content...</div>}>
                             <>
+                                {/* Only render if we have actual content */}
                                 {error && <ErrorDisplay message={error} />}
-                                {!error && (
+                                {!error && streamedContent && streamedContent.trim() && (
                                     <MarkdownRenderer
                                         key={`stream-${currentConversationId}`}
                                         markdown={streamedContent}
