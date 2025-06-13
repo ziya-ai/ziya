@@ -76,6 +76,13 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     Build messages for streaming using the extended prompt template.
     This centralizes message construction to avoid duplication.
     """
+    
+    # Prevent duplicate calls by checking if we're already processing this conversation
+    cache_key = f"building_{conversation_id}"
+    if hasattr(build_messages_for_streaming, cache_key):
+        logger.warning(f"Preventing duplicate message construction for {conversation_id}")
+        return getattr(build_messages_for_streaming, cache_key)
+
     from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
     from app.agents.agent import get_combined_docs_from_files, _format_chat_history
     
@@ -96,7 +103,8 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         logger.warning(f"Could not get MCP tools: {e}")
     
     # Get file context
-    file_context = get_combined_docs_from_files(files, conversation_id) if files else ""
+    # Don't load file context here - it will be loaded by the template's codebase parameter
+    file_context = ""
     
     # Apply post-instructions to the question once here
     from app.utils.post_instructions import PostInstructionManager
@@ -126,8 +134,8 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         logger.warning(f"Could not get tools for template: {e}")
     
     # Format messages using the extended prompt template
-    return extended_prompt.format_messages(
-        codebase=file_context,
+    formatted_messages = extended_prompt.format_messages(
+        codebase=file_context,  # This will be empty, template will call extract_codebase
         question=modified_question,
         chat_history=_format_chat_history(chat_history),
         ast_context="",  # Will be enhanced if AST is enabled
@@ -136,13 +144,25 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
     )
     
-    # Log the context construction details
+    # Cache the result to prevent duplicate calls
+    setattr(build_messages_for_streaming, cache_key, formatted_messages)
+    # Clean up cache after a short delay to prevent memory leaks
+    
+    return formatted_messages
     logger.info("CONTEXT CONSTRUCTION DETAILS:")
     logger.info(f"File context length: {len(file_context)} characters")
     logger.info(f"Modified question length: {len(modified_question)} characters")
     logger.info(f"Chat history items: {len(chat_history)}")
     logger.info(f"Available tools: {len(tools_list)}")
     logger.info(f"MCP tools available: {mcp_context.get('mcp_tools_available', False)}")
+
+    # DEBUG: Check template substitution
+    print(f"=== TEMPLATE SUBSTITUTION DEBUG ===")
+    print(f"Template variables being substituted:")
+    print(f"- codebase length: {len(file_context)}")
+    print(f"- question length: {len(modified_question)}")
+    print(f"- chat_history items: {len(_format_chat_history(chat_history))}")
+    print(f"- tools count: {len(tools_list)}")
     
     formatted_messages = extended_prompt.format_messages(
         codebase=file_context,
@@ -153,6 +173,13 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
         TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
     )
+    
+    # DEBUG: Check if template substitution caused duplication
+    for i, msg in enumerate(formatted_messages):
+        if hasattr(msg, 'content'):
+            file_markers_count = msg.content.count('File: ')
+            if file_markers_count > 0:
+                print(f"Message {i} after template substitution has {file_markers_count} file markers")
     
     return formatted_messages
 
@@ -718,34 +745,23 @@ async def stream_chunks(body):
             from langchain_core.messages import HumanMessage, AIMessage
             
             for msg in chat_history:
-                # Check if msg is a dictionary with 'type' and 'content' keys
-                if isinstance(msg, dict) and 'type' in msg and 'content' in msg:
+                # Handle case where msg is a tuple (role, content) from cleaned chat history
+                if isinstance(msg, tuple) and len(msg) == 2:
+                    role, content = msg
+                    
+                    if role == "human":
+                        messages.append(HumanMessage(content=content))
+                    elif role == "ai":
+                        messages.append(AIMessage(content=content))
+                # Handle case where msg is a dictionary with 'type' and 'content' keys
+                elif isinstance(msg, dict) and 'type' in msg and 'content' in msg:
                     msg_type = msg["type"]
                     msg_content = msg["content"]
-                    # Only log first few characters of content
                     
                     if msg_type == "human":
                         messages.append(HumanMessage(content=msg_content))
                     elif msg_type == "ai":
                         messages.append(AIMessage(content=msg_content))
-                # Handle case where msg is a list (common format from frontend)
-                elif isinstance(msg, list):
-                    # Format is typically [question, answer]
-                    if len(msg) >= 2:
-                        question = msg[0]
-                        answer = msg[1]
-                        
-                        # Add as separate human and AI messages
-                        messages.append(HumanMessage(content=question))
-                        messages.append(AIMessage(content=answer))
-                # Handle case where msg is a tuple (format from cleaned chat history)
-                elif isinstance(msg, tuple) and len(msg) == 2:
-                    # Format is typically (human_message, ai_message)
-                    human_msg, ai_msg = msg
-                    
-                    # Add as separate human and AI messages
-                    messages.append(HumanMessage(content=human_msg))
-                    messages.append(AIMessage(content=ai_msg))
                 # Handle other formats
                 else:
                     # Try other formats as a fallback
@@ -763,8 +779,15 @@ async def stream_chunks(body):
         # Add the current question
         from langchain_core.messages import HumanMessage
         
-        # Double-check that we're using the most recent question
-        if not question:
+        # Only add the current question if it's not already in the chat history
+        # Check if the last message in chat history is the same as the current question
+        should_add_current_question = True
+        if chat_history and len(chat_history) > 0:
+            last_msg = chat_history[-1]
+            if isinstance(last_msg, tuple) and len(last_msg) == 2 and last_msg[0] == "human" and last_msg[1] == question:
+                should_add_current_question = False
+        
+        if should_add_current_question and not question:
             if isinstance(body, dict) and 'input' in body and isinstance(body['input'], dict):
                 input_question = body['input'].get('question', '')
                 if input_question:
@@ -791,7 +814,8 @@ async def stream_chunks(body):
         logger.debug(f"Original question: {question[:100]}...")
         logger.debug(f"Modified question with post-instructions: {modified_question[:100]}...")
         
-        messages.append(HumanMessage(content=modified_question))
+        if should_add_current_question:
+            messages.append(HumanMessage(content=modified_question))
         
         # Stream directly from the model
         
@@ -860,7 +884,7 @@ async def stream_chunks(body):
                                 logger.info(f"ADDITIONAL_KWARGS: {msg.additional_kwargs}")
                             logger.info("-" * 30)
                         logger.info("🔥" * 50)
-                    
+
                     # Check connection status
                     if not connection_active:
                         logger.info("Connection lost during agent iteration")
@@ -868,6 +892,17 @@ async def stream_chunks(body):
                     # Process chunk content
 
                     if hasattr(chunk, 'content'):
+                        # Check if this is an error response chunk
+                        if (hasattr(chunk, 'response_metadata') and 
+                            chunk.response_metadata and 
+                            chunk.response_metadata.get('error_response')):
+                            # This is an error response, handle it specially
+                            logger.info(f"🔍 AGENT: Detected error response chunk")
+                            # The content should already be JSON formatted
+                            yield f"data: {chunk.content}\n\n"
+                            yield f"data: {json.dumps({'done': True})}\n\n"
+                            return
+                        
                         content = chunk.content() if callable(chunk.content) else chunk.content
                         content_str = str(content) if content else ""
                     else:
@@ -891,7 +926,6 @@ async def stream_chunks(body):
 
                     # Always accumulate content in current_response for tool detection
                     current_response += content_str
-                    logger.debug(f"🔍 AGENT: Accumulated response length: {len(current_response)}")
  
                     # Check if we should suppress this content from streaming
                     should_suppress = (
@@ -910,7 +944,6 @@ async def stream_chunks(body):
 
                         ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
                         yield f"data: {json.dumps({'ops': ops})}\n\n"
-                        logger.debug(f"🔍 AGENT: Streamed content chunk to frontend: '{content_str[:50]}...'")
                     else:
                         logger.debug(f"🔍 AGENT: Suppressed tool call content from frontend")
 
@@ -1116,22 +1149,26 @@ async def stream_endpoint(request: Request, body: dict):
             cleaned_history = []
             for pair in body["chat_history"]:
                 try:
-                    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    # Handle both tuple format [role, content] and dict format {"type": role, "content": content}
+                    if isinstance(pair, dict) and 'type' in pair and 'content' in pair:
+                        role, content = pair['type'], pair['content']
+                    elif isinstance(pair, (list, tuple)) and len(pair) == 2:
+                        role, content = pair[0], pair[1]
+                    else:
                         logger.warning(f"[INSTRUMENTATION] /ziya/stream invalid chat history pair format: {type(pair)}")
                         continue
-                        
-                    human, ai = pair
-                    if not isinstance(human, str) or not isinstance(ai, str):
-                        logger.warning(f"[INSTRUMENTATION] /ziya/stream non-string message in pair: human={type(human)}, ai={type(ai)}")
+                    
+                    if not isinstance(role, str) or not isinstance(content, str):
+                        logger.warning(f"[INSTRUMENTATION] /ziya/stream non-string message: role={type(role)}, content={type(content)}")
                         continue
-                        
-                    if human.strip() and ai.strip():
-                        cleaned_history.append((human.strip(), ai.strip()))
-                        logger.info(f"[INSTRUMENTATION] /ziya/stream added valid pair: ['{human[:20]}...', '{ai[:20]}...'] (truncated)")
+                    
+                    if role.strip() and content.strip():
+                        cleaned_history.append((role.strip(), content.strip()))
+                        logger.info(f"[INSTRUMENTATION] /ziya/stream added valid message: role='{role}', content='{content[:20]}...' (truncated)")
                     else:
-                        logger.warning(f"[INSTRUMENTATION] /ziya/stream empty message in pair")
+                        logger.warning(f"[INSTRUMENTATION] /ziya/stream empty message content")
                 except Exception as e:
-                    logger.error(f"[INSTRUMENTATION] /ziya/stream error processing chat history pair: {str(e)}")
+                    logger.error(f"[INSTRUMENTATION] /ziya/stream error processing chat history item: {str(e)}")
             
             logger.info(f"[INSTRUMENTATION] /ziya/stream cleaned chat history from {len(body['chat_history'])} to {len(cleaned_history)} pairs")
             body["chat_history"] = cleaned_history
@@ -1565,6 +1602,10 @@ async def chat_endpoint(request: Request):
         logger.info(f"Chat API received conversation_id: {conversation_id}")
         logger.info(f"🔍 CHAT_API: Received conversation_id from frontend: {conversation_id}")
 
+        # Debug: Log what we received from frontend
+        logger.info(f"🔍 CHAT_API: Received messages count: {len(messages)}")
+        logger.info(f"🔍 CHAT_API: Messages structure: {messages[:2] if messages else 'No messages'}")
+        
         logger.info("=== File Processing Debug ===")
         logger.info(f"Files received: {files}")
         
@@ -1576,11 +1617,28 @@ async def chat_endpoint(request: Request):
             elif isinstance(messages[0], dict):
                 logger.info(f"[INSTRUMENTATION] First message keys: {messages[0].keys()}")
         
+        # Convert frontend message tuples to proper chat history format
+        formatted_chat_history = []
+        for msg in messages:
+            if isinstance(msg, list) and len(msg) >= 2:
+                role, content = msg[0], msg[1]
+                # Convert role names to match expected format
+                if role in ['human', 'user']:
+                    formatted_chat_history.append({'type': 'human', 'content': content})
+                elif role in ['assistant', 'ai']:
+                    formatted_chat_history.append({'type': 'ai', 'content': content})
+            elif isinstance(msg, dict):
+                # Already in correct format
+                formatted_chat_history.append(msg)
+        
+        # Debug: Log the converted chat history
+        logger.info(f"🔍 CHAT_API: Converted chat history count: {len(formatted_chat_history)}")
+        
         # Format the data for the stream endpoint
         formatted_body = {
             'question': question,
             'conversation_id': conversation_id,
-            'chat_history': messages,
+            'chat_history': formatted_chat_history,
             'config': {
                 'conversation_id': conversation_id,  # Also include in config for backward compatibility
                 'files': files

@@ -720,12 +720,16 @@ class RetryingChatBedrock(Runnable):
                 async for chunk in self.model.astream(messages, model_config, **kwargs):
                     # Check if this is an error chunk that should terminate this specific stream
                     if isinstance(chunk, ChatGoogleGenerativeAIError):
-                        error_msg = {
-                            "status_code": 500,
-                            "stream_id": stream_id  # Include stream ID for debugging
+                        error_response = {
+                            "error": "server_error",
+                            "detail": str(chunk),
+                            "status_code": 500
                         }
-                        yield AIMessageChunk(content=json.dumps(error_msg))
-                        return  # Only terminate this specific stream
+                        # Create a special error chunk that the streaming middleware can detect
+                        error_chunk = AIMessageChunk(content=json.dumps(error_response))
+                        error_chunk.response_metadata = {"error_response": True}
+                        yield error_chunk
+                        return
 
                     elif isinstance(chunk, AIMessageChunk):
                         raw_chunk_content_repr = repr(chunk.content)[:200]
@@ -762,11 +766,14 @@ class RetryingChatBedrock(Runnable):
             except ChatGoogleGenerativeAIError as e:
                 # Format Gemini errors as structured error payload within a chunk
                 logger.error(f"ChatGoogleGenerativeAI error: {str(e)}")
-                error_msg = {
+                error_response = {
                     "error": "server_error",
                     "detail": str(e),
                     "status_code": 500
                 }
+                # Create a special error chunk that the streaming middleware can detect
+                error_chunk = AIMessageChunk(content=json.dumps(error_response))
+                error_chunk.response_metadata = {"error_response": True}
                 # Log the error message we're about to send
                 logger.info(f"Sending Gemini error as structured chunk: {error_msg}")
                 
@@ -800,14 +807,13 @@ class RetryingChatBedrock(Runnable):
                 logger.info(f"[ERROR_SSE] Yielding structured error chunk: {error_json}")
                 
                 # Log the exact message we're about to yield
-                logger.info("[ERROR_TRACE] About to yield AIMessageChunk with error content")
-                yield AIMessageChunk(content=error_json)
+                logger.info(f"[ERROR_TRACE] About to yield AIMessageChunk with error content")
+                # Create a special error chunk that the streaming middleware can detect
+                error_chunk = AIMessageChunk(content=error_json)
+                error_chunk.response_metadata = {"error_response": True}
+                yield error_chunk
                 logger.info("[ERROR_TRACE] Yielded error chunk")
                 
-                # Send DONE marker as proper SSE message
-                done_message = "[DONE]"
-                yield AIMessageChunk(content=done_message)
-                logger.info("[ERROR_TRACE] Yielded DONE marker")
                 return
 
             except Exception as e:
@@ -831,11 +837,10 @@ class RetryingChatBedrock(Runnable):
                     
                     # Let the streaming middleware handle SSE formatting
                     logger.info(f"[ERROR_SSE] Yielding throttling error chunk: {error_json}")
-                    yield AIMessageChunk(content=error_json)
-                    
-                    # Send DONE marker chunk
-                    done_message = "[DONE]"
-                    yield AIMessageChunk(content=done_message)
+                    # Create a special error chunk that the streaming middleware can detect
+                    error_chunk = AIMessageChunk(content=error_json)
+                    error_chunk.response_metadata = {"error_response": True}
+                    yield error_chunk
                     return
 
                 # Check if this is a Bedrock error that was wrapped in another exception
@@ -862,12 +867,10 @@ class RetryingChatBedrock(Runnable):
                 logger.info(f"Yielding final error response: {error_json}")
                 
                 # Yield the error payload as content in an AIMessageChunk
-                yield AIMessageChunk(content=error_json)
-                
-                logger.info("Yielded final error chunk, sending DONE marker")
-                
-                # Send DONE marker chunk
-                yield AIMessageChunk(content="[DONE]")
+                # Create a special error chunk that the streaming middleware can detect
+                error_chunk = AIMessageChunk(content=error_json)
+                error_chunk.response_metadata = {"error_response": True}
+                yield error_chunk
                 return
 
     def _format_messages(self, input_messages: List[Any]) -> List[Dict[str, str]]:
@@ -1091,6 +1094,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     logger.info("=== get_combined_docs_from_files called ===")
     logger.info(f"🔍 FILES_DEBUG: Called with {len(files)} files: {files[:5]}..." if len(files) > 5 else f"🔍 FILES_DEBUG: Called with files: {files}")
     logger.info(f"Called with files: {files}")
+    print(f"🔍 FILE_CONTENT_DEBUG: get_combined_docs_from_files called with {len(files)} files")
     combined_contents: str = ""
     logger.debug("Processing files:")
     print_file_tree(files if isinstance(files, list) else files.get("config", {}).get("files", []))
@@ -1131,6 +1135,8 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
                 combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
+    
+    print(f"🔍 FILE_CONTENT_DEBUG: get_combined_docs_from_files returning {len(combined_contents)} chars")
 
     # Log the first and last part of combined contents
     logger.info(f"Combined contents starts with:\n{combined_contents[:500]}")
@@ -1222,6 +1228,7 @@ class AgentInput(BaseModel):
 def extract_codebase(x):
     files = x["config"].get("files", [])
     # Extract conversation_id from multiple possible sources
+    print(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
     conversation_id = (
         x.get("conversation_id") or 
         x.get("config", {}).get("conversation_id") or
@@ -1329,7 +1336,7 @@ def extract_codebase(x):
     if result:
         return final_string
     return codebase
-
+    print(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase returning {len(final_string if result else codebase)} chars")
 def log_output(x):
     """Log output in a consistent format."""
     try:

@@ -255,11 +255,17 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     if chunk_str.startswith('{"error":'):
                         # This is an error response that needs proper SSE formatting
                         try:
-                            # Find where the JSON ends - look for various patterns
-                            if 'data: [DONE]' in chunk_str:
-                                json_part = chunk_str.split('data: [DONE]')[0].strip()
+                            # Find where the JSON ends - look for [DONE] marker
+                            if '[DONE]' in chunk_str:
+                                json_part = chunk_str.split('[DONE]')[0].strip()
                             elif '}data:' in chunk_str:
                                 json_part = chunk_str.split('}data:')[0] + '}'
+                            elif chunk_str.endswith('}[DONE]'):
+                                # Handle the specific case where [DONE] is appended to JSON
+                                json_part = chunk_str[:-6]  # Remove '[DONE]' suffix
+                            elif chunk_str.endswith('}'):
+                                # Clean JSON without any suffix
+                                json_part = chunk_str
                             else:
                                 # Look for the end of the JSON object
                                 brace_count = 0
@@ -276,12 +282,13 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 
                             # Clean up any trailing characters that aren't part of JSON
                             json_part = json_part.rstrip()
+                            logger.info(f"Extracted JSON part: {json_part}")
                             error_data = json.loads(json_part)
                             yield f"data: {json.dumps(error_data)}\n\n"
                             yield "data: [DONE]\n\n"
                             return
                         except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse error JSON: {json_part}")
+                            logger.warning(f"Failed to parse error JSON: {json_part if 'json_part' in locals() else chunk_str}")
                     
                     # Fallback: treat as regular chunk processing error
                     error_msg = {"error": "chunk_processing_error", "detail": str(chunk_error)}

@@ -87,14 +87,22 @@ class ContextCacheManager:
             conversation_id: Conversation identifier
             full_context: Complete context content
             file_paths: List of all file paths in context
-            
+        
         Returns:
             ContextSplit: Split context with stable and dynamic parts
         """
+        # Only operate on the actual codebase content, not the entire system message
+        # Extract just the codebase section after "Below is the current codebase of the user:"
+        codebase_start = full_context.find("Below is the current codebase of the user:")
+        if codebase_start == -1:
+            # If we can't find the codebase section, don't split
+            return ContextSplit(stable_content="", stable_files=[], dynamic_content=full_context, dynamic_files=[])
+        
+        codebase_content = full_context[codebase_start:]
+        
         # Get file changes from the file state manager
         changed_files = set()
         unchanged_files = set()
-        
         # Analyze each file individually
         for file_path in file_paths:
             if self._has_recent_changes(conversation_id, file_path):
@@ -117,7 +125,7 @@ class ContextCacheManager:
         dynamic_content_parts = []
         
         # Parse the context to extract file sections
-        file_sections = self._parse_context_by_files(full_context)
+        file_sections = self._parse_context_by_files(codebase_content)
         
         for file_path, content in file_sections.items():
             if file_path in unchanged_files:
@@ -167,6 +175,7 @@ class ContextCacheManager:
     def _parse_context_by_files(self, context: str) -> Dict[str, str]:
         """
         Parse context content and split by file sections.
+        Excludes template examples wrapped in <!-- TEMPLATE EXAMPLE --> comments.
         
         Args:
             context: Full context content
@@ -177,8 +186,21 @@ class ContextCacheManager:
         file_sections = {}
         current_file = None
         current_content = []
+        in_template_example = False
         
         for line in context.split('\n'):
+            # Check for template example markers
+            if '<!-- TEMPLATE EXAMPLE START -->' in line:
+                in_template_example = True
+                continue
+            elif '<!-- TEMPLATE EXAMPLE END -->' in line:
+                in_template_example = False
+                continue
+            
+            # Skip lines within template examples
+            if in_template_example:
+                continue
+                
             if line.startswith('File: '):
                 # Save previous file section
                 if current_file and current_content:
