@@ -217,43 +217,32 @@ export const StreamedContent: React.FC = () => {
             style={{ margin: '20px 0' }}
         />
     );
-    // Function to check if user is viewing the bottom of the content
-    const isViewingBottom = () => {
+    // Function to check if user is viewing the "active end" of content (bottom in top-down, top in bottom-up)
+    const isViewingActiveEnd = () => {
         if (!contentRef.current) return false;
-
+        
         const container = contentRef.current.closest('.chat-container');
         if (!container) return true;
 
-        // If we're at the bottom, reset userHasScrolled to re-enable auto-scrolling
-        if (Math.abs(container.scrollHeight - container.scrollTop - container.clientHeight) < 20) {
-            setUserHasScrolled(false);
-        }
-
-        const containerRect = container.getBoundingClientRect();
-        const contentRect = contentRef.current.getBoundingClientRect();
-
-        // In bottom-up mode, we care about the top of the content being visible
+        // In bottom-up mode, check if we're viewing the top (where new content appears)
         if (!isTopToBottom) {
-            // If the top of the content is visible in the viewport
-            return contentRect.top >= containerRect.top - 20; // 20px tolerance
+            // Check if we're near the top of the scroll area
+            return container.scrollTop <= 50; // 50px tolerance from top
         }
 
-        // In top-down mode, we care about the bottom being visible
-        return contentRect.bottom <= containerRect.bottom + 20; // 20px tolerance
+        // In top-down mode, check if we're near the bottom
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        return Math.abs(scrollHeight - scrollTop - clientHeight) <= 50; // 50px tolerance from bottom
     };
 
-
+    
     // Function to smoothly scroll to keep the streaming content in view
     const scrollToKeepInView = () => {
-        // Debug scroll events
-        /*const now = Date.now();
-        console.log(`scrollToKeepInView called at ${now % 10000}`, {
-            isAutoScrolling: isAutoScrollingRef.current,
-            isTopToBottom
-        });*/
-
-        // Don't auto-scroll if user has manually scrolled up
+        // Only auto-scroll during active streaming and if user hasn't manually scrolled away
         if (!contentRef.current || !isAutoScrollingRef.current || userHasScrolled) return;
+        
+        // Only auto-scroll if we're currently streaming to this conversation
+        if (!streamingConversations.has(currentConversationId)) return;
 
         const container = contentRef.current.closest('.chat-container');
         if (!container) return;
@@ -275,16 +264,13 @@ export const StreamedContent: React.FC = () => {
         } else {
             // In top-down mode, check if we were already at the bottom
             const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
-
-            // Only auto-scroll if we were already at the bottom
-            if (isAtBottom) {
-                // Use requestAnimationFrame to ensure scroll happens after render
-                requestAnimationFrame(() => {
-                    container.scrollTo({
+            
+            // Only auto-scroll if we were already at the bottom AND we're actively streaming
+            if (isAtBottom && streamingConversations.has(currentConversationId)) {
+                container.scrollTo({
                         top: container.scrollHeight,
-                        behavior: 'auto' // Use 'auto' to prevent jank during streaming
+                        behavior: 'auto'
                     });
-                });
             }
         }
     };
@@ -359,16 +345,9 @@ export const StreamedContent: React.FC = () => {
     // Effect to handle auto-scrolling during streaming
     useEffect(() => {
         if (!streamingConversations.has(currentConversationId)) return;
-
-        // Check if we should start auto-scrolling
-        if (contentRef.current && isViewingBottom() && !userHasScrolled) {
-            isAutoScrollingRef.current = true;
-        }
-
-        // Set up interval to keep scrolling if needed
-        const scrollInterval = setInterval(scrollToKeepInView, 500); // Reduced frequency
-
-        return () => clearInterval(scrollInterval);
+        
+        // Only enable auto-scrolling if user hasn't manually scrolled
+        isAutoScrollingRef.current = !userHasScrolled;
     }, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
 
     // Add a separate effect to handle scroll position restoration
@@ -376,19 +355,7 @@ export const StreamedContent: React.FC = () => {
         if (!streamingConversations.has(currentConversationId)) return;
 
         const container = contentRef.current?.closest('.chat-container');
-        if (!container) return;
-
-        // Store current scroll position before any content changes
-        const storeScrollPosition = () => {
-            lastScrollPositionRef.current = container.scrollTop;
-        };
-
-        // Add event listener to store position before any updates
-        container.addEventListener('scroll', storeScrollPosition, { passive: true });
-
-        return () => {
-            container.removeEventListener('scroll', storeScrollPosition);
-        };
+        // Removed scroll position restoration logic that was causing jumps
     }, [currentConversationId, streamingConversations]);
 
     // Update loading state based on streaming status

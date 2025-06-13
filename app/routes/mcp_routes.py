@@ -56,13 +56,16 @@ async def get_mcp_status():
             }
         
         status = mcp_manager.get_server_status()
+        config_info = mcp_manager.get_config_search_info()
         
         return {
             "initialized": True,
             "servers": status,
             "total_servers": len(status),
             "connected_servers": sum(1 for s in status.values() if s["connected"]),
-            "config_path": mcp_manager.config_path
+            "config_path": config_info["config_path"],
+            "config_exists": config_info["config_exists"],
+            "config_search_paths": config_info["search_paths"]
         }
         
     except Exception as e:
@@ -213,6 +216,7 @@ async def initialize_mcp():
             }
             
         mcp_manager = get_mcp_manager()
+        logger.info("MCP reinitialize requested - will re-search for config files")
         
         # Shutdown existing connections
         if mcp_manager.is_initialized:

@@ -62,12 +62,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     // Effect to handle scrolling when messages change
     useEffect(() => {
         // Only scroll if we're not streaming or user hasn't manually scrolled
-        if (!isStreaming && !userHasScrolled) {
-            const chatContainer = document.querySelector('.chat-container');
-            if (chatContainer && isTopToBottom) {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-        }
+        // Removed auto-scrolling from Conversation component to prevent conflicts
+        // StreamedContent handles scrolling during streaming
     }, [currentMessages.length, isStreaming, userHasScrolled, isTopToBottom]);
 
 

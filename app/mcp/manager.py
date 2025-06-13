@@ -33,6 +33,7 @@ class MCPManager:
         """
         self.config_path = config_path or self._find_config_file()
         self.clients: Dict[str, MCPClient] = {}
+        self.config_search_paths: List[str] = []
         self.builtin_server_definitions = self._get_builtin_server_definitions()
         self.is_initialized = False
         
@@ -68,14 +69,48 @@ class MCPManager:
 
     def _find_config_file(self) -> Optional[str]:
         """Find the MCP configuration file."""
+        self.config_search_paths: List[str] = []
+        
         # Check current working directory
         cwd_config = Path.cwd() / "mcp_config.json"
-        if cwd_config.exists(): return str(cwd_config)
+        self.config_search_paths.append(str(cwd_config))
+        if cwd_config.exists(): 
+            logger.info(f"Found MCP config file at: {cwd_config}")
+            return str(cwd_config)
+            
         # Check project root (assuming this script is in app/mcp/)
         project_root_config = Path(__file__).resolve().parents[2] / "mcp_config.json"
-        if project_root_config.exists(): return str(project_root_config)
+        self.config_search_paths.append(str(project_root_config))
+        if project_root_config.exists(): 
+            logger.info(f"Found MCP config file at: {project_root_config}")
+            return str(project_root_config)
+            
         # Default to user's Ziya directory
-        return str(Path.home() / ".ziya" / "mcp_config.json")
+        user_config = Path.home() / ".ziya" / "mcp_config.json"
+        self.config_search_paths.append(str(user_config))
+        if user_config.exists():
+            logger.info(f"Found MCP config file at: {user_config}")
+            return str(user_config)
+            
+        logger.info(f"No MCP config file found. Searched paths: {self.config_search_paths}")
+        return None
+        
+    def get_config_search_info(self) -> Dict[str, Any]:
+        """Get information about config file search and status."""
+        return {
+            "config_path": self.config_path,
+            "config_exists": self.config_path and Path(self.config_path).exists() if self.config_path else False,
+            "search_paths": getattr(self, 'config_search_paths', [])
+        }
+
+    def refresh_config_path(self):
+        """Re-search for config files and update the config path."""
+        old_path = self.config_path
+        self.config_path = self._find_config_file()
+        if old_path != self.config_path:
+            logger.info(f"Config path changed from {old_path} to {self.config_path}")
+        else:
+            logger.info(f"Config path unchanged: {self.config_path}")
 
     async def initialize(self) -> bool:
         """
@@ -90,12 +125,16 @@ class MCPManager:
             self.is_initialized = False
             return False
         
+        # Re-search for config files in case new ones were added
+        self.refresh_config_path()
+        
         try:
         # Load configuration
             server_configs = self.builtin_server_definitions.copy()
             logger.info(f"Initialized with {len(server_configs)} built-in server definitions.")
 
             if self.config_path and os.path.exists(self.config_path):
+                logger.info(f"Loading user MCP configuration from: {self.config_path}")
                 try:
                     with open(self.config_path, 'r') as f:
                         user_config_data = json.load(f)
@@ -116,7 +155,10 @@ class MCPManager:
                 except Exception as e:
                     logger.error(f"Error loading user MCP config from {self.config_path}: {e}")
             else:
-                logger.info(f"No user MCP config file found at {self.config_path} (or path not set). Using only built-in servers or defaults.")
+                if self.config_path:
+                    logger.info(f"No MCP config file found at {self.config_path}. Using built-in server defaults.")
+                else:
+                    logger.info(f"No MCP configuration file found. Searched: {getattr(self, 'config_search_paths', [])}. Using built-in server defaults.")
             self.server_configs = server_configs # Store the final merged configs
         
             # Connect to each configured server

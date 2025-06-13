@@ -82,11 +82,13 @@ class MCPClient:
                 logger.error(f"No command specified for MCP server: {self.server_config.get('name', 'unknown')}")
                 return False
             
-            # Set working directory to project root (parent of app directory)
+            # Use the current working directory where the program was started
+            # This is more intuitive for users - commands execute where they launched the program
+            working_dir = os.getcwd()
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             project_root = os.path.dirname(app_dir)
             
-            # For built-in servers, check multiple possible locations
+            # For built-in servers, check multiple possible locations for script resolution
             possible_roots = [
                 project_root,  # Development mode
                 os.getcwd(),   # Current working directory
@@ -94,13 +96,7 @@ class MCPClient:
                 os.path.dirname(app_dir)  # Package root (where mcp_servers would be alongside app/)
             ]
             
-            working_dir = project_root
-            # Set working directory to project root (parent of app directory)
-            app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            project_root = os.path.dirname(app_dir)
-            working_dir = project_root
-            
-            logger.info(f"Starting MCP server with command: {command}")
+            logger.info(f"Starting MCP server '{self.server_config.get('name', 'unknown')}' with working directory: {working_dir}")
 
             # Resolve command paths
             resolved_command = []

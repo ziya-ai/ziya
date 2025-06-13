@@ -100,17 +100,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Modified scrollToBottom function to respect user scroll
     const scrollToBottom = () => {
         const chatContainer = document.querySelector('.chat-container');
-        if (chatContainer && isTopToBottom && !userHasScrolled) {
-            requestAnimationFrame(() => {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-
-                // Reset user scroll state when we're no longer streaming
-                if (!isStreamingAny) {
-                    setTimeout(() => {
-                        setUserHasScrolled(false);
-                    }, 100);
-                }
-            });
+        if (chatContainer && isTopToBottom && !userHasScrolled && isStreamingAny) {
+            // Only scroll during active streaming to prevent unexpected jumps
+            chatContainer.scrollTop = chatContainer.scrollHeight;
         }
     };
 

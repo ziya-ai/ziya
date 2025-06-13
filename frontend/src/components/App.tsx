@@ -283,33 +283,23 @@ export const App: React.FC = () => {
 
     // in top-down mode autoscroll to end
     useEffect(() => {
-        if (isTopToBottom) {
-            const chatContainer = document.querySelector('.chat-container');
-            if (!chatContainer) return;
-
-            const scrollToBottom = (smooth = false) => {
-                if (userHasScrolled) return;
-
-                requestAnimationFrame(() => {
-                    (chatContainer as Element).scrollTo({
-                        top: chatContainer.scrollHeight,
-                        behavior: smooth ? 'smooth' : 'auto'
-                    });
-                });
-            };
-            // Only auto-scroll when streaming is active and user hasn't scrolled up
-            const isStreaming = streamingConversations.has(currentConversationId);
-            if (isStreaming) {
-                scrollToBottom();
-                // Add a small delay for smooth scroll after content renders
-                const timeoutId = setTimeout(() => scrollToBottom(true), 50);
-                return () => clearTimeout(timeoutId);
-            }
-        }
+        // Removed aggressive auto-scrolling that was causing cursor jumps
+        // Let StreamedContent handle scrolling during streaming
     }, [isTopToBottom, currentMessages, streamedContentMap, userHasScrolled, streamingConversations, currentConversationId]);
 
     const toggleDirection = () => {
+        // Prevent scroll jumping when toggling direction
+        const chatContainer = document.querySelector('.chat-container');
+        const currentScrollTop = chatContainer?.scrollTop || 0;
+        
         setIsTopToBottom(prev => !prev);
+        
+        // Restore scroll position after a brief delay
+        setTimeout(() => {
+            if (chatContainer) {
+                chatContainer.scrollTop = currentScrollTop;
+            }
+        }, 50);
     };
 
     useEffect(() => {

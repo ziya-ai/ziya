@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Modal, List, Tag, Space, Button, Spin, Alert, Descriptions } from 'antd';
-import { 
-    CheckCircleOutlined, 
-    CloseCircleOutlined, 
+import {
+    CheckCircleOutlined,
+    CloseCircleOutlined,
     ReloadOutlined,
     ToolOutlined,
     DatabaseOutlined,
@@ -30,6 +30,8 @@ interface MCPStatus {
     total_servers: number;
     connected_servers: number;
     config_path?: string;
+    config_exists?: boolean;
+    config_search_paths?: string[];
 }
 
 const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => {
@@ -77,6 +79,54 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
         return serverName;
     };
 
+    const getConfigStatusMessage = () => {
+        if (!status) return null;
+
+        const getPathDescription = (path: string, index: number) => {
+            if (path.includes('/.ziya/')) return '(user\'s home)';
+            if (path === `${process.cwd()}/mcp_config.json` || path.endsWith('/mcp_config.json') && !path.includes('/.ziya/')) {
+                // Check if it's likely the project root vs current working directory
+                if (path.includes('/mcp_config.json') && path.split('/').length > 2) {
+                    return '(project root)';
+                }
+                return '(current working directory)';
+            }
+            return '';
+        };
+        if (status.config_path && status.config_exists) {
+            return `Using config: ${status.config_path}`;
+        } else if (status.config_search_paths && status.config_search_paths.length > 0) {
+            return (
+                <div>
+                    <div>No MCP configuration file found in search path.</div>
+                    <div style={{ fontSize: '11px', opacity: 0.7, marginTop: '2px' }}>
+
+                        Using built-in server defaults.
+                    </div>
+                    <div style={{ fontSize: '11px', opacity: 0.7, marginTop: '4px', wordBreak: 'break-all' }}>
+                        Search path: {status.config_search_paths.map((path, index) => (
+                            <div key={index} style={{ marginTop: index > 0 ? '2px' : '0' }}>
+                                {index > 0 && '↓ '}
+                                <code style={{
+                                    backgroundColor: 'rgba(0,0,0,0.1)',
+                                    padding: '1px 3px',
+                                    borderRadius: '2px',
+                                    fontSize: '10px',
+                                    fontFamily: 'monospace'
+                                }}>{path}</code>
+                                <span style={{ marginLeft: '4px', fontStyle: 'italic' }}>
+                                    {getPathDescription(path, index)}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        } else {
+            return 'Using built-in server defaults';
+        }
+    };
+
     return (
         <Modal
             title="MCP Server Status"
@@ -106,11 +156,9 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                         description={
                             <div>
                                 <div>{status.connected_servers}/{status.total_servers} servers connected</div>
-                                {status.config_path && (
-                                    <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.8 }}>
-                                        Config: {status.config_path}
-                                    </div>
-                                )}
+                                <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.8 }}>
+                                    {getConfigStatusMessage()}
+                                </div>
                             </div>
                         }
                         type={status.initialized && status.connected_servers > 0 ? 'success' : 'warning'}
@@ -121,13 +169,13 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                         dataSource={Object.entries(status.servers)}
                         renderItem={([name, server]) => (
                             <List.Item>
-                                <Descriptions 
+                                <Descriptions
                                     title={
                                         <span>
                                             {getServerDisplayName(name)} {server.builtin && <Tag color="blue">built-in</Tag>}
                                         </span>
-                                    } 
-                                    column={1} 
+                                    }
+                                    column={1}
                                     size="small"
                                 >
                                     <Descriptions.Item label="Status">
