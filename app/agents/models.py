@@ -87,6 +87,8 @@ class ModelManager:
     # Class-level state with process-specific initialization
     _state = {
         'model': None,
+        'persistent_bedrock_clients': {},  # Store clients by config hash
+        'client_config_hash': None,       # Track current client config
         'auth_checked': False,
         'auth_success': False,
         'google_credentials': None,
@@ -116,6 +118,8 @@ class ModelManager:
         cls._state = {
             'model': None,
             'current_model_id': None,
+            'persistent_bedrock_clients': {},
+            'client_config_hash': None,
             'llm_with_stop': None,  # Add storage for llm_with_stop
             'auth_checked': False,
             'auth_success': False,
@@ -575,6 +579,61 @@ class ModelManager:
         return filtered_settings
 
     @classmethod
+    def _get_client_config_hash(cls, aws_profile: str, region: str, model_id: str) -> str:
+        """Generate a hash for the client configuration to track when clients can be reused."""
+        import hashlib
+        config_string = f"{aws_profile}_{region}_{model_id}"
+        return hashlib.md5(config_string.encode()).hexdigest()[:8]
+    
+    @classmethod
+    def _get_persistent_bedrock_client(cls, aws_profile: str, region: str, model_id: str):
+        """
+        Get or create a persistent Bedrock client for the given configuration.
+        Reuses existing clients when configuration matches.
+        """
+        from app.utils.aws_utils import ThrottleSafeBedrock, check_aws_credentials, create_fresh_boto3_session
+        from app.utils.custom_bedrock import CustomBedrockClient
+        
+        # Generate configuration hash
+        config_hash = cls._get_client_config_hash(aws_profile, region, model_id)
+        
+        # Check if we can reuse existing client
+        if config_hash in cls._state['persistent_bedrock_clients']:
+            logger.info(f"Reusing persistent Bedrock client for {aws_profile}/{region}/{model_id}")
+            return cls._state['persistent_bedrock_clients'][config_hash]
+        
+        # Create new client
+        logger.info(f"Creating new persistent Bedrock client for {aws_profile}/{region}/{model_id}")
+        
+        # Check AWS credentials
+        creds_valid, error_msg = check_aws_credentials(profile_name=aws_profile)
+        if not creds_valid:
+            logger.error(f"AWS credentials check failed: {error_msg}")
+            cls._state['last_auth_error'] = error_msg
+            from app.utils.custom_exceptions import KnownCredentialException
+            raise KnownCredentialException(error_msg)
+        
+        # Create fresh boto3 session and client
+        try:
+            session = create_fresh_boto3_session(profile_name=aws_profile)
+            bedrock_client = session.client('bedrock-runtime', region_name=region)
+            logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
+            
+            # Wrap with CustomBedrockClient and ThrottleSafeBedrock
+            custom_client = CustomBedrockClient(bedrock_client)
+            throttle_safe_client = ThrottleSafeBedrock(custom_client)
+            
+            # Store in persistent cache
+            cls._state['persistent_bedrock_clients'][config_hash] = throttle_safe_client
+            cls._state['client_config_hash'] = config_hash
+            
+            return throttle_safe_client
+            
+        except Exception as e:
+            logger.error(f"Error creating persistent bedrock client: {e}")
+            raise
+    
+    @classmethod
     def initialize_model(cls, force_reinit=False, settings_override: Optional[Dict[str, Any]] = None) -> BaseChatModel:
         """
         Initialize the model based on environment variables.
@@ -788,19 +847,8 @@ class ModelManager:
         # Reset any previous error flags
         KnownCredentialException._error_displayed = False
         
-        # Check AWS credentials
-        creds_valid, error_msg = check_aws_credentials(profile_name=aws_profile)
-        if not creds_valid:
-            # Log the full error message for debugging
-            logger.error(f"AWS credentials check failed: {error_msg}")
-            
-            # Store the error message in a class variable for consistent reporting
-            cls._state['last_auth_error'] = error_msg
-            
-            # Raise a KnownCredentialException instead of ValueError
-            # The exception will handle printing the message only once
-            from app.utils.custom_exceptions import KnownCredentialException
-            raise KnownCredentialException(error_msg)
+        # Get persistent Bedrock client (handles credential checking internally)
+        persistent_client = cls._get_persistent_bedrock_client(aws_profile, region, model_id)
         
         # Check if this is a Nova model
         family = model_config.get("family")
@@ -874,9 +922,6 @@ class ModelManager:
             if effective_thinking_mode_str is not None:
                 effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes")
 
-        # Force garbage collection before creating new model
-        gc.collect()
-        
         # Create the appropriate model based on family
         if family == "nova":
             from app.agents.wrappers.nova_wrapper import NovaBedrock
@@ -901,23 +946,12 @@ class ModelManager:
             nova_model_kwargs = {k: v for k, v in nova_model_kwargs.items() if v is not None}
             logger.info(f"Creating NovaBedrock with model_kwargs: {nova_model_kwargs}")
             
-            # Create a fresh boto3 session
-            try:
-                # Create a fresh session
-                session = create_fresh_boto3_session(profile_name=aws_profile)
-                new_region = os.environ.get("AWS_REGION", region)
-                bedrock_client = session.client('bedrock-runtime', region_name=new_region)
-                logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {new_region}")
-                
-                # Store the ThrottleSafeBedrock wrapper separately but use the original client for the model
-                throttle_safe_client = ThrottleSafeBedrock(bedrock_client)
-            except Exception as e:
-                logger.error(f"Error creating bedrock client: {e}")
-                raise
+            # Use persistent client for Nova models
+            new_region = os.environ.get("AWS_REGION", region)
             
             model = NovaBedrock(
                 model_id=model_id,
-                client=bedrock_client,  # Use the original client directly
+                client=persistent_client.client,  # Use the underlying client from persistent wrapper
                 region_name=new_region,
                 model_kwargs=nova_model_kwargs,
                 max_tokens=effective_max_tokens,
@@ -955,23 +989,10 @@ class ModelManager:
             # Import and use ZiyaBedrock
             from app.agents.wrappers.ziya_bedrock import ZiyaBedrock
             
-            # Create a fresh boto3 session
-            try:
-                # Create a fresh session
-                session = create_fresh_boto3_session(profile_name=aws_profile)
-                bedrock_client = session.client('bedrock-runtime', region_name=region)
-                logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
-                
-                # Wrap with throttle-safe client
-                bedrock_client = ThrottleSafeBedrock(bedrock_client)
-            except Exception as e:
-                logger.error(f"Error creating bedrock client: {e}")
-                raise
-            
             # Create the ZiyaBedrock model
             model = ZiyaBedrock(
                 model_id=model_id,
-                client=bedrock_client,  # Use our fresh client
+                client=persistent_client,  # Use persistent client
                 region_name=region,
                 model_kwargs=model_kwargs, # Pass effective kwargs from above
                 temperature=effective_temperature,    # Pass effective temperature

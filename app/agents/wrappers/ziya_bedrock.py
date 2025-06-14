@@ -79,16 +79,6 @@ class ZiyaBedrock(Runnable):
             # Also remove from model_kwargs if present
             if model_kwargs and "top_k" in model_kwargs:
                 del model_kwargs["top_k"]
-        self.ziya_max_tokens = max_tokens  # Store max_tokens directly
-        
-        # Force garbage collection before creating new clients
-        import gc
-        gc.collect()
-        
-        # Create a fresh boto3 client to ensure we don't reuse cached connections
-        import boto3
-        fresh_client = boto3.client('bedrock-runtime', region_name=region_name)
-        logger.info(f"Created fresh boto3 bedrock-runtime client for region: {region_name}")
 
         # Ensure model_kwargs is a dict and update max_tokens
         current_model_kwargs = model_kwargs or {} # Use a temporary var or modify model_kwargs directly
@@ -108,7 +98,7 @@ class ZiyaBedrock(Runnable):
         # Create the underlying ChatBedrock instance with the fresh client
         self.bedrock_model = ChatBedrock(
             model_id=model_id,
-            client=fresh_client,
+            client=client,  # Use the provided persistent client
             region_name=region_name,
             max_tokens=max_tokens,  # Explicitly pass max_tokens
             credentials_profile_name=credentials_profile_name,
@@ -119,11 +109,8 @@ class ZiyaBedrock(Runnable):
             **kwargs,
         )
         
-        # Wrap the client with our custom client to ensure max_tokens is correctly passed
-        if hasattr(self.bedrock_model, 'client') and self.bedrock_model.client is not None:
-            self.bedrock_model.client = CustomBedrockClient(self.bedrock_model.client, max_tokens=max_tokens)
-            logger.info(f"Wrapped boto3 client with CustomBedrockClient, max_tokens={max_tokens}")
-            self.bedrock_model.max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", max_tokens))  # Use environment variable if available
+        # Client is already wrapped by ModelManager, no need to wrap again
+        logger.info(f"Using persistent Bedrock client for model_id={model_id}, max_tokens={max_tokens}")
         
         # Log initialization parameters for debugging
         logger.info(f"Initializing ZiyaBedrock with model_id={model_id}")

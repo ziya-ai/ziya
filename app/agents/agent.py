@@ -1246,6 +1246,13 @@ class AgentInput(BaseModel):
 def extract_codebase(x):
     files = x["config"].get("files", [])
     # Extract conversation_id from multiple possible sources
+    
+    # If no files are selected, return a placeholder message
+    # This ensures the system template is still properly formatted
+    if not files:
+        logger.info("No files selected, returning placeholder codebase message")
+        return "No files have been selected for context analysis."
+    
     print(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
     conversation_id = (
         x.get("conversation_id") or 
@@ -1353,8 +1360,7 @@ def extract_codebase(x):
 
     if result:
         return final_string
-    return codebase
-    print(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase returning {len(final_string if result else codebase)} chars")
+    return codebase if codebase.strip() else "No files have been selected for context analysis."
 def log_output(x):
     """Log output in a consistent format."""
     try:
@@ -1388,8 +1394,6 @@ def create_agent_chain(chat_model: BaseChatModel):
     
     # Initialize MCP tools if available
     mcp_tools = []
-    
-    # Check if AST is enabled
     ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
     logger.info(f"Creating agent chain with AST enabled: {ast_enabled}")
     
@@ -1402,21 +1406,6 @@ def create_agent_chain(chat_model: BaseChatModel):
     logger.info(f"Creating agent chain for model: {model_name}, family: {model_family}, endpoint: {endpoint}")
     
     # Get the extended prompt with model-specific extensions
-
-    mcp_tools = []
-    prompt_template = get_extended_prompt(
-        model_name=model_name,
-        model_family=model_family,
-        endpoint=endpoint
-    )
-    logger.error(f"🔍 EXECUTION_TRACE: Agent chain using extended prompt template of length: {len(str(prompt_template))}")
-    
-    logger.info(f"AGENT_CHAIN: Received prompt template type: {type(prompt_template)}")
-    logger.info(f"AGENT_CHAIN: Prompt template messages: {len(prompt_template.messages)}")
-    for i, msg in enumerate(prompt_template.messages):
-        if hasattr(msg, 'prompt') and hasattr(msg.prompt, 'template'):
-            logger.info(f"AGENT_CHAIN: Message {i} template length: {len(msg.prompt.template)}")
-            logger.info(f"AGENT_CHAIN: Message {i} last 200 chars: {msg.prompt.template[-200:]}")
     
     # Define the input mapping with conditional AST context
     input_mapping = {
@@ -1447,6 +1436,7 @@ def create_agent_chain(chat_model: BaseChatModel):
         input_mapping["ast_context"] = lambda x: {}
 
     # Get MCP tools
+    mcp_tools = []
     try:
         from app.mcp.manager import get_mcp_manager
         from app.mcp.tools import create_mcp_tools
@@ -1468,14 +1458,41 @@ def create_agent_chain(chat_model: BaseChatModel):
             logger.info(f"Created {len(mcp_tools)} MCP tools for XML agent: {[tool.name for tool in mcp_tools]}")
         else:
             logger.warning("MCP manager not initialized, no MCP tools available")
+    
     except Exception as e:
         logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+    
+    # Add MCP context for prompt extensions
+    mcp_context = {
+         "mcp_tools_available": len(mcp_tools) > 0,
+         "available_mcp_tools": [tool.name for tool in mcp_tools]
+    }
+    
+    prompt_template = get_extended_prompt(
+        model_name=model_name,
+        model_family=model_family,
+        endpoint=endpoint,
+        context=mcp_context
+    )
+    
+    logger.error(f"🔍 EXECUTION_TRACE: Agent chain using extended prompt template of length: {len(str(prompt_template))}")
+    
+    logger.info(f"AGENT_CHAIN: Received prompt template type: {type(prompt_template)}")
+    logger.info(f"AGENT_CHAIN: Prompt template messages: {len(prompt_template.messages)}")
+    for i, msg in enumerate(prompt_template.messages):
+        logger.info(f"AGENT_CHAIN: Message {i} type: {type(msg)}")
+        if hasattr(msg, 'prompt') and hasattr(msg.prompt, 'template'):
+            logger.info(f"AGENT_CHAIN: Message {i} template length: {len(msg.prompt.template)}")
+            logger.info(f"AGENT_CHAIN: Message {i} last 200 chars: {msg.prompt.template[-200:]}")
+        elif hasattr(msg, 'template'):
+            logger.info(f"AGENT_CHAIN: Message {i} template length: {len(msg.template)}")
+        else:
+            logger.info(f"AGENT_CHAIN: Message {i} has no accessible template")
     
     logger.info(f"AGENT_CHAIN: Tools being passed to create_xml_agent: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
     # Create the XML agent directly with input preprocessing
     # Use custom output parser for MCP tool detection
     agent = create_xml_agent(llm_with_stop, mcp_tools, prompt_template)
-
     # Log the tools that were actually passed to the agent
     logger.info(f"XML agent created with {len(mcp_tools)} tools: {[tool.name for tool in mcp_tools]}")
     
@@ -1587,7 +1604,7 @@ def create_agent_executor(agent_chain: Runnable):
         tools=mcp_tools,
         handle_parsing_errors=True,
         return_intermediate_steps=True,  # This helps with debugging
-        max_iterations=3,  # Limit iterations to prevent infinite loops
+        max_iterations=15,  # Allow more iterations for complex tasks
     ).with_types(input_type=AgentInput) | RunnablePassthrough.assign(output=update_and_return)
     
     # Wrap the executor to add debugging
