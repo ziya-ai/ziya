@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useChatContext } from '../context/ChatContext';
 import { sendPayload } from "../apis/chatApi";
 import { Message } from "../utils/types";
@@ -29,8 +29,21 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
 
     const [editedMessage, setEditedMessage] = useState(currentMessages[index].content);
     const { checkedKeys } = useFolderContext();
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
     const { TextArea } = Input;
     const isEditing = editingMessageIndex === index;
+
+    // Focus the textarea when editing starts
+    useEffect(() => {
+        if (isEditing && textareaRef.current) {
+            setTimeout(() => {
+                if (textareaRef.current) {
+                    textareaRef.current.focus();
+                }
+            }, 100);
+        }
+    }, [isEditing]);
 
     const handleEdit = () => {
         setEditingMessageIndex(index);
@@ -133,14 +146,14 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
             {isInline && isEditing && (
                 null
             )}
-            
+
             {/* If we're editing and this is NOT the inline version, show full edit interface */}
             {isEditing && !isInline && (
                 <div style={{ width: '100%' }}>
                     {/* Header row with sender and buttons */}
-                    <div style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
                         alignItems: 'center',
                         marginBottom: '8px',
                         width: '100%'
@@ -164,25 +177,27 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                             </Tooltip>
                         </Space>
                     </div>
-                    
+
                     {/* Full-width textarea */}
                     <TextArea
-                        style={{ 
+                        ref={textareaRef}
+                        autoFocus
+                        style={{
                             width: '100%',
                             minHeight: '100px',
                             resize: 'vertical'
                         }}
                         value={editedMessage}
                         onChange={(e) => setEditedMessage(e.target.value)}
-                        autoSize={{ 
-                            minRows: 3, 
-                            maxRows: 20 
+                        autoSize={{
+                            minRows: 3,
+                            maxRows: 20
                         }}
                         placeholder="Edit your message..."
                     />
                 </div>
             )}
-            
+
             {/* Show edit button if not editing and this is inline, OR if not editing and not inline */}
             {!isEditing && (isInline || !isEditing) && (
                 <Tooltip title="Edit">

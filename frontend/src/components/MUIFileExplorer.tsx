@@ -236,7 +236,7 @@ export const MUIFileExplorer = () => {
   // Effect to load folders on component mount
   useEffect(() => {
     const loadFolders = async () => {
-      setIsLoading(true);
+      if (isLoading) return; // Prevent multiple simultaneous loads
       try {
         const response = await fetch('/api/folders');
         if (!response.ok) {
@@ -256,10 +256,12 @@ export const MUIFileExplorer = () => {
     };
 
     // Only load folders if we don't already have them
-    if (!folders || Object.keys(folders).length === 0) {
+    // Also check if we're not already loading to prevent race conditions
+    if ((!folders || Object.keys(folders).length === 0) && !isLoading) {
+      setIsLoading(true);
       loadFolders();
     } else {
-      setIsLoading(false);
+      if (folders && Object.keys(folders).length > 0) setIsLoading(false);
     }
   }, [folders, setTreeData]);
 

@@ -1073,6 +1073,8 @@ const MUIChatHistory = () => {
       }
     } catch (error) {
       message.error('Failed to load conversation');
+    } finally {
+      setIsLoading(false);
     }
   }, [currentConversationId, isLoadingConversation, loadConversation]);
 

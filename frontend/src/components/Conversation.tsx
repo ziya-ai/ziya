@@ -39,7 +39,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         toggleMessageMute,
     } = useChatContext();
 
-    const { checkedKeys } = useFolderContext();
+    // Don't block conversation rendering on folder context
+    const folderContext = useFolderContext();
+    const checkedKeys = folderContext?.checkedKeys || [];
     const { setQuestion } = useQuestionContext();
     const visibilityRef = useRef<boolean>(true);
     // Sort messages to maintain order
@@ -189,7 +191,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             await sendPayload(
                                 currentMessages,
                                 message.content,
-                                convertKeysToStrings(checkedKeys),
+                                convertKeysToStrings(checkedKeys || []),
                                 currentConversationId,
                                 setStreamedContentMap,
                                 setIsStreaming,
@@ -418,11 +420,20 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                         </div>
                                     )}
                                     
-                                    {msg.role === 'human' && editingMessageIndex === actualIndex && (
+                                    {/* Only show edit section when editing, otherwise show message content */}
+                                    {msg.role === 'human' && editingMessageIndex === actualIndex ? (
                                         <EditSection index={actualIndex} isInline={false} />
-                                    )}
-
-                                    {msg.role === 'assistant' && msg.content && (
+                                    ) : msg.role === 'human' && msg.content ? (
+                                        <div className="message-content">
+                                            <Suspense fallback={<div>Loading content...</div>}>
+                                                <MarkdownRenderer
+                                                    markdown={msg.content}
+                                                    enableCodeApply={enableCodeApply}
+                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                />
+                                            </Suspense>
+                                        </div>
+                                    ) : msg.role === 'assistant' && msg.content && (
                                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                             <div className="message-sender">AI:</div>
                                             <div style={{
@@ -437,15 +448,18 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                         </div>
                                     )}
 
-                                    <div className="message-content">
-                                        <Suspense fallback={<div>Loading content...</div>}>
-                                            <MarkdownRenderer
-                                                markdown={msg.content}
-                                                enableCodeApply={enableCodeApply}
-                                                isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                            />
-                                        </Suspense>
-                                    </div>
+                                    {/* Only show message content for assistant messages or non-editing human messages */}
+                                    {msg.role === 'assistant' && msg.content && (
+                                        <div className="message-content">
+                                            <Suspense fallback={<div>Loading content...</div>}>
+                                                <MarkdownRenderer
+                                                    markdown={msg.content}
+                                                    enableCodeApply={enableCodeApply}
+                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                />
+                                            </Suspense>
+                                        </div>
+                                    )}
                                 </>
                             ) : null
                         )}

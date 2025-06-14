@@ -278,6 +278,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             if (parsed.type === 'mermaid') {
                 // Pre-process the definition to fix common syntax issues
                 if (typeof parsed.definition === 'string') {
+                    // FIRST: Remove HTML tags that cause parsing issues
+                    parsed.definition = parsed.definition.replace(/<br\s*\/?>/gi, '\n');
+                    parsed.definition = parsed.definition.replace(/<\/br>/gi, '');
+                    parsed.definition = parsed.definition.replace(/<[^>]+>/g, '');
 
                     // Detect diagram type
                     const firstLine = parsed.definition.trim().split('\n')[0].toLowerCase();
@@ -285,6 +289,17 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
                     // Apply diagram-specific fixes
                     if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
+                        // PRIORITY FIX: Handle parentheses and special characters in node labels
+                        parsed.definition = parsed.definition.replace(/(\w+)\[([^\]]*)\]/g, (match, nodeId, content) => {
+                            // Quote content that contains special characters
+                            if (/[()\/\n<>]/.test(content) && !content.match(/^".*"$/)) {
+                                // Don't double-escape already escaped quotes
+                                const escapedContent = content.replace(/\\"/g, '"').replace(/"/g, '\\"');
+                                return `${nodeId}["${escapedContent}"]`;
+                            }
+                            return match;
+                        });
+
                         // Fix subgraph class syntax
                         parsed.definition = parsed.definition.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 style_$2');
                         parsed.definition = parsed.definition.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
