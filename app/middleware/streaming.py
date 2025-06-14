@@ -17,6 +17,12 @@ from langchain_core.tracers.log_stream import RunLogPatch
 
 from app.utils.logging_utils import logger
 
+# Import Google AI error for proper handling
+try:
+    from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+except ImportError:
+    ChatGoogleGenerativeAIError = None
+
 class StreamingMiddleware(BaseHTTPMiddleware):
     """Middleware for handling streaming responses."""
     
@@ -84,6 +90,29 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 chunk_content = ""
                 # Process the chunk
                 try:
+                    # Handle ChatGoogleGenerativeAIError specifically
+                    if ChatGoogleGenerativeAIError and isinstance(chunk, ChatGoogleGenerativeAIError):
+                        logger.info("Processing ChatGoogleGenerativeAIError in streaming middleware")
+                        error_message = str(chunk)
+                        
+                        # Check for context size error
+                        if "exceeds the maximum number of tokens" in error_message:
+                            error_data = {
+                                "error": "context_size_error",
+                                "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
+                                "status_code": 413
+                            }
+                        else:
+                            error_data = {
+                                "error": "model_error", 
+                                "detail": error_message,
+                                "status_code": 500
+                            }
+                        
+                        yield f"data: {json.dumps(error_data)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    
                     # Handle AIMessageChunk objects
                     if isinstance(chunk, AIMessageChunk):
                         logger.info("Processing AIMessageChunk")

@@ -784,19 +784,30 @@ class RetryingChatBedrock(Runnable):
             except ChatGoogleGenerativeAIError as e:
                 # Format Gemini errors as structured error payload within a chunk
                 logger.error(f"ChatGoogleGenerativeAI error: {str(e)}")
-                error_response = {
+                
+                # Check for specific error types
+                error_message = str(e)
+                if "exceeds the maximum number of tokens" in error_message:
+                    error_response = {
+                        "error": "context_size_error",
+                        "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
+                        "status_code": 413
+                    }
+                else:
+                    error_response = {
                     "error": "server_error",
                     "detail": str(e),
                     "status_code": 500
-                }
+                    }
+                
                 # Create a special error chunk that the streaming middleware can detect
                 error_chunk = AIMessageChunk(content=json.dumps(error_response))
                 error_chunk.response_metadata = {"error_response": True}
                 # Log the error message we're about to send
-                logger.info(f"Sending Gemini error as structured chunk: {error_msg}")
+                logger.info(f"Sending Gemini error as structured chunk: {error_response}")
                 
                 # Yield the error payload as content in an AIMessageChunk
-                yield AIMessageChunk(content=json.dumps(error_msg))
+                yield AIMessageChunk(content=json.dumps(error_response))
                 return
 
             except ClientError as e:
