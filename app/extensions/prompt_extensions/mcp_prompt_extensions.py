@@ -56,6 +56,7 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
 """ + _get_tool_call_formats_from_mcp(available_tools) + """
 
 **Usage Rules:**
+0. **Prefer local context and AST over tools when either can provide similar information**
 1. **Always use actual tool results** - Never fabricate output
 2. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
 3. **Time queries**: Always use tool rather than guessing current time
