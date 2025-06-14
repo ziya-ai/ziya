@@ -123,6 +123,27 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     # Set a maximum time limit for scanning (30 seconds)
     max_scan_time = 30
     
+    # Define multipliers for different file types
+    # These are heuristics and can be adjusted
+    FILE_TYPE_MULTIPLIERS = {
+        # Code files (tend to have higher token density)
+        '.py': 1.8, '.js': 1.8, '.ts': 1.8, '.java': 1.8, '.cpp': 1.8,
+        '.c': 1.8, '.h': 1.8, '.rs': 1.8, '.go': 1.8, '.php': 1.8,
+        '.jsx': 1.8, '.tsx': 1.8, '.rb': 1.8, '.cs': 1.8, '.swift': 1.8,
+        # Markup & Structured Data
+        '.html': 1.4, '.css': 1.6, '.xml': 1.4, '.json': 1.3, 
+        '.yaml': 1.3, '.yml': 1.3, '.md': 1.3,
+        # Logs and Plain Text
+        '.log': 1.2, '.txt': 1.2,
+        # Default for other text-based files
+        'default': 1.5  # The general multiplier we discussed
+    }
+
+    def get_file_type_multiplier(file_path: str) -> float:
+        _, ext = os.path.splitext(file_path)
+        ext = ext.lower()
+        return FILE_TYPE_MULTIPLIERS.get(ext, FILE_TYPE_MULTIPLIERS['default'])
+
     def count_tokens(file_path: str) -> int:
         """Count tokens in a file using tiktoken."""
         # Check if we've exceeded the time limit
@@ -150,7 +171,12 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 if token_count > 50000:
                     logger.debug(f"Skipping file with excessive tokens {file_path}: {token_count} tokens")
                     return 0
-                return token_count
+                
+                # Apply content-type specific multiplier
+                multiplier = get_file_type_multiplier(file_path)
+                adjusted_token_count = int(token_count * multiplier)
+                #logger.debug(f"File: {os.path.basename(file_path)}, Original Tokens: {token_count}, Multiplier: {multiplier:.2f}, Adjusted Tokens: {adjusted_token_count}")
+                return adjusted_token_count
             else:
                 logger.debug(f"No content extracted from: {file_path}")
                 return 0
