@@ -149,7 +149,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
         // Include the new message in messages for the API
         const baseMessages = isRetry ? currentMessages : [...currentMessages, newHumanMessage!];
-        const messagesToSend = baseMessages.filter(msg => !msg.muted);
+        // Filter out muted messages before sending to API - this is the definitive filter
+        const messagesToSend = baseMessages.filter(msg => msg.muted !== true);
+        
         addStreamingConversation(currentConversationId);
         const targetConversationId = currentConversationId;
 
@@ -158,7 +160,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             const selectedFiles = convertKeysToStrings(checkedKeys);
             const result = await sendPayload(
                 messagesToSend,
-                question,
+                currentQuestion,
                 selectedFiles,
                 targetConversationId,
                 setStreamedContentMap,

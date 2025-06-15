@@ -822,6 +822,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return conv;
             });
             queueSave(updated).catch(console.error);
+            
+            // Dispatch event to notify token counter of mute state change
+            window.dispatchEvent(new CustomEvent('messagesMutedChanged', {
+                detail: { conversationId, messageIndex }
+            }));
             return updated;
         });
     }, []);

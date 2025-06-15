@@ -442,9 +442,13 @@ export const TokenCountDisplay = memo(() => {
 
     const previousMessagesRef = useRef<string>('');
     const hasMessagesChanged = useCallback((messages: Message[]) => {
-        const messagesContent = messages.length > 0 ? messages.map(msg => msg.content).join('\n') : '';
-        if (messagesContent !== previousMessagesRef.current) {
-            previousMessagesRef.current = messagesContent;
+        // Include mute state in change detection to catch mute/unmute actions
+        const activeMessages = messages.filter(msg => msg.muted !== true);
+        const messagesContent = activeMessages.length > 0 ? activeMessages.map(msg => msg.content).join('\n') : '';
+        const messageSignature = `${messages.length}:${activeMessages.length}:${messagesContent}`;
+        
+        if (messageSignature !== previousMessagesRef.current) {
+            previousMessagesRef.current = messageSignature;
             console.debug('Messages changed:', { length: messages.length, content: messagesContent.slice(0, 100) });
             return true;
         }
@@ -465,7 +469,8 @@ export const TokenCountDisplay = memo(() => {
         setIsLoading(true);
         try {
             // Only count tokens for non-muted messages
-            const allText = currentMessages.filter(msg => !msg.muted).map(msg => msg.content).join('\n');
+            const allText = currentMessages.filter(msg => msg.muted !== true).map(msg => msg.content).join('\n');
+            console.debug('Token count calculation:', { totalMessages: currentMessages.length, activeMessages: currentMessages.filter(msg => msg.muted !== true).length });
             const tokens = await getTokenCount(allText);
             setChatTokenCount(tokens);
             lastMessageCount.current = currentMessages.length;
@@ -508,11 +513,17 @@ export const TokenCountDisplay = memo(() => {
     // Listen for mute state changes to trigger token count updates
     useEffect(() => {
         const handleMuteChange = (event: CustomEvent) => {
-            if (event.detail.conversationId === currentConversationId) {
+            if (event.detail?.conversationId === currentConversationId) {
                 console.log('Token counter: Mute state changed, updating chat tokens');
-                updateChatTokens();
+                // Use setTimeout to ensure state has been updated
+                setTimeout(() => {
+                    updateChatTokens();
+                }, 50);
             }
         };
+        
+        // Also listen for general message updates that might include mute changes
+        window.addEventListener('conversationUpdated', handleMuteChange as EventListener);
         
         window.addEventListener('messagesMutedChanged', handleMuteChange as EventListener);
         return () => window.removeEventListener('messagesMutedChanged', handleMuteChange as EventListener);

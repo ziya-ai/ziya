@@ -610,10 +610,8 @@ export const sendPayload = async (
 async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal) {
     const messageTuples: string[][] = [];
 
-    // Filter out muted messages before sending to API
-    const activeMessages = messages.filter(message => !message.muted);
-
-    for (const message of activeMessages) {
+    // Messages are already filtered in SendChatContainer, no need to filter again
+    for (const message of messages) {
         messageTuples.push([message.role, message.content]);
     }
 
