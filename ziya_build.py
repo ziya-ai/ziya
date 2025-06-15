@@ -81,6 +81,7 @@ def main():
         wheel_file = file
         break
     
+    if wheel_file:
         print(f"Final wheel created: {wheel_file}")
     else:
         print("ERROR: No wheel file found after post-processing.")
@@ -88,7 +89,5 @@ def main():
     
     return 0
     
-    print(f"Updated RECORD file with {len(list(templates_dir.rglob('*')))} template entries")
-
 if __name__ == "__main__":
     sys.exit(main())
