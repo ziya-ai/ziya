@@ -10,6 +10,8 @@ import {
     PlusOutlined,
     BulbOutlined,
     SwapOutlined,
+    CodeOutlined,
+    ApiOutlined,
     SettingOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
@@ -20,6 +22,8 @@ import { useChatContext } from '../context/ChatContext';
 import { StreamingContentManager } from './StreamingContentManager';
 import { ProfilerWrapper } from './ProfilerWrapper';
 
+const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
+const MCPStatusModal = React.lazy(() => import("./MCPStatusModal"));
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
 const PrismTest = React.lazy(() => import("./PrismTest"));
@@ -115,9 +119,13 @@ export const App: React.FC = () => {
     const { dbError } = useChatContext();
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
 
-    // Set initial CSS variable on mount
+    const [showShellConfig, setShowShellConfig] = useState(false);
+    const [showMCPStatus, setShowMCPStatus] = useState(false);
+    const [mcpEnabled, setMcpEnabled] = useState(false);
+
+    // Check MCP status on mount
     useEffect(() => {
-        document.documentElement.style.setProperty('--folder-panel-width', `${getValidPanelWidth(panelWidth)}px`);
+        document.documentElement.style.setProperty('--folder-panel-width', `25vw`);
         document.documentElement.style.setProperty('--model-display-height', '35px');
 
         // Force initial positioning of all elements after a short delay
@@ -125,6 +133,24 @@ export const App: React.FC = () => {
             handlePanelResize(panelWidth);
         }, 300);
     }, []);
+
+    // Check MCP status on mount
+    useEffect(() => {
+        const checkMCPStatus = async () => {
+            try {
+                const response = await fetch('/api/mcp/status');
+                if (response.ok) {
+                    const data = await response.json();
+                    // MCP is enabled only if it's not explicitly disabled
+                    setMcpEnabled(!data.disabled);
+                }
+            } catch (error) {
+                console.error('Failed to check MCP status:', error);
+            }
+        };
+        checkMCPStatus();
+    }, []);
+    console.log('Current mcpEnabled state:', mcpEnabled);
 
     // Add scroll event listener to detect manual scrolling
     useEffect(() => {
@@ -140,7 +166,7 @@ export const App: React.FC = () => {
                 setUserHasScrolled(false);
                 return;
             }
-            
+
             // If we're not at the bottom and the scroll position changed significantly, mark as user scrolled
             if (!isAtBottom && Math.abs(scrollTop - lastScrollPositionRef.current) > 10) {
                 setUserHasScrolled(true);
@@ -257,33 +283,23 @@ export const App: React.FC = () => {
 
     // in top-down mode autoscroll to end
     useEffect(() => {
-        if (isTopToBottom) {
-            const chatContainer = document.querySelector('.chat-container');
-            if (!chatContainer) return;
-
-            const scrollToBottom = (smooth = false) => {
-                if (userHasScrolled) return;
-
-                requestAnimationFrame(() => {
-                    (chatContainer as Element).scrollTo({
-                        top: chatContainer.scrollHeight,
-                        behavior: smooth ? 'smooth' : 'auto'
-                    });
-                });
-            };
-            // Only auto-scroll when streaming is active and user hasn't scrolled up
-            const isStreaming = streamingConversations.has(currentConversationId);
-            if (isStreaming) {
-                scrollToBottom();
-                // Add a small delay for smooth scroll after content renders
-                const timeoutId = setTimeout(() => scrollToBottom(true), 50);
-                return () => clearTimeout(timeoutId);
-            }
-        }
+        // Removed aggressive auto-scrolling that was causing cursor jumps
+        // Let StreamedContent handle scrolling during streaming
     }, [isTopToBottom, currentMessages, streamedContentMap, userHasScrolled, streamingConversations, currentConversationId]);
 
     const toggleDirection = () => {
+        // Prevent scroll jumping when toggling direction
+        const chatContainer = document.querySelector('.chat-container');
+        const currentScrollTop = chatContainer?.scrollTop || 0;
+        
         setIsTopToBottom(prev => !prev);
+        
+        // Restore scroll position after a brief delay
+        setTimeout(() => {
+            if (chatContainer) {
+                chatContainer.scrollTop = currentScrollTop;
+            }
+        }, 50);
     };
 
     useEffect(() => {
@@ -332,94 +348,119 @@ export const App: React.FC = () => {
     return (
         <ExtensionErrorBoundary>
             <ProfilerWrapper id="App">
-            <ConfigProvider
-                theme={{
-                    algorithm: themeAlgorithm,
-                    token: {
-                        borderRadius: 6,
-                        colorBgContainer: isDarkMode ? '#141414' : '#ffffff',
-                        colorText: isDarkMode ? '#ffffff' : '#000000',
-                    },
-                }}
-            >
-                <Button
-                    className={`panel-toggle ${isPanelCollapsed ? 'collapsed' : ''}`}
-                    type="primary"
-                    onClick={togglePanel}
-                    size="small"
-                    style={{
-                        padding: '4px 8px',
-                        color: isDarkMode ? undefined : (isPanelCollapsed ? '#ffffff' : '#1890ff'),
-                        left: isPanelCollapsed ? '-1px' : `${panelWidth + 2}px`, // Add 2px for border
-                        backgroundColor: isDarkMode ? undefined : (isPanelCollapsed ? '#1890ff' : undefined),
+                <ConfigProvider
+                    theme={{
+                        algorithm: themeAlgorithm,
+                        token: {
+                            borderRadius: 6,
+                            colorBgContainer: isDarkMode ? '#141414' : '#ffffff',
+                            colorText: isDarkMode ? '#ffffff' : '#000000',
+                        },
                     }}
-                    ghost={!isDarkMode || !isPanelCollapsed}
-                >{isPanelCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}</Button>
-
-                <PanelResizer
-                    onResize={handlePanelResize}
-                    isPanelCollapsed={isPanelCollapsed}
-                />
-
-                <div style={{ height: 'var(--app-header-height)' }}>
-                    <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
+                >
+                    <Button
+                        className={`panel-toggle ${isPanelCollapsed ? 'collapsed' : ''}`}
+                        type="primary"
+                        onClick={togglePanel}
+                        size="small"
                         style={{
-                            position: 'fixed',
-                            width: '100%',
-                            zIndex: 1000
-                        }}>
-                        <h2 style={{
-                            color: isDarkMode ? '#fff' : '#000',
-                            transition: 'color 0.3s ease',
-                            transform: 'translateZ(0)' // force GPU accel
-                        }}>
-                            <div style={{ position: 'absolute', left: '10px', display: 'flex', gap: '10px' }}>
-                                <Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
-                                    <Button
-                                        icon={<SwapOutlined rotate={90} />}
-                                        onClick={toggleDirection}
-                                        type={isTopToBottom ? 'primary' : 'default'}
-                                    >
-                                        {isTopToBottom ? 'Top-Down' : 'Bottom-Up'}
-                                    </Button>
+                            padding: '4px 8px',
+                            color: isDarkMode ? undefined : (isPanelCollapsed ? '#ffffff' : '#1890ff'),
+                            left: isPanelCollapsed ? '-1px' : `${panelWidth + 2}px`, // Add 2px for border
+                            backgroundColor: isDarkMode ? undefined : (isPanelCollapsed ? '#1890ff' : undefined),
+                        }}
+                        ghost={!isDarkMode || !isPanelCollapsed}
+                    >{isPanelCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}</Button>
+
+                    <PanelResizer
+                        onResize={handlePanelResize}
+                        isPanelCollapsed={isPanelCollapsed}
+                    />
+
+                    <div style={{ height: 'var(--app-header-height)' }}>
+                        <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
+                            style={{
+                                position: 'fixed',
+                                width: '100%',
+                                zIndex: 1000
+                            }}>
+                            <h2 style={{
+                                color: isDarkMode ? '#fff' : '#000',
+                                transition: 'color 0.3s ease',
+                                transform: 'translateZ(0)' // force GPU accel
+                            }}>
+                                <div style={{ position: 'absolute', left: '10px', display: 'flex', gap: '10px' }}>
+                                    <Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
+                                        <Button
+                                            icon={<SwapOutlined rotate={90} />}
+                                            onClick={toggleDirection}
+                                            type={isTopToBottom ? 'primary' : 'default'}
+                                        >
+                                            {isTopToBottom ? 'Top-Down' : 'Bottom-Up'}
+                                        </Button>
+                                    </Tooltip>
+                                </div>
+                                Ziya: Code Assist
+                            </h2>
+                            <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '10px' }}>
+                                <Tooltip title="Toggle theme">
+                                    <Button icon={<BulbOutlined />} onClick={toggleTheme} />
+                                </Tooltip>
+                                {mcpEnabled && (
+                                    <>
+                                        <Tooltip title="Shell Configuration">
+                                            <Button icon={<CodeOutlined />} onClick={() => setShowShellConfig(true)} />
+                                        </Tooltip>
+                                        <Tooltip title="MCP Servers">
+                                            <Button icon={<ApiOutlined />} onClick={() => setShowMCPStatus(true)} />
+                                        </Tooltip>
+                                    </>
+                                )}
+                                <Tooltip title="New Chat">
+                                    <Button icon={<PlusOutlined />} onClick={handleNewChat} />
                                 </Tooltip>
                             </div>
-                            Ziya: Code Assist
-                        </h2>
-                        <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '10px' }}>
-                            <Tooltip title="Toggle theme">
-                                <Button icon={<BulbOutlined />} onClick={toggleTheme} />
-                            </Tooltip>
-                            <Tooltip title="New Chat">
-                                <Button icon={<PlusOutlined />} onClick={handleNewChat} />
-                            </Tooltip>
                         </div>
                     </div>
-                </div>
-                <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
-                    style={{
-                        marginTop: 'var(--app-header-height)',
-                        height: 'calc(100vh - var(--app-header-height))'
-                    }}>
-                    <FolderTree isPanelCollapsed={isPanelCollapsed} />
-                    <div className="chat-container">
-                        <div className="chat-content-stabilizer">
-                            <LayoutErrorBoundary>
-                                {chatContainerContent}
-                            </LayoutErrorBoundary>
-                            {/* Add a hidden element to check layout integrity */}
-                            <div id="layout-integrity-check" style={{
-                                position: 'absolute',
-                                visibility: 'hidden'
-                            }}></div>
+                    <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
+                        style={{
+                            marginTop: 'var(--app-header-height)',
+                            height: 'calc(100vh - var(--app-header-height))'
+                        }}>
+                        <FolderTree isPanelCollapsed={isPanelCollapsed} />
+                        <div className="chat-container">
+                            <div className="chat-content-stabilizer">
+                                <LayoutErrorBoundary>
+                                    {chatContainerContent}
+                                </LayoutErrorBoundary>
+                                {/* Add a hidden element to check layout integrity */}
+                                <div id="layout-integrity-check" style={{
+                                    position: 'absolute',
+                                    visibility: 'hidden'
+                                }}></div>
+                            </div>
                         </div>
                     </div>
-                </div>
-                <Suspense fallback={null}>
-                    <AstStatusIndicator />
-                </Suspense>
+                    <Suspense fallback={null}>
+                        <AstStatusIndicator />
+                    </Suspense>
 
-            </ConfigProvider>
+                    <Suspense fallback={null}>
+                        {mcpEnabled && (
+                            <>
+                                <ShellConfigModal
+                                    visible={showShellConfig}
+                                    onClose={() => setShowShellConfig(false)}
+                                />
+                                <MCPStatusModal
+                                    visible={showMCPStatus}
+                                    onClose={() => setShowMCPStatus(false)}
+                                />
+                            </>
+                        )}
+                    </Suspense>
+
+                </ConfigProvider>
             </ProfilerWrapper>
         </ExtensionErrorBoundary>
     );

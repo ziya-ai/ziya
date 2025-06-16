@@ -73,6 +73,8 @@ def parse_arguments():
                         help="Enable AST-based code understanding capabilities")
     parser.add_argument("--ast-resolution", choices=['disabled', 'minimal', 'medium', 'detailed', 'comprehensive'], 
                        default='medium', help="AST context resolution level (default: medium)")
+    parser.add_argument("--mcp", action="store_true",
+                       help="Enable MCP (Model Context Protocol) server integration")
     return parser.parse_args()
 
 
@@ -105,10 +107,17 @@ def validate_model_and_endpoint(endpoint, model):
 
 
 def setup_environment(args):
+    import os
     os.environ["ZIYA_USER_CODEBASE_DIR"] = os.getcwd()
 
     additional_excluded_dirs = ','.join(args.exclude)
     os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] = additional_excluded_dirs
+
+    # Check for conflicting arguments before setting AWS profile
+    if args.endpoint == "google" and args.profile:
+        logger.error("The --profile argument is for AWS Bedrock and cannot be used with --endpoint google.")
+        logger.error("Please remove the --profile argument or use --endpoint bedrock.")
+        sys.exit(1)
 
     if args.profile:
         os.environ["ZIYA_AWS_PROFILE"] = args.profile
@@ -145,6 +154,13 @@ def setup_environment(args):
 
     os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
     
+    # Set path to templates directory
+    import os.path
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    templates_dir = os.path.join(current_dir, "templates")
+    os.environ["ZIYA_TEMPLATES_DIR"] = templates_dir
+    logger.info(f"Using templates directory: {templates_dir}")
+    
     # Enable AST capabilities if requested
     if args.ast:
         os.environ["ZIYA_ENABLE_AST"] = "true"
@@ -172,8 +188,11 @@ def setup_environment(args):
         logger.info(f"AST resolution level: {args.ast_resolution}")
         os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
         logger.info(f"Using max depth for AST: {args.max_depth}")
-
-
+    # Set MCP enablement flag
+    if args.mcp:
+        os.environ["ZIYA_ENABLE_MCP"] = "true"
+        logger.info("MCP (Model Context Protocol) integration enabled")
+    
 def check_version_and_upgrade():
     current_version = get_current_version()
     latest_version = get_latest_version()
@@ -267,12 +286,13 @@ def print_models():
 
 def start_server(args):
     # Dynamically import these only when needed
-    from langchain_cli.cli import serve
     from app.utils.langchain_validation_util import validate_langchain_vars
     
     validate_langchain_vars()
     
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    # Store the original working directory before any imports that might change it
+    original_cwd = os.getcwd()
+    logger.info(f"Preserving original working directory: {original_cwd}")
     # Override the default server location from 127.0.0.1 to 0.0.0.0
     # This allows the server to be accessible from other machines on the network
     try:
@@ -304,14 +324,18 @@ def start_server(args):
             # This avoids the double initialization issue
             logger.info("Authentication successful, starting server...")
             
-            # Ensure we're in the right directory for langchain-cli to find modules
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            if os.getcwd() != project_root:
-                os.chdir(project_root)
-            
             # Pass the environment variable to child processes
             os.environ["ZIYA_SKIP_INIT"] = "true"
-            serve(host="0.0.0.0", port=args.port)
+            
+            # Import here to avoid circular imports
+            import uvicorn
+            from app.server import app
+            
+            # Restore the original working directory before starting the server
+            os.chdir(original_cwd)
+            
+            # Use uvicorn directly instead of langchain_cli.serve()
+            uvicorn.run(app, host="0.0.0.0", port=args.port)
             
         except KnownCredentialException as e:
             # The exception will handle printing the message only once
@@ -319,12 +343,12 @@ def start_server(args):
             sys.exit(1)
         except ValueError as e:
             # Use a class variable to track if we've already displayed an error
-            if not getattr(ValueError, "_error_displayed", False):
+            if not hasattr(start_server, "_error_displayed"):
                 print("\n" + "=" * 80)
                 print(f"⚠️ ERROR: {str(e)}")
                 print("=" * 80 + "\n")
-                setattr(ValueError, "_error_displayed", True)
-                
+                start_server._error_displayed = True
+            
             logger.error("Server startup aborted due to configuration error.")
             sys.exit(1)
     except ValueError as e:

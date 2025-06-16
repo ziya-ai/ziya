@@ -17,6 +17,12 @@ from langchain_core.tracers.log_stream import RunLogPatch
 
 from app.utils.logging_utils import logger
 
+# Import Google AI error for proper handling
+try:
+    from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+except ImportError:
+    ChatGoogleGenerativeAIError = None
+
 class StreamingMiddleware(BaseHTTPMiddleware):
     """Middleware for handling streaming responses."""
     
@@ -84,6 +90,29 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 chunk_content = ""
                 # Process the chunk
                 try:
+                    # Handle ChatGoogleGenerativeAIError specifically
+                    if ChatGoogleGenerativeAIError and isinstance(chunk, ChatGoogleGenerativeAIError):
+                        logger.info("Processing ChatGoogleGenerativeAIError in streaming middleware")
+                        error_message = str(chunk)
+                        
+                        # Check for context size error
+                        if "exceeds the maximum number of tokens" in error_message:
+                            error_data = {
+                                "error": "context_size_error",
+                                "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
+                                "status_code": 413
+                            }
+                        else:
+                            error_data = {
+                                "error": "model_error", 
+                                "detail": error_message,
+                                "status_code": 500
+                            }
+                        
+                        yield f"data: {json.dumps(error_data)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    
                     # Handle AIMessageChunk objects
                     if isinstance(chunk, AIMessageChunk):
                         logger.info("Processing AIMessageChunk")
@@ -145,7 +174,19 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                         yield f"data: {json.dumps(content)}\n\n"
                                     else:
                                         yield f"data: {content}\n\n"
-                        # If we couldn't extract content, skip this chunk
+                                yield f"data: {content}\n\n"
+                                continue
+                    
+                    # Handle DeepSeek format specifically
+                    if isinstance(chunk, dict) and "generation" in chunk:
+                        logger.info("Processing DeepSeek generation chunk")
+                        content = chunk["generation"]
+                        if content:
+                            chunk_content = content
+                            yield f"data: {content}\n\n"
+                            continue
+                    elif isinstance(raw_content, dict) and "generation" in raw_content:
+                        yield f"data: {raw_content['generation']}\n\n"
                         continue
                     
                     # Handle string chunks
@@ -221,16 +262,75 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     
                 except Exception as chunk_error:
                     logger.error(f"Error processing chunk: {str(chunk_error)}")
-                    # Send error as SSE data instead of raising
-                    error_msg = {
-                        "error": "chunk_processing_error",
-                        "detail": str(chunk_error)
-                    }
-                    yield f"data: {json.dumps(error_msg)}\n\n"
-                    continue
+                    # Check if this looks like a JSON error message that should be formatted as SSE
                     
-            # Send the [DONE] marker
-            yield "data: [DONE]\n\n"
+                    # Handle the case where we get a validation error as plain JSON
+                    if isinstance(chunk, str) and '"error": "validation_error"' in chunk:
+                        logger.info("Converting validation error JSON to SSE format")
+                        try:
+                            # Extract the JSON part
+                            json_start = chunk.find('{"error"')
+                            json_end = chunk.find('}', json_start) + 1
+                            if json_start >= 0 and json_end > json_start:
+                                error_json = chunk[json_start:json_end]
+                                error_data = json.loads(error_json)
+                                yield f"data: {json.dumps(error_data)}\n\n"
+                                yield "data: [DONE]\n\n"
+                                return
+                        except Exception as e:
+                            logger.warning(f"Failed to convert validation error to SSE: {e}")
+                    
+                    chunk_str = str(chunk)
+                    if chunk_str.startswith('{"error":'):
+                        # This is an error response that needs proper SSE formatting
+                        try:
+                            # Find where the JSON ends - look for [DONE] marker
+                            if '[DONE]' in chunk_str:
+                                json_part = chunk_str.split('[DONE]')[0].strip()
+                            elif '}data:' in chunk_str:
+                                json_part = chunk_str.split('}data:')[0] + '}'
+                            elif chunk_str.endswith('}[DONE]'):
+                                # Handle the specific case where [DONE] is appended to JSON
+                                json_part = chunk_str[:-6]  # Remove '[DONE]' suffix
+                            elif chunk_str.endswith('}'):
+                                # Clean JSON without any suffix
+                                json_part = chunk_str
+                            else:
+                                # Look for the end of the JSON object
+                                brace_count = 0
+                                json_end = 0
+                                for i, char in enumerate(chunk_str):
+                                    if char == '{':
+                                        brace_count += 1
+                                    elif char == '}':
+                                        brace_count -= 1
+                                        if brace_count == 0:
+                                            json_end = i + 1
+                                            break
+                                json_part = chunk_str[:json_end] if json_end > 0 else chunk_str
+                                
+                            # Clean up any trailing characters that aren't part of JSON
+                            json_part = json_part.rstrip()
+                            logger.info(f"Extracted JSON part: {json_part}")
+                            error_data = json.loads(json_part)
+                            yield f"data: {json.dumps(error_data)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse error JSON: {json_part if 'json_part' in locals() else chunk_str}")
+                    
+                    # Fallback: treat as regular chunk processing error
+                    error_msg = {"error": "chunk_processing_error", "detail": str(chunk_error)}
+                    yield f"data: {json.dumps(error_msg)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                    
+            # Ensure we end the stream properly
+            try:
+                # Send the [DONE] marker
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logger.error(f"Error sending DONE marker: {str(e)}")
             
         except Exception as e:
             logger.error(f"Error in safe_stream: {str(e)}")
@@ -240,4 +340,9 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 "detail": str(e)
             }
             yield f"data: {json.dumps(error_msg)}\n\n"
-            yield "data: [DONE]\n\n"
+            try:
+                yield "data: [DONE]\n\n"
+            except Exception as done_error:
+                logger.error(f"Error sending final DONE marker: {str(done_error)}")
+                # Don't re-raise here as it would cause more protocol errors
+                pass

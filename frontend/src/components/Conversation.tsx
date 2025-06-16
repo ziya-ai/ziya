@@ -2,11 +2,12 @@ import React, { useEffect, useRef, Suspense, memo, useCallback, useMemo } from "
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
 import { Space, Spin, Button, Tooltip } from 'antd';
-import { LoadingOutlined, RobotOutlined, RedoOutlined } from "@ant-design/icons";
+import { LoadingOutlined, RobotOutlined, RedoOutlined, SoundOutlined, MutedOutlined } from "@ant-design/icons";
 import { sendPayload } from "../apis/chatApi";
 import { useFolderContext } from "../context/FolderContext";
 import ModelChangeNotification from './ModelChangeNotification';
 import { convertKeysToStrings, Message } from "../utils/types";
+import { useQuestionContext } from '../context/QuestionContext';
 
 // Lazy load the MarkdownRenderer
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
@@ -20,6 +21,7 @@ interface ConversationProps {
 
 const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => {
     const { currentMessages,
+        editingMessageIndex,
         isTopToBottom,
         isLoadingConversation,
         addStreamingConversation,
@@ -30,12 +32,17 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         setStreamedContentMap,
         isStreaming,
         addMessageToConversation,
-        userHasScrolled,
+        setProcessingState,
         removeStreamingConversation,
-        streamedContentMap
+        streamedContentMap,
+        userHasScrolled,
+        toggleMessageMute,
     } = useChatContext();
 
-    const { checkedKeys } = useFolderContext();
+    // Don't block conversation rendering on folder context
+    const folderContext = useFolderContext();
+    const checkedKeys = folderContext?.checkedKeys || [];
+    const { setQuestion } = useQuestionContext();
     const visibilityRef = useRef<boolean>(true);
     // Sort messages to maintain order
     const messageIds = useMemo(() => currentMessages.map(m => m.id), [currentMessages]);
@@ -57,12 +64,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     // Effect to handle scrolling when messages change
     useEffect(() => {
         // Only scroll if we're not streaming or user hasn't manually scrolled
-        if (!isStreaming && !userHasScrolled) {
-            const chatContainer = document.querySelector('.chat-container');
-            if (chatContainer && isTopToBottom) {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-        }
+        // Removed auto-scrolling from Conversation component to prevent conflicts
+        // StreamedContent handles scrolling during streaming
     }, [currentMessages.length, isStreaming, userHasScrolled, isTopToBottom]);
 
 
@@ -188,13 +191,14 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             await sendPayload(
                                 currentMessages,
                                 message.content,
-                                convertKeysToStrings(checkedKeys),
+                                convertKeysToStrings(checkedKeys || []),
                                 currentConversationId,
                                 setStreamedContentMap,
                                 setIsStreaming,
                                 removeStreamingConversation,
                                 addMessageToConversation,
                                 streamingConversations.has(currentConversationId),
+                                setProcessingState
                             );
                         } catch (error) {
                             setIsStreaming(false);
@@ -208,6 +212,100 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
             </Tooltip>
         );
     };
+
+    // Render mute button
+    const renderMuteButton = (index: number) => {
+        // Don't show mute button if this message is being edited
+        if (editingMessageIndex === index) {
+            return null;
+        }
+        
+        const message = currentMessages[index];
+
+        // Don't show mute button if there's an error state (retry button is showing)
+        if (shouldShowRetry(index)) {
+            return null;
+        }
+
+        if (!message || message.role === 'system') return null;
+
+        return (
+            <Tooltip title={message.muted ? "Unmute (include in context)" : "Mute (exclude from context)"}>
+                <Button
+                    icon={message.muted ? <MutedOutlined /> : <SoundOutlined />}
+                    type="default"
+                    size="small"
+                    style={{
+                        padding: '0 8px',
+                        minWidth: '32px',
+                        height: '32px'
+                    }}
+                    onClick={() => {
+                        console.log(`Toggling mute for message ${index}, current state:`, message.muted);
+                        toggleMessageMute(currentConversationId, index);
+
+                        // Trigger token count update by dispatching a custom event
+                        setTimeout(() => {
+                            window.dispatchEvent(new CustomEvent('messagesMutedChanged', {
+                                detail: { conversationId: currentConversationId }
+                            }));
+                        }, 100);
+                    }}
+                />
+            </Tooltip>
+        );
+    };
+
+    // Render resubmit button for human messages
+    const renderResubmitButton = (index: number) => {
+        // Don't show resubmit button if this message is being edited
+        if (editingMessageIndex === index) {
+            return null;
+        }
+        
+        const message = currentMessages[index];
+
+        // Don't show resubmit button if there's an error state (retry button is showing)
+        if (shouldShowRetry(index)) {
+            return null;
+        }
+
+        if (!message || message.role !== 'human') return null;
+
+        // Don't show resubmit button if we're currently streaming
+        const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+        if (isCurrentlyStreaming) return null;
+
+        return (
+            <Tooltip title="Resubmit this question">
+                <Button
+                    icon={<RedoOutlined />}
+                    type="default"
+                    size="small"
+                    style={{
+                        padding: '0 8px',
+                        minWidth: '32px',
+                        height: '32px'
+                    }}
+                    onClick={() => {
+                        // Set the question in the input field
+                        setQuestion(message.content);
+                        // Scroll to the input field and focus it
+                        setTimeout(() => {
+                            const textarea = document.getElementById('chat-question-textarea');
+                            if (textarea) {
+                                textarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                textarea.focus();
+                                // Place cursor at the end of the text
+                                (textarea as HTMLTextAreaElement).setSelectionRange(message.content.length, message.content.length);
+                            }
+                        }, 100);
+                    }}
+                />
+            </Tooltip>
+        );
+    };
+
     return (
         <div style={{ position: 'relative' }}>
             {isInitialLoading && (
@@ -288,7 +386,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     return <div
                         // Use message ID as key instead of index
                         key={`message-${msg.id || index}`}
-                        className={`message ${msg.role || ''}${needsResponse
+                        className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${needsResponse
                             ? ' needs-response'
                             : ''
                             }`}
@@ -306,31 +404,62 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 // Regular message rendering for messages with content
                                 <>
                                     {msg.role === 'human' && (
-                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                        <div style={{ display: editingMessageIndex === actualIndex ? 'none' : 'flex', justifyContent: 'space-between' }}>
                                             <div className="message-sender">You:</div>
-                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                            <div style={{ 
+                                                display: 'flex', 
+                                                gap: '8px',
+                                                alignItems: 'center',
+                                                marginRight: '8px'
+                                            }}>
+                                                {renderMuteButton(actualIndex)}
+                                                {renderResubmitButton(actualIndex)}
                                                 {needsResponse && renderRetryButton(actualIndex)}
-                                                <EditSection index={isTopToBottom ? index : currentMessages.length - 1 - index} />
+                                                <EditSection index={actualIndex} isInline={true} />
                                             </div>
                                         </div>
                                     )}
-
-                                    {msg.role === 'assistant' && msg.content && (
+                                    
+                                    {/* Only show edit section when editing, otherwise show message content */}
+                                    {msg.role === 'human' && editingMessageIndex === actualIndex ? (
+                                        <EditSection index={actualIndex} isInline={false} />
+                                    ) : msg.role === 'human' && msg.content ? (
+                                        <div className="message-content">
+                                            <Suspense fallback={<div>Loading content...</div>}>
+                                                <MarkdownRenderer
+                                                    markdown={msg.content}
+                                                    enableCodeApply={enableCodeApply}
+                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                />
+                                            </Suspense>
+                                        </div>
+                                    ) : msg.role === 'assistant' && msg.content && (
                                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                             <div className="message-sender">AI:</div>
+                                            <div style={{
+                                                display: 'flex',
+                                                gap: '8px',
+                                                alignItems: 'center',
+                                                marginRight: '8px'
+                                            }}>
+                                                {renderMuteButton(actualIndex)}
+                                            </div>
                                             {renderRetryButton(actualIndex)}
                                         </div>
                                     )}
 
-                                    <div className="message-content">
-                                        <Suspense fallback={<div>Loading content...</div>}>
-                                            <MarkdownRenderer
-                                                markdown={msg.content}
-                                                enableCodeApply={enableCodeApply}
-                                                isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                            />
-                                        </Suspense>
-                                    </div>
+                                    {/* Only show message content for assistant messages or non-editing human messages */}
+                                    {msg.role === 'assistant' && msg.content && (
+                                        <div className="message-content">
+                                            <Suspense fallback={<div>Loading content...</div>}>
+                                                <MarkdownRenderer
+                                                    markdown={msg.content}
+                                                    enableCodeApply={enableCodeApply}
+                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                />
+                                            </Suspense>
+                                        </div>
+                                    )}
                                 </>
                             ) : null
                         )}

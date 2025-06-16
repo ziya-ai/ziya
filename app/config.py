@@ -4,9 +4,10 @@ Configuration module for Ziya.
 This module contains all configuration constants and settings.
 It should be importable without triggering any side effects or initializations.
 """
+import os
 
 # Server configuration
-DEFAULT_PORT = 8000
+DEFAULT_PORT = 6969
 
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
@@ -147,10 +148,10 @@ ENDPOINT_DEFAULTS = {
         "token_limit": 30720,
         "max_output_tokens": 20048,
         "default_max_output_tokens": 20048,
-        "supported_parameters": ["temperature", "max_tokens"],
+        "supported_parameters": ["temperature", "top_p"],
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 1.0, "default": 0.3},
-            "max_tokens": {"min": 1, "max": 65535, "default": 16000}
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.9},
         },
         "convert_system_message_to_human": True,
         "enforce_size_limit": True,
@@ -348,6 +349,11 @@ ENV_VAR_MAPPING = {
 
 # Default request size limits
 DEFAULT_MAX_REQUEST_SIZE_MB = 10
+
+# MCP Tool sentinel configuration - single env var for tag name
+TOOL_SENTINEL_TAG = os.environ.get("ZIYA_TOOL_SENTINEL", "TOOL_SENTINEL")
+TOOL_SENTINEL_OPEN = f"<{TOOL_SENTINEL_TAG}>"
+TOOL_SENTINEL_CLOSE = f"</{TOOL_SENTINEL_TAG}>"
 
 # Helper functions for model parameter validation
 

@@ -79,16 +79,6 @@ class ZiyaBedrock(Runnable):
             # Also remove from model_kwargs if present
             if model_kwargs and "top_k" in model_kwargs:
                 del model_kwargs["top_k"]
-        self.ziya_max_tokens = max_tokens  # Store max_tokens directly
-        
-        # Force garbage collection before creating new clients
-        import gc
-        gc.collect()
-        
-        # Create a fresh boto3 client to ensure we don't reuse cached connections
-        import boto3
-        fresh_client = boto3.client('bedrock-runtime', region_name=region_name)
-        logger.info(f"Created fresh boto3 bedrock-runtime client for region: {region_name}")
 
         # Ensure model_kwargs is a dict and update max_tokens
         current_model_kwargs = model_kwargs or {} # Use a temporary var or modify model_kwargs directly
@@ -108,7 +98,7 @@ class ZiyaBedrock(Runnable):
         # Create the underlying ChatBedrock instance with the fresh client
         self.bedrock_model = ChatBedrock(
             model_id=model_id,
-            client=fresh_client,
+            client=client,  # Use the provided persistent client
             region_name=region_name,
             max_tokens=max_tokens,  # Explicitly pass max_tokens
             credentials_profile_name=credentials_profile_name,
@@ -119,11 +109,8 @@ class ZiyaBedrock(Runnable):
             **kwargs,
         )
         
-        # Wrap the client with our custom client to ensure max_tokens is correctly passed
-        if hasattr(self.bedrock_model, 'client') and self.bedrock_model.client is not None:
-            self.bedrock_model.client = CustomBedrockClient(self.bedrock_model.client, max_tokens=max_tokens)
-            logger.info(f"Wrapped boto3 client with CustomBedrockClient, max_tokens={max_tokens}")
-            self.bedrock_model.max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", max_tokens))  # Use environment variable if available
+        # Client is already wrapped by ModelManager, no need to wrap again
+        logger.info(f"Using persistent Bedrock client for model_id={model_id}, max_tokens={max_tokens}")
         
         # Log initialization parameters for debugging
         logger.info(f"Initializing ZiyaBedrock with model_id={model_id}")
@@ -203,6 +190,9 @@ class ZiyaBedrock(Runnable):
                 if context_split:
                     # Replace the single large message with split messages
                     logger.info(f"✅ CACHE: Successfully split context into {len(context_split)} messages")
+                    # Log the content of each split message to verify completeness
+                    for i, msg in enumerate(context_split):
+                        logger.info(f"Split message {i} ends with: {msg.content[-200:] if hasattr(msg, 'content') else 'No content'}")
                     prepared_messages.extend(context_split)
                     continue
                 elif self.context_cache_manager.should_cache_context(message.content, model_config):
@@ -275,20 +265,6 @@ class ZiyaBedrock(Runnable):
         return messages
     
     def _extract_file_paths_from_content(self, content: str) -> List[str]:
-        """Extract file paths from context content."""
-        import re
-        file_paths = []
-        
-        # Look for "File: " markers
-        for line in content.split('\n'):
-            if line.startswith('File: '):
-                file_path = line[6:].strip()
-                if file_path:
-                    file_paths.append(file_path)
-                    
-        return file_paths
-
-    def _extract_file_paths_from_content(self, content: str) -> List[str]:
         """Extract file paths from system message content."""
         import re
         file_paths = []
@@ -351,10 +327,6 @@ class ZiyaBedrock(Runnable):
             logger.debug(f"Added temperature={self.ziya_temperature} to _generate kwargs")
         
         # Only add top_k if it's not None (model supports it)
-        if self.ziya_top_k is not None and "top_k" not in kwargs:
-            kwargs["top_k"] = self.ziya_top_k
-            logger.debug(f"Added temperature={self.ziya_temperature} to _generate kwargs")
-        
         if self.ziya_top_k is not None and "top_k" not in kwargs:
             kwargs["top_k"] = self.ziya_top_k
             logger.debug(f"Added top_k={self.ziya_top_k} to _generate kwargs")
@@ -711,6 +683,19 @@ class ZiyaBedrock(Runnable):
                 yield chunk.message.content
     
     # Forward LangChain BaseChatModel required methods
+    def _extract_streaming_content(self, chunk):
+        """Extract content from streaming chunks based on model type."""
+        # Get model ID to determine provider
+        model_id = self.model_id.lower() if hasattr(self, 'model_id') else ""
+        
+        # Handle DeepSeek format
+        if "deepseek" in model_id and isinstance(chunk, dict):
+            if "generation" in chunk:
+                return chunk["generation"]
+            
+        # Default extraction for other models
+        return chunk
+    
     @property
     def _llm_type(self) -> str:
         """Return the type of LLM."""
@@ -872,20 +857,10 @@ class ZiyaBedrock(Runnable):
         conversation_id = kwargs.get("conversation_id")
         if not conversation_id and config and isinstance(config, dict):
             conversation_id = config.get("conversation_id")
+            logger.debug(f"Found conversation_id in config: {conversation_id}")
 
         # Prepare messages with caching if supported
         messages = self._prepare_messages_with_smart_caching(messages, conversation_id, config)
-
-        # Ensure system messages are properly ordered after caching
-        messages = self._ensure_system_message_ordering(messages)
-
-        # Extract conversation_id from config if not in kwargs
-        if not conversation_id and config and isinstance(config, dict):
-            conversation_id = config.get("conversation_id")
-            logger.debug(f"Found conversation_id in config: {conversation_id}")
-        elif hasattr(input, 'get'):
-            conversation_id = input.get('conversation_id')
-            logger.debug(f"Found conversation_id in input: {conversation_id}")
             
         # Add our stored parameters to kwargs if not already present
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:

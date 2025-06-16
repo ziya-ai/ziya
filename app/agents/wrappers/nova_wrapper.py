@@ -287,43 +287,6 @@ class NovaWrapper(BaseChatModel):
             logger.error(f"Error calling Nova model: {str(e)}")
             logger.info("=== NOVA WRAPPER _generate END ===")
             raise
-            logger.info("Bedrock converse API call completed successfully")
-            
-            # Parse the response
-            logger.info("About to parse response")
-            text = self._parse_response(response)
-            logger.info(f"Parsed response text length: {len(text)}")
-            
-            # Create an AIMessage with the text
-            ai_message = AIMessage(content=text)
-            
-            # Create a Generation object
-            logger.info("Creating Generation object directly")
-            generation = ChatGeneration(
-                message=ai_message,
-                generation_info={"model_id": self.model_id}
-            )
-            logger.info(f"Created Generation with text length: {len(text)}")
-            
-            # Add id attribute to the Generation object
-            if isinstance(text, ZiyaString):
-                object.__setattr__(generation, 'id', text.id)
-            else:
-                object.__setattr__(generation, 'id', f"nova-{hash(text) % 10000}")
-            
-            logger.info(f"Generation type: {type(generation)}")
-            logger.info(f"Generation has message attribute: {hasattr(generation, 'message')}")
-            logger.info(f"Generation has id attribute: {hasattr(generation, 'id')}")
-            
-            # Create the result
-            result = ChatResult(generations=[generation])
-            
-            logger.info("=== NOVA WRAPPER _generate END ===")
-            return result
-        except Exception as e:
-            logger.error(f"Error calling Nova model: {str(e)}")
-            logger.info("=== NOVA WRAPPER _generate END ===")
-            raise
     
     async def _astream(
         self,

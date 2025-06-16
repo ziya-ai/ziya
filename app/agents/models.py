@@ -12,70 +12,25 @@ from langchain.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
 import app.config as config
 from app.config import get_supported_parameters  # Import the function explicitly
-import google.auth.exceptions
 import google.auth
+import google.auth.exceptions
 from dotenv import load_dotenv
 from dotenv.main import find_dotenv
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 from app.agents.callbacks import EmptyMessageFilter
 
+# Load environment variables from .env at the module level
+dotenv_path = find_dotenv()
+if dotenv_path:
+    load_dotenv(dotenv_path, override=True)
+    logger.info(f"MODELS.PY: Loaded environment variables from {dotenv_path}")
+
 from langchain.agents import AgentExecutor
 from langchain.agents.format_scratchpad import format_xml
 from langchain_core.messages import HumanMessage
 
 # Import configuration from the central config module
 import app.config as config
-
-from langchain.agents import AgentExecutor
-from langchain.agents.format_scratchpad import format_xml
-from langchain_core.messages import HumanMessage
-
-# Import configuration from the central config module
-import app.config as config
-
-class ModelManager:
-    """Manages model initialization and configuration."""
-    
-    def __init__(self):
-        """Initialize the model manager."""
-        # Load environment variables
-        load_dotenv(find_dotenv())
-        
-        # Initialize state
-        self._endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
-        self._model = os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS[self._endpoint])
-        self._model_id_override = os.environ.get("ZIYA_MODEL_ID_OVERRIDE")
-        self._llm = None
-        
-        # Initialize model parameters
-        self._temperature = float(os.environ.get("ZIYA_TEMPERATURE", 0.3))
-        self._top_p = float(os.environ.get("ZIYA_TOP_P", 0.9))
-        self._top_k = int(os.environ.get("ZIYA_TOP_K", 40))
-        self._max_output_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))
-        
-        # Initialize the LLM
-        self._initialize_llm()
-    
-    def get_model_config(self):
-        """Get the current model configuration."""
-        model_config = config.MODEL_CONFIGS[self._endpoint][self._model].copy()
-        
-        # Override model ID if specified
-        if self._model_id_override:
-            model_config["model_id"] = self._model_id_override
-        
-        # Update parameters
-        model_config.update({
-            "temperature": self._temperature,
-            "top_p": self._top_p,
-            "top_k": self._top_k,
-            "max_output_tokens": self._max_output_tokens
-        })
-        
-        return model_config
-        for message in messages:
-            if not message.content or not message.content.strip():
-                raise ValueError("Empty message content detected")
 
 class ModelManager:
     """Manages model initialization and configuration."""
@@ -132,6 +87,8 @@ class ModelManager:
     # Class-level state with process-specific initialization
     _state = {
         'model': None,
+        'persistent_bedrock_clients': {},  # Store clients by config hash
+        'client_config_hash': None,       # Track current client config
         'auth_checked': False,
         'auth_success': False,
         'google_credentials': None,
@@ -161,6 +118,8 @@ class ModelManager:
         cls._state = {
             'model': None,
             'current_model_id': None,
+            'persistent_bedrock_clients': {},
+            'client_config_hash': None,
             'llm_with_stop': None,  # Add storage for llm_with_stop
             'auth_checked': False,
             'auth_success': False,
@@ -407,31 +366,38 @@ class ModelManager:
         return filtered_kwargs
             
     @classmethod
-    def get_model_settings(cls, model_instance=None):
+    def get_model_settings(cls, config_or_model=None) -> Dict[str, Any]:
         """
-        Get the current model settings.
+        Get model settings from environment variables or config.
+        Handles parameter mapping and type conversion automatically.
         
         Args:
-            model_instance: Optional model instance to get settings from
+            config_or_model: Either a config dict, model instance, or None
             
         Returns:
-            dict: The complete model settings
+            dict: Model settings with proper parameter mappings and filtering
         """
-        # Get endpoint and model from environment variables
-        endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS.get(endpoint))
-        
-        # Get model configuration
-        try:
+        # Determine config source and get model configuration
+        if hasattr(config_or_model, 'model_id'):
+            # Model instance provided
+            endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
+            model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
             model_config = cls.get_model_config(endpoint, model_name)
-            
-            # Copy all relevant settings from model_config
-            # Start with all settings from the model config
+        elif isinstance(config_or_model, dict):
+            # Config dict provided
+            model_config = config_or_model
+        else:
+            # No specific config provided, use environment variables
+            endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
+            model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
+            model_config = cls.get_model_config(endpoint, model_name)
+        
+        try:
+            # Start with base settings from model config
             settings = {}
             
-            # Copy all relevant settings from model_config
+            # Copy all relevant settings from model_config (excluding metadata)
             for key, value in model_config.items():
-                # Skip internal/metadata keys
                 if key not in ["name", "model_id", "parameter_mappings"]:
                     settings[key] = value
             
@@ -440,19 +406,27 @@ class ModelManager:
                 settings["token_limit"] = model_config["token_limit"]
                 logger.info(f"Including token_limit in settings: {model_config['token_limit']}")
             
-            # Override with environment variables if they exist
+            # Apply environment variable overrides with proper type conversion
             for env_var, config_key in config.ENV_VAR_MAPPING.items():
                 if env_var in os.environ:
-                    # Handle type conversion based on the expected type
                     value = os.environ[env_var]
-                    if isinstance(settings.get(config_key), bool):
-                        settings[config_key] = value.lower() in ("true", "1", "yes")
+                    
+                    # Convert to appropriate type based on existing value or config
+                    if config_key in model_config:
+                        if isinstance(model_config[config_key], bool):
+                            value = value.lower() in ('true', 'yes', '1', 't', 'y')
+                        elif isinstance(model_config[config_key], int):
+                            value = int(value)
+                        elif isinstance(model_config[config_key], float):
+                            value = float(value)
+                    elif isinstance(settings.get(config_key), bool):
+                        value = value.lower() in ("true", "1", "yes")
                     elif isinstance(settings.get(config_key), int):
                         settings[config_key] = int(value)
                     elif isinstance(settings.get(config_key), float):
                         settings[config_key] = float(value)
-                    else:
-                        settings[config_key] = value
+                    
+                    settings[config_key] = value
             
             # Add thinking_mode from environment if it exists
             if "ZIYA_THINKING_MODE" in os.environ:
@@ -471,7 +445,45 @@ class ModelManager:
                 # Fall back to maximum value
                 settings["max_output_tokens"] = model_config.get("max_output_tokens", 4096)
             
-            return settings
+            # Get supported parameters for filtering
+            supported_params = []
+            model_params = model_config.get('supported_parameters', [])
+            if model_params:
+                supported_params.extend(model_params)
+            
+            # If model has a family, get parameters from family hierarchy
+            if 'family' in model_config:
+                family_name = model_config['family']
+                if family_name in config.MODEL_FAMILIES:
+                    family_config = config.MODEL_FAMILIES[family_name]
+                    
+                    # Get parameters from family
+                    family_params = family_config.get('supported_parameters', [])
+                    if family_params:
+                        supported_params.extend(family_params)
+                        
+                    # Check for parent family parameters
+                    if 'parent' in family_config and family_config['parent'] in config.MODEL_FAMILIES:
+                        parent_family = config.MODEL_FAMILIES[family_config['parent']]
+                        parent_params = parent_family.get('supported_parameters', [])
+                        if parent_params:
+                            supported_params.extend(parent_params)
+            
+            # Filter settings to only include supported parameters
+            filtered_settings = {}
+            for key, value in settings.items():
+                if key in supported_params or key not in ['top_k', 'top_p']:  # Always include non-model parameters
+                    filtered_settings[key] = value
+            
+            # Apply parameter mappings
+            parameter_mappings = model_config.get("parameter_mappings", {})
+            for source_param, target_params in parameter_mappings.items():
+                if source_param in filtered_settings:
+                    for target_param in target_params:
+                        if target_param != source_param:  # Avoid duplicate assignments
+                            filtered_settings[target_param] = filtered_settings[source_param]
+            
+            return filtered_settings
         except ValueError:
             # If validation fails, return default settings
             logger.warning("Failed to get model config, returning default settings")
@@ -566,6 +578,61 @@ class ModelManager:
                         
         return filtered_settings
 
+    @classmethod
+    def _get_client_config_hash(cls, aws_profile: str, region: str, model_id: str) -> str:
+        """Generate a hash for the client configuration to track when clients can be reused."""
+        import hashlib
+        config_string = f"{aws_profile}_{region}_{model_id}"
+        return hashlib.md5(config_string.encode()).hexdigest()[:8]
+    
+    @classmethod
+    def _get_persistent_bedrock_client(cls, aws_profile: str, region: str, model_id: str):
+        """
+        Get or create a persistent Bedrock client for the given configuration.
+        Reuses existing clients when configuration matches.
+        """
+        from app.utils.aws_utils import ThrottleSafeBedrock, check_aws_credentials, create_fresh_boto3_session
+        from app.utils.custom_bedrock import CustomBedrockClient
+        
+        # Generate configuration hash
+        config_hash = cls._get_client_config_hash(aws_profile, region, model_id)
+        
+        # Check if we can reuse existing client
+        if config_hash in cls._state['persistent_bedrock_clients']:
+            logger.info(f"Reusing persistent Bedrock client for {aws_profile}/{region}/{model_id}")
+            return cls._state['persistent_bedrock_clients'][config_hash]
+        
+        # Create new client
+        logger.info(f"Creating new persistent Bedrock client for {aws_profile}/{region}/{model_id}")
+        
+        # Check AWS credentials
+        creds_valid, error_msg = check_aws_credentials(profile_name=aws_profile)
+        if not creds_valid:
+            logger.error(f"AWS credentials check failed: {error_msg}")
+            cls._state['last_auth_error'] = error_msg
+            from app.utils.custom_exceptions import KnownCredentialException
+            raise KnownCredentialException(error_msg)
+        
+        # Create fresh boto3 session and client
+        try:
+            session = create_fresh_boto3_session(profile_name=aws_profile)
+            bedrock_client = session.client('bedrock-runtime', region_name=region)
+            logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
+            
+            # Wrap with CustomBedrockClient and ThrottleSafeBedrock
+            custom_client = CustomBedrockClient(bedrock_client)
+            throttle_safe_client = ThrottleSafeBedrock(custom_client)
+            
+            # Store in persistent cache
+            cls._state['persistent_bedrock_clients'][config_hash] = throttle_safe_client
+            cls._state['client_config_hash'] = config_hash
+            
+            return throttle_safe_client
+            
+        except Exception as e:
+            logger.error(f"Error creating persistent bedrock client: {e}")
+            raise
+    
     @classmethod
     def initialize_model(cls, force_reinit=False, settings_override: Optional[Dict[str, Any]] = None) -> BaseChatModel:
         """
@@ -780,19 +847,8 @@ class ModelManager:
         # Reset any previous error flags
         KnownCredentialException._error_displayed = False
         
-        # Check AWS credentials
-        creds_valid, error_msg = check_aws_credentials(profile_name=aws_profile)
-        if not creds_valid:
-            # Log the full error message for debugging
-            logger.error(f"AWS credentials check failed: {error_msg}")
-            
-            # Store the error message in a class variable for consistent reporting
-            cls._state['last_auth_error'] = error_msg
-            
-            # Raise a KnownCredentialException instead of ValueError
-            # The exception will handle printing the message only once
-            from app.utils.custom_exceptions import KnownCredentialException
-            raise KnownCredentialException(error_msg)
+        # Get persistent Bedrock client (handles credential checking internally)
+        persistent_client = cls._get_persistent_bedrock_client(aws_profile, region, model_id)
         
         # Check if this is a Nova model
         family = model_config.get("family")
@@ -866,9 +922,6 @@ class ModelManager:
             if effective_thinking_mode_str is not None:
                 effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes")
 
-        # Force garbage collection before creating new model
-        gc.collect()
-        
         # Create the appropriate model based on family
         if family == "nova":
             from app.agents.wrappers.nova_wrapper import NovaBedrock
@@ -893,23 +946,12 @@ class ModelManager:
             nova_model_kwargs = {k: v for k, v in nova_model_kwargs.items() if v is not None}
             logger.info(f"Creating NovaBedrock with model_kwargs: {nova_model_kwargs}")
             
-            # Create a fresh boto3 session
-            try:
-                # Create a fresh session
-                session = create_fresh_boto3_session(profile_name=aws_profile)
-                new_region = os.environ.get("AWS_REGION", region)
-                bedrock_client = session.client('bedrock-runtime', region_name=new_region)
-                logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {new_region}")
-                
-                # Store the ThrottleSafeBedrock wrapper separately but use the original client for the model
-                throttle_safe_client = ThrottleSafeBedrock(bedrock_client)
-            except Exception as e:
-                logger.error(f"Error creating bedrock client: {e}")
-                raise
+            # Use persistent client for Nova models
+            new_region = os.environ.get("AWS_REGION", region)
             
             model = NovaBedrock(
                 model_id=model_id,
-                client=bedrock_client,  # Use the original client directly
+                client=persistent_client.client,  # Use the underlying client from persistent wrapper
                 region_name=new_region,
                 model_kwargs=nova_model_kwargs,
                 max_tokens=effective_max_tokens,
@@ -947,23 +989,10 @@ class ModelManager:
             # Import and use ZiyaBedrock
             from app.agents.wrappers.ziya_bedrock import ZiyaBedrock
             
-            # Create a fresh boto3 session
-            try:
-                # Create a fresh session
-                session = create_fresh_boto3_session(profile_name=aws_profile)
-                bedrock_client = session.client('bedrock-runtime', region_name=region)
-                logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
-                
-                # Wrap with throttle-safe client
-                bedrock_client = ThrottleSafeBedrock(bedrock_client)
-            except Exception as e:
-                logger.error(f"Error creating bedrock client: {e}")
-                raise
-            
             # Create the ZiyaBedrock model
             model = ZiyaBedrock(
                 model_id=model_id,
-                client=bedrock_client,  # Use our fresh client
+                client=persistent_client,  # Use persistent client
                 region_name=region,
                 model_kwargs=model_kwargs, # Pass effective kwargs from above
                 temperature=effective_temperature,    # Pass effective temperature
@@ -1018,19 +1047,35 @@ class ModelManager:
             temperature = settings["temperature"]
         if "max_output_tokens" in settings:
             max_output_tokens = settings["max_output_tokens"]
-            
-        logger.info(f"Initializing Google model: {model_id} with kwargs: {{'temperature': {temperature}, 'max_output_tokens': {max_output_tokens}}}")
         
-        # Check Google credentials
-        cls._check_google_credentials()
+        # Check Google credentials (this also loads GOOGLE_API_KEY if not already set)
+        cls._check_google_credentials() 
+        
+        # Explicitly get the API key after checking credentials
+        google_api_key = os.environ.get("GOOGLE_API_KEY")
+        if google_api_key:
+            logger.info(f"GOOGLE_API_KEY found, length: {len(google_api_key)}, first 5 chars: {google_api_key[:5]}...")
+            if not google_api_key.strip(): # Check if the key is just whitespace
+                logger.warning("GOOGLE_API_KEY is present but empty or whitespace. Treating as not set to allow ADC.")
+                google_api_key = None
+        else:
+            logger.info("GOOGLE_API_KEY not found in environment. ADC will be used by the library if configured.")
+            # This case should ideally be caught by _check_google_credentials,
+            # but as a safeguard:
+            # If _check_google_credentials didn't raise an error, it means ADC might be available.
+            # So, we explicitly set google_api_key to None to let the library use ADC.
+            google_api_key = None
+        
+        logger.info(f"Initializing Google model: {model_id} with kwargs: {{'temperature': {temperature}, 'max_output_tokens': {max_output_tokens}}}")
         
         # Create the model
         model = ZiyaChatGoogleGenerativeAI(
             model=model_id,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
-            convert_system_message_to_human=convert_system_message,
-            callbacks=[EmptyMessageFilter()]
+            convert_system_message_to_human=False, # Explicitly set to False for Gemini
+            callbacks=[EmptyMessageFilter()],
+            google_api_key=google_api_key # Pass it explicitly
         )
         
         return model
@@ -1038,7 +1083,7 @@ class ModelManager:
     @classmethod
     def _check_google_credentials(cls) -> None:
         """
-        Check if Google credentials are available and valid.
+            Check if Google credentials (API key or ADC) are available and valid.
         
         Raises:
             ValueError: If credentials are not available or invalid
@@ -1093,8 +1138,16 @@ class ModelManager:
         model_config = cls.get_model_config(endpoint, model_name)
         model_id = model_config.get("model_id", model_name)
         
+        # Handle both string and dict model IDs
+        model_id_str = ""
+        if isinstance(model_id, dict):
+            # For dict model IDs, get a representative string
+            model_id_str = next(iter(model_id.values())) if model_id else ""
+        else:
+            model_id_str = str(model_id)
+        
         # For Claude models, we need to remove the stop parameter
-        if "claude" in model_id.lower():
+        if "claude" in model_id_str.lower():
             logger.info(f"Removing unsupported parameter 'stop' for model {model_id}")
             logger.info(f"Binding with filtered kwargs: {{}}")
             return model

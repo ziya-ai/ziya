@@ -19,6 +19,7 @@ export interface ModelChange {
 export type Message = {
     id?: string;
     content: string;
+    muted?: boolean;
     _edited?: boolean;
     _truncatedAfter?: boolean;
     role: MessageRole;

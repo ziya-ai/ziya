@@ -8,6 +8,8 @@ export const convertToTreeData = (folders: Folders, parentKey = ''): TreeDataNod
         const node: TreeDataNode = {
             title,
             key: currentKey,
+            // All folders are collapsed by default
+            isLeaf: !value.children || Object.keys(value.children).length === 0,
         };
 
         if (value.children) {

@@ -4,6 +4,9 @@ from app.utils.logging_utils import logger
 import os
 import importlib.util
 
+# IMPORT MCP capabilities if available
+from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+
 # Import AST capabilities if available
 try:
     # First check if the required packages are installed
@@ -56,16 +59,17 @@ The codebase context includes line-by-line change indicators in this format:
 [NNN ] - Line number NNN is unchanged (note the space)
 
 Example:
+<!-- TEMPLATE EXAMPLE START -->
 File: example.py
 [001+] def new_function():      # This is a newly added line
 [002*]     x = 42              # This line was modified
 [003 ]     return x           # This line is unchanged
+<!-- TEMPLATE EXAMPLE END -->
 
 When you see a "Code Change Summary" at the start of the context, it indicates files
 that have been modified during our conversation. Use this information to maintain
 context about the evolution of the code during our discussion.
 
-CRITICAL: Every marked change (-/+) must show actual content differences:
  Never output identical content as a change, even if spacing differs
  Skip single-line changes that differ only in non-functional whitespace
  Only include whitespace changes that affect functionality (e.g., Python indentation)
@@ -240,10 +244,19 @@ line's content, not as a new line in the file.
 
 Do not include any explanatory text within the diff blocks. If you need to provide explanations or comments, do so outside the diff blocks.
 
+AVAILABLE TOOLS:
+You have access to the following tools:
+
+{tools}
+
+To use a tool, format your request as:
+{TOOL_SENTINEL_OPEN}<name>tool_name</name><arguments>{{"key": "value"}}</arguments>{TOOL_SENTINEL_CLOSE}
+
 The codebase is provided at the end of this prompt in a specific format. 
 The code that the user has given to you for context is in the format like below where first line has the File path and then the content follows.
 Each file starts with "File: <filepath>" followed by its content on subsequent lines. 
 
+<!-- TEMPLATE EXAMPLE START -->
 File: <filepath>
 <Content of the file>. 
 
@@ -253,13 +266,24 @@ Below is the current codebase of the user:
 
 {codebase}
 
+<!-- TEMPLATE EXAMPLE END -->
 ---------------------------------------
 Codebase ends here. 
+
 
 Remember to strictly adhere to the Git diff format guidelines provided above when suggesting code changes.
 
 """
 
+# DEBUG: Check if template contains file markers
+template_file_markers = template.count('File: ')
+print(f"=== TEMPLATE DEBUG ===")
+print(f"Template contains {template_file_markers} 'File: ' markers")
+if template_file_markers > 0:
+    lines = template.split('\n')
+    file_lines = [line.strip() for line in lines if 'File: ' in line]
+    print(f"Template file markers: {file_lines}")
+print("=== END TEMPLATE DEBUG ===")
 # Add AST capabilities to the template if available
 if os.environ.get("ZIYA_ENABLE_AST") == "true" and AST_AVAILABLE:
     # Get AST context and token count

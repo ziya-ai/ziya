@@ -19,8 +19,29 @@ def clamp(value, min_val, max_val):
     """Clamp a value between min and max values."""
     return max(min_val, min(max_val, value))
 
+def is_whitespace_only_change(old_lines: List[str], new_lines: List[str]) -> bool:
+    """
+    Check if the difference between old_lines and new_lines is only whitespace.
+    
+    Args:
+        old_lines: The original lines
+        new_lines: The new lines
+        
+    Returns:
+        True if the only differences are whitespace, False otherwise
+    """
+    if len(old_lines) != len(new_lines):
+        return False
+    
+    for old_line, new_line in zip(old_lines, new_lines):
+        # Compare the lines ignoring whitespace
+        if old_line.strip() != new_line.strip():
+            return False
+    
+    return True
+
 def apply_diff_with_difflib_hybrid_forced(
-    file_path: str, diff_content: str, original_lines_with_endings: List[str], 
+    file_path: str, diff_content: str, original_lines_with_endings: List[str],
     skip_hunks: List[int] = None
 ) -> List[str]:
     """
@@ -48,6 +69,22 @@ def apply_diff_with_difflib_hybrid_forced(
         logger.info(f"Skipping already applied hunks: {skip_hunks}")
 
     # --- Line Ending and Final Newline Detection ---
+    has_final_newline = original_lines_with_endings[-1].endswith('\n') if original_lines_with_endings else True
+    
+    # --- Parse Hunks ---
+    hunks = list(parse_unified_diff_exact_plus(diff_content, file_path))
+    
+    # --- Detect Whitespace-Only Changes ---
+    from ..application.whitespace_handler import is_whitespace_only_diff
+    whitespace_only_hunks = []
+    for i, h in enumerate(hunks):
+        if is_whitespace_only_diff(h):
+            whitespace_only_hunks.append(i+1)  # 1-based indexing for hunk IDs
+    
+    if whitespace_only_hunks:
+        logger.info(f"Detected whitespace-only changes in hunks: {whitespace_only_hunks}")
+        # For whitespace-only changes, we'll force application even if they're marked as already applied
+        skip_hunks = [h for h in skip_hunks if h not in whitespace_only_hunks]
     original_content_str = "".join(original_lines_with_endings)
     crlf_count = original_content_str.count('\r\n')
     lf_count = original_content_str.count('\n') - crlf_count
@@ -149,13 +186,31 @@ def apply_diff_with_difflib_hybrid_forced(
             fuzzy_best_ratio = 0.0
             logger.debug(f"Hunk #{hunk_idx}: Attempting fuzzy near line {fuzzy_initial_pos_search}")
 
-            # Assuming find_best_chunk_position is imported or defined above
+            # Prepare normalized lines for fuzzy matching
             normalized_final_lines_fuzzy = [normalize_line_for_comparison(line) for line in final_lines_with_endings]
             normalized_old_block_fuzzy = [normalize_line_for_comparison(line) for line in h['old_block']]
+            
+            # Check if this is a whitespace-only change
+            from ..application.whitespace_handler import is_whitespace_only_diff
+            whitespace_only = is_whitespace_only_diff(h)
+            
+            # Use fuzzy matching to find the best position
+            from ..application.fuzzy_match import find_best_chunk_position
             fuzzy_best_pos, fuzzy_best_ratio = find_best_chunk_position(
-                normalized_final_lines_fuzzy,                normalized_old_block_fuzzy,
+                normalized_final_lines_fuzzy, normalized_old_block_fuzzy,
                 fuzzy_initial_pos_search
             )
+            
+            # Special handling for whitespace-only changes
+            if whitespace_only and (fuzzy_best_ratio < MIN_CONFIDENCE or fuzzy_best_pos is None):
+                logger.info(f"Hunk #{hunk_idx}: Detected whitespace-only change, using specialized handling")
+                fuzzy_best_pos = fuzzy_initial_pos_search
+                fuzzy_best_ratio = 0.9  # High confidence for whitespace changes
+            if fuzzy_best_ratio < MIN_CONFIDENCE and is_whitespace_only_change(h['old_block'], h['new_lines']):
+                logger.info(f"Hunk #{hunk_idx}: Detected whitespace-only change, using specialized handling")
+                fuzzy_best_pos = fuzzy_initial_pos_search
+                fuzzy_best_ratio = 0.9  # High confidence for whitespace changes
+            
             # --- End Inlined ---
 
             min_confidence = MIN_CONFIDENCE
