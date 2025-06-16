@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useChatContext } from '../context/ChatContext';
 import { sendPayload } from "../apis/chatApi";
 import { Message } from "../utils/types";
@@ -9,9 +9,10 @@ import { EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined } from "@ant-d
 
 interface EditSectionProps {
     index: number;
+    isInline?: boolean;
 }
 
-export const EditSection: React.FC<EditSectionProps> = ({ index }) => {
+export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = false }) => {
     const {
         currentMessages,
         currentConversationId,
@@ -21,16 +22,31 @@ export const EditSection: React.FC<EditSectionProps> = ({ index }) => {
         streamingConversations,
         addStreamingConversation,
         setStreamedContentMap,
-        removeStreamingConversation
+        removeStreamingConversation,
+        editingMessageIndex,
+        setEditingMessageIndex
     } = useChatContext();
 
-    const [isEditing, setIsEditing] = useState(false);
     const [editedMessage, setEditedMessage] = useState(currentMessages[index].content);
     const { checkedKeys } = useFolderContext();
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
     const { TextArea } = Input;
+    const isEditing = editingMessageIndex === index;
+
+    // Focus the textarea when editing starts
+    useEffect(() => {
+        if (isEditing && textareaRef.current) {
+            setTimeout(() => {
+                if (textareaRef.current) {
+                    textareaRef.current.focus();
+                }
+            }, 100);
+        }
+    }, [isEditing]);
 
     const handleEdit = () => {
-        setIsEditing(true);
+        setEditingMessageIndex(index);
     };
 
     const handleSave = () => {
@@ -51,16 +67,16 @@ export const EditSection: React.FC<EditSectionProps> = ({ index }) => {
             }
             return conv;
         }));
-        setIsEditing(false);
+        setEditingMessageIndex(null);
     };
 
     const handleCancel = () => {
-        setIsEditing(false);
+        setEditingMessageIndex(null);
         setEditedMessage(currentMessages[index].content);
     };
 
     const handleSubmit = async () => {
-        setIsEditing(false);
+        setEditingMessageIndex(null);
 
         // Clear any existing streamed content
         setStreamedContentMap(new Map());
@@ -126,31 +142,69 @@ export const EditSection: React.FC<EditSectionProps> = ({ index }) => {
 
     return (
         <div>
-            {isEditing ? (
-                <>
+            {/* If this is the inline version and we're editing this message, don't render anything */}
+            {isInline && isEditing && (
+                null
+            )}
+
+            {/* If we're editing and this is NOT the inline version, show full edit interface */}
+            {isEditing && !isInline && (
+                <div style={{ width: '100%' }}>
+                    {/* Header row with sender and buttons */}
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '8px',
+                        width: '100%'
+                    }}>
+                        <div className="message-sender">You:</div>
+                        <Space>
+                            <Tooltip title="Cancel editing">
+                                <Button icon={<CloseOutlined />} onClick={handleCancel} size="small">
+                                    Cancel
+                                </Button>
+                            </Tooltip>
+                            <Tooltip title="Save changes to context">
+                                <Button icon={<SaveOutlined />} onClick={handleSave} size="small">
+                                    Save
+                                </Button>
+                            </Tooltip>
+                            <Tooltip title="Send to model, remove newer responses">
+                                <Button icon={<CheckOutlined />} onClick={handleSubmit} size="small" type="primary">
+                                    Submit
+                                </Button>
+                            </Tooltip>
+                        </Space>
+                    </div>
+
+                    {/* Full-width textarea */}
                     <TextArea
-                        style={{ width: '38vw', height: '100px' }}
+                        ref={textareaRef}
+                        autoFocus
+                        style={{
+                            width: '100%',
+                            minHeight: '100px',
+                            resize: 'vertical'
+                        }}
                         value={editedMessage}
                         onChange={(e) => setEditedMessage(e.target.value)}
+                        autoSize={{
+                            minRows: 3,
+                            maxRows: 20
+                        }}
+                        placeholder="Edit your message..."
                     />
-                    <Space style={{ marginTop: '8px' }}>
-                        <Button icon={<CloseOutlined />} onClick={handleCancel} size="small">
-                            Cancel
-                        </Button>
-                        <Button icon={<SaveOutlined />} onClick={handleSave} size="small">
-                            Save
-                        </Button>
-                        <Button icon={<CheckOutlined />} onClick={handleSubmit} size="small" type="primary">
-                            Submit
-                        </Button>
-                    </Space>
-                </>
-            ) : (
+                </div>
+            )}
+
+            {/* Show edit button if not editing and this is inline, OR if not editing and not inline */}
+            {!isEditing && (isInline || !isEditing) && (
                 <Tooltip title="Edit">
                     <Button icon={<EditOutlined />} onClick={handleEdit} />
                 </Tooltip>
             )}
         </div>
     );
-}
+};
 

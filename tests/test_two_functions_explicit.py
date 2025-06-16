@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from app.utils.diff_utils.pipeline.pipeline_manager import apply_diff_pipeline
 
 # Configure logging for the test
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TestTwoFunctions")
 
 class TestTwoFunctions(unittest.TestCase):

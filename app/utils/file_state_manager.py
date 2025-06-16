@@ -335,7 +335,8 @@ class FileStateManager:
                     line_states={},  # No changes initially
                     original_content=lines.copy(),
                     current_content=lines.copy(),
-                    last_seen_content=lines.copy()
+                    last_seen_content=lines.copy(),
+                    last_context_submission_content=lines.copy()
                 )
                 
                 # Mark all lines as new for newly added files

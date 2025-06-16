@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from app.utils.logging_utils import logger
+from app.mcp.manager import get_mcp_manager
 from app.utils.prompt_extensions import PromptExtensionManager
 from app.agents.prompts import original_template, conversational_prompt
 
@@ -30,10 +31,12 @@ def get_extended_prompt(model_name: Optional[str] = None,
     """
     if context is None:
         context = {}
+    logger.error(f"🔍 EXECUTION_TRACE: get_extended_prompt() called for model: {model_name}")
     
     # Get the original template
     template = original_template
     
+    logger.error(f"🔍 EXECUTION_TRACE: Original template length: {len(template)}")
     # Apply extensions
     extended_template = PromptExtensionManager.apply_extensions(
         prompt=template,
@@ -42,6 +45,12 @@ def get_extended_prompt(model_name: Optional[str] = None,
         endpoint=endpoint,
         context=context
     )
+    
+    logger.error(f"🔍 EXECUTION_TRACE: Extended template length: {len(extended_template)}")
+    logger.info(f"PROMPT_MANAGER: Final extended template length: {len(extended_template)}")
+    logger.info(f"PROMPT_MANAGER: Original template length: {len(template)}")
+    logger.info(f"PROMPT_MANAGER: Extended template length: {len(extended_template)}")
+    logger.info(f"PROMPT_MANAGER: Template was modified: {len(extended_template) != len(template)}")
     
     # Create a new prompt template with the extended template
     extended_prompt = ChatPromptTemplate.from_messages(

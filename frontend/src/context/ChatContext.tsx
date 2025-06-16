@@ -9,6 +9,8 @@ interface ChatContext {
     streamedContentMap: Map<string, string>;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
+    processingState: string;
+    setProcessingState: Dispatch<SetStateAction<string>>;
     isStreamingAny: boolean;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
@@ -40,6 +42,9 @@ interface ChatContext {
     setFolderFileSelections: Dispatch<SetStateAction<Map<string, string[]>>>;
     deleteFolder: (id: string) => Promise<void>;
     setDisplayMode: (conversationId: string, mode: 'raw' | 'pretty') => void;
+    toggleMessageMute: (conversationId: string, messageIndex: number) => void;
+    editingMessageIndex: number | null;
+    setEditingMessageIndex: (index: number | null) => void;
 }
 
 const chatContext = createContext<ChatContext | undefined>(undefined);
@@ -54,6 +59,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
     const [isStreamingAny, setIsStreamingAny] = useState(false);
+    const [processingState, setProcessingState] = useState<string>('idle');
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [currentResponse, setCurrentResponse] = useState<Message | null>(null);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
@@ -79,6 +85,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
+    const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
 
     // Monitor ChatProvider render performance
     useLayoutEffect(() => {
@@ -93,17 +100,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Modified scrollToBottom function to respect user scroll
     const scrollToBottom = () => {
         const chatContainer = document.querySelector('.chat-container');
-        if (chatContainer && isTopToBottom && !userHasScrolled) {
-            requestAnimationFrame(() => {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-
-                // Reset user scroll state when we're no longer streaming
-                if (!isStreamingAny) {
-                    setTimeout(() => {
-                        setUserHasScrolled(false);
-                    }, 100);
-                }
-            });
+        if (chatContainer && isTopToBottom && !userHasScrolled && isStreamingAny) {
+            // Only scroll during active streaming to prevent unexpected jumps
+            chatContainer.scrollTop = chatContainer.scrollHeight;
         }
     };
 
@@ -431,6 +430,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
         try {
+            console.log('🔄 Loading conversation:', conversationId);
+
             // Don't remove streaming for the conversation we're switching away from
             // First update conversations in memory
             // Mark current conversation as read
@@ -446,13 +447,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
             });
 
             // Set the current conversation ID after updating state
-            await new Promise(resolve => setTimeout(resolve, 50));
+            // Remove artificial delay that might be blocking
+            // await new Promise(resolve => setTimeout(resolve, 50));
             setCurrentConversationId(conversationId);
 
             // Set the current folder ID based on the conversation's folder
+            // This should not block conversation loading
             const conversation = conversations.find(c => c.id === conversationId);
-            if (conversation && conversation.folderId !== undefined) {
-                setCurrentFolderId(conversation.folderId);
+            if (conversation) {
+                // Set folder ID asynchronously to not block message loading
+                setTimeout(() => {
+                    setCurrentFolderId(conversation.folderId ?? null);
+                }, 0);
             }
             // Only clear streaming content map for conversations that are no longer streaming
             setStreamedContentMap(prev => {
@@ -460,6 +466,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 // Keep streaming content for active streaming conversations
                 return next;
             });
+
             console.log('Current conversation changed:', {
                 from: currentConversationId,
                 to: conversationId,
@@ -467,6 +474,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 hasStreamingContent: Array.from(streamedContentMap.keys())
             });
         } finally {
+            // Always clear loading state, even if folder operations are pending
+            console.log('✅ Conversation loading complete:', conversationId);
             setIsLoadingConversation(false);
         }
         setStreamedContentMap(new Map());
@@ -569,109 +578,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, []);
 
-    // Folder management functions
-    const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
-        const newFolder: ConversationFolder = {
-            id: uuidv4(),
-            name,
-            parentId: parentId || null,
-            useGlobalContext: true,
-            useGlobalModel: true,
-            createdAt: Date.now(),
-            updatedAt: Date.now()
-        };
-
-        try {
-            await db.saveFolder(newFolder);
-            setFolders(prev => [...prev, newFolder]);
-            return newFolder.id;
-        } catch (error) {
-            console.error('Error creating folder:', error);
-            throw error;
-        }
-    }, []);
-
-    const updateFolder = useCallback(async (folder: ConversationFolder): Promise<void> => {
-        try {
-            folder.updatedAt = Date.now();
-            await db.saveFolder(folder);
-            setFolders(prev => prev.map(f => f.id === folder.id ? folder : f));
-        } catch (error) {
-            console.error('Error updating folder:', error);
-            throw error;
-        }
-    }, []);
-
-    // frontend/src/context/ChatContext.tsx
-    const deleteFolder = useCallback(async (id: string): Promise<void> => {
-        try {
-            // Get the most up-to-date list of conversations from the DB or state.
-            // To be safest, especially if other operations might be happening,
-            // it's better to work with the data that will be persisted.
-            const currentConversationsFromDB = await db.getConversations();
-            const updatedConversationsForDB = currentConversationsFromDB.map(conv =>
-                conv.folderId === id ? { ...conv, isActive: false, _version: Date.now() } : conv
-            );
-
-            // Save the entire updated list to the database once
-            await db.saveConversations(updatedConversationsForDB);
-
-            // Now update the React state based on the successfully persisted changes
-            setConversations(prevConvs => prevConvs.map(conv =>
-                conv.folderId === id ? { ...conv, isActive: false, _version: Date.now() } : conv
-            ));
-
-            // Delete the folder metadata from the database
-            await db.deleteFolder(id);
-
-            // Update folders state in React
-            setFolders(prevFolders => prevFolders.filter(f => f.id !== id));
-
-            // If the currently active folder is the one being deleted, reset it
-            if (currentFolderId === id) {
-                setCurrentFolderId(null);
-            }
-
-            const numAffectedConversations = updatedConversationsForDB.filter(c => c.folderId === id && !currentConversationsFromDB.find(oc => oc.id === c.id)?.isActive).length;
-            console.log(`Folder deleted and ${numAffectedConversations} conversations marked inactive.`);
-
-        } catch (error) {
-            console.error('Error deleting folder:', error);
-            message.error('Failed to delete folder. Please try again.');
-            // Potentially re-fetch state from DB to ensure consistency if partial failure
-            const freshConversations = await db.getConversations();
-            setConversations(freshConversations);
-            const freshFolders = await db.getFolders();
-            setFolders(freshFolders);
-        }
-    }, [currentFolderId, setConversations, setFolders, setCurrentFolderId]); // Removed 'conversations' from deps, relies on fetching fresh from DB
-
-    const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
-        try {
-            // First update the conversation in memory with a new version
-            const newVersion = Date.now();
-            setConversations(prev => prev.map(conv =>
-                conv.id === conversationId
-                    ? { ...conv, folderId, _version: newVersion }
-                    : conv
-            ));
-
-            // Then update in the database
-            await db.moveConversationToFolder(conversationId, folderId);
-
-            return;
-        } catch (error) {
-            console.error('Error moving conversation to folder:', error);
-            throw error;
-        }
-    }, []);
-
     useEffect(() => {
-        if (isInitialized) {
+        // Load current messages immediately when conversation changes, regardless of folder state
+        if (currentConversationId) {
             const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
             setCurrentMessages(messages);
         }
-    }, [conversations, currentConversationId, isInitialized]);
+    }, [conversations, currentConversationId]);
 
 
     // Enhanced initialization with corruption detection and recovery
@@ -682,34 +595,48 @@ export function ChatProvider({ children }: ChatProviderProps) {
         try {
             await db.init();
             const savedConversations = await db.getConversations();
-            const savedFolders = await db.getFolders();
 
-            // Check for corruption by comparing with backup
-            const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
-            if (backup) {
-                const backupConversations = JSON.parse(backup);
+            // Set conversations immediately to unblock message loading
+            console.log('✅ Setting conversations immediately:', savedConversations.length);
+            setConversations(savedConversations);
+            setIsInitialized(true);
 
-                // If IndexedDB has significantly fewer conversations than backup, restore from backup
-                if (savedConversations.length < backupConversations.length * 0.5) {
-                    console.warn(`⚠️ Potential corruption detected: IndexedDB has ${savedConversations.length} conversations, backup has ${backupConversations.length}`);
-
-                    // Auto-recovery
-                    await db.saveConversations(backupConversations);
-                    setConversations(backupConversations);
-                    console.log('✅ Auto-recovery completed');
-                } else {
-                    setConversations(savedConversations);
-                    await createBackup(savedConversations);
+            // Set current messages immediately if we have a current conversation
+            if (currentConversationId) {
+                const currentConv = savedConversations.find(c => c.id === currentConversationId);
+                if (currentConv) {
+                    console.log('✅ Setting current messages immediately:', currentConv.messages.length);
+                    setCurrentMessages(currentConv.messages);
                 }
-            } else {
-                setConversations(savedConversations);
-                await createBackup(savedConversations);
             }
 
-            setFolders(savedFolders);
-            setIsInitialized(true);
+            // Handle backup/recovery operations asynchronously - don't block UI
+            setTimeout(async () => {
+                // Check for corruption by comparing with backup
+                const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
+                if (backup) {
+                    const backupConversations = JSON.parse(backup);
+
+                    // If IndexedDB has significantly fewer conversations than backup, restore from backup
+                    if (savedConversations.length < backupConversations.length * 0.5) {
+                        console.warn(`⚠️ Potential corruption detected: IndexedDB has ${savedConversations.length} conversations, backup has ${backupConversations.length}`);
+
+                        // Auto-recovery - update state again
+                        await db.saveConversations(backupConversations);
+                        setConversations(backupConversations);
+                        console.log('✅ Auto-recovery completed');
+                    } else {
+                        await createBackup(savedConversations);
+                    }
+                } else {
+                    await createBackup(savedConversations);
+                }
+            }, 0);
+
+            console.log('✅ Conversations initialized, folder loading will continue in background');
         } catch (error) {
             console.error('Initialization failed:', error);
+            // Existing error handling...
             // Existing error handling...
         } finally {
             isRecovering.current = false;
@@ -740,13 +667,34 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
     }, [initializeWithRecovery, createBackup]);
 
+    useEffect(() => {
+        // Load current messages immediately when conversation changes, regardless of folder state
+        if (currentConversationId) {
+            const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
+            setCurrentMessages(messages);
+        }
+    }, [conversations, currentConversationId]);
+
     // Load folders when component mounts
     useEffect(() => {
-        if (isInitialized) {
-            console.log("Loading folders from database...");
-            db.getFolders().then(setFolders).catch(console.error);
-        }
-    }, [isInitialized]);
+        // Load folders independently of initialization state
+        // This ensures folder loading doesn't block conversation loading
+        const loadFoldersIndependently = async () => {
+            try {
+                console.log("Loading folders from database...");
+                // Add a small delay to ensure conversations are loaded first
+                await new Promise(resolve => setTimeout(resolve, 100));
+                const folders = await db.getFolders();
+                setFolders(folders);
+                console.log("✅ Folders loaded:", folders.length);
+            } catch (error) {
+                console.error('Error loading folders:', error);
+                // Don't let folder errors block the app
+                setFolders([]);
+            }
+        };
+        loadFoldersIndependently();
+    }, []); // Remove isInitialized dependency
 
     // Listen for model change events
     useEffect(() => {
@@ -858,9 +806,36 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
     }, []);
 
+    const toggleMessageMute = useCallback((conversationId: string, messageIndex: number) => {
+        setConversations(prev => {
+            const updated = prev.map(conv => {
+                if (conv.id === conversationId) {
+                    const updatedMessages = [...conv.messages];
+                    if (updatedMessages[messageIndex]) {
+                        updatedMessages[messageIndex] = {
+                            ...updatedMessages[messageIndex],
+                            muted: !updatedMessages[messageIndex].muted
+                        };
+                    }
+                    return { ...conv, messages: updatedMessages, _version: Date.now() };
+                }
+                return conv;
+            });
+            queueSave(updated).catch(console.error);
+            
+            // Dispatch event to notify token counter of mute state change
+            window.dispatchEvent(new CustomEvent('messagesMutedChanged', {
+                detail: { conversationId, messageIndex }
+            }));
+            return updated;
+        });
+    }, []);
+
     const value = useMemo(() => ({
         streamedContentMap,
         setStreamedContentMap,
+        processingState,
+        setProcessingState,
         isStreaming,
         isStreamingAny,
         streamingConversations,
@@ -892,10 +867,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setDisplayMode,
         moveConversationToFolder,
         dbError,
-        isLoadingConversation
+        isLoadingConversation,
+        toggleMessageMute,
+        editingMessageIndex,
+        setEditingMessageIndex,
     }), [
         streamedContentMap,
         setStreamedContentMap,
+        processingState,
+        setProcessingState,
         isStreaming,
         isStreamingAny,
         streamingConversations,
@@ -927,7 +907,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setDisplayMode,
         moveConversationToFolder,
         dbError,
-        isLoadingConversation
+        isLoadingConversation,
+        toggleMessageMute,
+        editingMessageIndex,
+        setEditingMessageIndex,
     ]);
 
     // Temporary debug command

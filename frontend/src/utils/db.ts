@@ -743,17 +743,7 @@ class ConversationDB implements DB {
         try {
             // Check if the 'folders' object store exists
             if (!this.db!.objectStoreNames.contains('folders')) {
-                console.warn("Folders object store doesn't exist yet. Creating it now.");
-
-                // Close the current connection
-                this.db!.close();
-                this.db = null;
-
-                // Increment version and reinitialize
-                currentVersion++;
-                await this.init();
-
-                // Return empty array since no folders exist yet
+                console.warn("Folders object store doesn't exist yet. Will be created on next database upgrade.");
                 return [];
             } else {
                 return new Promise((resolve, reject) => {
@@ -771,19 +761,12 @@ class ConversationDB implements DB {
     }
 
     async saveFolder(folder: ConversationFolder): Promise<void> {
-        await this.init();
+        if (!this.db) await this.init();
 
         // Check if the 'folders' object store exists
         if (!this.db!.objectStoreNames.contains('folders')) {
-            console.warn("Folders object store doesn't exist yet. Creating it now.");
-
-            // Close the current connection
-            this.db!.close();
-            this.db = null;
-
-            // Increment version and reinitialize
-            currentVersion++;
-            await this.init();
+            console.warn("Folders object store doesn't exist yet. Cannot save folder until database is upgraded.");
+            return;
         }
 
         return new Promise<void>((resolve, reject) => {
