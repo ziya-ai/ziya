@@ -225,12 +225,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     return;
                 }
             }
-                
-                // Log the parsed spec for debugging
-                console.debug('D3Renderer: Successfully parsed spec:', {
-                    type: parsed.type,
-                    renderer: parsed.renderer
-                });
 
             // If we have a parsed spec, determine if it's complete enough to render
             if (parsed) {
@@ -284,6 +278,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             if (parsed.type === 'mermaid') {
                 // Pre-process the definition to fix common syntax issues
                 if (typeof parsed.definition === 'string') {
+                    // FIRST: Remove HTML tags that cause parsing issues
+                    parsed.definition = parsed.definition.replace(/<br\s*\/?>/gi, '\n');
+                    parsed.definition = parsed.definition.replace(/<\/br>/gi, '');
+                    parsed.definition = parsed.definition.replace(/<[^>]+>/g, '');
 
                     // Detect diagram type
                     const firstLine = parsed.definition.trim().split('\n')[0].toLowerCase();
@@ -291,6 +289,17 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
                     // Apply diagram-specific fixes
                     if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
+                        // PRIORITY FIX: Handle parentheses and special characters in node labels
+                        parsed.definition = parsed.definition.replace(/(\w+)\[([^\]]*)\]/g, (match, nodeId, content) => {
+                            // Quote content that contains special characters
+                            if (/[()\/\n<>]/.test(content) && !content.match(/^".*"$/)) {
+                                // Don't double-escape already escaped quotes
+                                const escapedContent = content.replace(/\\"/g, '"').replace(/"/g, '\\"');
+                                return `${nodeId}["${escapedContent}"]`;
+                            }
+                            return match;
+                        });
+
                         // Fix subgraph class syntax
                         parsed.definition = parsed.definition.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 style_$2');
                         parsed.definition = parsed.definition.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
@@ -385,36 +394,21 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     return;
                 }
 
-                // Handle Vega-Lite rendering
-                const container = vegaContainerRef.current;
-                if (!container) return;
-
-                const vegaSpec = {
-                    $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-                    width: width || 'container',
-                    height: height || 300,
-                    mark: parsed.type || 'point',
-                    data: {
-                        values: Array.isArray(parsed.data) ? parsed.data : [parsed.data]
-                    },
-                    encoding: parsed.encoding || {
-                        x: { field: 'x', type: 'quantitative' },
-                        y: { field: 'y', type: 'quantitative' }
-                    },
-                    ...parsed
-                };
-
-                if (vegaViewRef.current) {
-                    vegaViewRef.current.finalize();
-                    vegaViewRef.current = null;
+                // Cleanup existing simulation
+                if (simulationRef.current) {
+                    try {
+                        simulationRef.current.stop();
+                        simulationRef.current = null;
+                    } catch (error) {
+                        console.warn('Error cleaning up simulation:', error);
+                    }
                 }
 
-                console.debug('Rendering Vega spec:', vegaSpec);
-                const result = await vegaEmbed(container, vegaSpec, {
-                    actions: false,
-                    theme: isDarkMode ? 'dark' : 'excel',
-                    renderer: 'canvas'
-                });
+                // Set container dimensions
+                container.style.width = `${width}px`;
+                container.style.height = `${height}px`;
+                container.style.position = 'relative';
+                container.style.overflow = 'hidden';
 
                 // Check if this is a Graphviz or Mermaid plugin
                 const plugin = findPlugin(parsed);
@@ -542,7 +536,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 hasSuccessfulRenderRef.current = true;
                 return;
             }
-        };
 
             // Handle Vega-Lite rendering
             const container = vegaContainerRef.current;
@@ -659,83 +652,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const isJointRender = useMemo(() => {
         const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
         return plugin?.name === 'joint-renderer';
-    }, [spec]);
-
-    // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams
-    useEffect(() => {
-        // Only run this effect when theme changes and we have a Mermaid or Graphviz diagram
-        if ((isMermaidRender || isGraphvizRender) && d3ContainerRef.current) {
-            console.debug(`Theme changed for ${isMermaidRender ? 'Mermaid' : 'Graphviz'} diagram, re-rendering`);
-
-            // For Mermaid, apply post-render fixes
-            if (isMermaidRender) {
-                const svgElement = d3ContainerRef.current.querySelector('svg');
-                if (svgElement) {
-                    if (isDarkMode) {
-                        // Fix for arrow markers in dark mode
-                        svgElement.querySelectorAll('defs marker path').forEach(el => {
-                            el.setAttribute('stroke', '#88c0d0');
-                            el.setAttribute('fill', '#88c0d0');
-                        });
-
-                        // Fix for all SVG paths and lines
-                        svgElement.querySelectorAll('line, path:not([fill])').forEach(el => {
-                            el.setAttribute('stroke', '#88c0d0');
-                            el.setAttribute('stroke-width', '1.5');
-                        });
-
-                        // Text on darker backgrounds should be black for contrast
-                        svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
-                            el.setAttribute('fill', '#000000');
-                        });
-
-                        // Node and cluster styling
-                        svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
-                            el.setAttribute('stroke', '#81a1c1');
-                            el.setAttribute('fill', '#5e81ac');
-                        });
-
-                        svgElement.querySelectorAll('.cluster rect').forEach(el => {
-                            el.setAttribute('stroke', '#81a1c1');
-                            el.setAttribute('fill', '#4c566a');
-                        });
-                    }
-                }
-            }
-
-            // For Graphviz, trigger a complete re-render
-            if (isGraphvizRender && typeof spec === 'object') {
-                // Find the theme button and click it to trigger a re-render
-                const themeButton = d3ContainerRef.current.querySelector('.graphviz-theme-button');
-                if (themeButton) {
-                    (themeButton as HTMLButtonElement).click();
-                } else {
-                    // If no theme button, force a re-render by triggering a new render cycle
-                    // This is a simpler approach that avoids referencing initializeVisualization
-                    renderIdRef.current++; // Increment render ID to force a new render
-
-                    // Force re-render by updating a state
-                    setIsLoading(true);
-                    setTimeout(() => {
-                        if (mounted.current) {
-                            setIsLoading(false);
-                        }
-                    }, 10);
-                }
-            }
-        }
-    }, [isDarkMode, isMermaidRender, isGraphvizRender, spec]);
-
-    // Determine if it's specifically a Graphviz render
-    const isGraphvizRender = useMemo(() => {
-        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
-        return plugin?.name === 'graphviz-renderer';
-    }, [spec]);
-
-    // Determine if it's specifically a Vega-Lite render
-    const isVegaLiteRender = useMemo(() => {
-        const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
-        return plugin?.name === 'vega-lite-renderer';
     }, [spec]);
 
     // Add a specific effect for theme changes to force re-rendering of Mermaid and Graphviz diagrams

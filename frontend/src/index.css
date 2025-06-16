@@ -505,7 +505,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   box-sizing: border-box;
   height: calc(100vh - var(--header-height));
   overflow: hidden;
-  padding: 20px;
+  padding: 20px 5px 20px 10px; /* 10px left padding, 5px right padding */
   transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
   border-right: 2px solid #e8e8e8;
   flex-direction: column;
@@ -829,6 +829,14 @@ button[data-tooltip-delay="50"] {
     z-index: 0;
     padding: 0 8px !important;
     box-sizing: border-box !important;
+    white-space: pre !important;
+    word-wrap: normal !important;
+    overflow: visible !important;
+}
+
+/* Enable horizontal scrolling for split view */
+.diff-table.diff-split .diff-code {
+    overflow-x: auto !important;
     white-space: pre !important;
     word-wrap: normal !important;
     overflow: visible !important;
@@ -2049,4 +2057,24 @@ body:not(.dark) .token.attr-name {
     background: rgba(0, 0, 0, 0.7);
     border-color: #444;
     color: #fff;
+}
+
+.message.muted {
+  opacity: 0.5;
+  background-color: rgba(128, 128, 128, 0.1);
+  border-left: 3px solid #ccc;
+}
+
+.message.human:hover .ant-btn[title*="Resubmit"] {
+  opacity: 1;
+  visibility: visible;
+}
+ 
+.message.human .ant-btn[title*="Resubmit"] {
+  opacity: 0.6;
+  transition: all 0.2s ease;
+}
+ 
+.message.human .ant-btn[title*="Resubmit"]:hover {
+  transform: translateY(-1px);
 }

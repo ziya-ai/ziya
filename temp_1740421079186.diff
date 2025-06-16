@@ -1,0 +1,38 @@
+diff --git a/app/agents/agent.py b/app/agents/agent.py
+--- a/app/agents/agent.py
++++ b/app/agents/agent.py
+@@ -346,17 +346,21 @@
+ 
+ # Define the agent chain
+ def create_agent_chain():
+-    return {
+-        "codebase": log_codebase_wrapper,
+-        "question": lambda x: x["question"],
+-        "agent_scratchpad": lambda x: format_xml(x.get("intermediate_steps", [])),
+-        "chat_history": lambda x: _format_chat_history(x["chat_history"]),
+-        } | conversational_prompt | (
+-        lambda x: (
+-            logger.info(f"Template population check:") or
+-            logger.info(f"System message contains codebase section: {'---------------------------------------' in str(x)}") or
+-            logger.info(f"Number of 'File:' markers in system message: {str(x).count('File:')}") or
+-            x
+-        )
+-    ) | llm_with_stop | parse_output | log_output
++    # First create a runnable that prepares the input
++    input_prep = RunnablePassthrough() | (
++        lambda x: {
++            "codebase": log_codebase_wrapper(x),
++            "question": x["question"],
++            "agent_scratchpad": format_xml(x.get("intermediate_steps", [])),
++            "chat_history": _format_chat_history(x["chat_history"]),
++        }
++    )
+ 
++    # Then create the full chain
++    return (
++        input_prep | 
++        conversational_prompt | 
++        llm_with_stop | 
++        parse_output | 
++        log_output
++    )

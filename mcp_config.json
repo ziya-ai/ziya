@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "time-server": {
+      "command": ["python", "-u", "mcp_servers/time_server.py"],
+      "enabled": true,
+      "description": "Provides current time functionality"
+    },
+    "shell": {
+      "command": ["python", "-u", "mcp_servers/shell_server.py"],
+      "env": {
+        "ALLOW_COMMANDS": "ls,cat,pwd,grep,wc,touch,find,date,cd,curl,sort,cut,ping,ps"
+      },
+      "enabled": true
+    },
+  },
+  "globalSettings": {
+    "timeout": 30000,
+    "retryAttempts": 3
+  }
+}

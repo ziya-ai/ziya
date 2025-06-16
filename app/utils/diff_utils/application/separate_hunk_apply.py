@@ -302,6 +302,56 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         logger.debug(f"Actual patch stderr: {patch_result.stderr}")
         logger.debug(f"Actual patch return code: {patch_result.returncode}")
         
+        # Check if the patch was already applied
+        # 2. Handle Dry Run Results
+        if dry_run_status == "failed":
+            logger.warning(f"Dry run failed for hunk in {file_path}. Status: {dry_run_status}")
+            return False, False  # Failed
+        elif dry_run_status == "already_applied":
+            # CRITICAL FIX: Check if this is a false "already applied" message
+            # If the dry run says "already applied" but the return code is 0,
+            # it's likely a clean application that patch is misinterpreting
+            if dry_run_result.returncode == 0:
+                # Look for specific indicators of true "already applied" status
+                truly_already_applied = (
+                    "Skipping patch." in dry_run_result.stdout or
+                    "Reversed (or previously applied) patch detected!  Skipping patch." in dry_run_result.stdout
+                )
+                logger.info(f"Dry run indicates {'truly already applied' if truly_already_applied else 'successful application'} for {file_path}")
+                return True, truly_already_applied  # Success, Already Applied only if truly already applied
+            else:
+                return False, False  # Failed with "already applied" but non-zero return code
+        elif dry_run_status == "succeeded" and (dry_run_fuzz > 0 or dry_run_offset != 0):
+            logger.warning(f"Dry run succeeded with fuzz ({dry_run_fuzz}) or offset ({dry_run_offset}) for hunk in {file_path}. Deferring to difflib.")
+            return False, False  # Treat as failure for this stage
+        elif dry_run_status == "succeeded":
+            # Clean success in dry run, proceed to actual patch
+            logger.info(f"Dry run succeeded cleanly for hunk in {file_path}. Attempting actual patch.")
+            pass  # Proceed to actual patch command
+        else:
+            # Unknown status from dry run or parsing failed but exit code was 0
+            logger.warning(f"Unknown or ambiguous dry run status for hunk in {file_path}. Status: {dry_run_status}. Treating as failure.")
+            return False, False  # Failed
+        
+        # 3. Run Actual Patch (only if dry run was clean success)
+        patch_command_apply = ['patch', '-p1', '--forward', '--no-backup-if-mismatch',
+                               '--reject-file=-', '--batch', '--ignore-whitespace',
+                               '--verbose', '-i', temp_path]  # No --noreverse
+        
+        logger.debug(f"Running patch command (actual): {' '.join(patch_command_apply)}")
+        
+        patch_result = subprocess.run(
+            patch_command_apply,
+            cwd=user_codebase_dir,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        logger.debug(f"Actual patch stdout: {patch_result.stdout}")
+        logger.debug(f"Actual patch stderr: {patch_result.stderr}")
+        logger.debug(f"Actual patch return code: {patch_result.returncode}")
+        
         # Check if the patch was applied successfully
         if patch_result.returncode == 0:
             logger.info(f"Actual patch succeeded for hunk in {file_path}")

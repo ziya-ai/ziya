@@ -104,7 +104,7 @@ def get_confidence_threshold(level='medium'):
     Get the configured confidence threshold.
     
     Args:
-        level: The confidence level ('exact', 'high', 'medium', 'low', 'minimum')
+        level: The confidence level ('exact', 'high', 'medium', 'low', 'minimum', 'very_low')
                'medium' is the default used for fuzzy matching in the difflib implementation
         
     Returns:
@@ -126,6 +126,8 @@ def get_confidence_threshold(level='medium'):
         return LOW_CONFIDENCE_THRESHOLD
     elif level == 'minimum':
         return MINIMUM_CONFIDENCE_THRESHOLD
+    elif level == 'very_low':
+        return 0.2  # Even lower threshold for desperate cases
     else:
         return MEDIUM_CONFIDENCE_THRESHOLD
 

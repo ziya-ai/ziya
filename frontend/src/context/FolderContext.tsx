@@ -106,7 +106,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, [currentFolderId, folders, folderFileSelections]);
 
   useEffect(() => {
-    const fetchFolders = async () => {
+    // Make folder loading independent and non-blocking
+    const fetchFoldersAsync = async () => {
       try {
         const response = await fetch('/api/folders');
         if (!response.ok) {
@@ -125,7 +126,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         // Store the complete folder structure
         setFolders(data);
 
-        // Get all available file paths recursively
+        // Move heavy computation to async to avoid blocking UI
+        setTimeout(async () => {
+          try {
+            // Get all available file paths recursively
         const getAllPaths = (obj: any, prefix: string = ''): string[] => {
           return Object.entries(obj).flatMap(([key, value]: [string, any]) => {
             const path = prefix ? `${prefix}/${key}` : key;
@@ -180,11 +184,18 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           // Return the updated set of checked keys
           return [...newChecked];
         });
+          } catch (error) {
+            console.error('Error processing folder paths:', error);
+          }
+        }, 0); // Run in next tick to avoid blocking
       } catch (error) {
         console.error('Error fetching folders:', error);
       }
     };
-        fetchFolders();
+    
+    // Start folder loading immediately but don't await it
+    // This prevents blocking other initialization processes
+    fetchFoldersAsync();
     }, []);
 
     const contextValue = useMemo(() => ({
@@ -210,7 +221,20 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 export const useFolderContext = () => {
   const context = useContext(FolderContext);
   if (context === undefined) {
-    throw new Error('useFolderContext must be used within a FolderProvider');
+    // Don't throw error during initialization - return safe defaults
+    console.warn('useFolderContext called before FolderProvider is ready, returning defaults');
+    return {
+      folders: undefined,
+      treeData: [],
+      checkedKeys: [],
+      setTreeData: () => {},
+      setCheckedKeys: () => {},
+      searchValue: '',
+      setSearchValue: () => {},
+      expandedKeys: [],
+      setExpandedKeys: () => {},
+      getFolderTokenCount: () => 0
+    };
   }
   return context;
 };

@@ -238,12 +238,22 @@ def detect_error_type(error_message: str) -> Tuple[str, str, int, Optional[str]]
     return error_type, detail, status_code, retry_after
 
 
-def format_error_response(error_type: str, detail: str) -> Dict[str, Any]:
+def format_error_response(error_type: str, detail: str, status_code: int = 500, retry_after: Optional[str] = None) -> Dict[str, Any]:
     """Format an error response for the API."""
     # Ensure detail is a string to avoid serialization issues
     if not isinstance(detail, str):
         detail = str(detail)
-    return {"error": {"type": error_type, "detail": detail}}
+    
+    error_response = {
+        "error": error_type,
+        "detail": detail,
+        "status_code": status_code
+    }
+    
+    if retry_after:
+        error_response["retry_after"] = retry_after
+        
+    return error_response
 
 
 def is_critical_error(error_message: str) -> bool:
