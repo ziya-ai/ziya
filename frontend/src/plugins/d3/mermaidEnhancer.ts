@@ -170,9 +170,265 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
 
-  // Add a preprocessor specifically for subgraph syntax
+  // Add a preprocessor to fix pipe syntax in flowcharts - higher priority
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      // Fix pipe syntax - convert A |label| B to A -->|label| B
+      return definition.replace(/(\w+)\s*\|([^|]+)\|\s*(\w+)/g, '$1 -->|$2| $3');
+    }, {
+    name: 'pipe-syntax-fix',
+    priority: 300,
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to fix multi-line node labels that cause parsing errors
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      // Fix multi-line node labels by replacing newlines with <br> tags
+      return definition.replace(/(\w+)\[([^\]]*)\n([^\]]*)\]/g, '$1[$2<br>$3]');
+    }, {
+    name: 'multiline-node-label-fix',
+    priority: 250,
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to fix flowchart line continuation issues
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' && diagramType !== 'TD' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      // Fix incomplete lines that end abruptly (like "C[Load User Profil" without closing bracket)
+      let processedDef = definition;
+
+      // Fix the specific "Load User Profil" error - complete truncated node labels
+      processedDef = processedDef.replace(/(\w+)\["?([^"\]]*?)$/gm, (match, nodeId, content) => {
+        // If content looks incomplete (no closing quote/bracket), complete it
+        return `${nodeId}["${content}"]`;
+      });
+
+      processedDef = processedDef.replace(/(\w+)\[([^\]]*?)$/gm, (match, nodeId, content) => {
+        return content.trim() ? `${nodeId}["${content}"]` : `${nodeId}[${nodeId}]`;
+      });
+      return processedDef;
+    }, {
+    name: 'flowchart-incomplete-line-fix',
+    priority: 200,
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to fix class diagram syntax issues
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'classDiagram' && !definition.trim().startsWith('classDiagram')) {
+        return definition;
+      }
+
+      let processedDef = definition;
+
+      // Fix class inheritance syntax - replace ">" with "--|>"
+      processedDef = processedDef.replace(/(\s+)>\s*(\w+)/g, '$1--|> $2');
+
+      // Fix invalid standalone ">" syntax in class definitions
+      processedDef = processedDef.replace(/^\s*>\s*$/gm, '');
+
+      // Fix the specific "} > OrderStatus {" error pattern
+      processedDef = processedDef.replace(/}\s*>\s*(\w+)\s*{/g, '}\n    $1 --|> ');
+
+      // Fix class body with standalone ">" - remove it
+      processedDef = processedDef.replace(/(class\s+\w+\s*{\s*)>\s*/g, '$1');
+
+      // Fix enum syntax issues
+      processedDef = processedDef.replace(/(\w+)\s*{\s*<<enumeration>>/g, '$1 {\n        <<enumeration>>');
+
+      // Fix method syntax with asterisk
+      processedDef = processedDef.replace(/\+(\w+)\([^)]*\)\s*(\w+)\*/g, '+$1() $2');
+
+      // Fix invalid ">" syntax in class definitions
+      processedDef = processedDef.replace(/}\s*(\w+)\s*{/g, '}\n\n    class $1 {');
+
+      return processedDef;
+    }, {
+    name: 'class-diagram-syntax-fix',
+    priority: 180,
+    diagramTypes: ['classDiagram']
+  });
+
+  // Add a quote cleanup preprocessor that runs first to fix quote multiplication
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' && !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      const lines = definition.split('\n');
+      const fixedLines: string[] = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        let currentLine = lines[i];
+        // Regex to capture:
+        // 1: leading whitespace, 2: nodeId, 3: openBracket (paren or square),
+        // 4: opening quote (optional), 5: content, 6: closing quote (matches opening),
+        // 7: closeBracket (matches openBracket), 8: any trailing characters on the line
+
+        // Skip subgraph lines - they don't need node termination fixes
+        if (currentLine.trim().startsWith('subgraph') || currentLine.trim() === 'end') {
+          fixedLines.push(currentLine);
+          continue;
+        }
+
+        const nodeDefRegex = /^(\s*)(\w+)\s*(\[|\()(["']?)(.*?)(\4)(\]|\))(\s*.*)$/;
+        const nodeDefMatch = currentLine.match(nodeDefRegex);
+
+        if (nodeDefMatch) {
+          const [,
+            leadingSpace,
+            nodeId,
+            openBracketOrParen,
+            openingQuote,
+            nodeContent,
+            closingQuote, // This should match openingQuote due to \4 in regex
+            closeBracketOrParen,
+            trailingCharacters // All characters after the closing bracket/paren
+          ] = nodeDefMatch;
+
+          let mainPart = `${leadingSpace}${nodeId}${openBracketOrParen}`;
+          let contentPart = nodeContent;
+
+          if (openingQuote && closingQuote) { // If it was quoted
+            if (contentPart.trim() === "") {
+              contentPart = " "; // Replace "" or '' with " "
+            }
+            mainPart += `${openingQuote}${contentPart}${closingQuote}`;
+          } else { // Unquoted content
+            mainPart += contentPart;
+          }
+          mainPart += `${closeBracketOrParen}`;
+
+          let finalLine = mainPart;
+          const originalTrailingSyntax = trailingCharacters.trim();
+
+          if (originalTrailingSyntax) {
+            finalLine += trailingCharacters;
+          }
+
+          const needsTerminationFix = !originalTrailingSyntax ||
+            (!originalTrailingSyntax.startsWith(':::') &&
+              !originalTrailingSyntax.match(/^(-->|---|~~~|\.-|\.\.-|o--|--o|x--)/));
+
+          if (needsTerminationFix && !originalTrailingSyntax && !currentLine.includes('subgraph')) {
+            finalLine += ":::default";
+          }
+          fixedLines.push(finalLine);
+        } else {
+          fixedLines.push(currentLine);
+        }
+      }
+      return fixedLines.join('\n');
+    }, {
+    name: 'flowchart-line-break-fix',
+    priority: 185,
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to fix gitgraph diagrams
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('gitgraph')) {
+      return def;
+    }
+
+    // Convert gitgraph to git graph (supported syntax)
+    let finalDef = def.replace(/^gitgraph/, 'gitGraph');
+
+    return finalDef;
+  }, {
+    name: 'gitgraph-syntax-fix',
+    priority: 140,
+    diagramTypes: ['gitgraph', 'gitGraph']
+  });
+
+  // Add a preprocessor to fix XYChart excessive quotes
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'xychart' && !def.trim().startsWith('xychart')) {
+      return def;
+    }
+
+    // Fix excessive quotes in xychart syntax
+    return def.replace(/"{2,}/g, '"');
+  }, {
+    name: 'xychart-quotes-fix',
+    priority: 140,
+    diagramTypes: ['xychart']
+  });
+
+  // Add a preprocessor to fix flowchart line break issues
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      // Fix incomplete node definitions that end with newlines
+      let processedDef = definition;
+
+      // Fix nodes that have incomplete label definitions - ensure proper closing
+      processedDef = processedDef.replace(/(\w+)\[([^\]]*)\n/g, '$1["$2"]');
+
+      // Ensure proper spacing around arrows
+      processedDef = processedDef.replace(/(\w+)-->/g, '$1 -->');
+      processedDef = processedDef.replace(/-->(\w+)/g, '--> $1');
+
+      return processedDef;
+    }, {
+    name: 'flowchart-line-break-fix',
+    priority: 190,
+    diagramTypes: ['flowchart', 'graph']
+  });
+  // Add a quote cleanup preprocessor that runs first to fix quote multiplication
   registerPreprocessor((def: string, type: string) => {
     if (type !== 'flowchart' && !def.startsWith('flowchart ') && !def.startsWith('graph ')) {
+      return def;
+    }
+
+    let finalDef = def;
+    console.log('Quote cleanup - before:', finalDef.substring(0, 200));
+
+    // Fix quote multiplication by cleaning up malformed quotes
+    finalDef = finalDef.replace(/(\w+)\[([^\]]*)\]/g, (match, nodeId, content) => {
+      // Skip if this is already properly quoted
+      if (content.match(/^"[^"]*"$/)) {
+        return match;
+      }
+
+      // If content has multiple quotes, excessive quotes, or malformed quotes, clean it up
+      if (content.includes('""') || content.match(/"{2,}/) || content.includes('\\"') || content.match(/^".*".*"/)) {
+        // Extract the actual text content by removing all quote variations and trailing backslashes
+        const cleanContent = content.replace(/^"+|"+$/g, '').replace(/\\"/g, '"').replace(/"{2,}/g, '"').replace(/\\+$/g, '');
+        console.log(`Cleaning quotes for ${nodeId}: "${content}" -> "${cleanContent}"`);
+        return `${nodeId}["${cleanContent}"]`;
+      }
+      return match;
+    });
+
+    console.log('Quote cleanup - after:', finalDef.substring(0, 200));
+    return finalDef;
+  }, {
+    name: 'quote-cleanup',
+    priority: 200, // High priority to run first
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor specifically for subgraph syntax
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'flowchart' && !def.startsWith('flowchart') && !def.startsWith('graph')) {
       return def;
     }
 
@@ -197,30 +453,47 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['flowchart', 'graph']
   });
 
-  // Add a preprocessor to fix mixed node shapes in flowcharts
-  registerPreprocessor((def: string, type: string) => {
-    if (type !== 'flowchart' && !def.startsWith('flowchart ') && !def.startsWith('graph ')) {
+  registerPreprocessor((def: string, type: string): string => {
+    if (type !== 'flowchart' && !def.startsWith('flowchart') && !def.startsWith('graph')) {
       return def;
     }
 
     let finalDef = def;
 
-    // Normalize mixed node shapes - convert parentheses to square brackets for consistency
-    // This handles cases like: A[text] --> B(text) which can cause parsing issues
-    finalDef = finalDef.replace(/(\w+)\(([^)]+)\)/g, '$1["$2"]');
-    
-    // Fix node references in arrows that might have shape syntax
-    finalDef = finalDef.replace(/(\w+)\[([^\]]+)\]\s*-->\s*(\w+)\(([^)]+)\)/g, '$1["$2"] --> $3["$4"]');
-    
-    // Ensure all node labels are properly quoted if they contain special characters
-    finalDef = finalDef.replace(/(\w+)\[([^\]"]+[&(),/\s][^\]"]*)\]/g, (match, node, label) => {
-      // Only add quotes if not already quoted and contains special chars
-      return label.includes('"') ? match : `${node}["${label}"]`;
+    console.log('Mixed node shapes - processing:', finalDef.substring(0, 200));
+    finalDef = finalDef.replace(/(\w+)\[([^\]]*)\]/g, (match, nodeId, content) => {
+      // Skip if already properly quoted
+      if (content.match(/^"[^"]*"$/) || content.match(/^'[^']*'$/)) {
+        return match;
+      }
+
+      // Only quote if content has special characters and isn't already quoted
+      if (/[()\/\n<>\-]/.test(content)) {
+        // Escape any existing quotes and wrap in quotes
+        const escapedContent = content.replace(/"/g, '\\"');
+        return `${nodeId}["${escapedContent}"]`;
+      }
+      return match;
+    });
+    finalDef = finalDef.replace(/(\w+)\(([^)]*)\)/g, (match, nodeId, content) => {
+      // Skip if already properly quoted
+      if (content.match(/^"[^"]*"$/) || content.match(/^'[^']*'$/)) {
+        return match;
+      }
+
+      if (/[\[\]\/\n<>\-]/.test(content)) {
+        const escapedContent = content.replace(/"/g, '\\"');
+        return `${nodeId}("${escapedContent}")`;
+      }
+      return match;
     });
 
+
+    console.log('Mixed node shapes - result:', finalDef.substring(0, 200));
+    console.log('Final processed definition length:', finalDef.length);
     return finalDef;
   }, {
-    name: 'mixed-node-shapes-fix',
+    name: 'special-char-in-node-label-fix',
     priority: 135,
     diagramTypes: ['flowchart', 'graph']
   });
@@ -244,7 +517,7 @@ export function initMermaidEnhancer(): void {
 
   // Add a specific preprocessor for complex flowcharts
   registerPreprocessor((def: string, type: string) => {
-    if (type !== 'flowchart' && !def.startsWith('flowchart ') && !def.startsWith('graph ')) {
+    if (type !== 'flowchart' && !def.startsWith('flowchart') && !def.startsWith('graph')) {
       return def;
     }
 
@@ -343,11 +616,132 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['xychart']
   });
 
+  // Add a preprocessor to fix Sankey diagram line break issues
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'sankey' && !def.trim().startsWith('sankey-beta') && !def.trim().startsWith('sankey')) {
+      return def;
+    }
+
+    // Fix line break issues in sankey diagrams
+    let lines = def.split('\n');
+    let result: string[] = [];
+
+    for (let line of lines) {
+      let trimmedLine = line.trim();
+
+      // Skip empty lines
+      if (!trimmedLine) {
+        continue;
+      }
+
+      // Keep the sankey-beta header as is
+      if (trimmedLine.startsWith('sankey')) {
+        result.push(trimmedLine);
+      } else if (trimmedLine.includes(',')) {
+        // Ensure each data line has proper comma separation and no extra whitespace
+        line = line.replace(/\s+/g, ' ').trim();
+        result.push(line);
+      }
+    }
+
+    return result.join('\n');
+  }, {
+    name: 'sankey-line-break-fix',
+    priority: 115,
+    diagramTypes: ['sankey', 'sankey-beta']
+  });
+
+  // Add a preprocessor to fix Timeline diagram syntax issues
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('timeline')) {
+      return def;
+    }
+
+    // Fix timeline diagram syntax issues
+    let lines = def.split('\n');
+    let result: string[] = [];
+    let inSection = false;
+
+    for (let line of lines) {
+      let trimmedLine = line.trim();
+
+      // Skip empty lines
+      if (!trimmedLine) {
+        continue;
+      }
+
+      // Handle timeline header
+      if (trimmedLine.startsWith('timeline')) {
+        result.push(trimmedLine);
+        continue;
+      }
+
+      // Handle title
+      if (trimmedLine.startsWith('title ')) {
+        result.push('    ' + trimmedLine);
+        continue;
+      }
+
+      // Handle sections
+      if (trimmedLine.startsWith('section ')) {
+        result.push('    ' + trimmedLine);
+        inSection = true;
+        continue;
+      }
+
+      // Handle events within sections
+      if (inSection && trimmedLine.includes(' : ')) {
+        result.push('        ' + trimmedLine);
+        continue;
+      }
+
+      // Default case - preserve line with proper indentation
+      if (trimmedLine) {
+        result.push('    ' + trimmedLine);
+      }
+    }
+
+    return result.join('\n');
+  }, {
+    name: 'timeline-syntax-fix',
+    priority: 120,
+    diagramTypes: ['timeline']
+  });
+
+  // Add a preprocessor to fix Gantt diagram date format issues
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'gantt' && !def.trim().startsWith('gantt')) {
+      return def;
+    }
+
+    // Fix gantt diagram date format issues
+    let processedDef = def;
+
+    // Fix date format - convert "50s" style dates to proper format
+    processedDef = processedDef.replace(/(\d+)s/g, '$1');
+
+    // Ensure proper date format is set
+    if (!processedDef.includes('dateFormat')) {
+      processedDef = processedDef.replace(/^gantt/, 'gantt\n    dateFormat YYYY-MM-DD');
+    }
+
+    // Fix axis format
+    if (!processedDef.includes('axisFormat')) {
+      processedDef = processedDef.replace(/dateFormat[^\n]*/, '$&\n    axisFormat %Y-%m-%d');
+    }
+
+    return processedDef;
+  }, {
+    name: 'gantt-date-format-fix',
+    priority: 120,
+    diagramTypes: ['gantt']
+  });
+
   // Fix for sequence diagram activation/deactivation issues
   registerPreprocessor((def: string, type: string) => {
-    if (type !== 'sequenceDiagram') return def;
+    if (type !== 'sequenceDiagram' && !def.trim().startsWith('sequenceDiagram')) return def;
 
-    // Track activation state to prevent deactivating inactive participants
+    // Track activation state more carefully to prevent deactivating inactive participants
     const lines = def.split('\n');
     const activationState: Record<string, boolean> = {};
     const result: string[] = [];
@@ -355,37 +749,75 @@ export function initMermaidEnhancer(): void {
     for (let line of lines) {
       line = line.trim();
 
+      // Skip empty lines and comments
+      if (!line || line.startsWith('%%')) {
+        result.push(line);
+        continue;
+      }
+
+      // Skip lines that are just whitespace or comments
+      if (!line || line.startsWith('%%') || line.startsWith('Note')) {
+        result.push(line);
+        continue;
+      }
+
       // Track activations
       if (line.includes('activate ')) {
-        const participant = line.replace(/activate\s+(\w+).*/, '$1').trim();
-        activationState[participant] = true;
+        const activateMatch = line.match(/activate\s+(\w+)/);
+        const participant = activateMatch ? activateMatch[1] : null;
+        if (!participant) continue;
+
+        if (participant) {
+          activationState[participant] = true;
+        }
         result.push(line);
       }
       // Check deactivations
       else if (line.includes('deactivate ')) {
-        const participant = line.replace(/deactivate\s+(\w+).*/, '$1').trim();
-        if (activationState[participant]) {
+        const deactivateMatch = line.match(/deactivate\s+(\w+)/);
+        const participant = deactivateMatch ? deactivateMatch[1] : null;
+
+        if (participant && activationState[participant]) {
           activationState[participant] = false;
           result.push(line);
-        } else {
+        } else if (participant) {
           // Skip this deactivation as the participant is not active
           console.warn(`Skipping deactivation for inactive participant: ${participant}`);
           // Add as comment for debugging
           result.push(`%%${line} (skipped - participant not active)`);
         }
       }
-      // Handle implicit deactivation via "deactivate" keyword
+      // Handle activation via message arrows
+      else if (line.includes('->>+') || line.includes('-->>+')) {
+        const activationMatch = line.match(/.*?->>?\+\s*(\w+)/);
+        if (activationMatch && activationMatch[1]) {
+          activationState[activationMatch[1]] = true;
+        }
+        result.push(line);
+      }
+      // Handle deactivation via message arrows
+      else if (line.includes('->>-') || line.includes('-->>-')) {
+        const deactivationMatch = line.match(/.*?->>?-\s*(\w+)/);
+        if (deactivationMatch && deactivationMatch[1] && activationState[deactivationMatch[1]]) {
+          activationState[deactivationMatch[1]] = false;
+        }
+        result.push(line);
+      }
+
+      // Handle lines with "deactivate" at the end but no explicit participant
       else if (line.endsWith('deactivate')) {
-        // This is a shorthand deactivation, check if we can determine the participant
-        const match = line.match(/(\w+)-->>.*deactivate$/);
-        if (match && match[1]) {
-          const participant = match[1];
-          if (!activationState[participant]) {
-            // Convert to a regular line without deactivation
-            line = line.replace(/deactivate$/, '');
-            console.warn(`Removed deactivation for inactive participant: ${participant}`);
-          } else {
-            activationState[participant] = false;
+        // Extract participant from the message line
+        const messageMatch = line.match(/(\w+)->>.*?(\w+).*deactivate$/);
+        if (messageMatch) {
+          const targetParticipant = messageMatch[2];
+          if (targetParticipant && !activationState[targetParticipant]) {
+            // Remove the deactivate keyword since the participant isn't active
+            const cleanLine = line.replace(/\s*deactivate\s*$/, '');
+            result.push(cleanLine);
+            console.warn(`Removed deactivation for inactive participant: ${targetParticipant}`);
+            continue;
+          } else if (targetParticipant) {
+            activationState[targetParticipant] = false;
           }
         }
         result.push(line);
@@ -400,6 +832,41 @@ export function initMermaidEnhancer(): void {
     name: 'sequence-activation-fix',
     priority: 100,
     diagramTypes: ['sequenceDiagram']
+  });
+
+  // Add a specific preprocessor to handle the exact parsing errors we're seeing
+  registerPreprocessor((def: string, type: string) => {
+    // Fix incomplete flowchart connections that cause "NODE_STRING" errors
+    let processedDef = def;
+
+    // Fix patterns like "F  H    G  I" (incomplete connections)
+    processedDef = processedDef.replace(/(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s*$/gm,
+      '$1 --> $2\n    $2 --> $3\n    $3 --> $4');
+
+    return processedDef;
+  }, {
+    name: 'incomplete-connection-fix',
+    priority: 90,
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  registerPreprocessor((def: string, type: string) => {
+    // Handle all diagram types that might have parsing issues
+    let processedDef = def;
+
+    // Fix the specific "Load User Profil" truncation error
+    processedDef = processedDef.replace(/C\["Load User Profil$/m, 'C["Load User Profile"]');
+    processedDef = processedDef.replace(/(\w+)\["([^"]*?)$/gm, '$1["$2"]');
+
+    // Fix class diagram ">" dependency syntax
+    processedDef = processedDef.replace(/}\s*>\s*(\w+)\s*{/g, '}\n    $1 --|> ');
+    processedDef = processedDef.replace(/(class\s+\w+\s*{\s*)>\s*/g, '$1');
+
+    return processedDef;
+  }, {
+    name: 'parsing-error-fix',
+    priority: 85,
+    diagramTypes: ['*']
   });
 
   // Register a preprocessor to handle color values in classDef statements
@@ -444,17 +911,17 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['*']
   });
 
-
-  // Fix for state diagram shape function errors
   registerPreprocessor((def: string, type: string) => {
-    if (type !== 'stateDiagram' && type !== 'stateDiagram-v2') return def;
-
     // Add explicit shape definitions for states that might be causing issues
     const lines = def.split('\n');
     const states = new Set<string>();
 
     // First pass: collect all state names
     for (const line of lines) {
+      // Skip if not a state diagram type, but allow processing if it looks like one
+      if (type && type !== 'stateDiagram' && type !== 'stateDiagram-v2' && !line.match(/^\s*stateDiagram/i)) {
+        continue;
+      }
       // Match state definitions and transitions
       const stateMatches = line.match(/\b(\w+)\b\s*:/g) || [];
       const transitionMatches = line.match(/\b(\w+)\b\s*-->/g) || [];
@@ -473,8 +940,7 @@ export function initMermaidEnhancer(): void {
     // Second pass: ensure all states have a shape definition
     const result = [...lines];
     const stateDefSection = lines.findIndex(line =>
-      line.trim().startsWith('stateDiagram') ||
-      line.trim().startsWith('stateDiagram-v2')
+      line.trim().match(/^stateDiagram(?:-v2)?/i)
     );
 
     if (stateDefSection !== -1) {
@@ -526,12 +992,56 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['*']
   });
 
-  // Register default error handlers
+  // Register a preprocessor to improve dark mode text visibility by using stroke colors for text
+  registerPreprocessor((def: string, type: string) => {
+    // Only apply to diagrams that might have classDef or style statements
+    if (!def.includes('classDef') && !def.includes('style ')) {
+      return def;
+    }
 
-  // Generic error handler that provides a fallback rendering
+    let processedDef = def;
+
+    // Extract classDef statements and modify them for better dark mode visibility
+    // Pattern: classDef className fill:#lightcolor,stroke:#darkcolor,stroke-width:2px
+    processedDef = processedDef.replace(
+      /classDef\s+(\w+)\s+fill:(#[a-fA-F0-9]{6}),stroke:(#[a-fA-F0-9]{6}),stroke-width:(\d+px)/g,
+      (match, className, fillColor, strokeColor, strokeWidth) => {
+        // Add color property using the stroke color for better text visibility
+        return `classDef ${className} fill:${fillColor},stroke:${strokeColor},stroke-width:${strokeWidth},color:${strokeColor}`;
+      }
+    );
+
+    // Handle style statements for individual nodes
+    // Pattern: style NodeName fill:#color,stroke:#color,stroke-width:3px
+    processedDef = processedDef.replace(
+      /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{6}),stroke:(#[a-fA-F0-9]{6}),stroke-width:(\d+px)/g,
+      (match, nodeName, fillColor, strokeColor, strokeWidth) => {
+        // Add color property using the stroke color, or a high-contrast color if stroke is too light
+        const contrastColor = getContrastColor(strokeColor, fillColor);
+        return `style ${nodeName} fill:${fillColor},stroke:${strokeColor},stroke-width:${strokeWidth},color:${contrastColor}`;
+      }
+    );
+
+    // Handle cases where stroke color might be too light (like #333 which is common)
+    // Replace #333 strokes with darker colors for better text contrast
+    processedDef = processedDef.replace(
+      /(stroke:#333)/g,
+      'stroke:#000000'
+    );
+
+    return processedDef;
+  }, {
+    name: 'dark-mode-text-visibility-fix',
+    priority: 105,
+    diagramTypes: ['*']
+  });
+
+  // Default error handler (lowest priority)
   registerErrorHandler((error: Error, context: ErrorContext) => {
     const { container, definition, diagramType } = context;
 
+    // This handler should only run if no other handler has dealt with the error
+    // and if a container is provided to display the error.
     if (!container) return false;
 
     // Create a fallback visualization
@@ -563,7 +1073,7 @@ export function initMermaidEnhancer(): void {
             border-radius: 4px;
             overflow: auto;
             max-height: 300px;
-          "><code>${definition.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>
+          "><code>${definition.replace(/</g, '<').replace(/>/g, '>')}</code></pre>
         </div>
       </div>
     `;
@@ -583,11 +1093,149 @@ export function initMermaidEnhancer(): void {
     return true;
   }, {
     name: 'fallback-renderer',
-    priority: 10,
+    priority: 0, // Lowest priority, runs if nothing else handled it
     errorTypes: ['*']
   });
 
   console.log('Mermaid enhancer initialized with default preprocessors and error handlers');
+}
+
+/**
+ * Get a high-contrast color for text based on fill and stroke colors
+ * @param strokeColor - The stroke color (hex)
+ * @param fillColor - The fill color (hex)
+ * @returns - A color that provides good contrast
+ */
+function getContrastColor(strokeColor: string, fillColor: string): string {
+  // Convert hex to RGB for luminance calculation
+  const hexToRgb = (hex: string) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16)
+    } : null;
+  };
+
+  const strokeRgb = hexToRgb(strokeColor);
+  if (!strokeRgb) return strokeColor;
+
+  // Calculate relative luminance using proper sRGB formula
+  const luminance = (0.299 * strokeRgb.r + 0.587 * strokeRgb.g + 0.114 * strokeRgb.b) / 255;
+
+  // If stroke color is too light (luminance > 0.5), use a darker version or black
+  return luminance > 0.5 ? '#000000' : strokeColor;
+}
+
+/**
+ * Get optimal text color based on background color with special handling for problematic colors
+ * @param backgroundColor - The background color (hex)
+ * @returns - The best contrasting text color
+ */
+function getOptimalTextColor(backgroundColor: string): string {
+  // Convert hex to RGB
+  const hexToRgb = (hex: string) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16)
+    } : null;
+  };
+
+  const rgb = hexToRgb(backgroundColor);
+  if (!rgb) return '#000000';
+
+  // Special handling for yellow and yellow-ish colors
+  // Yellow has high luminance but white text on yellow is terrible
+  if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+    return '#000000'; // Always use black on yellow/yellow-ish
+  }
+
+  // Special handling for beige/cream colors (high R, G, moderate B)
+  if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
+    return '#000000'; // Always use black on beige/cream
+  }
+
+  // Calculate relative luminance using proper sRGB formula
+  const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+  
+  // Use a more conservative threshold - prefer black text unless background is quite dark
+  return luminance > 0.4 ? '#000000' : '#ffffff';
+}
+
+/**
+ * Get optimal text color based on background color with special handling for problematic colors
+ * @param backgroundColor - The background color (hex)
+ * @returns - The best contrasting text color
+ */
+function getOptimalTextColor(backgroundColor: string): string {
+  // Convert hex to RGB
+  const hexToRgb = (hex: string) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16)
+    } : null;
+  };
+
+  const rgb = hexToRgb(backgroundColor);
+  if (!rgb) return '#000000';
+
+  // Special handling for yellow and yellow-ish colors
+  // Yellow has high luminance but white text on yellow is terrible
+  if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+    return '#000000'; // Always use black on yellow/yellow-ish
+  }
+
+  // Special handling for beige/cream colors (high R, G, moderate B)
+  if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
+    return '#000000'; // Always use black on beige/cream
+  }
+
+  // Calculate relative luminance using proper sRGB formula
+  const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+  
+  // Use a more conservative threshold - prefer black text unless background is quite dark
+  return luminance > 0.4 ? '#000000' : '#ffffff';
+}
+
+/**
+ * Get optimal text color based on background color with special handling for problematic colors
+ * @param backgroundColor - The background color (hex)
+ * @returns - The best contrasting text color
+ */
+function getOptimalTextColor(backgroundColor: string): string {
+  // Convert hex to RGB
+  const hexToRgb = (hex: string) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16)
+    } : null;
+  };
+
+  const rgb = hexToRgb(backgroundColor);
+  if (!rgb) return '#000000';
+
+  // Special handling for yellow and yellow-ish colors
+  // Yellow has high luminance but white text on yellow is terrible
+  if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+    return '#000000'; // Always use black on yellow/yellow-ish
+  }
+
+  // Special handling for beige/cream colors (high R, G, moderate B)
+  if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
+    return '#000000'; // Always use black on beige/cream
+  }
+
+  // Calculate relative luminance using proper sRGB formula
+  const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+  
+  // Use a more conservative threshold - prefer black text unless background is quite dark
+  return luminance > 0.4 ? '#000000' : '#ffffff';
 }
 
 /**
@@ -646,11 +1294,8 @@ export function enhanceMermaid(mermaid: any): void {
       return { svg: '', bindFunctions: () => { } };
     }
   };
-
-  console.log('Mermaid library enhanced with preprocessing and error handling');
 }
 
-// Export a function to initialize everything
 export default function initMermaidSupport(mermaidInstance?: any): void {
   initMermaidEnhancer();
 
