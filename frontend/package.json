@@ -51,7 +51,7 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build && npm run copy-to-templates",
-    "copy-to-templates": "rm -rf ../templates/* && cp -r build/* ../templates && cp -r public/testcases ../templates/",
+    "copy-to-templates": "rm -rf ../templates/* && cp -r build/* ../templates",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },

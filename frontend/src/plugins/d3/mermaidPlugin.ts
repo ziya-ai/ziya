@@ -76,6 +76,9 @@ export const mermaidPlugin: D3RenderPlugin = {
     render: async (container: HTMLElement, d3: any, spec: MermaidSpec, isDarkMode: boolean): Promise<void> => {
         console.log(`🎯 MERMAID PLUGIN RENDER CALLED with spec:`, spec);
         console.log(`Mermaid plugin render called with spec type: ${spec.type}, definition length: ${spec.definition.length}`);
+        console.log('📊 DIAGRAM PREVIEW:', spec.definition.substring(0, 100).replace(/\n/g, '\\n'));
+        console.log('🔍 HAS HTML TAGS:', spec.definition.includes('<br'));
+
         let renderSuccessful = false;
         try {
             container.innerHTML = '';
@@ -137,12 +140,35 @@ export const mermaidPlugin: D3RenderPlugin = {
             // Pre-process the definition to fix common syntax issues
             let processedDefinition = spec.definition;
 
+            console.log('Original definition (first 200 chars):', processedDefinition.substring(0, 200));
+
+            // FIRST: Remove HTML tags that cause parsing issues
+            processedDefinition = processedDefinition.replace(/<br\s*\/?>/gi, '\n');
+            processedDefinition = processedDefinition.replace(/<\/br>/gi, '');
+            processedDefinition = processedDefinition.replace(/<[^>]+>/g, '');
+
             // Detect diagram type
             const firstLine = processedDefinition.trim().split('\n')[0].toLowerCase();
             const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
 
+            console.log('After HTML removal (first 200 chars):', processedDefinition.substring(0, 200));
+
             // Apply diagram-specific fixes
             if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
+                // CRITICAL: Fix parentheses and special characters in node labels
+                // This must happen before other processing to prevent parsing errors
+                processedDefinition = processedDefinition.replace(/(\w+)\[([^\]]*)\]/g, (match, nodeId, content) => {
+                    // If content contains parentheses, slashes, or line breaks and isn't quoted, quote it
+                    if (/[()\/\n<>]/.test(content) && !content.match(/^".*"$/)) {
+                        // Don't double-escape already escaped quotes
+                        const cleanContent = content.replace(/\\"/g, '"').replace(/"/g, '\\"');
+                        return `${nodeId}["${cleanContent}"]`;
+                    }
+                    return match;
+                });
+
+                console.log('After parentheses fix (first 200 chars):', processedDefinition.substring(0, 200));
+
                 // Fix subgraph class syntax
                 processedDefinition = processedDefinition.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 style_$2');
                 processedDefinition = processedDefinition.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
@@ -294,6 +320,13 @@ export const mermaidPlugin: D3RenderPlugin = {
             let svg: string;
             try {
                 const result = await mermaid.render(mermaidId, processedDefinition);
+                
+                // Check if result is valid
+                if (!result || typeof result !== 'object') {
+                    console.error('Invalid mermaid render result:', result);
+                    throw new Error('Mermaid render returned invalid result');
+                }
+                console.log('Mermaid render result:', result);
                 svg = result.svg;
                 renderSuccessful = true;
                 console.log(`Mermaid render successful, got SVG of length: ${svg.length}`);
@@ -301,6 +334,7 @@ export const mermaidPlugin: D3RenderPlugin = {
                 renderSuccessful = true;
                 // Check if we got a valid SVG
                 if (!svg || svg.trim() === '') {
+                    console.error('Empty SVG returned from Mermaid render for definition:', processedDefinition.substring(0, 200));
                     throw new Error('Failed to get SVG element');
                 }
 
@@ -310,6 +344,16 @@ export const mermaidPlugin: D3RenderPlugin = {
                 }
             } catch (renderError) {
                 console.error('Error rendering mermaid diagram:', renderError);
+                
+                // Log the specific error details
+                if (renderError instanceof Error) {
+                    console.error('Error name:', renderError.name);
+                    console.error('Error message:', renderError.message);
+                    console.error('Error stack:', renderError.stack);
+                }
+                
+                console.error('Failed definition (first 500 chars):', processedDefinition.substring(0, 500));
+                console.error('Processed definition that failed:', processedDefinition.substring(0, 500));
                 throw renderError;
             }
 
@@ -339,7 +383,13 @@ export const mermaidPlugin: D3RenderPlugin = {
             wrapper.innerHTML = svg;
 
             // Remove the loading spinner
-            container.removeChild(loadingSpinner);
+            try {
+                if (loadingSpinner && loadingSpinner.parentNode === container) {
+                    container.removeChild(loadingSpinner);
+                }
+            } catch (e) {
+                console.warn('Could not remove loading spinner (this is normal for multiple renders):', e instanceof Error ? e.message : String(e));
+            }
 
             // Add wrapper to container
             container.appendChild(wrapper);
@@ -385,6 +435,62 @@ export const mermaidPlugin: D3RenderPlugin = {
                 });
             };
 
+            // Enhanced function to improve text visibility in dark mode
+            const enhanceDarkModeTextVisibility = (svgElement: SVGElement) => {
+                // Get all text elements
+                const textElements = svgElement.querySelectorAll('text');
+                
+                textElements.forEach(textEl => {
+                    // Find the parent node to get its styling context
+                    let parentNode = textEl.parentElement;
+                    while (parentNode && !parentNode.classList.contains('node') && !parentNode.classList.contains('cluster')) {
+                        parentNode = parentNode.parentElement;
+                    }
+                    
+                    if (parentNode) {
+                        // Look for shape elements (rect, circle, polygon, path) in the parent
+                        const shapeElement = parentNode.querySelector('rect, circle, polygon, path');
+                        if (shapeElement) {
+                            const stroke = shapeElement.getAttribute('stroke');
+                            const fill = shapeElement.getAttribute('fill');
+                            
+                            // If we have a stroke color, use it for text (it's usually darker/more saturated)
+                            if (stroke && stroke !== 'none' && stroke !== '#333' && stroke !== '#333333') {
+                                textEl.setAttribute('fill', stroke);
+                            } else if (fill && fill !== 'none') {
+                                // If no good stroke, derive optimal contrasting color from fill
+                                const contrastColor = getTextContrastColor(fill);
+                                textEl.setAttribute('fill', contrastColor);
+                            } else {
+                                // Fallback to high contrast color
+                                textEl.setAttribute('fill', '#000000');
+                            }
+                        }
+                    }
+                });
+                
+                // Special handling for edge labels and other floating text
+                svgElement.querySelectorAll('.edgeLabel text').forEach(textEl => {
+                    const currentFill = textEl.getAttribute('fill');
+                    // If text is white or very light, make it more visible
+                    if (!currentFill || currentFill === '#ffffff' || currentFill === 'white' || currentFill === '#eceff4') {
+                        textEl.setAttribute('fill', '#000000');
+                    }
+                });
+
+                // Handle gantt chart and other diagram text that might be on colored backgrounds
+                svgElement.querySelectorAll('text').forEach(textEl => {
+                    const parentRect = textEl.closest('g')?.querySelector('rect');
+                    if (parentRect) {
+                        const bgColor = parentRect.getAttribute('fill');
+                        if (bgColor && bgColor !== 'none') {
+                            const optimalColor = getOptimalTextColor(bgColor);
+                            textEl.setAttribute('fill', optimalColor);
+                        }
+                    }
+                });
+            };
+
             // Enhance dark theme visibility for specific elements
             if (isDarkMode && svgElement) {
                 requestAnimationFrame(() => {
@@ -406,16 +512,9 @@ export const mermaidPlugin: D3RenderPlugin = {
                         el.setAttribute('stroke-width', '1.5px');
                     });
 
-                    // Text on darker backgrounds should be black for contrast
-                    svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
-                        el.setAttribute('fill', '#000000');
-                    });
-
-                    // Text on lighter backgrounds should be white for contrast
-                    svgElement.querySelectorAll('.edgeLabel text, text:not(.node .label text):not(.cluster .label text)').forEach(el => {
-                        el.setAttribute('fill', '#eceff4');
-                    });
-
+                    // Apply enhanced text visibility improvements
+                    enhanceDarkModeTextVisibility(svgElement);
+                    
                     svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
                         el.setAttribute('stroke-width', '1.5px');
@@ -943,3 +1042,74 @@ ${svgData}`;
         }
     }
 };
+
+/**
+ * Get a contrasting text color based on background color
+ * @param backgroundColor - The background color (hex) 
+ * @returns - A contrasting color for text
+ */
+function getTextContrastColor(backgroundColor: string): string {
+    // Convert hex to RGB
+    const hexToRgb = (hex: string) => {
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+        } : null;
+    };
+
+    const rgb = hexToRgb(backgroundColor);
+    if (!rgb) return '#000000';
+
+    // Special handling for yellow and yellow-ish colors
+    // Yellow has high luminance but white text on yellow is terrible
+    if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+        return '#000000'; // Always use black on yellow/yellow-ish
+    }
+
+    // Special handling for beige/cream colors (high R, G, moderate B)
+    if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
+        return '#000000'; // Always use black on beige/cream
+    }
+
+    // Calculate relative luminance using proper sRGB formula
+    const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+    
+    // Use a more conservative threshold - prefer black text unless background is quite dark
+    return luminance > 0.4 ? '#000000' : '#ffffff';
+}
+
+/**
+ * Get optimal text color based on background color with special handling for problematic colors
+ * @param backgroundColor - The background color (hex)
+ * @returns - The best contrasting text color
+ */
+function getOptimalTextColor(backgroundColor: string): string {
+    // Convert hex to RGB
+    const hexToRgb = (hex: string) => {
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+        } : null;
+    };
+
+    const rgb = hexToRgb(backgroundColor);
+    if (!rgb) return '#000000';
+
+    // Special handling for yellow and yellow-ish colors
+    if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+        return '#000000'; // Always use black on yellow/yellow-ish
+    }
+
+    // Special handling for beige/cream colors
+    if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
+        return '#000000'; // Always use black on beige/cream
+    }
+
+    // Calculate relative luminance and use conservative threshold
+    const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+    return luminance > 0.4 ? '#000000' : '#ffffff';
+}
