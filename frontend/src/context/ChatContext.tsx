@@ -1,10 +1,9 @@
-import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo, memo, useLayoutEffect } from 'react';
+import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
-import { debounce } from '../utils/debounce';
-import { Modal, message } from 'antd';
-import { performEmergencyRecovery } from '../utils/emergencyRecovery';
+import { message } from 'antd';
+
 interface ChatContext {
     streamedContentMap: Map<string, string>;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
@@ -61,7 +60,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isStreamingAny, setIsStreamingAny] = useState(false);
     const [processingState, setProcessingState] = useState<string>('idle');
     const [conversations, setConversations] = useState<Conversation[]>([]);
-    const [currentResponse, setCurrentResponse] = useState<Message | null>(null);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
     const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
     const currentConversationRef = useRef<string>(currentConversationId);
@@ -69,7 +67,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
     const [isTopToBottom, setIsTopToBottom] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
-    const lastSavedState = useRef<string>('');
     const [userHasScrolled, setUserHasScrolled] = useState(false);
     const [folders, setFolders] = useState<ConversationFolder[]>([]);
     const [dbError, setDbError] = useState<string | null>(null);
@@ -78,10 +75,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [folderFileSelections, setFolderFileSelections] = useState<Map<string, string[]>>(new Map());
     const [folderPanelWidth, setFolderPanelWidth] = useState<number>(300); // Default width
     const processedModelChanges = useRef<Set<string>>(new Set());
-    const contentRef = useRef<HTMLDivElement>(null);
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
     const isRecovering = useRef<boolean>(false);
-    const pendingSave = useRef<NodeJS.Timeout | null>(null);
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
@@ -176,25 +171,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
     }, [streamingConversations]);
 
-    const shouldUpdateState = (newState: Conversation[], force: boolean = false) => {
-
-        const newStateStr = JSON.stringify(newState);
-
-        // Check if current conversation exists in new state
-        const currentConvExists = newState.some(conv => conv.id === currentConversationRef.current);
-        if (!currentConvExists && conversations.some(conv => conv.id === currentConversationRef.current)) {
-            console.warn('Preventing update that would remove current conversation');
-            return false;
-        }
-
-        if (newStateStr === lastSavedState.current) {
-            return false;
-        }
-
-        lastSavedState.current = newStateStr;
-        return true;
-    };
-
     // Enhanced backup system with corruption detection
     const createBackup = useCallback(async (conversations: Conversation[]) => {
         try {
@@ -225,22 +201,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
         return saveQueue.current;
     }, [createBackup]);
-
-    const saveConversationsWithDebounce = useCallback(async (conversations: Conversation[]) => {
-        if (pendingSave.current) {
-            clearTimeout(pendingSave.current);
-        }
-
-        pendingSave.current = setTimeout(async () => {
-            try {
-                await queueSave(conversations);
-            } catch (error) {
-                console.error('Failed to save conversations:', error);
-                setDbError(error instanceof Error ? error.message : 'Failed to save conversations');
-            }
-            pendingSave.current = null;
-        }, 1000);
-    }, [queueSave]);
 
     const addMessageToConversation = useCallback((message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
         const conversationId = targetConversationId || currentConversationId;
@@ -309,7 +269,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             return updatedConversations;
         });
-    }, [currentConversationId, currentFolderId, folderPanelWidth, conversations]);
+    }, [currentConversationId, currentFolderId, folderPanelWidth, queueSave]);
 
     // Add a function to handle model change notifications
     const handleModelChange = useCallback((event: CustomEvent) => {
@@ -381,7 +341,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Mark this change as processed
             processedModelChanges.current.add(changeKey);
         }
-    }, [currentFolderId]);
+    }, [currentConversationId, conversations]);
 
     const startNewChat = useCallback((specificFolderId?: string | null) => {
         return new Promise<void>((resolve, reject) => {
@@ -425,7 +385,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 reject(error);
             }
         });
-    }, [currentConversationId, currentFolderId, conversations]);
+    }, [currentConversationId, currentFolderId, conversations, queueSave]);
 
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
@@ -479,7 +439,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsLoadingConversation(false);
         }
         setStreamedContentMap(new Map());
-    }, [currentConversationId, conversations, streamingConversations, streamedContentMap]);
+    }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave]);
 
     // Folder management functions
     const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
@@ -556,7 +516,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const freshFolders = await db.getFolders();
             setFolders(freshFolders);
         }
-    }, [currentFolderId, setConversations, setFolders, setCurrentFolderId]); // Removed 'conversations' from deps, relies on fetching fresh from DB
+    }, [currentFolderId, setConversations, setFolders, setCurrentFolderId, queueSave]);
 
     const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
         try {
@@ -641,7 +601,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         } finally {
             isRecovering.current = false;
         }
-    }, [createBackup]);
+    }, [createBackup, currentConversationId]);
 
     useEffect(() => {
         initializeWithRecovery();
@@ -665,7 +625,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 clearInterval(backupInterval);
             }
         };
-    }, [initializeWithRecovery, createBackup]);
+    }, [initializeWithRecovery, createBackup, conversations]);
 
     useEffect(() => {
         // Load current messages immediately when conversation changes, regardless of folder state
@@ -717,7 +677,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             activeConversations: conversations.filter(c => c.isActive).map(c => c.id),
             streamingToOther: streamingConversations.has(currentConversationId)
         });
-    }, [currentConversationId]);
+    }, [currentConversationId, conversations, currentFolderId, streamedContentMap, streamingConversations]);
 
     const mergeConversations = useCallback((local: Conversation[], remote: Conversation[]) => {
         const merged = new Map<string, Conversation>();
@@ -804,7 +764,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             queueSave(updated).catch(console.error);
             return updated;
         });
-    }, []);
+    }, [queueSave]);
 
     const toggleMessageMute = useCallback((conversationId: string, messageIndex: number) => {
         setConversations(prev => {
@@ -822,14 +782,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return conv;
             });
             queueSave(updated).catch(console.error);
-            
+
             // Dispatch event to notify token counter of mute state change
             window.dispatchEvent(new CustomEvent('messagesMutedChanged', {
                 detail: { conversationId, messageIndex }
             }));
             return updated;
         });
-    }, []);
+    }, [queueSave]);
 
     const value = useMemo(() => ({
         streamedContentMap,

@@ -1,10 +1,9 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
-import { Folders, Message } from '../utils/types';
+import { Message } from '../utils/types';
 import { useFolderContext } from "../context/FolderContext";
 import { Tooltip, Spin, Progress, Typography, message, ProgressProps, Dropdown } from "antd";
 import { useTheme } from '../context/ThemeContext';
 import { ModelSettings } from './ModelConfigModal';
-import { InfoCircleOutlined } from '@ant-design/icons';
 import { useChatContext } from "../context/ChatContext";
 
 const getTokenCount = async (text: string): Promise<number> => {
@@ -348,7 +347,7 @@ export const TokenCountDisplay = memo(() => {
             window.removeEventListener('modelSettingsChanged', handleModelSettingsChange as unknown as EventListener);
         };
 
-    }, []);
+    }, [modelLimits]);
 
     // Include AST tokens in the total when AST is enabled
     const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0);
@@ -360,18 +359,6 @@ export const TokenCountDisplay = memo(() => {
         if (folders && checkedKeys.length > 0) {
             // Check if we're in a folder with folder-specific file selections
             const currentFolder = currentFolderId ? chatFolders.find(f => f.id === currentFolderId) : null;
-            const usesFolderContext = currentFolder && !currentFolder.useGlobalContext;
-
-            // Determine which file selections to use
-            let effectiveCheckedKeys = [...checkedKeys];
-            if (usesFolderContext) {
-                const folderSelections = currentFolderId ? folderFileSelections.get(currentFolderId) : undefined;
-                if (folderSelections) {
-                    effectiveCheckedKeys = folderSelections;
-                }
-            }
-
-            // Only recalculate without logging every time
 
             let total = 0;
             const details: { [key: string]: number } = {};
@@ -446,7 +433,7 @@ export const TokenCountDisplay = memo(() => {
         const activeMessages = messages.filter(msg => msg.muted !== true);
         const messagesContent = activeMessages.length > 0 ? activeMessages.map(msg => msg.content).join('\n') : '';
         const messageSignature = `${messages.length}:${activeMessages.length}:${messagesContent}`;
-        
+
         if (messageSignature !== previousMessagesRef.current) {
             previousMessagesRef.current = messageSignature;
             console.debug('Messages changed:', { length: messages.length, content: messagesContent.slice(0, 100) });
@@ -521,10 +508,10 @@ export const TokenCountDisplay = memo(() => {
                 }, 50);
             }
         };
-        
+
         // Also listen for general message updates that might include mute changes
         window.addEventListener('conversationUpdated', handleMuteChange as EventListener);
-        
+
         window.addEventListener('messagesMutedChanged', handleMuteChange as EventListener);
         return () => window.removeEventListener('messagesMutedChanged', handleMuteChange as EventListener);
     }, [currentConversationId, updateChatTokens]);
@@ -674,7 +661,7 @@ export const TokenCountDisplay = memo(() => {
                 </Tooltip>
             </div>
         </div>
-    ), [isLoading, totalTokenCount, chatTokenCount, combinedTokenCount, containerWidth, showDetailedTotal]);
+    ), [isLoading, combinedTokenCount, getProgressStatus, isDarkMode, tokenItems, tokenLimit]);
 
     return (
         <div className="token-display-container">

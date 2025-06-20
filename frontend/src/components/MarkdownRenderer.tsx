@@ -1,41 +1,25 @@
-import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, useId, useContext, createContext, useDebugValue, forwardRef } from 'react';
+import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId } from 'react';
 import 'prismjs/themes/prism.css';
 import { marked, Tokens } from 'marked';
-import { Alert, Button, message, Space, Spin, Tooltip } from 'antd';
-import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
+import { Alert, Button, message, Tooltip } from 'antd';
+import { parseDiff, tokenize } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import {
-    CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined, SplitCellsOutlined, BorderlessTableOutlined, NumberOutlined, EyeOutlined, FileTextOutlined, CodepenOutlined, CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, ExclamationCircleOutlined
+    SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
+    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
 } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
-import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
+import { loadPrismLanguage } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
 import type * as PrismType from 'prismjs';
-import { renderFileHeader } from './renderFileHeader';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
 
 // Define the status interface
-
-// Create a context for diff view settings to avoid window variable dependencies
-interface DiffViewContextType {
-    viewType: 'split' | 'unified';
-    setViewType: (type: 'split' | 'unified') => void;
-    displayMode: 'raw' | 'pretty';
-    setDisplayMode: (mode: 'raw' | 'pretty') => void;
-}
-
-const DiffViewContext = createContext<DiffViewContextType>({
-    viewType: 'unified',
-    setViewType: () => { },
-    displayMode: 'pretty',
-    setDisplayMode: () => { }
-});
-
 interface HunkStatus {
     applied: boolean;
     alreadyApplied?: boolean;
@@ -54,9 +38,6 @@ const hunkStatusEventBus = new EventTarget();
 const HUNK_STATUS_EVENT = 'hunkStatusUpdate';
 // Add a global set to track processed window events
 const processedWindowEvents = new Set<string>();
-
-// Add a cache for whitespace visualization
-const whitespaceVisualizationCache = new Map<string, string>();
 
 // Add a map to track which request ID corresponds to which diff element
 const diffRequestMap = new Map<string, string>();
@@ -78,13 +59,13 @@ interface ToolBlockProps {
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
     // Check if this is a security error from shell command blocking
-    const isSecurityError = content.includes('🚫 SECURITY BLOCK') || 
-                           content.includes('Command not allowed') ||
-                           content.includes('COMMAND BLOCKED');
-    
+    const isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
+        content.includes('Command not allowed') ||
+        content.includes('COMMAND BLOCKED');
+
     // Check if this is an MCP tool error
-    const isMCPError = content.includes('MCP Tool Error') || 
-                      content.includes('MCP Resource Error');
+    const isMCPError = content.includes('MCP Tool Error') ||
+        content.includes('MCP Resource Error');
 
     // If this is a security error, render it with special styling
     if (isSecurityError) {
@@ -95,6 +76,15 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                 type="warning"
                 showIcon
                 style={{ margin: '16px 0', border: '2px solid #faad14' }}
+            />
+        );
+    }
+
+    if (isMCPError) {
+        return (
+            <Alert
+                message="MCP External Error"
+                description={content}
             />
         );
     }
@@ -417,8 +407,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
         // Clean up file path for matching
         const cleanFilePath = filePath.replace(/^[ab]\//, '');
 
-        let currentFile: { oldPath: string; newPath: string } | null = null;
-        let currentFileIndex = -1;
         let inTargetFile = false;
         let collectingHunk = false;
         let currentHunkHeader: string | null = null;
@@ -440,7 +428,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
                 // Reset state for new file
                 collectingHunk = false;
                 currentHunkHeader = null;
-                currentFileIndex++;
                 currentHunkContent = [];
                 inTargetFile = false;
 
@@ -454,7 +441,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
                     if (oldPath === cleanFilePath || newPath === cleanFilePath ||
                         oldPath.endsWith(`/${cleanFilePath}`) || newPath.endsWith(`/${cleanFilePath}`)) {
                         inTargetFile = true;
-                        currentFile = { oldPath, newPath };
                         result.push(line);
 
                         // Also check the next line for index info
@@ -464,7 +450,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
                         }
                     } else {
                         inTargetFile = false;
-                        currentFile = null;
 
                         // Log for debugging
                         console.debug(`Skipping file: old=${oldPath}, new=${newPath}, target=${cleanFilePath}`);
@@ -536,20 +521,12 @@ const isDeletionDiff = (content: string) => {
         content.includes('+++ /dev/null');
 };
 
-// Helper function to check if this is a new file diff
-const isNewFileDiff = (content: string) => {
-    return (content.includes('--- /dev/null') && content.includes('+++ b/')) ||
-        content.includes('new file mode') ||
-        (content.includes('new file mode') && content.includes('+++ b/'));
-};
-
 const normalizeGitDiff = (diff: string): string => {
     // because LLMs tend to ignore instructions and get lazy
     if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null') ||
         diff.match(/^@@\s+-\d+/m)) {
         const lines: string[] = diff.split('\n');
         const normalizedLines: string[] = [];
-        let fileIndex = 0;
 
         // Check if this is a properly formatted diff
         const hasDiffHeaders = lines.some(line =>
@@ -717,15 +694,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty'); // Use window setting
     const diffRef = useRef<string>(diff);
-    const parseInProgressRef = useRef<boolean>(false);
     const forceRenderRef = useRef<boolean>(false);
-    const componentIdRef = useRef(`diff-${Date.now()}-${Math.random()}`);
 
     // Use a stable ID that doesn't change on re-renders
-    const diffIdRef = useRef<string>(elementId || (() => {
-        const id = `diff-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-        return id;
-    })());
     const diffId = useRef<string>(elementId || `diff-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`).current;
 
     // Flag to prevent rendering during streaming
@@ -762,15 +733,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         return () => {
             hunkStatusEventBus.removeEventListener(HUNK_STATUS_EVENT, handleStatusUpdate);
         };
-
-        // Check the global registry for existing status updates for this diff
-        if (window.hunkStatusRegistry && window.hunkStatusRegistry.has(diffId)) {
-            const existingStatuses = window.hunkStatusRegistry.get(diffId);
-            if (existingStatuses) {
-                setInstanceHunkStatusMap(new Map(existingStatuses));
-                setStatusUpdateCounter(prev => prev + 1);
-            }
-        }
     }, []);
 
     // Function to update hunk statuses from API response
@@ -828,7 +790,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             const errorMsg = error instanceof Error ? error.message : String(error);
             console.error("Error updating hunk statuses:", errorMsg);
         }
-    }, [diff]);
+    }, [diff, diffId]);
 
     // Listen for window-level hunk status updates with data, but don't update during streaming
     useEffect(() => {
@@ -874,7 +836,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
             };
         }
-    }, [updateHunkStatuses]);
+    }, [updateHunkStatuses, diffId]);
 
 
     // detect language from file path
@@ -1003,7 +965,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             }
         };
         parseAndSetFiles();
-    }, [diff]);
+    }, [diff, isGlobalStreaming]);
 
     // tokenize hunks
     useEffect(() => {
@@ -1114,7 +1076,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         // Create a stable key for this hunk
                         const hunkKey = `${fileIndex}-${hunkIndex}`;
                         const status = instanceHunkStatusMap.get(hunkKey);
-                        const hunkId = hunkIndex + 1;
                         const isApplied = status?.applied;
                         const statusReason = status?.reason || '';
                         const isAlreadyApplied = status?.alreadyApplied;
@@ -1210,9 +1171,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
 
     const renderContent = (hunk: any, filePath: string, status?: any, fileIndex?: number, hunkIndex?: number): JSX.Element[] => {
-
-        // Add a status row at the top of the hunk if status is available
-        const changes = [...(hunk.changes || [])];
 
         // Define base style for rows
         const rowStyle: React.CSSProperties = {};
@@ -1660,7 +1618,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
     const statusUpdateCounterRef = useRef<number>(0);
     const isStreamingRef = useRef<boolean>(false);
-    const stableRequestIdRef = useRef<string>(`req-${diffElementId}-${Date.now()}`);
     const appliedRef = useRef<boolean>(false);
     const buttonInstanceId = useRef(`button-${diffElementId}-${Date.now()}`).current;
 
@@ -1670,9 +1627,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const buttonId = useId();
     // Define a function to trigger diff updates
     const triggerDiffUpdate = (hunkStatuses: Record<string, any> | null = null, requestId: string | null = null, diffElementId: string | null = null) => {
-        // Create a unique event key for this specific diff element
-        const event = new CustomEvent(HUNK_STATUS_EVENT, { detail: { hunkStatuses, requestId, isCompletionEvent: true } });
-        // hunkStatusEventBus.dispatchEvent(event); // We'll use component-specific updates instead
 
         // Also dispatch a window event for backward compatibility
         console.log(`Triggering diff update event with statuses for request ${requestId}:`, hunkStatuses);
@@ -1895,7 +1849,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                                     'Successfully applied' :
                                                     hunkStatus.status === 'already_applied' ? 'Already applied' : 'Failed'
                                             } as HunkStatus);
-                                            return newMap;
 
                                             // Also update the global registry
                                             if (window.hunkStatusRegistry) {
@@ -1905,6 +1858,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                                 const registryMap = window.hunkStatusRegistry.get(diffElementId)!;
                                                 registryMap.set(hunkKey, newMap.get(hunkKey) as HunkStatus);
                                             }
+                                            return newMap;
                                         });
                                         // Default to success if not found in hunk_statuses
 
@@ -2230,7 +2184,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             const eventKey = `${e.detail.requestId || ''}-${e.detail.targetDiffElementId || ''}`;
             setTimeout(() => processedWindowEvents.delete(eventKey), 500);
 
-            const targetDiffElementId = diffRequestMap.get(e.detail.requestId);
             const targetDiffElementIdFromMap = diffRequestMap.get(e.detail.requestId)?.replace(/^diff-/, 'diff-view-');
             let isRelevantUpdate = false;
 
@@ -2240,9 +2193,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 console.debug(`Skipping already processed window event: ${eventKey}`);
                 return;
             }
-
-            // Create a unique identifier for this specific button instance
-            const thisButtonId = buttonInstanceId;
 
             // Log the event and our identifiers for debugging
             console.log(`Checking if update matches our element: target=${e.detail.targetDiffElementId}, ours=${diffElementId}, buttonId=${buttonInstanceId}`);
@@ -2340,12 +2290,9 @@ interface DiffTokenProps {
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
     const { isStreaming } = useChatContext();
-    // Check if we're in a streaming response
-    const streamingCheckedRef = useRef(false);
     // Generate a unique ID once when the component mounts
     const [diffId] = useState(() =>
         `diff-${Math.random().toString(36).substring(2, 9)}-${Date.now()}`);
-    const [streamingContent, setStreamingContent] = useState<string | null>(null);
     const contentRef = useRef<string | null>(null);
 
     // Store the content in a ref to avoid re-renders
@@ -2365,49 +2312,6 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         />
     );
 });
-
-const BasicDiffView = ({ diff }: { diff: string }) => {
-    const [lines, setLines] = useState<string[]>([]);
-
-    useEffect(() => {
-        if (diff) {
-            setLines(diff.split('\n'));
-        }
-    }, [diff]);
-
-    return (
-        <div className="basic-diff-view">
-            {lines.map((line, i) => (
-                <div
-                    key={i}
-                    className={`diff-line ${line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove' : ''}`}
-                >
-                    <span className="diff-marker">
-                        {line.startsWith('+') ? '+' : line.startsWith('-') ? '-' : ' '}
-                    </span>
-                    <code>{line.slice(1)}</code>
-                </div>
-            ))}
-        </div>
-    );
-};
-
-// Component to handle streaming diffs
-const StreamingDiffView = ({ content }: { content: string }) => {
-    const [lines, setLines] = useState<string[]>([]);
-
-    useEffect(() => {
-        if (content) {
-            setLines(content.split('\n'));
-        }
-    }, [content]);
-
-    return (
-        <div className="streaming-diff-view">
-            <BasicDiffView diff={content} />
-        </div>
-    );
-};
 
 interface DiffViewWrapperProps {
     token: TokenWithText;
@@ -2717,7 +2621,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     useEffect(() => {
         tokenRef.current = token;
         if (contentRef.current) highlightCodeIfNeeded();
-    }, [token]);
+    }, [token, highlightCodeIfNeeded]);
 
     useEffect(() => {
         if (token.lang !== undefined && !prismInstance) {
@@ -3005,8 +2909,6 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // Require at least two characteristic lines for content-based detection
         const diffMarkersFound = [hasGitHeader, hasMinusHeader, hasPlusHeader, hasHunkHeader].filter(Boolean).length;
         if (diffMarkersFound >= 2) {
-            // Log which condition matched for debugging
-            const matchReason = `${hasGitHeader ? 'git ' : ''}${hasMinusHeader ? '--- ' : ''}${hasPlusHeader ? '+++ ' : ''}${hasHunkHeader ? '@@ ' : ''}`.trim();
             return 'diff';
         }
         // If no special content detected, treat as generic code
@@ -3156,7 +3058,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         console.warn('Tool token missing toolName or text:', { hasText: hasText(tokenWithText), toolName: tokenWithText.toolName });
                         return null;
                     }
-                    
+
                     // Check for security errors in tool output and render them prominently
                     if (tokenWithText.text && (
                         tokenWithText.text.includes('🚫 SECURITY BLOCK') ||
@@ -3167,7 +3069,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             <Alert key={index} message="🚫 Command Blocked" description={tokenWithText.text} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14' }} />
                         );
                     }
-                    
+
                     console.log('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
                     return (
                         <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
@@ -3177,13 +3079,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (!hasText(tokenWithText)) return null;
                     return (
                         <D3Renderer key={index} spec={tokenWithText.text} type="d3" isStreaming={isStreaming} />
-                    );
-
-                case 'tool':
-                    if (!hasText(tokenWithText) || !tokenWithText.toolName) return null;
-                    console.log('Rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
-                    return (
-                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
                     );
 
                 case 'code':
@@ -3541,7 +3436,6 @@ const markedOptions = {
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
-    const [isPending, startTransition] = useTransition();
     // State for the tokens that are currently displayed with stable reference
     const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
     // Ref to store the previous set of tokens, useful for certain streaming optimizations or comparisons

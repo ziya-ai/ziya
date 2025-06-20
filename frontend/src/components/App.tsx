@@ -1,11 +1,10 @@
-import React, { useState, useRef, useEffect, Suspense, useCallback } from 'react';
+import React, { useState, useRef, useEffect, Suspense } from 'react';
 import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
-import { Button, Tooltip, ConfigProvider, theme, message } from "antd";
+import { Button, Tooltip, ConfigProvider, message } from "antd";
 import {
     MenuFoldOutlined,
-    ExperimentOutlined,
     MenuUnfoldOutlined,
     PlusOutlined,
     BulbOutlined,
@@ -15,22 +14,15 @@ import {
     SettingOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
-import { DebugControls } from './DebugControls';
-import { MUIFileExplorer } from './MUIFileExplorer';
 import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
-import { StreamingContentManager } from './StreamingContentManager';
 import { ProfilerWrapper } from './ProfilerWrapper';
 
 const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
 const MCPStatusModal = React.lazy(() => import("./MCPStatusModal"));
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
-const PrismTest = React.lazy(() => import("./PrismTest"));
-const SyntaxTest = React.lazy(() => import("./SyntaxTest"));
-const MUIChatHistory = React.lazy(() => import("./MUIChatHistory"));
 const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
-const ApplyDiffTest = React.lazy(() => import("./ApplyDiffTest"));
 
 // Error boundary component to catch extension context errors
 class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
@@ -116,7 +108,6 @@ export const App: React.FC = () => {
         const saved = localStorage.getItem(PANEL_WIDTH_KEY);
         return saved ? parseInt(saved, 10) : 300; // Default width: 300px
     });
-    const { dbError } = useChatContext();
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
 
     const [showShellConfig, setShowShellConfig] = useState(false);
@@ -132,7 +123,7 @@ export const App: React.FC = () => {
         setTimeout(() => {
             handlePanelResize(panelWidth);
         }, 300);
-    }, []);
+    });
 
     // Check MCP status on mount
     useEffect(() => {
@@ -176,7 +167,7 @@ export const App: React.FC = () => {
 
         chatContainer.addEventListener('scroll', handleScroll);
         return () => chatContainer.removeEventListener('scroll', handleScroll);
-    }, [setUserHasScrolled]);
+    }, [userHasScrolled, setUserHasScrolled]);
 
     const handleNewChat = async () => {
         try {
@@ -204,7 +195,6 @@ export const App: React.FC = () => {
         setTimeout(() => {
             const folderPanel = document.querySelector('.folder-tree-panel') as HTMLElement;
             const modelDisplay = document.querySelector('.model-id-display') as HTMLElement;
-            const tokenDisplay = document.querySelector('.token-display') as HTMLElement;
 
             if (folderPanel && constrainedWidth > 0) {
                 folderPanel.style.width = `${constrainedWidth}px`;
@@ -291,9 +281,9 @@ export const App: React.FC = () => {
         // Prevent scroll jumping when toggling direction
         const chatContainer = document.querySelector('.chat-container');
         const currentScrollTop = chatContainer?.scrollTop || 0;
-        
+
         setIsTopToBottom(prev => !prev);
-        
+
         // Restore scroll position after a brief delay
         setTimeout(() => {
             if (chatContainer) {

@@ -104,17 +104,17 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
     };
 
     const dangerousCommands = ['rm', 'rmdir', 'mv', 'cp', 'chmod', 'chown', 'sudo', 'su'];
-    const destructiveGitOperations = ['reset', 'rebase', 'merge', 'push', 'pull', 'checkout', 'commit', 'add', 'rm'];
+    // const destructiveGitOperations = ['reset', 'rebase', 'merge', 'push', 'pull', 'checkout', 'commit', 'add', 'rm'];
     const safeGitOperations = [
-        'status', 'log', 'show', 'diff', 'branch', 'remote', 'config --get', 
-        'ls-files', 'ls-tree', 'blame', 'tag', 'stash list', 'reflog', 
+        'status', 'log', 'show', 'diff', 'branch', 'remote', 'config --get',
+        'ls-files', 'ls-tree', 'blame', 'tag', 'stash list', 'reflog',
         'rev-parse', 'describe', 'shortlog', 'whatchanged'
     ];
-    
-    const isDangerous = (command: string) => 
-        dangerousCommands.some(dangerous => 
-        command.toLowerCase().includes(dangerous.toLowerCase())
-    );
+
+    const isDangerous = (command: string) =>
+        dangerousCommands.some(dangerous =>
+            command.toLowerCase().includes(dangerous.toLowerCase())
+        );
 
     return (
         <Modal
@@ -141,7 +141,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 </div>
 
                 <Divider />
-                
+
                 <Alert
                     message="Security Notice"
                     description="Only enable commands that are safe for AI execution. Git operations are limited to read-only and safe operations by default."
@@ -155,16 +155,16 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 <Collapse defaultActiveKey={['1']} ghost>
                     <Panel header="Basic Configuration" key="1">
 
-                <div>
-                    <h4>Command Timeout</h4>
-                    <Input
-                        type="number"
-                        value={config.timeout}
-                        onChange={(e) => setConfig(prev => ({ ...prev, timeout: parseInt(e.target.value) || 10 }))}
-                        suffix="seconds"
-                        style={{ width: 150 }}
-                    />
-                </div>
+                        <div>
+                            <h4>Command Timeout</h4>
+                            <Input
+                                type="number"
+                                value={config.timeout}
+                                onChange={(e) => setConfig(prev => ({ ...prev, timeout: parseInt(e.target.value) || 10 }))}
+                                suffix="seconds"
+                                style={{ width: 150 }}
+                            />
+                        </div>
 
                         <Divider />
 
@@ -179,7 +179,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                             <div style={{ marginBottom: 12, color: '#666', fontSize: '12px' }}>
                                 When enabled, allows read-only and safe Git commands
                             </div>
-                            
+
                             {config.gitOperationsEnabled && (
                                 <div style={{ marginLeft: 24 }}>
                                     <h5>Allowed Git Operations:</h5>
@@ -200,59 +200,59 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                     </Panel>
 
                     <Panel header="Custom Commands" key="2">
-                <div>
+                        <div>
                             <h4>Additional Allowed Commands</h4>
                             <div style={{ marginBottom: 12, color: '#666', fontSize: '12px' }}>
                                 Add custom commands to the whitelist. Be careful with potentially dangerous commands.
                             </div>
-                    <div style={{ marginBottom: 12 }}>
-                        <Input.Group compact>
-                            <Input
-                                placeholder="Enter command name"
-                                value={newCommand}
-                                onChange={(e) => setNewCommand(e.target.value)}
-                                onPressEnter={addCommand}
-                                style={{ width: 'calc(100% - 80px)' }}
-                            />
-                            <Button 
-                                type="primary" 
-                                icon={<PlusOutlined />} 
-                                onClick={addCommand}
-                                style={{ width: 80 }}
-                            >
-                                Add
-                            </Button>
-                        </Input.Group>
-                    </div>
-
-                    <List
-                        size="small"
-                        dataSource={config.allowedCommands}
-                        renderItem={(command) => (
-                            <List.Item
-                                actions={[
-                                    <Button
-                                        type="text"
-                                        size="small"
-                                        icon={<DeleteOutlined />}
-                                        onClick={() => removeCommand(command)}
-                                        danger
+                            <div style={{ marginBottom: 12 }}>
+                                <Input.Group compact>
+                                    <Input
+                                        placeholder="Enter command name"
+                                        value={newCommand}
+                                        onChange={(e) => setNewCommand(e.target.value)}
+                                        onPressEnter={addCommand}
+                                        style={{ width: 'calc(100% - 80px)' }}
                                     />
-                                ]}
-                            >
-                                <Space>
-                                    <Tag color={isDangerous(command) ? 'red' : 'blue'}>
-                                        {command}
-                                    </Tag>
-                                    {isDangerous(command) && (
-                                        <WarningOutlined style={{ color: '#ff4d4f' }} />
-                                    )}
-                                </Space>
-                            </List.Item>
-                        )}
-                        style={{ maxHeight: 200, overflow: 'auto' }}
-                    />
-                </div>
+                                    <Button
+                                        type="primary"
+                                        icon={<PlusOutlined />}
+                                        onClick={addCommand}
+                                        style={{ width: 80 }}
+                                    >
+                                        Add
+                                    </Button>
+                                </Input.Group>
+                            </div>
+
+                            <List
+                                size="small"
+                                dataSource={config.allowedCommands}
+                                renderItem={(command) => (
+                                    <List.Item
+                                        actions={[
+                                            <Button
+                                                type="text"
+                                                size="small"
+                                                icon={<DeleteOutlined />}
+                                                onClick={() => removeCommand(command)}
+                                                danger
+                                            />
+                                        ]}
+                                    >
+                                        <Space>
+                                            <Tag color={isDangerous(command) ? 'red' : 'blue'}>
+                                                {command}
+                                            </Tag>
+                                            {isDangerous(command) && (
+                                                <WarningOutlined style={{ color: '#ff4d4f' }} />
+                                            )}
+                                        </Space>
+                                    </List.Item>
+                                )}
+                                style={{ maxHeight: 200, overflow: 'auto' }}
+                            />
+                        </div>
                     </Panel>
                 </Collapse>
             </Space>

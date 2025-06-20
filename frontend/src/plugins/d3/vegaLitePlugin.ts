@@ -240,10 +240,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // For charts with explicit dimensions, use a more conservative autosize
       if ((vegaSpec.width && vegaSpec.width > 0) || (vegaSpec.height && vegaSpec.height > 0)) {
         vegaSpec.autosize = {
-        type: 'fit-x',
-        contains: 'padding',
-        resize: true
-      };
+          type: 'fit-x',
+          contains: 'padding',
+          resize: true
+        };
       }
 
       // Ensure axis labels are properly displayed without overriding user config
@@ -329,7 +329,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
       const result = await embed(container, vegaSpec, embedOptions);
 
       // Store references to the vega view and container content
-      const vegaView = result.view;
       const vegaContainer = container.querySelector('.vega-embed') as HTMLElement;
 
       // Add action buttons container
@@ -726,16 +725,16 @@ ${svgData}`;
           // Only apply responsive sizing if the chart doesn't have explicit dimensions
           const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
           const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
-          
+
           if (!hasExplicitWidth) {
             svgElement.style.width = '100%';
             svgElement.style.maxWidth = '100%';
           }
-          
+
           if (!hasExplicitHeight) {
             svgElement.style.height = 'auto';
           }
-          
+
           svgElement.style.display = 'block';
 
           console.log(">>> vegaLitePlugin: SVG sizing applied:", {
@@ -748,7 +747,7 @@ ${svgData}`;
         if (vegaEmbedDiv) {
           // Only apply responsive width if not explicitly set
           const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
-          
+
           if (!hasExplicitWidth) {
             vegaEmbedDiv.style.width = '100%';
             vegaEmbedDiv.style.maxWidth = '100%';
@@ -859,16 +858,16 @@ ${svgData}`;
           // Only apply responsive sizing if chart doesn't have explicit dimensions
           const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
           const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
-          
+
           if (!hasExplicitWidth) {
             svgElement.style.width = '100%';
             svgElement.style.maxWidth = '100%';
           }
-          
+
           if (!hasExplicitHeight) {
             svgElement.style.height = 'auto';
           }
-          
+
           svgElement.style.overflow = 'visible';
 
           // Force the vega-embed container to accommodate the full SVG content
@@ -881,10 +880,10 @@ ${svgData}`;
 
               vegaEmbedDiv.style.height = `${neededHeight}px`;
               vegaEmbedDiv.style.minHeight = `${neededHeight}px`;
-              
+
               console.log('Container sizing:', { containerWidth, aspectRatio, neededHeight });
             }
-            
+
             vegaEmbedDiv.style.display = 'block';
             vegaEmbedDiv.style.overflow = 'visible';
           }

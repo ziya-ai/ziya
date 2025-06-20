@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useFolderContext } from '../context/FolderContext';
 import { useTheme } from '../context/ThemeContext';
 import { Folders } from '../utils/types';
@@ -15,7 +15,6 @@ import Button from '@mui/material/Button';
 import IconButton from '@mui/material/IconButton';
 import InputAdornment from '@mui/material/InputAdornment';
 import LinearProgress from '@mui/material/LinearProgress';
-import Tooltip from '@mui/material/Tooltip';
 import Box from '@mui/material/Box';
 import Collapse from '@mui/material/Collapse';
 
@@ -105,7 +104,6 @@ export const MUIFileExplorer = () => {
     // Extract clean label and token count
     const titleMatch = String(node.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
     const cleanLabel = titleMatch ? titleMatch[1] : String(node.title);
-    const tokenCount = titleMatch ? parseInt(titleMatch[2].replace(/,/g, ''), 10) : 0;
 
     const handleToggle = () => {
       if (hasChildren) {
@@ -161,8 +159,8 @@ export const MUIFileExplorer = () => {
           />
 
           {/* Icon */}
-          {hasChildren ? 
-            getFolderIcon(isExpanded) : 
+          {hasChildren ?
+            getFolderIcon(isExpanded) :
             getFileIcon(cleanLabel)}
 
           {/* Label */}
@@ -243,7 +241,7 @@ export const MUIFileExplorer = () => {
           throw new Error(`Failed to load folders: ${response.status}`);
         }
         const data: Folders = await response.json();
-        
+
         // Convert and sort data
         const sortedData = sortTreeData(convertToTreeData(data));
         setTreeData(sortedData);
@@ -338,24 +336,6 @@ export const MUIFileExplorer = () => {
       .filter(node => node !== null);
 
     return { filteredData, expandedKeys };
-  };
-
-  // Handle tree node expansion
-  const handleNodeToggle = (event: React.SyntheticEvent, nodeIds: string[]) => {
-    console.log('MUI Node toggle:', {
-      event: event.type,
-      nodeIds,
-      current: expandedKeys
-    });
-
-    // Convert all nodeIds to strings to ensure consistent comparison
-    const stringNodeIds = nodeIds.map(id => String(id));
-
-    // Update expanded keys with the new set of IDs
-    setExpandedKeys(stringNodeIds);
-    console.log('MUI Updated expanded nodes:', stringNodeIds);
-
-    setAutoExpandParent(false);
   };
 
   // Refresh folders
@@ -462,7 +442,7 @@ export const MUIFileExplorer = () => {
         prev.map(String).filter(key => !keysToRemove.includes(key) && !parentKeys.includes(key))
       );
     }
-    
+
     // Clear the token calculation cache when selections change
     tokenCalculationCache.current.clear();
   };
@@ -556,8 +536,8 @@ export const MUIFileExplorer = () => {
             </Typography>
           </Box>
         ) : (
-          <Box sx={{ 
-            height: '100%', 
+          <Box sx={{
+            height: '100%',
             overflowY: 'auto',
             '& .MuiBox-root': {
               maxWidth: '100%'

@@ -455,7 +455,6 @@ class ConversationDB implements DB {
                 console.warn('Failed to initialize database, returning empty conversations array');
                 console.error('Failed to initialize database:', error);
                 return this.restoreFromBackup();
-                throw new Error('Database initialization failed');
             }
             if (!this.db) throw new Error('Database not initialized');
         }

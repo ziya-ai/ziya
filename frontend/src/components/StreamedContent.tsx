@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo, useTransition, useId, Suspense } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo, useTransition, useId, Suspense } from 'react';
 import { useChatContext } from '../context/ChatContext';
 import { Space, Alert, Typography } from 'antd';
 import StopStreamButton from './StopStreamButton';
@@ -14,8 +14,6 @@ export const StreamedContent: React.FC = () => {
     const contentRef = useRef<HTMLDivElement>(null);
     const isAutoScrollingRef = useRef<boolean>(false);
     const [isPendingResponse, setIsPendingResponse] = useState<boolean>(false);
-    const streamingInstanceId = useId();
-    const [isPending, startTransition] = useTransition();
     const [hasShownContent, setHasShownContent] = useState<boolean>(false);
     const lastScrollPositionRef = useRef<number>(0);
     const {
@@ -23,13 +21,10 @@ export const StreamedContent: React.FC = () => {
         isStreaming,
         processingState,
         setIsStreaming,
-        setProcessingState,
         currentConversationId,
-        isStreamingAny,
         streamingConversations,
         currentMessages,
         userHasScrolled,
-        setUserHasScrolled,
         isTopToBottom,
         removeStreamingConversation,
     } = useChatContext();
@@ -54,7 +49,7 @@ export const StreamedContent: React.FC = () => {
             setIsStreaming(true);
         }
         streamedContentRef.current = streamedContent;
-    }, [currentConversationId, streamingConversations, isStreaming, setIsStreaming]);
+    }, [currentConversationId, streamingConversations, isStreaming, setIsStreaming, streamedContent]);
 
     // Track conversation changes and reset content visibility state
     useEffect(() => {
@@ -147,9 +142,9 @@ export const StreamedContent: React.FC = () => {
     const LoadingIndicator = () => (
         <Space>
             <div style={{
-                visibility: processingState === 'awaiting_model_response' || 
-                            (!hasStreamedContent && streamingConversations.has(currentConversationId))
-                            ? 'visible' : 'hidden',
+                visibility: processingState === 'awaiting_model_response' ||
+                    (!hasStreamedContent && streamingConversations.has(currentConversationId))
+                    ? 'visible' : 'hidden',
                 opacity: processingState === 'awaiting_model_response' ? 1 : 0.8,
                 transition: 'opacity 0.3s ease',
                 padding: '10px 20px',
@@ -220,7 +215,7 @@ export const StreamedContent: React.FC = () => {
     // Function to check if user is viewing the "active end" of content (bottom in top-down, top in bottom-up)
     const isViewingActiveEnd = () => {
         if (!contentRef.current) return false;
-        
+
         const container = contentRef.current.closest('.chat-container');
         if (!container) return true;
 
@@ -235,12 +230,12 @@ export const StreamedContent: React.FC = () => {
         return Math.abs(scrollHeight - scrollTop - clientHeight) <= 50; // 50px tolerance from bottom
     };
 
-    
+
     // Function to smoothly scroll to keep the streaming content in view
     const scrollToKeepInView = () => {
         // Only auto-scroll during active streaming and if user hasn't manually scrolled away
         if (!contentRef.current || !isAutoScrollingRef.current || userHasScrolled) return;
-        
+
         // Only auto-scroll if we're currently streaming to this conversation
         if (!streamingConversations.has(currentConversationId)) return;
 
@@ -264,13 +259,13 @@ export const StreamedContent: React.FC = () => {
         } else {
             // In top-down mode, check if we were already at the bottom
             const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
-            
+
             // Only auto-scroll if we were already at the bottom AND we're actively streaming
             if (isAtBottom && streamingConversations.has(currentConversationId)) {
                 container.scrollTo({
-                        top: container.scrollHeight,
-                        behavior: 'auto'
-                    });
+                    top: container.scrollHeight,
+                    behavior: 'auto'
+                });
             }
         }
     };
@@ -345,7 +340,7 @@ export const StreamedContent: React.FC = () => {
     // Effect to handle auto-scrolling during streaming
     useEffect(() => {
         if (!streamingConversations.has(currentConversationId)) return;
-        
+
         // Only enable auto-scrolling if user hasn't manually scrolled
         isAutoScrollingRef.current = !userHasScrolled;
     }, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
@@ -353,9 +348,6 @@ export const StreamedContent: React.FC = () => {
     // Add a separate effect to handle scroll position restoration
     useEffect(() => {
         if (!streamingConversations.has(currentConversationId)) return;
-
-        const container = contentRef.current?.closest('.chat-container');
-        // Removed scroll position restoration logic that was causing jumps
     }, [currentConversationId, streamingConversations]);
 
     // Update loading state based on streaming status
@@ -426,7 +418,7 @@ export const StreamedContent: React.FC = () => {
                                         />
                                     </div>
                                 )}
-                                
+
                             </>
                         </Suspense>
                     </div>

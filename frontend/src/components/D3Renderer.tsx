@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, CSSProperties, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo, CSSProperties, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { Spin, Modal } from 'antd';
 import vegaEmbed from 'vega-embed';
@@ -178,7 +178,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
             if (!spec) {
                 throw new Error('No specification provided');
-                return;
             }
 
             let parsed: any;
@@ -389,11 +388,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 const container = d3ContainerRef.current;
                 if (!container) return;
 
-                if (renderIdRef.current !== renderIdRef.current) {
-                    console.debug(`Skipping stale render #${renderIdRef.current}`);
-                    return;
-                }
-
                 // Cleanup existing simulation
                 if (simulationRef.current) {
                     try {
@@ -435,9 +429,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     if (container.firstChild) {
                         container.removeChild(container.firstChild);
                     }
-
-                    // Initialize D3 selection for the container
-                    const d3Container = d3.select(tempContainer);
 
                     if (typeof parsed.render === 'function') {
                         const result = parsed.render.call(parsed, tempContainer, d3);
@@ -599,7 +590,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 }
             }
         }
-    }, [spec, type, width, height, isDarkMode, isStreaming, isMarkdownBlockClosed, config, onLoad, onError, isLoading, hasAttemptedRender, mounted, renderingStarted]);
+    }, [spec, type, width, height, isDarkMode, isStreaming, isMarkdownBlockClosed, config, onLoad, onError, isLoading, hasAttemptedRender, mounted, renderingStarted, renderError]);
 
     // Main rendering useEffect with stable dependencies
     useEffect(() => {
@@ -615,7 +606,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             console.debug(`Starting render #${currentRender}`);
             initializeVisualization(forceRender);
         }
-    }, [spec, isMarkdownBlockClosed, forceRender]);
+    }, [spec, isMarkdownBlockClosed, forceRender, initializeVisualization]);
 
     // Separate effect for theme changes to avoid circular dependencies
     useEffect(() => {
@@ -946,76 +937,6 @@ ${svgData}`;
         // Clean up the URL object after a delay
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
-
-    // Add source modal component
-    const SourceModal = () => (
-        <Modal
-            title="Visualization Source"
-            open={isSourceModalVisible}
-            onCancel={() => setIsSourceModalVisible(false)}
-            footer={null}
-            width={800}
-        >
-            <pre style={{
-                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                padding: '16px',
-                borderRadius: '4px',
-                overflow: 'auto',
-                maxHeight: '60vh',
-                color: isDarkMode ? '#e6e6e6' : '#24292e'
-            }}>
-                <code>{typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code>
-            </pre>
-        </Modal>
-    );
-
-    // Add action buttons container
-    const ActionButtons = () => (
-        <div className="diagram-actions">
-            <button
-                className="diagram-action-button"
-                onClick={() => {
-                    const container = d3ContainerRef.current;
-                    if (container) {
-                        const svg = container.querySelector('svg');
-                        if (svg) {
-                            // Use the new openInPopout function
-                            const title = isGraphvizRender ? 'Graphviz Diagram' :
-                                isMermaidRender ? 'Mermaid Diagram' :
-                                    'D3 Visualization';
-                            openInPopout(svg, title);
-                        }
-                    }
-                }}
-            >
-                ↗️ Open
-            </button>
-            <button
-                className="diagram-action-button"
-                onClick={() => {
-                    const container = d3ContainerRef.current;
-                    if (container) {
-                        const svg = container.querySelector('svg');
-                        if (svg) {
-                            // Use the new saveSvg function
-                            const filename = isGraphvizRender ? `graphviz-diagram-${Date.now()}.svg` :
-                                isMermaidRender ? `mermaid-diagram-${Date.now()}.svg` :
-                                    `visualization-${Date.now()}.svg`;
-                            saveSvg(svg, filename);
-                        }
-                    }
-                }}
-            >
-                💾 Save
-            </button>
-            <button
-                className="diagram-action-button"
-                onClick={() => setIsSourceModalVisible(true)}
-            >
-                📝 Source
-            </button>
-        </div>
-    );
 
     return (
         <div
