@@ -77,6 +77,28 @@ interface ToolBlockProps {
 }
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
+    // Check if this is a security error from shell command blocking
+    const isSecurityError = content.includes('🚫 SECURITY BLOCK') || 
+                           content.includes('Command not allowed') ||
+                           content.includes('COMMAND BLOCKED');
+    
+    // Check if this is an MCP tool error
+    const isMCPError = content.includes('MCP Tool Error') || 
+                      content.includes('MCP Resource Error');
+
+    // If this is a security error, render it with special styling
+    if (isSecurityError) {
+        return (
+            <Alert
+                message="🚫 Command Blocked"
+                description={content}
+                type="warning"
+                showIcon
+                style={{ margin: '16px 0', border: '2px solid #faad14' }}
+            />
+        );
+    }
+
     const isShellCommand = toolName === 'mcp_run_shell_command';
 
     // Clean up content by removing any literal tool markers
@@ -523,7 +545,8 @@ const isNewFileDiff = (content: string) => {
 
 const normalizeGitDiff = (diff: string): string => {
     // because LLMs tend to ignore instructions and get lazy
-    if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null')) {
+    if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null') ||
+        diff.match(/^@@\s+-\d+/m)) {
         const lines: string[] = diff.split('\n');
         const normalizedLines: string[] = [];
         let fileIndex = 0;
@@ -536,7 +559,9 @@ const normalizeGitDiff = (diff: string): string => {
                 lines.some(line => line.startsWith('--- /dev/null')) // Support new file diffs
             );
         const hasHunkHeader = lines.some(line =>
-            /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line)
+            /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line) ||
+            /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/.test(line) ||
+            /^@@\s+-\d+,\d+\s+@@/.test(line)
         );
 
         if (hasDiffHeaders && hasHunkHeader) {
@@ -590,6 +615,19 @@ const normalizeGitDiff = (diff: string): string => {
                 return false;
             }
             if (line.startsWith('@@')) {
+                // Normalize hunk headers with leading zeros or incomplete format
+                const normalizedHunk = line.replace(/^@@\s+-0*(\d+),?(\d*)\s+\+?0*(\d+),?(\d*)\s*@@?.*$/,
+                    (match, oldStart, oldCount, newStart, newCount) => {
+                        const oldLines = oldCount || '1';
+                        const newLines = newCount || '1';
+                        return `@@ -${oldStart},${oldLines} +${newStart},${newLines} @@`;
+                    });
+                return normalizedHunk !== line; // Only include if we normalized it
+            }
+            if (line.startsWith('---') || line.startsWith('+++')) {
+                return false;
+            }
+            if (line.startsWith('@@')) {
                 // Keep hunk headers
                 return true;
             }
@@ -621,11 +659,29 @@ const normalizeGitDiff = (diff: string): string => {
             return false;
         });
 
+        // Find and normalize any hunk headers in the content
+        const normalizedContentLines = contentLines.map(line => {
+            if (line.startsWith('@@')) {
+                return line.replace(/^@@\s+-0*(\d+),?(\d*)\s+\+?0*(\d+),?(\d*)\s*@@?.*$/,
+                    (match, oldStart, oldCount, newStart, newCount) => {
+                        const oldLines = oldCount || '1';
+                        const newLines = newCount || '1';
+                        return `@@ -${oldStart},${oldLines} +${newStart},${newLines} @@`;
+                    });
+            }
+            return line;
+        });
+
         // Add hunk header
-        normalizedLines.push(`@@ -1,${removeCount + contextCount} +1,${addCount + contextCount} @@`);
+        const existingHunkHeaders = normalizedContentLines.filter(line => line.startsWith('@@'));
+        if (existingHunkHeaders.length > 0) {
+            normalizedLines.push(...existingHunkHeaders);
+        } else {
+            normalizedLines.push(`@@ -1,${removeCount + contextCount} +1,${addCount + contextCount} @@`);
+        }
 
         // Add content lines, preserving +/- and adding spaces for context
-        contentLines.forEach(line => {
+        normalizedContentLines.filter(line => !line.startsWith('@@')).forEach(line => {
             const trimmed = line.trimStart();
             if (trimmed.startsWith('+') || trimmed.startsWith('-')) {
                 // For indented +/- lines, preserve only the content indentation
@@ -2780,7 +2836,7 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
-    
+
     // Debug logging for problematic tokens
     if (tokenType === 'code' && 'text' in token && (!token.lang || token.lang === '')) {
         console.log('Code block without lang detected:', { text: (token.text || '').substring(0, 100), hasLang: !!token.lang, lang: token.lang });
@@ -2795,7 +2851,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
         const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
-        const hasHunkHeader = linesToCheck.some(line => line.trim().startsWith('@@ '));
+        const hasHunkHeader = linesToCheck.some(line => {
+            const trimmed = line.trim();
+            return trimmed.startsWith('@@') && trimmed.match(/^@@\s+-\d+/);
+        });
         const diffMarkersFound = [hasGitHeader, hasMinusHeader, hasPlusHeader, hasHunkHeader].filter(Boolean).length;
 
         // More lenient check for diff --git, allowing it not to be the very first thing
@@ -2865,13 +2924,13 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         // Enhanced tool block detection by content
         // Look for tool block markers that might have been missed by lang detection
-        if (trimmedText.startsWith('```tool:mcp_') || 
+        if (trimmedText.startsWith('```tool:mcp_') ||
             trimmedText.includes('```tool:mcp_') ||
             (trimmedText.startsWith('$ ') && trimmedText.length > 10) ||
             trimmedText.match(/^[A-Z_]+:\s*\S+/) || // Environment variables or command outputs
-            trimmedText.includes('🔧') || 
+            trimmedText.includes('🔧') ||
             trimmedText.includes('🛠️')) {
-            
+
             // Try to extract tool name from content
             const toolMatch = trimmedText.match(/```?tool:(mcp_\w+)/);
             const toolName = toolMatch ? toolMatch[1] : 'mcp_run_shell_command';
@@ -2937,7 +2996,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
         const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
-        const hasHunkHeader = linesToCheck.some(line => line.trim().startsWith('@@ ')); // More lenient check
+        const hasHunkHeader = linesToCheck.some(line => {
+            const trimmed = line.trim();
+            return trimmed.startsWith('@@') && trimmed.match(/^@@\s+-\d+/);
+        });
 
         // Check for common valid diff starting patterns
         // Require at least two characteristic lines for content-based detection
@@ -3094,6 +3156,18 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         console.warn('Tool token missing toolName or text:', { hasText: hasText(tokenWithText), toolName: tokenWithText.toolName });
                         return null;
                     }
+                    
+                    // Check for security errors in tool output and render them prominently
+                    if (tokenWithText.text && (
+                        tokenWithText.text.includes('🚫 SECURITY BLOCK') ||
+                        tokenWithText.text.includes('Command not allowed') ||
+                        tokenWithText.text.includes('COMMAND BLOCKED')
+                    )) {
+                        return (
+                            <Alert key={index} message="🚫 Command Blocked" description={tokenWithText.text} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14' }} />
+                        );
+                    }
+                    
                     console.log('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
                     return (
                         <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
@@ -3505,7 +3579,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Pre-process tool blocks to clean up literal inclusions
             processedMarkdown = processedMarkdown.replace(
-                /```tool:(mcp_\w+)\s*```tool:(mcp_\w+)/g, 
+                /```tool:(mcp_\w+)\s*```tool:(mcp_\w+)/g,
                 '```tool:$1'
             );
             processedMarkdown = processedMarkdown.replace(
@@ -3537,7 +3611,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 console.log('Parse error during streaming, keeping previous tokens:', error);
                 return previousTokensRef.current;
             }
-            
+
             // Don't create fallback code blocks for empty content
             if (!markdown || markdown.trim() === '') {
                 return [];

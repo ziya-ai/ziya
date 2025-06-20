@@ -214,21 +214,37 @@ export const vegaLitePlugin: D3RenderPlugin = {
         availableHeight
       });
 
-      // Set responsive width - use container width for all visualizations
-      vegaSpec.width = availableWidth;
-
-      // Handle height based on visualization type
-      if (!vegaSpec.height && !vegaSpec.vconcat && !vegaSpec.hconcat && !vegaSpec.facet) {
-        // For simple charts, let height be determined by content but set a reasonable default
-        vegaSpec.height = Math.min(availableHeight * 0.6, 400);
+      // Only override dimensions if they're not explicitly set in the spec
+      if (!vegaSpec.width && vegaSpec.width !== 0) {
+        vegaSpec.width = availableWidth;
       }
 
-      // Configure autosize to make visualizations responsive
-      vegaSpec.autosize = {
+      // Only set height if not explicitly specified and not using complex layouts
+      if (!vegaSpec.height && vegaSpec.height !== 0 && !vegaSpec.vconcat && !vegaSpec.hconcat && !vegaSpec.facet) {
+        // For simple charts without explicit height, use a reasonable default
+        vegaSpec.height = Math.min(availableHeight * 0.8, 500);
+      }
+
+      // Only set autosize if not already configured
+      if (!vegaSpec.autosize) {
+        vegaSpec.autosize = {
+          type: 'fit-x',
+          contains: 'padding',
+          resize: true
+        };
+      } else if (vegaSpec.autosize && typeof vegaSpec.autosize === 'object') {
+        // Preserve existing autosize configuration
+        vegaSpec.autosize = { ...vegaSpec.autosize };
+      }
+
+      // For charts with explicit dimensions, use a more conservative autosize
+      if ((vegaSpec.width && vegaSpec.width > 0) || (vegaSpec.height && vegaSpec.height > 0)) {
+        vegaSpec.autosize = {
         type: 'fit-x',
         contains: 'padding',
         resize: true
       };
+      }
 
       // Ensure axis labels are properly displayed without overriding user config
       if (vegaSpec.layer) {
@@ -277,12 +293,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
         theme: isDarkMode ? 'dark' : 'excel',
         renderer: 'svg' as const, // Use SVG for better scaling with complex layouts
         scaleFactor: 1,
-        width: availableWidth,
-        height: vegaSpec.height || availableHeight * 0.6,
+        // Don't override width/height in embed options if they're set in the spec
+        ...((!vegaSpec.width || vegaSpec.width === 0) && { width: availableWidth }),
+        ...((!vegaSpec.height || vegaSpec.height === 0) && { height: availableHeight * 0.6 }),
         config: {
           view: {
-            continuousWidth: availableWidth,
-            continuousHeight: vegaSpec.height || availableHeight * 0.6,
+            // Only set continuous dimensions if not explicitly specified
+            ...((!vegaSpec.width || vegaSpec.width === 0) && { continuousWidth: availableWidth }),
+            ...((!vegaSpec.height || vegaSpec.height === 0) && { continuousHeight: availableHeight * 0.6 }),
             stroke: 'transparent' // Remove default border
           },
           background: null // Let container handle background
@@ -705,15 +723,20 @@ ${svgData}`;
         const vegaEmbedDiv = container.classList.contains('vega-embed') ? container : container.querySelector('.vega-embed') as HTMLElement;
 
         if (svgElement) {
-          // Ensure SVG uses full container width
-          svgElement.style.width = '100%';
-          svgElement.style.maxWidth = '100%';
-          svgElement.style.height = 'auto';
+          // Only apply responsive sizing if the chart doesn't have explicit dimensions
+          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+          const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
+          
+          if (!hasExplicitWidth) {
+            svgElement.style.width = '100%';
+            svgElement.style.maxWidth = '100%';
+          }
+          
+          if (!hasExplicitHeight) {
+            svgElement.style.height = 'auto';
+          }
+          
           svgElement.style.display = 'block';
-
-          // Remove any fixed width/height attributes that might constrain sizing
-          svgElement.removeAttribute('width');
-          svgElement.removeAttribute('height');
 
           console.log(">>> vegaLitePlugin: SVG sizing applied:", {
             svgWidth: svgElement.style.width,
@@ -723,8 +746,13 @@ ${svgData}`;
         }
 
         if (vegaEmbedDiv) {
-          vegaEmbedDiv.style.width = '100%';
-          vegaEmbedDiv.style.maxWidth = '100%';
+          // Only apply responsive width if not explicitly set
+          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+          
+          if (!hasExplicitWidth) {
+            vegaEmbedDiv.style.width = '100%';
+            vegaEmbedDiv.style.maxWidth = '100%';
+          }
         }
 
         // Force parent containers to use full width
@@ -816,39 +844,61 @@ ${svgData}`;
             const [, , width, height] = viewBox.split(' ').map(Number);
             svgWidth = width;
             svgHeight = height;
+          } else {
+            // Try to get dimensions from the SVG attributes
+            const width = svgElement.getAttribute('width');
+            const height = svgElement.getAttribute('height');
+            if (width && height) {
+              svgWidth = parseFloat(width);
+              svgHeight = parseFloat(height);
+            }
           }
 
           console.log('SVG content dimensions:', { svgWidth, svgHeight, viewBox });
 
-          // Force SVG to be responsive but maintain aspect ratio
-          svgElement.style.width = '100%';
-          svgElement.style.height = 'auto';
-          svgElement.style.maxWidth = '100%';
+          // Only apply responsive sizing if chart doesn't have explicit dimensions
+          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+          const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
+          
+          if (!hasExplicitWidth) {
+            svgElement.style.width = '100%';
+            svgElement.style.maxWidth = '100%';
+          }
+          
+          if (!hasExplicitHeight) {
+            svgElement.style.height = 'auto';
+          }
+          
           svgElement.style.overflow = 'visible';
 
           // Force the vega-embed container to accommodate the full SVG content
           if (vegaEmbedDiv) {
-            // Calculate the actual height needed based on current width and aspect ratio
-            const containerWidth = vegaEmbedDiv.getBoundingClientRect().width;
-            const aspectRatio = svgHeight / svgWidth;
-            const neededHeight = containerWidth * aspectRatio;
+            // Only calculate responsive height if height isn't explicitly set
+            if (!hasExplicitHeight) {
+              const containerWidth = vegaEmbedDiv.getBoundingClientRect().width;
+              const aspectRatio = svgHeight / svgWidth;
+              const neededHeight = containerWidth * aspectRatio;
 
-            vegaEmbedDiv.style.height = `${neededHeight}px`;
-            vegaEmbedDiv.style.minHeight = `${neededHeight}px`;
+              vegaEmbedDiv.style.height = `${neededHeight}px`;
+              vegaEmbedDiv.style.minHeight = `${neededHeight}px`;
+              
+              console.log('Container sizing:', { containerWidth, aspectRatio, neededHeight });
+            }
+            
             vegaEmbedDiv.style.display = 'block';
             vegaEmbedDiv.style.overflow = 'visible';
-
-            console.log('Container sizing:', { containerWidth, aspectRatio, neededHeight });
           }
 
-          // Force parent d3-containers to accommodate the full height
-          let parent = container.parentElement;
-          while (parent && parent.classList.contains('d3-container')) {
-            (parent as HTMLElement).style.height = 'auto';
-            (parent as HTMLElement).style.minHeight = `${svgHeight}px`;
-            (parent as HTMLElement).style.overflow = 'visible';
-            console.log('Updated parent container:', parent.className, 'to height: auto, minHeight:', svgHeight);
-            parent = parent.parentElement;
+          // Only adjust parent containers if height isn't explicitly set
+          if (!hasExplicitHeight) {
+            let parent = container.parentElement;
+            while (parent && parent.classList.contains('d3-container')) {
+              (parent as HTMLElement).style.height = 'auto';
+              (parent as HTMLElement).style.minHeight = `${svgHeight}px`;
+              (parent as HTMLElement).style.overflow = 'visible';
+              console.log('Updated parent container:', parent.className, 'to height: auto, minHeight:', svgHeight);
+              parent = parent.parentElement;
+            }
           }
 
           // For complex layouts, ensure proper scaling

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Switch, Input, Button, List, Tag, Space, message, Divider } from 'antd';
+import { Modal, Switch, Input, Button, List, Tag, Space, message, Divider, Checkbox, Collapse, Alert } from 'antd';
 import { PlusOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons';
 
 interface ShellConfigModalProps {
@@ -10,13 +10,19 @@ interface ShellConfigModalProps {
 interface ShellConfig {
     enabled: boolean;
     allowedCommands: string[];
+    gitOperationsEnabled: boolean;
+    safeGitOperations: string[];
     timeout: number;
 }
+
+const { Panel } = Collapse;
 
 const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose }) => {
     const [config, setConfig] = useState<ShellConfig>({
         enabled: true,
         allowedCommands: ['ls', 'cat', 'pwd', 'grep', 'wc', 'touch', 'find', 'date'],
+        gitOperationsEnabled: true,
+        safeGitOperations: ['status', 'log', 'show', 'diff', 'branch', 'remote', 'ls-files', 'blame'],
         timeout: 10
     });
     const [newCommand, setNewCommand] = useState('');
@@ -88,8 +94,25 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         }));
     };
 
+    const toggleGitOperation = (operation: string) => {
+        setConfig(prev => ({
+            ...prev,
+            safeGitOperations: prev.safeGitOperations.includes(operation)
+                ? prev.safeGitOperations.filter(op => op !== operation)
+                : [...prev.safeGitOperations, operation]
+        }));
+    };
+
     const dangerousCommands = ['rm', 'rmdir', 'mv', 'cp', 'chmod', 'chown', 'sudo', 'su'];
-    const isDangerous = (command: string) => dangerousCommands.some(dangerous => 
+    const destructiveGitOperations = ['reset', 'rebase', 'merge', 'push', 'pull', 'checkout', 'commit', 'add', 'rm'];
+    const safeGitOperations = [
+        'status', 'log', 'show', 'diff', 'branch', 'remote', 'config --get', 
+        'ls-files', 'ls-tree', 'blame', 'tag', 'stash list', 'reflog', 
+        'rev-parse', 'describe', 'shortlog', 'whatchanged'
+    ];
+    
+    const isDangerous = (command: string) => 
+        dangerousCommands.some(dangerous => 
         command.toLowerCase().includes(dangerous.toLowerCase())
     );
 
@@ -118,6 +141,19 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 </div>
 
                 <Divider />
+                
+                <Alert
+                    message="Security Notice"
+                    description="Only enable commands that are safe for AI execution. Git operations are limited to read-only and safe operations by default."
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                />
+
+                <Divider />
+
+                <Collapse defaultActiveKey={['1']} ghost>
+                    <Panel header="Basic Configuration" key="1">
 
                 <div>
                     <h4>Command Timeout</h4>
@@ -130,8 +166,45 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                     />
                 </div>
 
+                        <Divider />
+
+                        <div>
+                            <Space align="center" style={{ marginBottom: 12 }}>
+                                <Switch
+                                    checked={config.gitOperationsEnabled}
+                                    onChange={(checked) => setConfig(prev => ({ ...prev, gitOperationsEnabled: checked }))}
+                                />
+                                <span>Enable safe Git operations</span>
+                            </Space>
+                            <div style={{ marginBottom: 12, color: '#666', fontSize: '12px' }}>
+                                When enabled, allows read-only and safe Git commands
+                            </div>
+                            
+                            {config.gitOperationsEnabled && (
+                                <div style={{ marginLeft: 24 }}>
+                                    <h5>Allowed Git Operations:</h5>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                                        {safeGitOperations.map(operation => (
+                                            <Checkbox
+                                                key={operation}
+                                                checked={config.safeGitOperations.includes(operation)}
+                                                onChange={() => toggleGitOperation(operation)}
+                                            >
+                                                git {operation}
+                                            </Checkbox>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </Panel>
+
+                    <Panel header="Custom Commands" key="2">
                 <div>
-                    <h4>Allowed Commands Whitelist</h4>
+                            <h4>Additional Allowed Commands</h4>
+                            <div style={{ marginBottom: 12, color: '#666', fontSize: '12px' }}>
+                                Add custom commands to the whitelist. Be careful with potentially dangerous commands.
+                            </div>
                     <div style={{ marginBottom: 12 }}>
                         <Input.Group compact>
                             <Input
@@ -180,6 +253,8 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                         style={{ maxHeight: 200, overflow: 'auto' }}
                     />
                 </div>
+                    </Panel>
+                </Collapse>
             </Space>
         </Modal>
     );

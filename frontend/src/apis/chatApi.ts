@@ -311,6 +311,27 @@ export const sendPayload = async (
                         // Not JSON or not a hunk status update, ignore
                     }
 
+                    // Check for partial response preservation warnings
+                    try {
+                        const jsonData = JSON.parse(data);
+                        if (jsonData.warning === 'partial_response_preserved') {
+                            console.warn('⚠️ PARTIAL RESPONSE PRESERVED:', jsonData.detail);
+                            console.log('Preserved content:', jsonData.partial_content);
+                            
+                            // Add the preserved content to current content
+                            if (jsonData.partial_content && !currentContent.includes(jsonData.partial_content)) {
+                                currentContent += jsonData.partial_content;
+                                setStreamedContentMap((prev: Map<string, string>) => {
+                                    const next = new Map(prev);
+                                    next.set(conversationId, currentContent);
+                                    return next;
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        // Not a warning JSON, continue processing
+                    }
+
                     // Check for errors using our new function - but be careful not to match code examples
                     // Skip error checking if the data looks like it contains code blocks or diffs
                     const containsCodeBlock = data.includes('```');
@@ -318,9 +339,16 @@ export const sendPayload = async (
 
                     if (errorResponse) {
                         console.log("Error detected in SSE data:", errorResponse);
-                        message.error({
-                            content: errorResponse.detail || 'An error occurred',
-                            duration: 10,
+                        
+                        // Show different message for partial responses vs complete failures
+                        const isPartialResponse = currentContent.length > 0;
+                        const errorMessage = isPartialResponse 
+                            ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
+                            : errorResponse.detail || 'An error occurred';
+                        
+                        message.warning({
+                            content: errorMessage,
+                            duration: isPartialResponse ? 15 : 10,
                             key: 'stream-error'
                         });
                         errorOccurred = true;
@@ -476,9 +504,16 @@ export const sendPayload = async (
                                 const nestedError = extractErrorFromNestedOps(chunk);
                                 if (nestedError) {
                                     console.log("Nested error detected in ops structure:", nestedError);
-                                    message.error({
-                                        content: nestedError.detail || 'An error occurred',
-                                        duration: 10,
+                                    
+                                    // Show different message for partial responses vs complete failures
+                                    const isPartialResponse = currentContent.length > 0;
+                                    const errorMessage = isPartialResponse 
+                                        ? `${nestedError.detail} (Partial response preserved - ${currentContent.length} characters)`
+                                        : nestedError.detail || 'An error occurred';
+                                    
+                                    message.warning({
+                                        content: errorMessage,
+                                        duration: isPartialResponse ? 15 : 10,
                                         key: 'stream-error'
                                     });
                                     errorOccurred = true;
@@ -539,9 +574,16 @@ export const sendPayload = async (
 
                 if (errorResponse) {
                     console.log("Error detected in final content:", errorResponse);
-                    message.error({
-                        content: errorResponse.detail || 'An error occurred',
-                        duration: 10,
+                    
+                    // Show different message for partial responses vs complete failures
+                    const isPartialResponse = currentContent.length > 0;
+                    const errorMessage = isPartialResponse 
+                        ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
+                        : errorResponse.detail || 'An error occurred';
+                    
+                    message.warning({
+                        content: errorMessage,
+                        duration: isPartialResponse ? 15 : 10,
                         key: 'stream-error'
                     });
                     errorOccurred = true;

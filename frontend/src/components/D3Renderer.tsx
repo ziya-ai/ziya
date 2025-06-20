@@ -426,7 +426,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');
                 tempContainer.style.width = '100%';
-                tempContainer.style.height = '100%';
+                tempContainer.style.height = 'auto';
 
                 let renderSuccessful = false;
 

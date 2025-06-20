@@ -404,7 +404,7 @@ export const StreamedContent: React.FC = () => {
                         <Suspense fallback={<div>Loading content...</div>}>
                             <>
                                 {/* Only render if we have actual content */}
-                                {error && <ErrorDisplay message={error} />}
+                                {error && <><ErrorDisplay message={error} /><br /></>}
                                 {!error && streamedContent && streamedContent.trim() && (
                                     <MarkdownRenderer
                                         key={`stream-${currentConversationId}`}
@@ -414,6 +414,19 @@ export const StreamedContent: React.FC = () => {
                                         enableCodeApply={enableCodeApply}
                                     />
                                 )}
+                                {/* Show content even when there's an error */}
+                                {error && streamedContent && streamedContent.trim() && (
+                                    <div style={{ opacity: 0.8 }}>
+                                        <MarkdownRenderer
+                                            key={`stream-${currentConversationId}-with-error`}
+                                            markdown={streamedContent}
+                                            forceRender={streamingConversations.has(currentConversationId)}
+                                            isStreaming={streamingConversations.has(currentConversationId)}
+                                            enableCodeApply={enableCodeApply}
+                                        />
+                                    </div>
+                                )}
+                                
                             </>
                         </Suspense>
                     </div>

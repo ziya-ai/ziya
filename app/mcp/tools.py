@@ -121,6 +121,15 @@ class MCPTool(BaseTool):
             )
             logger.info(f"🔍 MCPTool._arun: Got result from MCP manager: {result}")
             
+            # Check if this is an error response from the MCP server
+            if isinstance(result, dict) and result.get("error"):
+                error_msg = result.get("message", "Unknown MCP error")
+                # Format security errors prominently
+                if "SECURITY BLOCK" in error_msg or "Command not allowed" in error_msg:
+                    return f"🚫 **SECURITY BLOCK**: {error_msg}"
+                else:
+                    return f"❌ **MCP Error**: {error_msg}"
+            
             logger.info(f"MCPTool._arun result for {self.mcp_tool_name}: {result}")
             if result is None:
                 return f"Error: MCP tool '{self.mcp_tool_name}' not found or failed to execute"

@@ -261,8 +261,14 @@ class MCPClient:
             response = json.loads(response_line.strip())
             
             if "error" in response:
-                logger.error(f"MCP server error: {response['error']}")
-                return None
+                error_info = response['error']
+                logger.error(f"MCP server error: {error_info}")
+                # Return error information so it can be displayed to the user
+                return {
+                    "error": True,
+                    "message": error_info.get("message", "Unknown MCP server error"),
+                    "code": error_info.get("code", -1)
+                }
                 
             return response.get("result")
             

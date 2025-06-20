@@ -1610,7 +1610,7 @@ body:not(.dark) .token.attr-name {
 .d3-container:not(.d3-container .d3-container) {
    margin: 1em 0;
    border-radius: 6px;
-   overflow: auto;
+   overflow: visible;
    box-sizing: border-box;
    /* Allow container to size based on content, up to 100% width */
    display: block; 
@@ -1955,12 +1955,13 @@ body:not(.dark) .token.attr-name {
     height: auto !important;
     min-height: unset !important;
     max-height: none !important;
+    overflow: visible !important;
 }
 
 .mermaid-wrapper {
     width: 100%;
     max-width: 100%;
-    overflow: auto;
+    overflow: visible;
     padding: 1em;
     display: flex;
     justify-content: center;
@@ -1971,15 +1972,15 @@ body:not(.dark) .token.attr-name {
     height: auto !important;
     width: auto !important;
     min-width: 200px;
-    max-height: 600px;
+    max-height: none !important;
 }
 
 .mermaid-container {
     width: 100% !important;
     height: auto !important;
-    overflow: auto !important;
+    overflow: visible !important;
     padding: 1em 0 !important;
-    max-height: 800px !important;
+    max-height: none !important;
 }
 
 /* MUI Chat History specific styles */

@@ -814,6 +814,12 @@ class RetryingChatBedrock(Runnable):
                 error_str = str(e)
                 logger.warning(f"Bedrock client error: {error_str}")
                 
+                # Log any accumulated content before error handling
+                if hasattr(self, '_accumulated_content') and self._accumulated_content:
+                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(self._accumulated_content)} characters accumulated before error")
+                    print(f"ACCUMULATED CONTENT BEFORE ERROR:\n{self._accumulated_content}")
+                
+                
                 # Run credential debug again on error
                 
                 error_type, detail, status_code, retry_after = detect_error_type(error_str)
@@ -848,6 +854,12 @@ class RetryingChatBedrock(Runnable):
             except Exception as e:
                 error_str = str(e)
                 logger.warning(f"Error on attempt {attempt + 1}: {error_str}")
+                
+                # Log any accumulated content before error handling
+                if hasattr(self, '_accumulated_content') and self._accumulated_content:
+                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(self._accumulated_content)} characters accumulated before exception")
+                    print(f"ACCUMULATED CONTENT BEFORE EXCEPTION:\n{self._accumulated_content}")
+                
 
                 # Check if this is a throttling error wrapped in another exception
                 if "ThrottlingException" in error_str or "Too many requests" in error_str:

@@ -340,12 +340,32 @@ export function initMermaidEnhancer(): void {
 
   // Add a preprocessor to fix gitgraph diagrams
   registerPreprocessor((def: string, type: string) => {
-    if (!def.trim().startsWith('gitgraph')) {
-      return def;
+    // This preprocessor is specific to gitgraph/gitGraph types.
+    // We need to replace `gitgraph` with `gitGraph` if it's present after frontmatter.
+    const lines = def.split('\n');
+
+    let inFrontmatter = false;
+    let diagramTypeLineProcessed = false; // Flag to ensure we only process the first 'gitgraph' after frontmatter
+
+    if (lines.length > 0 && lines[0].trim() === '---') {
+      inFrontmatter = true;
     }
 
-    // Convert gitgraph to git graph (supported syntax)
-    let finalDef = def.replace(/^gitgraph/, 'gitGraph');
+    let finalDef = lines.map((line) => {
+      if (inFrontmatter) {
+        if (line.trim() === '---') {
+          inFrontmatter = false; // End of frontmatter
+        }
+        return line; // Keep frontmatter lines as is
+      }
+
+      // After frontmatter (or if no frontmatter)
+      if (!diagramTypeLineProcessed && line.trim().startsWith('gitgraph')) {
+        diagramTypeLineProcessed = true; // Mark that we've processed the diagram type line
+        return line.replace('gitgraph', 'gitGraph');
+      }
+      return line;
+    }).join('\n');
 
     return finalDef;
   }, {
@@ -532,6 +552,12 @@ export function initMermaidEnhancer(): void {
     // Fix "Send DONE Marker" nodes that cause parsing errors
     finalDef = finalDef.replace(/\[Send\s+"DONE"\s+Marker\]/g, '[Send DONE Marker]');
 
+    // Fix issues like `class X,Y,Z style --> class`
+    // 1. Ensure `class` as a node ID is quoted.
+    finalDef = finalDef.replace(/(\s+-->\s+)class(\s*;|\s*\[|\s*$|\s+-->)/gm, '$1"class"$2');
+    // 2. Address `class X,Y,Z somenode` potentially being misparsed before `-->`
+    // This is complex; a simpler fix is to ensure `class` keyword is not misinterpreted.
+    // The main issue seems to be `--> class`.
 
     // Fix node references that cause parsing errors
     finalDef = finalDef.replace(/(\w+)\s*-->\s*(\w+)\[([^\]]+)\]/g, (match, source, target, label) => {
@@ -778,13 +804,14 @@ export function initMermaidEnhancer(): void {
         const participant = deactivateMatch ? deactivateMatch[1] : null;
 
         if (participant && activationState[participant]) {
-          activationState[participant] = false;
-          result.push(line);
-        } else if (participant) {
-          // Skip this deactivation as the participant is not active
-          console.warn(`Skipping deactivation for inactive participant: ${participant}`);
-          // Add as comment for debugging
-          result.push(`%%${line} (skipped - participant not active)`);
+          // Only add deactivate line if participant is actually active
+          if (activationState[participant]) {
+            activationState[participant] = false;
+            result.push(line);
+          } else {
+            console.warn(`Skipping deactivation for already inactive participant: ${participant} in line: "${line}"`);
+            result.push(`%% ${line} (skipped - participant already inactive)`);
+          }
         }
       }
       // Handle activation via message arrows
@@ -795,11 +822,17 @@ export function initMermaidEnhancer(): void {
         }
         result.push(line);
       }
-      // Handle deactivation via message arrows
+      // Handle deactivation via message arrows, only if active
       else if (line.includes('->>-') || line.includes('-->>-')) {
         const deactivationMatch = line.match(/.*?->>?-\s*(\w+)/);
-        if (deactivationMatch && deactivationMatch[1] && activationState[deactivationMatch[1]]) {
-          activationState[deactivationMatch[1]] = false;
+        if (deactivationMatch && deactivationMatch[1]) {
+          if (activationState[deactivationMatch[1]]) {
+            activationState[deactivationMatch[1]] = false;
+            result.push(line);
+          } else {
+            console.warn(`Skipping arrow deactivation for already inactive participant: ${deactivationMatch[1]} in line: "${line}"`);
+            result.push(line.replace(/->>?-/, '->>'));
+          }
         }
         result.push(line);
       }
@@ -814,7 +847,6 @@ export function initMermaidEnhancer(): void {
             // Remove the deactivate keyword since the participant isn't active
             const cleanLine = line.replace(/\s*deactivate\s*$/, '');
             result.push(cleanLine);
-            console.warn(`Removed deactivation for inactive participant: ${targetParticipant}`);
             continue;
           } else if (targetParticipant) {
             activationState[targetParticipant] = false;
@@ -861,7 +893,14 @@ export function initMermaidEnhancer(): void {
     // Fix class diagram ">" dependency syntax
     processedDef = processedDef.replace(/}\s*>\s*(\w+)\s*{/g, '}\n    $1 --|> ');
     processedDef = processedDef.replace(/(class\s+\w+\s*{\s*)>\s*/g, '$1');
-
+    // Fix for `OrderStatus --|> PENDING` where PENDING is not a class
+    // If Y in X --|> Y is all caps and not defined as a class, comment it out.
+    processedDef = processedDef.replace(/^(\s*)(\w+)\s*--\|>\s*([A-Z_]+)\s*$/gm, (match, indent, classX, classY) => {
+      if (!processedDef.match(new RegExp(`class\\s+${classY}\\s*\\{`, 'm'))) {
+        return `${indent}%% ${match.trim()}`;
+      }
+      return match;
+    });
     return processedDef;
   }, {
     name: 'parsing-error-fix',
@@ -1148,94 +1187,25 @@ function getOptimalTextColor(backgroundColor: string): string {
 
   // Special handling for yellow and yellow-ish colors
   // Yellow has high luminance but white text on yellow is terrible
-  if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+  if (rgb.r > 180 && rgb.g > 180 && rgb.b < 120) {
     return '#000000'; // Always use black on yellow/yellow-ish
   }
 
   // Special handling for beige/cream colors (high R, G, moderate B)
-  if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
+  if (rgb.r > 200 && rgb.g > 180 && rgb.b > 140) {
     return '#000000'; // Always use black on beige/cream
+  }
+
+  // Special handling for light gray colors
+  if (Math.abs(rgb.r - rgb.g) < 30 && Math.abs(rgb.g - rgb.b) < 30 && rgb.r > 180) {
+    return '#000000'; // Use black on light grays
   }
 
   // Calculate relative luminance using proper sRGB formula
   const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-  
+
   // Use a more conservative threshold - prefer black text unless background is quite dark
-  return luminance > 0.4 ? '#000000' : '#ffffff';
-}
-
-/**
- * Get optimal text color based on background color with special handling for problematic colors
- * @param backgroundColor - The background color (hex)
- * @returns - The best contrasting text color
- */
-function getOptimalTextColor(backgroundColor: string): string {
-  // Convert hex to RGB
-  const hexToRgb = (hex: string) => {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result ? {
-      r: parseInt(result[1], 16),
-      g: parseInt(result[2], 16),
-      b: parseInt(result[3], 16)
-    } : null;
-  };
-
-  const rgb = hexToRgb(backgroundColor);
-  if (!rgb) return '#000000';
-
-  // Special handling for yellow and yellow-ish colors
-  // Yellow has high luminance but white text on yellow is terrible
-  if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
-    return '#000000'; // Always use black on yellow/yellow-ish
-  }
-
-  // Special handling for beige/cream colors (high R, G, moderate B)
-  if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
-    return '#000000'; // Always use black on beige/cream
-  }
-
-  // Calculate relative luminance using proper sRGB formula
-  const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-  
-  // Use a more conservative threshold - prefer black text unless background is quite dark
-  return luminance > 0.4 ? '#000000' : '#ffffff';
-}
-
-/**
- * Get optimal text color based on background color with special handling for problematic colors
- * @param backgroundColor - The background color (hex)
- * @returns - The best contrasting text color
- */
-function getOptimalTextColor(backgroundColor: string): string {
-  // Convert hex to RGB
-  const hexToRgb = (hex: string) => {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result ? {
-      r: parseInt(result[1], 16),
-      g: parseInt(result[2], 16),
-      b: parseInt(result[3], 16)
-    } : null;
-  };
-
-  const rgb = hexToRgb(backgroundColor);
-  if (!rgb) return '#000000';
-
-  // Special handling for yellow and yellow-ish colors
-  // Yellow has high luminance but white text on yellow is terrible
-  if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
-    return '#000000'; // Always use black on yellow/yellow-ish
-  }
-
-  // Special handling for beige/cream colors (high R, G, moderate B)
-  if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
-    return '#000000'; // Always use black on beige/cream
-  }
-
-  // Calculate relative luminance using proper sRGB formula
-  const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-  
-  // Use a more conservative threshold - prefer black text unless background is quite dark
-  return luminance > 0.4 ? '#000000' : '#ffffff';
+  return luminance > 0.35 ? '#000000' : '#ffffff';
 }
 
 /**
@@ -1255,11 +1225,30 @@ export function enhanceMermaid(mermaid: any): void {
   mermaid.render = async function(id: string, definition: string, ...args: any[]): Promise<any> {
     try {
       // Determine diagram type
-      const firstLine = definition.trim().split('\n')[0];
-      const diagramType = firstLine.trim().replace(/^(\w+).*$/, '$1').toLowerCase();
-
+      let diagramType: string;
+      const lines = definition.trim().split('\n');
+      let typeLine = lines[0]?.trim() || '';
+      if (typeLine === '---' && lines.length > 1) {
+        let inFrontmatterDetect = true;
+        let diagramDeclarationLine = '';
+        for (let i = 1; i < lines.length; i++) {
+          const currentLineTrimmed = lines[i].trim();
+          if (inFrontmatterDetect) {
+            if (currentLineTrimmed === '---') {
+              inFrontmatterDetect = false;
+            }
+          } else {
+            if (currentLineTrimmed) { // First non-empty line after frontmatter
+              diagramDeclarationLine = currentLineTrimmed;
+              break;
+            }
+          }
+        }
+        typeLine = diagramDeclarationLine || lines[0]?.trim() || ''; // Fallback if no declaration found
+      }
+      diagramType = typeLine.split(' ')[0].toLowerCase(); // Get the first word as type
       // Preprocess the definition
-      const processedDef = preprocessDefinition(definition, diagramType);
+      const processedDef = preprocessDefinition(definition, diagramType); // Pass the correctly determined diagramType
 
       // Call the original render with processed definition
       const result = await originalRender.call(this, id, processedDef, ...args);
