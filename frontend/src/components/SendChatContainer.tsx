@@ -31,6 +31,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         streamingConversations,
         addStreamingConversation,
         removeStreamingConversation,
+        setProcessingState,
         setUserHasScrolled
     } = useChatContext();
 
@@ -166,7 +167,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 setIsStreaming,
                 removeStreamingConversation,
                 addMessageToConversation,
-                streamingConversations.has(currentConversationId)
+                streamingConversations.has(currentConversationId),
+                setProcessingState
             );
             // Check if result is an error response
             if (typeof result === 'string' && result.includes('"error":"validation_error"')) {

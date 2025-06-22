@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, useTransition, useId, Suspense } from 'react';
 import { useChatContext } from '../context/ChatContext';
 import { Space, Alert, Typography } from 'antd';
+import { v4 as uuidv4 } from 'uuid';
 import StopStreamButton from './StopStreamButton';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
-
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC = () => {
@@ -18,6 +18,7 @@ export const StreamedContent: React.FC = () => {
     const lastScrollPositionRef = useRef<number>(0);
     const {
         streamedContentMap,
+        addMessageToConversation,
         isStreaming,
         processingState,
         setIsStreaming,
@@ -29,7 +30,6 @@ export const StreamedContent: React.FC = () => {
         removeStreamingConversation,
     } = useChatContext();
 
-    const { question } = useQuestionContext();
 
     // Use a ref to track the last rendered content to avoid unnecessary re-renders
     const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) ?? '', [streamedContentMap, currentConversationId]);
@@ -270,6 +270,83 @@ export const StreamedContent: React.FC = () => {
         }
     };
 
+    // Listen for preserved content events from streaming errors
+    useEffect(() => {
+        const handlePreservedContent = (event: CustomEvent) => {
+            const { 
+                preserved_content, 
+                pre_streaming_work,
+                processing_context,
+                successful_tool_results, 
+                tool_execution_summary, 
+                error_detail 
+            } = event.detail;
+            
+            console.log('Received preserved content event:', {
+                preservedContentLength: preserved_content?.length || 0,
+                successfulTools: successful_tool_results?.length || 0,
+                preStreamingWork: pre_streaming_work?.length || 0,
+                processingContext: processing_context,
+                executionSummary: tool_execution_summary
+            });
+            
+            // Only create preserved message if we have content or successful tools
+            if (preserved_content || (successful_tool_results && successful_tool_results.length > 0) || (pre_streaming_work && pre_streaming_work.length > 0)) {
+                let preservedContent = preserved_content || '';
+                
+                // Add pre-streaming work if available
+                if (pre_streaming_work && pre_streaming_work.length > 0) {
+                    const workSection = '\n\n---\n**🔄 Processing Work Completed Before Error:**\n\n' +
+                        pre_streaming_work.map((work, index) => `${index + 1}. ${work}`).join('\n');
+                    preservedContent += workSection;
+                    
+                    // Add cache information if available
+                    if (processing_context?.cache_benefit) {
+                        preservedContent += `\n\n**💾 Cache Status:** ${processing_context.cache_benefit}`;
+                    }
+                }
+                
+                // If we have successful tool results, format them nicely
+                if (successful_tool_results && successful_tool_results.length > 0) {
+                    const toolResultsSection = '\n\n---\n**✅ Successful Tool Executions Before Error:**\n\n' +
+                        successful_tool_results.map((result, index) => {
+                            const content = typeof result === 'string' ? result : (result.content || JSON.stringify(result));
+                            return `**Tool ${index + 1}:**\n${content}`;
+                        }).join('\n\n');
+                    preservedContent += toolResultsSection;
+                }
+                
+                // Add error context
+                const errorContext = `\n\n---\n**❌ Error Occurred:** ${error_detail}\n` +
+                    (tool_execution_summary ? 
+                        `**📊 Execution Summary:** ${tool_execution_summary.successful_executions}/${tool_execution_summary.total_attempts} tools completed successfully` 
+                        : '');
+                preservedContent += errorContext;
+                
+                const preservedMessage = {
+                    id: uuidv4(),
+                    role: 'assistant' as const,
+                    content: preservedContent,
+                    _timestamp: Date.now(),
+                    preservedContent: {
+                        successful_tools: successful_tool_results || [],
+                        pre_streaming_work: pre_streaming_work || [],
+                        processing_context: processing_context || {},
+                        execution_summary: tool_execution_summary,
+                        error_detail: error_detail,
+                        was_preserved: true
+                    }
+                };
+                
+                addMessageToConversation(preservedMessage, currentConversationId);
+                console.log('Added preserved message with successful tool results');
+            }
+        };
+
+        document.addEventListener('preservedContent', handlePreservedContent as EventListener);
+        return () => document.removeEventListener('preservedContent', handlePreservedContent as EventListener);
+    }, [currentConversationId, addMessageToConversation]);
+
     // Reset error when new content starts streaming
     useEffect(() => {
         if (isStreaming) {
@@ -364,15 +441,6 @@ export const StreamedContent: React.FC = () => {
                         {connectionLost && (
                             <ConnectionLostAlert />
                         )}
-                        {/* Show the human message immediately when streaming starts */}
-                        {streamingConversations.has(currentConversationId) && question && (
-                            <div className="message human" style={{ marginBottom: '16px' }}>
-                                <div className="message-sender">You:</div>
-                                <div className="message-content">
-                                    <Typography.Paragraph>{question}</Typography.Paragraph>
-                                </div>
-                            </div>
-                        )}
                         <div className="message-sender" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <span>AI:</span>
                             {/* Only show stop button here once we have content */}
@@ -390,6 +458,17 @@ export const StreamedContent: React.FC = () => {
                                 {/* Only render if we have actual content */}
                                 {error && <><ErrorDisplay message={error} /><br /></>}
                                 {!error && streamedContent && streamedContent.trim() && (
+                                    <div className="streamed-content-wrapper">
+                                        {/* Show preservation notice if this content was preserved */}
+                                        {streamedContent.includes('Successful Tool Executions Before Error:') && (
+                                            <Alert
+                                                message="⚠️ Partial Response Preserved"
+                                                description="Some tool executions completed successfully before an error occurred. Results are shown below."
+                                                type="warning"
+                                                showIcon
+                                                style={{ marginBottom: '16px' }}
+                                            />
+                                        )}
                                     <MarkdownRenderer
                                         key={`stream-${currentConversationId}`}
                                         markdown={streamedContent}
@@ -397,6 +476,7 @@ export const StreamedContent: React.FC = () => {
                                         isStreaming={streamingConversations.has(currentConversationId)}
                                         enableCodeApply={enableCodeApply}
                                     />
+                                    </div>
                                 )}
                                 {/* Show content even when there's an error */}
                                 {error && streamedContent && streamedContent.trim() && (

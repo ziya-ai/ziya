@@ -371,7 +371,7 @@ export const App: React.FC = () => {
                         style={{
                             padding: '4px 8px',
                             color: isDarkMode ? undefined : (isPanelCollapsed ? '#ffffff' : '#1890ff'),
-                            left: isPanelCollapsed ? '-1px' : `${panelWidth - 14}px`, // Position at panel edge
+                            left: isPanelCollapsed ? '-1px' : `${panelWidth}px`, // Position at right edge of resizer (-4px spacing)
                             backgroundColor: isDarkMode ? undefined : (isPanelCollapsed ? '#1890ff' : undefined),
                         }}
                         ghost={!isDarkMode || !isPanelCollapsed}
@@ -382,7 +382,7 @@ export const App: React.FC = () => {
                         isPanelCollapsed={isPanelCollapsed}
                     />
 
-                    <div style={{ height: 'var(--app-header-height)' }}>
+                    <div style={{ height: 'var(--header-height)' }}>
                         <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
                             style={{
                                 position: 'fixed',
@@ -429,8 +429,8 @@ export const App: React.FC = () => {
                     </div>
                     <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
                         style={{
-                            marginTop: 'var(--app-header-height)',
-                            height: 'calc(100vh - var(--app-header-height))',
+                            marginTop: 'var(--header-height)',
+                            height: 'calc(100vh - var(--header-height))',
                             display: 'flex',
                             width: '100vw',
                             overflow: 'hidden'

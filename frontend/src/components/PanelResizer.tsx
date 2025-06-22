@@ -91,8 +91,8 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
         left: 'var(--folder-panel-width)',
         top: 'var(--header-height)',
         bottom: 0,
-        width: '10px',
-        marginLeft: '-5px', // Center the handle on the border
+        width: '8px',
+        marginLeft: '-4px', // Center the handle on the border
         cursor: 'col-resize',
         zIndex: 100,
         backgroundColor: isDragging ? (isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)') : 'transparent',
