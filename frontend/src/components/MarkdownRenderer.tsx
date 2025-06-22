@@ -20,6 +20,7 @@ import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/f
 import { FileOperationRenderer } from './FileOperationRenderer';
 
 // Define the status interface
+import 'katex/dist/katex.min.css';
 interface HunkStatus {
     applied: boolean;
     alreadyApplied?: boolean;
@@ -2550,7 +2551,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 
     // Stable reference to prevent unnecessary re-renders
     const stableToken = useMemo(() => token, [token.text, token.lang, token.type]);
-    
+
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
@@ -2739,7 +2740,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 // Define the possible determined types
 type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'file-operation' | 'tool' |
-    'code' | 'html' | 'text' | 'list' | 'table' | 'escape' |
+    'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' |
@@ -3245,6 +3246,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
                     }
 
+                    // Check for KATEX/LATEX math expressions
+                    if (htmlContent.includes('MATH_DISPLAY:')) {
+                        const mathMatch = htmlContent.match(/MATH_DISPLAY:([^<]*)/s);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
+                    }
+                    if (htmlContent.includes('MATH_INLINE:')) {
+                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/s);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                    }
+
                     const tagMatches = htmlContent.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g);
 
                     if (tagMatches) {
@@ -3434,6 +3445,28 @@ const markedOptions = {
     pedantic: false
 };
 
+// Math rendering component
+const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, displayMode }) => {
+    const katex = require('katex');
+
+    try {
+        const html = katex.renderToString(math, {
+            displayMode,
+            throwOnError: false,
+            strict: false
+        });
+
+        return displayMode ?
+            <div className="math-display" dangerouslySetInnerHTML={{ __html: html }} /> :
+            <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />;
+    } catch (error) {
+        console.warn('KaTeX rendering error:', error);
+        return displayMode ?
+            <div className="math-error">Math Error: {math}</div> :
+            <span className="math-error">Math Error: {math}</span>;
+    }
+};
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
@@ -3472,6 +3505,18 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             processedMarkdown = processedMarkdown.replace(
                 /^```tool:(mcp_\w+)\s*$/gm,
                 '```tool:$1'
+            );
+
+            // Pre-process math expressions
+            // Handle display math $$...$$
+            processedMarkdown = processedMarkdown.replace(
+                /\$\$([\s\S]*?)\$\$/g,
+                '<div class="math-display-block">$$MATH_DISPLAY:$1$$</div>'
+            );
+            // Handle inline math $...$
+            processedMarkdown = processedMarkdown.replace(
+                /\$([^$\n]+?)\$/g,
+                '<span class="math-inline-span">MATH_INLINE:$1</span>'
             );
 
             // Pre-process MathML blocks to prevent fragmentation
