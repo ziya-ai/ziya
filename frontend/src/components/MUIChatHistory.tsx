@@ -524,6 +524,7 @@ const MUIChatHistory = () => {
   const {
     conversations,
     currentConversationId,
+    setDynamicTitleLength,
     setConversations,
     isLoadingConversation,
     streamingConversations,
@@ -541,6 +542,7 @@ const MUIChatHistory = () => {
 
   const { isDarkMode } = useTheme();
   const [expandedNodes, setExpandedNodes] = useState<React.Key[]>([]);
+  const chatHistoryRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState<string>('');
   const [pinnedFolders, setPinnedFolders] = useState<Set<string>>(new Set());
@@ -587,6 +589,34 @@ const MUIChatHistory = () => {
       localStorage.setItem('ZIYA_PINNED_FOLDERS', JSON.stringify([...pinnedFolders]));
     }
   }, [pinnedFolders]);
+
+  // Handle panel width measurement for dynamic title length
+  useEffect(() => {
+    let lastWidth = 0;
+    let timeoutId: NodeJS.Timeout;
+    
+    const resizeObserver = new ResizeObserver((entries) => {
+      // Debounce resize events to prevent excessive firing
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        const entry = entries[0];
+        if (entry && Math.abs(entry.contentRect.width - lastWidth) > 10) {
+          lastWidth = entry.contentRect.width;
+          const calculatedLength = Math.max(30, Math.min(80, Math.floor(lastWidth / 6)));
+          setDynamicTitleLength(calculatedLength);
+        }
+      }, 250); // 250ms debounce
+    });
+
+    if (chatHistoryRef.current) {
+      resizeObserver.observe(chatHistoryRef.current);
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      resizeObserver.disconnect();
+    };
+  }, [setDynamicTitleLength]);
 
   // Handle opening the move menu
   const handleOpenMoveMenu = (nodeId: string, anchorEl: HTMLElement) => {
@@ -1592,7 +1622,7 @@ const MUIChatHistory = () => {
       <Spin size="large" />
     </Box>
   ) : (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <Box ref={chatHistoryRef} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Tree View with integrated action buttons */}
       <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
         {(() => {

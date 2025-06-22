@@ -2548,11 +2548,15 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const tokenRef = useRef<TokenWithText>(token);
     const contentRef = useRef<HTMLDivElement>(null);
 
+    // Stable reference to prevent unnecessary re-renders
+    const stableToken = useMemo(() => token, [token.text, token.lang, token.type]);
+    
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
     const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
     const [debugInfo, setDebugInfo] = useState<any>({});
+    const renderCountRef = useRef(0);
 
     const { isStreaming: isGlobalStreaming } = useChatContext();
 
@@ -2619,9 +2623,20 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 
     // Store token in ref to avoid unnecessary re-renders
     useEffect(() => {
+        // Only update if content actually changed
+        if (tokenRef.current.text !== token.text || tokenRef.current.lang !== token.lang) {
+            tokenRef.current = token;
+            if (contentRef.current) highlightCodeIfNeeded();
+        }
+    }, [token.text, token.lang, highlightCodeIfNeeded]);
+
+    // Remove the effect that was causing continuous re-renders
+    /*
+    useEffect(() => {
         tokenRef.current = token;
         if (contentRef.current) highlightCodeIfNeeded();
     }, [token, highlightCodeIfNeeded]);
+    */
 
     useEffect(() => {
         if (token.lang !== undefined && !prismInstance) {
@@ -2667,14 +2682,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         return <ToolBlock toolName={toolName} content={token.text || ''} isDarkMode={isDarkMode} />;
     }
 
-    console.debug('CodeBlock rendering:', {
-        id: index,
-        tokenType: token.type,
-        language: token.lang,
-        isStreaming: token.text?.endsWith('\n'),
-        contentLength: token.text?.length,
-        contentPreview: token.text?.substring(0, 50)
-    });
+    // Remove debug logging that was causing performance overhead
 
     // Get the effective language for highlighting
     const getEffectiveLang = (rawLang: string | undefined): string => {
@@ -2740,12 +2748,6 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
-
-    // Debug logging for problematic tokens
-    if (tokenType === 'code' && 'text' in token && (!token.lang || token.lang === '')) {
-        console.log('Code block without lang detected:', { text: (token.text || '').substring(0, 100), hasLang: !!token.lang, lang: token.lang });
-    }
-    console.log(`determineTokenType called: tokenType=${tokenType}, lang=${(token as any).lang}`);
 
     // 1. Prioritize content-based detection for diffs, regardless of lang tag
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
@@ -2946,7 +2948,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
     return tokens.map((token, index) => {
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
-        console.log(`Token ${index}: type=${token.type}, lang=${(token as any).lang}, determinedType=${determinedType}`);
 
         if ((token as any).lang?.startsWith('tool:')) {
             console.log(`Tool token processing - originalType: ${token.type}, determinedType: ${determinedType}, lang: ${(token as any).lang}`);
@@ -3441,6 +3442,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Ref to store the previous set of tokens, useful for certain streaming optimizations or comparisons
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
     // Track if we're in a streaming response - this is for the overall component 
+    const parseTimeoutRef = useRef<NodeJS.Timeout>();
     const markdownRef = useRef<string>(markdown);
     const isStreamingState = isStreaming;
 
@@ -3448,26 +3450,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // This is critical for stability - we need to ensure tokens don't change unnecessarily
     const lexedTokens = useMemo(() => {
         if (!markdown?.trim()) {
+            clearTimeout(parseTimeoutRef.current);
             return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
         }
 
         try {
             markdownRef.current = markdown;
             // During streaming, if we already have a diff being rendered, keep it stable
-            if ((externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
-                const hasDiff = previousTokensRef.current?.some(token =>
-                    token.type === 'code' && (token as TokenWithText).lang === 'diff');
-                if (hasDiff && false) { // Disable this optimization to allow streaming diffs
-                    return previousTokensRef.current;
-                }
-            }
-
-            // Use marked.lexer directly
             let processedMarkdown = markdown;
 
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
-                console.log('Skipping empty markdown during streaming');
                 return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
             }
 
@@ -3500,12 +3493,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
             return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
         } catch (error) {
-            // During streaming, if parsing fails but we have previous valid tokens, keep using them
-            if ((externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
-                console.log('Parse error during streaming, keeping previous tokens:', error);
-                return previousTokensRef.current;
-            }
-
             // Don't create fallback code blocks for empty content
             if (!markdown || markdown.trim() === '') {
                 return [];
@@ -3516,37 +3503,24 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
     }, [markdown, externalStreaming, isStreamingState]);
 
+    // Cleanup timeout on unmount
+    useEffect(() => {
+        return () => clearTimeout(parseTimeoutRef.current);
+    }, []);
+
     // Update tokens state when the memoized tokens change
     useEffect(() => {
-        // Only update if streaming is complete or if we don't have tokens yet
+        // Always update immediately for live streaming
         if (lexedTokens.length > 0) {
             previousTokensRef.current = lexedTokens;
             setDisplayTokens(lexedTokens);
-
-            // Debug log for streaming updates
-            if (isStreamingState) {
-                const codeBlocks = lexedTokens.filter(token =>
-                    token.type === 'code' && (token as TokenWithText).lang !== 'diff'
-                );
-                console.debug('Streaming update:', {
-                    tokenCount: lexedTokens.length,
-                    codeBlockCount: codeBlocks.length
-                });
-            }
         }
-    }, [lexedTokens, isStreamingState]); // This effect runs when lexedTokens (from useMemo) is updated.
+    }, [lexedTokens]); // Remove streaming state dependency for immediate updates
 
-    // Debug log streaming state - keep this for debugging
-    // but it doesn't affect functionality
-    useEffect(() => {
-        console.log(`MarkdownRenderer streaming state: ${externalStreaming || isStreamingState ? 'streaming' : 'not streaming'}`);
-    }, [externalStreaming, isStreamingState]);
-
-    // Only memoize the rendered content when not streaming or when streaming completes 
+    // Only memoize the rendered content when not streaming or when streaming completes
     const renderedContent = useMemo(() => {
         return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming);
-    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, isStreamingState]); // Add isStreamingState to dependencies
-
+    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Remove streaming state for live updates
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
@@ -3555,7 +3529,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         <div>{renderedContent}</div>;
 }, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply);
 // Note: forceRender prop is intentionally not included in the memo comparison to ensure re-rendering during streaming
-export default MarkdownRenderer;
 
 const cleanDiffContent = (content: string): string => {
     const lines = content.split('\n');
@@ -3586,3 +3559,5 @@ const cleanDiffContent = (content: string): string => {
     });
     return cleanedLines.join('\n');
 };
+
+export default MarkdownRenderer;

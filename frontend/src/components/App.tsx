@@ -116,14 +116,16 @@ export const App: React.FC = () => {
 
     // Check MCP status on mount
     useEffect(() => {
-        document.documentElement.style.setProperty('--folder-panel-width', `25vw`);
+        // Convert viewport width to pixels immediately to prevent CSS variable thrashing
+        const initialWidth = Math.min(window.innerWidth * 0.25, 400);
+        document.documentElement.style.setProperty('--folder-panel-width', `${initialWidth}px`);
         document.documentElement.style.setProperty('--model-display-height', '35px');
 
         // Force initial positioning of all elements after a short delay
         setTimeout(() => {
             handlePanelResize(panelWidth);
         }, 300);
-    });
+    }, []); // Add empty dependency array to run only once
 
     // Check MCP status on mount
     useEffect(() => {
@@ -141,8 +143,8 @@ export const App: React.FC = () => {
         };
         checkMCPStatus();
     }, []);
-    console.log('Current mcpEnabled state:', mcpEnabled);
-
+    // Reduce logging frequency to improve performance
+    // console.log('Current mcpEnabled state:', mcpEnabled);
     // Add scroll event listener to detect manual scrolling
     useEffect(() => {
         const chatContainer = document.querySelector('.chat-container');
@@ -177,47 +179,45 @@ export const App: React.FC = () => {
             message.error('Failed to create new chat');
             console.error('Error creating new chat:', error);
         }
-    };
+  };
 
-    const handlePanelResize = (newWidth: number) => {
-        // Ensure we're not making the chat area too small
-        const minChatWidth = 300; // Minimum width for chat area
-        const maxPanelWidth = window.innerWidth - minChatWidth - 60; // 60px for margins and padding
+  const handlePanelResize = (newWidth: number) => {
+    const minWidth = 200;
+    const maxWidth = Math.min(800, window.innerWidth - 350); // Leave at least 350px for chat
+    const constrainedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
 
-        // Apply constraints
-        const constrainedWidth = Math.min(newWidth, maxPanelWidth);
+    // Only update if width actually changed significantly (avoid micro-updates)
+    if (Math.abs(constrainedWidth - panelWidth) > 2) {
+      setPanelWidth(getValidPanelWidth(constrainedWidth));
+      localStorage.setItem(PANEL_WIDTH_KEY, constrainedWidth.toString());
 
-        setPanelWidth(getValidPanelWidth(constrainedWidth));
-        localStorage.setItem(PANEL_WIDTH_KEY, constrainedWidth.toString());
-        document.documentElement.style.setProperty('--folder-panel-max-width', 'none');
+      // Update CSS variable immediately
+      document.documentElement.style.setProperty('--folder-panel-width', `${constrainedWidth}px`);
+      
+      // Remove the forced window resize event - it's not needed and causes performance issues
+      // The CSS variable update is sufficient for layout changes
+    }
+  };
 
-        // Directly update any elements that might have fixed widths
-        setTimeout(() => {
-            const folderPanel = document.querySelector('.folder-tree-panel') as HTMLElement;
-            const modelDisplay = document.querySelector('.model-id-display') as HTMLElement;
+  // Sync panelWidth state with CSS variable
+    useEffect(() => {
+        document.documentElement.style.setProperty('--folder-panel-width', `${panelWidth}px`);
+    }, [panelWidth]);
 
-            if (folderPanel && constrainedWidth > 0) {
-                folderPanel.style.width = `${constrainedWidth}px`;
-                folderPanel.style.minWidth = `${constrainedWidth}px`;
-                folderPanel.style.maxWidth = 'none';
+    // Add window resize handler to update panel width when viewport changes
+    useEffect(() => {
+        const handleWindowResize = () => {
+            // Only update if panel is not being manually resized
+            const currentWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--folder-panel-width'));
+            if (currentWidth) {
+                const newWidth = Math.min(window.innerWidth * 0.25, Math.max(currentWidth, 300));
+                document.documentElement.style.setProperty('--folder-panel-width', `${newWidth}px`);
             }
+        };
 
-            if (modelDisplay) {
-                modelDisplay.style.width = `${constrainedWidth}px`;
-                modelDisplay.style.minWidth = `${constrainedWidth}px`;
-            }
-
-            // Update CSS variable after DOM updates
-            document.documentElement.style.setProperty('--folder-panel-width', `${getValidPanelWidth(constrainedWidth)}px`);
-
-            // Dispatch resize event after a small delay to ensure all styles are applied
-            setTimeout(() => {
-                window.dispatchEvent(new Event('resize'));
-                // Force another resize event after a bit longer to catch any late updates
-                setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
-            }, 10);
-        }, 10);
-    };
+        window.addEventListener('resize', handleWindowResize);
+        return () => window.removeEventListener('resize', handleWindowResize);
+    }, []);
 
     const preserveScrollPosition = (action: () => void) => {
 
@@ -306,6 +306,21 @@ export const App: React.FC = () => {
         }, 100);
     }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
 
+    // Add keyboard shortcut for layout reset
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'R') {
+                e.preventDefault();
+                localStorage.removeItem('ZIYA_PANEL_WIDTH');
+                localStorage.removeItem('ZIYA_PANEL_COLLAPSED');
+                document.documentElement.style.setProperty('--folder-panel-width', '300px');
+                window.location.reload();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
     const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
 
     const chatContainerContent = isTopToBottom ? (
@@ -356,7 +371,7 @@ export const App: React.FC = () => {
                         style={{
                             padding: '4px 8px',
                             color: isDarkMode ? undefined : (isPanelCollapsed ? '#ffffff' : '#1890ff'),
-                            left: isPanelCollapsed ? '-1px' : `${panelWidth + 2}px`, // Add 2px for border
+                            left: isPanelCollapsed ? '-1px' : `${panelWidth - 14}px`, // Position at panel edge
                             backgroundColor: isDarkMode ? undefined : (isPanelCollapsed ? '#1890ff' : undefined),
                         }}
                         ghost={!isDarkMode || !isPanelCollapsed}
@@ -415,7 +430,10 @@ export const App: React.FC = () => {
                     <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
                         style={{
                             marginTop: 'var(--app-header-height)',
-                            height: 'calc(100vh - var(--app-header-height))'
+                            height: 'calc(100vh - var(--app-header-height))',
+                            display: 'flex',
+                            width: '100vw',
+                            overflow: 'hidden'
                         }}>
                         <FolderTree isPanelCollapsed={isPanelCollapsed} />
                         <div className="chat-container">

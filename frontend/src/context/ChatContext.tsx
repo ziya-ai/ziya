@@ -6,6 +6,8 @@ import { message } from 'antd';
 
 interface ChatContext {
     streamedContentMap: Map<string, string>;
+    dynamicTitleLength: number;
+    setDynamicTitleLength: (length: number) => void;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
     processingState: string;
@@ -68,12 +70,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isTopToBottom, setIsTopToBottom] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
     const [userHasScrolled, setUserHasScrolled] = useState(false);
+    const initializationStarted = useRef(false);
     const [folders, setFolders] = useState<ConversationFolder[]>([]);
     const [dbError, setDbError] = useState<string | null>(null);
     const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
     const folderRef = useRef<string | null>(null);
     const [folderFileSelections, setFolderFileSelections] = useState<Map<string, string[]>>(new Map());
-    const [folderPanelWidth, setFolderPanelWidth] = useState<number>(300); // Default width
+    const [dynamicTitleLength, setDynamicTitleLength] = useState<number>(50); // Default reasonable length
     const processedModelChanges = useRef<Set<string>>(new Set());
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
     const isRecovering = useRef<boolean>(false);
@@ -83,14 +86,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
 
     // Monitor ChatProvider render performance
-    useLayoutEffect(() => {
-        renderCount.current++;
-        const renderTime = performance.now() - renderStart.current;
-        if (renderTime > 10 || renderCount.current % 20 === 0) {
-            console.log(`📊 ChatProvider render #${renderCount.current}: ${renderTime.toFixed(2)}ms`);
-        }
-        renderStart.current = performance.now();
-    });
+    // Remove performance monitoring that's causing overhead
 
     // Modified scrollToBottom function to respect user scroll
     const scrollToBottom = () => {
@@ -105,38 +101,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         conversationsRef.current = conversations;
         streamingConversationsRef.current = streamingConversations;
     }, [conversations, streamingConversations]);
-
-    // Add a resize observer effect to monitor panel width changes
-    useEffect(() => {
-        const resizeObserver = new ResizeObserver(entries => {
-            for (const entry of entries) {
-                const folderPanel = document.querySelector('.folder-tree-panel');
-                if (folderPanel) {
-                    setFolderPanelWidth(entry.contentRect.width);
-                }
-            }
-        });
-
-        const folderPanel = document.querySelector('.folder-tree-panel');
-        if (folderPanel) {
-            resizeObserver.observe(folderPanel);
-        }
-
-        return () => {
-            resizeObserver.disconnect();
-        };
-    }, []);
-
-    // Listen for panel width changes
-    useEffect(() => {
-        const handlePanelResize = (e: CustomEvent) => {
-            if (e.detail && e.detail.width) {
-                setFolderPanelWidth(e.detail.width);
-            }
-        };
-        window.addEventListener('folderPanelResize', handlePanelResize as EventListener);
-        return () => window.removeEventListener('folderPanelResize', handlePanelResize as EventListener);
-    }, []);
 
     const addStreamingConversation = useCallback((id: string) => {
         setStreamingConversations(prev => {
@@ -207,11 +171,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (!conversationId) return;
 
         const folderId = currentFolderId;
-        // Calculate dynamic title length based on panel width
-        // We'll use a ratio of approximately 1 character per 6 pixels of width
-        const dynamicTitleLength = Math.max(30, Math.floor(folderPanelWidth / 6));
+        // Use the dynamicTitleLength from state - updated only by UI components
 
-        console.log('Dynamic title length:', { folderPanelWidth, dynamicTitleLength });
+        // Debug logging to see when messages are added
+        console.log('📝 Adding message:', { role: message.role, conversationId: targetConversationId, titleLength: dynamicTitleLength });
 
         messageUpdateCount.current += 1;
         setConversations(prevConversations => {
@@ -269,11 +232,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             return updatedConversations;
         });
-    }, [currentConversationId, currentFolderId, folderPanelWidth, queueSave]);
+    }, [currentConversationId, currentFolderId, dynamicTitleLength, queueSave]);
 
     // Add a function to handle model change notifications
     const handleModelChange = useCallback((event: CustomEvent) => {
-        // Extract model change details
         const { previousModel, newModel, modelId, previousModelId } = event.detail;
 
         console.log('ChatContext received modelChanged event:', {
@@ -549,7 +511,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     // Enhanced initialization with corruption detection and recovery
     const initializeWithRecovery = useCallback(async () => {
-        if (isRecovering.current) return;
+        if (isRecovering.current || initializationStarted.current) return;
+        initializationStarted.current = true;
         isRecovering.current = true;
 
         try {
@@ -557,17 +520,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const savedConversations = await db.getConversations();
 
             // Set conversations immediately to unblock message loading
-            console.log('✅ Setting conversations immediately:', savedConversations.length);
+            if (!isInitialized) {
+                console.log('✅ Setting conversations immediately:', savedConversations.length);
             setConversations(savedConversations);
-            setIsInitialized(true);
-
-            // Set current messages immediately if we have a current conversation
-            if (currentConversationId) {
-                const currentConv = savedConversations.find(c => c.id === currentConversationId);
-                if (currentConv) {
-                    console.log('✅ Setting current messages immediately:', currentConv.messages.length);
-                    setCurrentMessages(currentConv.messages);
-                }
+                setIsInitialized(true);
             }
 
             // Handle backup/recovery operations asynchronously - don't block UI
@@ -593,7 +549,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
             }, 0);
 
-            console.log('✅ Conversations initialized, folder loading will continue in background');
         } catch (error) {
             console.error('Initialization failed:', error);
             // Existing error handling...
@@ -602,6 +557,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
             isRecovering.current = false;
         }
     }, [createBackup, currentConversationId]);
+
+    // Load current messages when conversation changes
+    useEffect(() => {
+        if (currentConversationId && isInitialized) {
+            const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
+            setCurrentMessages(messages);
+        }
+    }, [conversations, currentConversationId, isInitialized]);
 
     useEffect(() => {
         initializeWithRecovery();
@@ -620,23 +583,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
 
         return () => {
-            if (db.db) {
-                db.db.close();
-                clearInterval(backupInterval);
-            }
+            clearInterval(backupInterval);
+            // Don't close database connection here - it may interrupt ongoing transactions
+            // The database connection will be managed by the DB class itself
+            // if (db.db) {
+            //     db.db.close();
+            // }
         };
     }, [initializeWithRecovery, createBackup, conversations]);
 
+    // Load folders independently of initialization state
+    // This ensures folder loading doesn't block conversation loading
     useEffect(() => {
-        // Load current messages immediately when conversation changes, regardless of folder state
-        if (currentConversationId) {
-            const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
-            setCurrentMessages(messages);
-        }
-    }, [conversations, currentConversationId]);
-
-    // Load folders when component mounts
-    useEffect(() => {
+        if (!isInitialized) return;
         // Load folders independently of initialization state
         // This ensures folder loading doesn't block conversation loading
         const loadFoldersIndependently = async () => {
@@ -654,7 +613,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         };
         loadFoldersIndependently();
-    }, []); // Remove isInitialized dependency
+    }, [isInitialized]); // Only run after initialization
 
     // Listen for model change events
     useEffect(() => {
@@ -740,7 +699,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             isMounted = false;
             window.removeEventListener('storage', handleStorageChange);
         };
-    }, [isInitialized, conversations, folders, mergeConversations, setConversations, setFolders]); // Added folders and setFolders
+    }, [conversations, folders, mergeConversations, setConversations, setFolders]);
 
 
     useEffect(() => {
@@ -793,6 +752,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const value = useMemo(() => ({
         streamedContentMap,
+        dynamicTitleLength,
+        setDynamicTitleLength,
         setStreamedContentMap,
         processingState,
         setProcessingState,
@@ -833,6 +794,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setEditingMessageIndex,
     }), [
         streamedContentMap,
+        dynamicTitleLength,
+        setDynamicTitleLength,
         setStreamedContentMap,
         processingState,
         setProcessingState,

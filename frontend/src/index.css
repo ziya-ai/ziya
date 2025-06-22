@@ -132,7 +132,7 @@ body.dark {
   background-color: inherit;
   will-change: transform;
   height: calc(100vh - var(--app-header-height));
-  display: flex;
+  display: flex; /* Match App.tsx */
   flex-direction: row;
 }
 
@@ -150,14 +150,12 @@ body.dark {
   max-width: 100%;
   position: relative;
   left: var(--folder-panel-width);
-  width: calc(100% - var(--folder-panel-width) - 40px);
+  width: calc(100vw - var(--folder-panel-width) - 40px);
   padding: 0;
   border: 1p solid #ccc;
   border-radius: 6px;
   background-color: inherit;
-  margin: 20px 0 20px 20px;
-  margin-left: 20px;
-  transition: background-color 0.3s ease, border-color 0.3s ease, left 0.3s ease, width 0.3s ease;
+  transition: none; /* Remove transitions that cause reflows */
 }
 
 /* Prevent scroll jumps during streaming */
@@ -193,8 +191,7 @@ body.dark {
 
 .panel-collapsed .chat-container {
   left: 0;
-  width: calc(100% - 40px);
-  margin-left: 20px;
+  width: calc(100vw - 40px);
 }
 
 .dark .panel-toggle::before {
@@ -308,6 +305,12 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   border-radius: 6px;
   transition: background-color 0.3s ease, border-color 0.3s ease;
   overflow: visible;
+}
+
+/* Fix streaming content alignment - prevent left shift during streaming */
+.message.streaming {
+  transform: none !important;
+  margin-left: 0 !important;
 }
 
 .progressive-loading {
@@ -491,7 +494,6 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 }
 
 .dark .ant-input::placeholder {
-  color: #808080;
 }
 
 /* Folder Tree Panel */
@@ -500,13 +502,12 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   left: 0;
   top: 0;
   bottom: 0;
-  width: min(var(--folder-panel-width), var(--folder-panel-max-width));
-  max-width: var(--folder-panel-max-width);
+  width: var(--folder-panel-width);
   box-sizing: border-box;
   height: calc(100vh - var(--header-height));
   overflow: hidden;
-  padding: 20px 5px 20px 10px; /* 10px left padding, 5px right padding */
-  transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
+  padding: 20px 5px 20px 10px;
+  transition: none; /* Remove transitions that cause reflows */
   border-right: 2px solid #e8e8e8;
   flex-direction: column;
   z-index: 2;
@@ -515,6 +516,15 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   display: flex;
   height: 100%;
   overflow-y: auto;
+}
+
+/* Make chat history panel match folder panel width */
+.MuiBox-root[style*="height: 100%"][style*="display: flex"][style*="flexDirection: column"] {
+  position: fixed !important;
+  left: 0 !important;
+  width: var(--folder-panel-width) !important;
+  height: calc(100vh - var(--header-height)) !important;
+  z-index: 2 !important;
 }
 
 .folder-tree-panel.collapsed {

@@ -326,15 +326,7 @@ export const StreamedContent: React.FC = () => {
 
     // Add effect to handle conversation switches
     useEffect(() => {
-        // Force scroll event to trigger re-render
-        const triggerScroll = () => {
-            window.requestAnimationFrame(() => {
-                window.dispatchEvent(new CustomEvent('scroll'));
-                // Force another scroll after a short delay to ensure content is visible
-                setTimeout(() => window.dispatchEvent(new CustomEvent('scroll')), 100);
-            });
-        };
-        triggerScroll();
+        // Remove scroll event dispatching that was causing layout changes
     }, [currentConversationId, streamedContentMap]);
 
     // Effect to handle auto-scrolling during streaming

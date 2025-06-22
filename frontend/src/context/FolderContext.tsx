@@ -1,4 +1,4 @@
-import React, { createContext, ReactNode, useContext, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { createContext, ReactNode, useContext, useCallback, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
 import { Folders } from "../utils/types";
 import { convertToTreeData } from "../utils/folderUtil";
 import { useChatContext } from "./ChatContext";
@@ -29,7 +29,6 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     return saved ? JSON.parse(saved) : [];
   });
 
-  const { currentFolderId, folderFileSelections, folders: chatFolders } = useChatContext();
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
     const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
@@ -37,16 +36,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   });
 
   // Monitor FolderProvider render performance
-  useLayoutEffect(() => {
-    renderCount.current++;
-    const renderTime = performance.now() - renderStart.current;
-    if (renderTime > 5 || renderCount.current % 30 === 0) {
-      console.log(`📊 FolderProvider render #${renderCount.current}: ${renderTime.toFixed(2)}ms`);
-    }
-    renderStart.current = performance.now();
-  });
+  // Remove performance monitoring that's causing overhead
 
-  const getFolderTokenCount = (path: string, folderData: Folders | undefined): number => {
+  const getFolderTokenCount = useCallback((path: string, folderData: Folders | undefined): number => {
     if (!folderData) {
       // console.warn(`getFolderTokenCount: folderData is undefined for path "${path}"`);
       return 0;
@@ -72,7 +64,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
 
     return 0;
-  };
+  }, []);
 
   // Save expanded folders whenever they change
   useEffect(() => {
@@ -92,18 +84,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   }, [checkedKeys]);
 
-  // Update checked keys when folder changes if folder has specific file selections
-  useEffect(() => {
-    if (currentFolderId) {
-      const folder = chatFolders.find(f => f.id === currentFolderId);
-      if (folder && !folder.useGlobalContext) {
-        const folderSelections = folderFileSelections.get(currentFolderId);
-        if (folderSelections) {
-          setCheckedKeys(folderSelections);
-        }
-      }
-    }
-  }, [currentFolderId, folders, folderFileSelections, chatFolders]);
+  // Remove chat context dependency that was causing render loops
 
   useEffect(() => {
     // Make folder loading independent and non-blocking
@@ -127,7 +108,16 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         setFolders(data);
 
         // Move heavy computation to async to avoid blocking UI
-        setTimeout(async () => {
+        // Use requestIdleCallback if available, otherwise setTimeout
+        const scheduleWork = (callback: () => void) => {
+          if ('requestIdleCallback' in window) {
+            requestIdleCallback(callback, { timeout: 1000 });
+          } else {
+            setTimeout(callback, 0);
+          }
+        };
+
+        scheduleWork(async () => {
           try {
             // Get all available file paths recursively
             const getAllPaths = (obj: any, prefix: string = ''): string[] => {
@@ -187,7 +177,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           } catch (error) {
             console.error('Error processing folder paths:', error);
           }
-        }, 0); // Run in next tick to avoid blocking
+        });
       } catch (error) {
         console.error('Error fetching folders:', error);
       }
@@ -209,7 +199,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setSearchValue,
     expandedKeys,
     setExpandedKeys
-  }), [folders, treeData, checkedKeys, searchValue, expandedKeys]);
+  }), [folders, treeData, checkedKeys, searchValue, expandedKeys, getFolderTokenCount]);
 
   return (
     <FolderContext.Provider value={contextValue}>
