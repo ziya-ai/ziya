@@ -43,14 +43,25 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                 if hasattr(request.state, "response_started") and request.state.response_started:
                     logger.warning("Response already started, can only send body parts (streaming: True)")
                     # Create an error message
-                    logger.error(f"Error caught after response started: {str(e)}")
+                    preserved_content = None
+                    if hasattr(e, 'response_metadata') and e.response_metadata.get('has_preserved_content'):
+                        preserved_content = e.response_metadata.get('preserved_content')
+                    
                     error_msg = {
-                    "error": "stream_error",
+                        "error": "stream_error",
                         "detail": str(e),
                         "status_code": 500
                     }
+                    
+                    if preserved_content:
+                        error_msg.update({
+                            "has_preserved_content": True,
+                            "preserved_content": preserved_content
+                        })
+                    
                     logger.info(f"Sent error as SSE data: {error_msg}")
                     # We can't do anything here, the response has already started
+                    return Response(status_code=500, content=json.dumps(error_msg))
                     return Response(status_code=500, content=json.dumps(error_msg))
                 
                 # Create a streaming response with the error

@@ -830,7 +830,7 @@ async def stream_chunks(body):
 
         # Initialize variables for agent iteration loop
         processed_tool_calls = set()
-        max_iterations = 5
+        max_iterations = 10
         iteration = 0
         messages_for_model = []
         all_tool_results = []  # Track all tool results across iterations

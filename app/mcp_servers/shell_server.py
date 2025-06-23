@@ -40,8 +40,14 @@ class ShellServer:
             'ps': r'^ps(\s+.*)?$',
             'curl': r'^curl(\s+.*)?$',
             'ping': r'^ping(\s+.*)?$',
-            'touch': r'^touch(\s+.*)?$',
-            
+            'sed': r'^sed(\s+.*)?$',
+            'awk': r'^awk(\s+.*)?$',
+            'less': r'^less(\s+.*)?$',
+            'xargs': r'^xargs(\s+.*)?$',
+            'which': r'^xargs(\s+.*)?$',
+            'du': r'^du(\s+.*)?$',
+            'df': r'^df(\s+.*)?$',
+            'file': r'^file(\s+.*)?$'
         }
         
         # Add git operations if enabled

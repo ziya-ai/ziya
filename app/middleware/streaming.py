@@ -79,6 +79,9 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         # Reset repetition detection state for this stream
         self._recent_lines = []
         accumulated_content = ""
+        accumulated_chunks = []  # Track all chunks for better preservation
+        successful_tool_outputs = []  # Track successful tool executions
+        tool_sequence_count = 0
         content_buffer = ""  # Buffer to hold content while checking for tool calls
         partial_response_preserved = False
         try:
@@ -131,6 +134,19 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         # Let stream_chunks handle structured error detection within content
                     if raw_content: # Avoid sending empty data chunks
                             # Properly handle different content types
+                        # Always accumulate content for preservation
+                        if isinstance(raw_content, str):
+                            accumulated_content += raw_content
+                            accumulated_chunks.append(raw_content)
+                            
+                            # Track successful tool executions
+                            if self._looks_like_tool_output(raw_content):
+                                tool_sequence_count += 1
+                                if not self._contains_error_indicators(raw_content):
+                                    successful_tool_outputs.append({
+                                        "sequence": tool_sequence_count,
+                                        "content": raw_content
+                                    })
                         if isinstance(raw_content, dict):
                             # For structured content like thinking mode, preserve the structure
                             logger.debug(f"Preserving structured content: {list(raw_content.keys())}")
@@ -156,6 +172,8 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                     yield f"data: {content_buffer}\n\n"
                                     content_buffer = ""
                             elif self._contains_partial(content_buffer):
+                                # Still accumulate partial content
+                                accumulated_content += content
                                 # Hold the content in buffer, don't send yet
                                 continue
                             else:
@@ -250,6 +268,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             content = content()
                         if content:
                             if isinstance(content, dict):
+                                accumulated_content += json.dumps(content)
                                 yield f"data: {json.dumps(content)}\n\n"
                                 chunk_content = json.dumps(content)
                             else:
@@ -352,17 +371,36 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     
                     # Preserve accumulated content before error
                     if accumulated_content and not partial_response_preserved:
-                        logger.info(f"Preserving {len(accumulated_content)} characters of partial response before error")
-                        console.log(f"PARTIAL RESPONSE PRESERVED:\n{accumulated_content}")
+                        logger.info(f"Preserving {len(accumulated_content)} characters of partial response before chunk error")
+                        
+                        # Create a comprehensive preservation message
+                        preservation_content = {
+                            "partial_content": accumulated_content,
+                            "chunks_processed": len(accumulated_chunks)
+                        }
                         
                         # Send warning about partial response
                         warning_msg = {
                             "warning": "partial_response_preserved",
                             "detail": f"Server encountered an error after generating {len(accumulated_content)} characters. The partial response has been preserved.",
-                            "partial_content": accumulated_content
+                            "partial_content": accumulated_content,
+                            "successful_tool_outputs": successful_tool_outputs,
+                            "execution_summary": {
+                                "total_tool_sequences": tool_sequence_count,
+                                "successful_sequences": len(successful_tool_outputs),
+                                "has_successful_tools": len(successful_tool_outputs) > 0
+                            }
                         }
                         yield f"data: {json.dumps(warning_msg)}\n\n"
                         partial_response_preserved = True
+                        
+                        # Also send as a custom event for the frontend to handle
+                        event_data = {
+                            "type": "preservedContent",
+                            "data": warning_msg
+                        }
+                        yield f"event: preservedContent\n"
+                        yield f"data: {json.dumps(event_data)}\n\n"
                     
                     yield "data: [DONE]\n\n"
                     return
@@ -379,16 +417,35 @@ class StreamingMiddleware(BaseHTTPMiddleware):
             
             # Preserve accumulated content before final error
             if accumulated_content and not partial_response_preserved:
-                logger.info(f"Preserving {len(accumulated_content)} characters of partial response before final error")
+                logger.info(f"Preserving {len(accumulated_content)} characters of partial response before final stream error")
+                
+                # Log to console for debugging
                 print(f"PARTIAL RESPONSE PRESERVED (FINAL ERROR):\n{accumulated_content}")
+                
+                # Also log chunk count for debugging
+                logger.info(f"Total chunks processed before error: {len(accumulated_chunks)}")
                 
                 # Send warning about partial response
                 warning_msg = {
                     "warning": "partial_response_preserved", 
                     "detail": f"Server encountered an error after generating {len(accumulated_content)} characters. The partial response has been preserved.",
-                    "partial_content": accumulated_content
+                    "partial_content": accumulated_content,
+                    "successful_tool_outputs": successful_tool_outputs,
+                    "execution_summary": {
+                        "total_tool_sequences": tool_sequence_count,
+                        "successful_sequences": len(successful_tool_outputs),
+                        "has_successful_tools": len(successful_tool_outputs) > 0
+                    }
                 }
                 yield f"data: {json.dumps(warning_msg)}\n\n"
+                
+                # Also send as a custom event for the frontend to handle
+                event_data = {
+                    "type": "preservedContent", 
+                    "data": warning_msg
+                }
+                yield f"event: preservedContent\n"
+                yield f"data: {json.dumps(event_data)}\n\n"
             
             # Send error as SSE data
             error_msg = {
@@ -427,7 +484,25 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         
         return False
     
-    def _might_be_tool_call_start(self, content: str) -> bool:
+    def _might_be_tool_start(self, content: str) -> bool:
         """Check if content might be the start of a tool call."""
         sentinel_start = TOOL_SENTINEL_OPEN[:min(len(content), len(TOOL_SENTINEL_OPEN))]
         return content.endswith(sentinel_start) or TOOL_SENTINEL_OPEN.startswith(content.strip())
+    
+    def _looks_like_tool_output(self, content: str) -> bool:
+        """Check if content looks like tool output."""
+        tool_indicators = [
+            "$ ",  # Shell command output
+            "MCP Tool",
+            "Tool:",
+            "```",  # Code blocks often contain tool results
+            "Exit code:",
+            "SECURITY BLOCK",
+            "Tool execution"
+        ]
+        return any(indicator in content for indicator in tool_indicators)
+    
+    def _contains_error_indicators(self, content: str) -> bool:
+        """Check if content contains error indicators."""
+        error_indicators = ["error", "timeout", "failed", "exception", "❌", "🚫", "⏱️"]
+        return any(indicator.lower() in content.lower() for indicator in error_indicators)

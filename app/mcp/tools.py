@@ -113,17 +113,64 @@ class MCPTool(BaseTool):
         logger.info(f"MCPTool._arun called for {self.mcp_tool_name} with args: {arguments}")
         logger.info(f"🔍 MCPTool._arun: About to execute MCP tool {self.mcp_tool_name}")
         logger.info(f"🔍 MCPTool._arun: MCP manager initialized: {mcp_manager.is_initialized if 'mcp_manager' in globals() else 'No manager'}")
+        
+        # Track partial results for timeout/error recovery
+        partial_content = ""
+        execution_start_time = asyncio.get_event_loop().time()
+        
         try:
             mcp_manager = get_mcp_manager()
-            result = await mcp_manager.call_tool(
-                self.mcp_tool_name,
-                arguments
-            )
+            
+            # Execute with timeout handling and partial content preservation
+            try:
+                # Set a reasonable timeout for MCP calls (30 seconds)
+                result = await asyncio.wait_for(
+                    mcp_manager.call_tool(self.mcp_tool_name, arguments),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                execution_time = asyncio.get_event_loop().time() - execution_start_time
+                logger.warning(f"MCP tool {self.mcp_tool_name} timed out after {execution_time:.1f} seconds")
+                
+                # Return timeout error with context preservation
+                timeout_result = {
+                    "error": "mcp_timeout", 
+                    "detail": f"MCP tool '{self.mcp_tool_name}' timed out after {execution_time:.1f} seconds",
+                    "tool_name": self.mcp_tool_name,
+                    "arguments": arguments,
+                    "partial_content": partial_content,
+                    "execution_time": execution_time
+                }
+                
+                # Format as a user-friendly error message that preserves context
+                error_msg = f"⏱️ **MCP Tool Timeout**: {self.mcp_tool_name} timed out after {execution_time:.1f}s"
+                if partial_content:
+                    error_msg += f"\n\n**Partial Result Before Timeout:**\n{partial_content}"
+                error_msg += f"\n\n**Arguments:** {arguments}"
+                return error_msg
+            
             logger.info(f"🔍 MCPTool._arun: Got result from MCP manager: {result}")
             
             # Check if this is an error response from the MCP server
             if isinstance(result, dict) and result.get("error"):
                 error_msg = result.get("message", "Unknown MCP error")
+                error_code = result.get("code", -1)
+                
+                # Check for timeout-related errors from the MCP server itself
+                is_timeout_error = (
+                    "timeout" in error_msg.lower() or 
+                    "timed out" in error_msg.lower() or
+                    error_code == -32603  # Internal error code often used for timeouts
+                )
+                
+                if is_timeout_error:
+                    execution_time = asyncio.get_event_loop().time() - execution_start_time
+                    timeout_msg = f"⏱️ **MCP Server Timeout**: {error_msg}"
+                    if partial_content:
+                        timeout_msg += f"\n\n**Partial Result Before Timeout:**\n{partial_content}"
+                    timeout_msg += f"\n\n**Execution Time:** {execution_time:.1f}s"
+                    return timeout_msg
+                
                 # Format security errors prominently
                 if "SECURITY BLOCK" in error_msg or "Command not allowed" in error_msg:
                     return f"🚫 **SECURITY BLOCK**: {error_msg}"
@@ -143,22 +190,43 @@ class MCPTool(BaseTool):
                         text_parts = []
                         for block in content[:1]: # only use the first content block to avoid duplicates
                             if isinstance(block, dict) and "text" in block:
+                                # Track partial content as we process it
+                                block_text = block["text"]
+                                partial_content += block_text
                                 text_parts.append(block["text"])
                             elif isinstance(block, str):
+                                partial_content += block
                                 text_parts.append(block)
                         return "\n".join(text_parts)
                     elif isinstance(content, str):
+                        partial_content += content
                         return content
                     else:
+                        content_str = str(content)
+                        partial_content += content_str
                         return str(content)
                 else:
+                    result_str = str(result)
+                    partial_content += result_str
                     return str(result)
             else:
+                result_str = str(result)
+                partial_content += result_str
                 return str(result)
                 
         except Exception as e:
+            execution_time = asyncio.get_event_loop().time() - execution_start_time
             logger.error(f"Error running MCP tool {self.mcp_tool_name}: {str(e)}")
-            return f"Error running MCP tool: {str(e)}"
+            
+            # Enhanced error message with context preservation
+            error_msg = f"❌ **MCP Tool Error**: {str(e)}"
+            if partial_content:
+                error_msg += f"\n\n**Partial Result Before Error:**\n{partial_content}"
+            error_msg += f"\n\n**Tool:** {self.mcp_tool_name}"
+            error_msg += f"\n**Arguments:** {arguments}"
+            error_msg += f"\n**Execution Time:** {execution_time:.1f}s"
+            
+            return error_msg
 
 
 class MCPResourceTool(BaseTool):

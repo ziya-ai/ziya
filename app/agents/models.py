@@ -775,7 +775,7 @@ class ModelManager:
             else:
                 # Need to switch regions
                 if region_prefix == "eu" and "us" in model_id:
-                    # Switch to US region
+                    # Current region is EU but model only available in US - switch to US region
                     new_region = model_config.get("region", "us-west-2") if model_config else "us-west-2"
                     logger.warning(f"Model only available in US regions. Switching from {region} to {new_region}")
                     os.environ["AWS_REGION"] = new_region
@@ -914,18 +914,17 @@ class ModelManager:
         raw_model_id = model_config.get("model_id")
         model_id, updated_region = cls._get_region_specific_model_id_with_region_update(raw_model_id, region, model_config)
         
+        # Update the environment variable with the new region
+        if updated_region != region:
+            os.environ["AWS_REGION"] = updated_region
+        
         # Use the updated region if it was changed
         if updated_region != region:
             region = updated_region
             logger.info(f"Region updated to: {region}")
             cls._state['aws_region'] = region
         
-        logger.info(f"Selected model_id: {model_id} for region: {region}")
-        # Use the updated region if it was changed
-        if updated_region != region:
-            region = updated_region
-            logger.info(f"Region updated to: {region}")
-            cls._state['aws_region'] = region
+        logger.info(f"Selected model_id: {model_id} for region: {updated_region}")
 
         logger.info(f"Selected model_id: {model_id} for region: {region}")
         
