@@ -21,6 +21,16 @@ const isValidMessage = (message: any) => {
 function extractErrorFromSSE(content: string): ErrorResponse | null {
     if (!content) return null;
 
+    // Check for validation errors first (these are critical and should be shown)
+    if (content.includes('ValidationException') && content.includes('Input is too long')) {
+        return {
+            error: 'context_size_error',
+            detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+            status_code: 413
+        };
+    }
+
+    // Check for other validation errors
     try {
         // Check for JSON error format
         if (content.includes('"error"') || content.includes('"detail"')) {
@@ -36,6 +46,14 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             } catch (e) {
                 // Not valid JSON, continue with other checks
             }
+        }
+
+        // Check for validation exception patterns in plain text
+        if (content.includes('ValidationException') || content.includes('Input is too long')) {
+            return {
+                error: 'validation_error',
+                detail: 'The request contains invalid data or is too large for the model.'
+            };
         }
 
         // Check for specific error patterns - only at the beginning of lines
@@ -86,6 +104,16 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
 function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
     try {
         // Try to find JSON objects in the chunk
+        
+        // First check for validation errors in plain text
+        if (chunk.includes('ValidationException') && chunk.includes('Input is too long')) {
+            return {
+                error: 'context_size_error',
+                detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                status_code: 413
+            };
+        }
+        
         const jsonMatches = chunk.match(/(\{.*?\})/g);
         if (!jsonMatches) return null;
 
@@ -118,6 +146,13 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                             // Check for error in messages array - but be careful not to match code examples
                             if (op.value.messages && Array.isArray(op.value.messages)) {
                                 for (const msg of op.value.messages) {
+                                    // Check for validation errors in message content
+                                    if (msg.content && typeof msg.content === 'string' && 
+                                        msg.content.includes('ValidationException') && 
+                                        msg.content.includes('Input is too long')) {
+                                        return { error: 'context_size_error', detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.', status_code: 413 };
+                                    }
+                                    
                                     if (msg.content && typeof msg.content === 'string') {
                                         // Only check for errors outside of code blocks
                                         const isInCodeBlock = /```[\s\S]*?(?:Error:|error:)[\s\S]*?```/m.test(msg.content);
