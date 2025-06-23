@@ -224,6 +224,9 @@ declare global {
     interface Window {
         Prism: typeof PrismType;
         diffElementPaths?: Map<string, string>;
+        diffViewType?: 'unified' | 'split';
+        diffShowLineNumbers?: boolean;
+        diffDisplayMode?: 'raw' | 'pretty';
         hunkStatusRegistry: Map<string, Map<string, HunkStatus>>;
     }
 }
@@ -2325,8 +2328,8 @@ interface DiffViewWrapperProps {
 
 const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
-    const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
-    const [displayMode, setDisplayMode] = useState<DisplayMode>('pretty');
+    const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
+    const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty');
     const [isVisible, setIsVisible] = useState<boolean>(true);
     const [currentContent, setCurrentContent] = useState<string>(token.text || '');
     const lastValidDiffRef = useRef<string | null>(null);
@@ -2390,7 +2393,11 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
 
     // Ensure window settings are synced with initial state
     useEffect(() => {
-        if (window.diffViewType !== viewType) {
+        // Sync window settings with component state
+        if (window.diffViewType && window.diffViewType !== viewType) {
+            setViewType(window.diffViewType);
+        }
+        if (window.diffShowLineNumbers !== undefined && window.diffShowLineNumbers !== showLineNumbers) {
             window.diffViewType = viewType;
         }
     }, [token, viewType]);
