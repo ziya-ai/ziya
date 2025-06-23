@@ -20,7 +20,7 @@ export const StreamedContent: React.FC = () => {
         streamedContentMap,
         addMessageToConversation,
         isStreaming,
-        processingState,
+        getProcessingState,
         setIsStreaming,
         currentConversationId,
         streamingConversations,
@@ -35,6 +35,10 @@ export const StreamedContent: React.FC = () => {
     const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) ?? '', [streamedContentMap, currentConversationId]);
     const streamedContentRef = useRef<string>(streamedContent);
     const currentConversationRef = useRef<string>(currentConversationId);
+    
+    // Get processing state for current conversation
+    const processingState = getProcessingState(currentConversationId);
+    
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
         streamedContentMap.get(currentConversationId) !== '';
@@ -142,10 +146,10 @@ export const StreamedContent: React.FC = () => {
     const LoadingIndicator = () => (
         <Space>
             <div style={{
-                visibility: processingState === 'awaiting_model_response' ||
+                visibility: processingState === 'processing_tools' ||
                     (!hasStreamedContent && streamingConversations.has(currentConversationId))
                     ? 'visible' : 'hidden',
-                opacity: processingState === 'awaiting_model_response' ? 1 : 0.8,
+                opacity: processingState === 'processing_tools' ? 1 : 0.8,
                 transition: 'opacity 0.3s ease',
                 padding: '10px 20px',
                 textAlign: 'left',
@@ -161,18 +165,18 @@ export const StreamedContent: React.FC = () => {
                     <LoadingOutlined
                         spin
                         style={{
-                            color: processingState === 'awaiting_model_response'
+                            color: processingState === 'processing_tools'
                                 ? '#faad14' : '#1890ff' // Orange for tool processing, blue for initial
                         }}
                     />
                     <span style={{
-                        color: processingState === 'awaiting_model_response' ? '#faad14' : '#1890ff',
+                        color: processingState === 'processing_tools' ? '#faad14' : '#1890ff',
                         animation: 'fadeInOut 2s infinite',
                         verticalAlign: 'middle',
                         marginLeft: '4px',
                         display: 'inline-block'
                     }}>
-                        {processingState === 'awaiting_model_response'
+                        {processingState === 'processing_tools'
                             ? 'Processing tool results...' : 'Processing response...'}
                     </span>
 

@@ -28,10 +28,10 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         setStreamedContentMap,
         isStreaming,
         addMessageToConversation,
-        setProcessingState,
         removeStreamingConversation,
         streamedContentMap,
         userHasScrolled,
+        updateProcessingState,
         toggleMessageMute,
     } = useChatContext();
 
@@ -191,7 +191,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 removeStreamingConversation,
                                 addMessageToConversation,
                                 streamingConversations.has(currentConversationId),
-                                setProcessingState
+                                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state)
                             );
                         } catch (error) {
                             setIsStreaming(false);

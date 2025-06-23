@@ -2,6 +2,8 @@ import { SetStateAction, Dispatch } from 'react';
 import { message } from 'antd';
 import { Message } from '../utils/types';
 
+type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error';
+
 interface ErrorResponse {
     error: string;
     detail: string;
@@ -211,7 +213,7 @@ export const sendPayload = async (
     removeStreamingConversation: (id: string) => void,
     addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void,
     isStreamingToCurrentConversation: boolean = true,
-    setProcessingState?: Dispatch<SetStateAction<string>>
+    setProcessingState?: (state: ProcessingState) => void
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
@@ -419,7 +421,11 @@ export const sendPayload = async (
                         for (const op of ops) {
                             if (op.op === 'add' && op.path === '/processing_state' && typeof setProcessingState === 'function') {
                                 // Handle processing state updates
-                                setProcessingState(op.value);
+                                const stateValue = op.value;
+                                if (stateValue === 'awaiting_model_response') {
+                                    setProcessingState('processing_tools');
+                                }
+                                // Note: State will auto-reset to 'idle' when removeStreamingConversation is called
                                 continue;
                             }
                             if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {

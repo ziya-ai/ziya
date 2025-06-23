@@ -4,14 +4,21 @@ import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import { message } from 'antd';
 
+type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error';
+
+interface ConversationProcessingState {
+    state: ProcessingState;
+    lastUpdated: number;
+}
+
 interface ChatContext {
     streamedContentMap: Map<string, string>;
     dynamicTitleLength: number;
     setDynamicTitleLength: (length: number) => void;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
-    processingState: string;
-    setProcessingState: Dispatch<SetStateAction<string>>;
+    getProcessingState: (conversationId: string) => ProcessingState;
+    updateProcessingState: (conversationId: string, state: ProcessingState) => void;
     isStreamingAny: boolean;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
@@ -60,7 +67,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
     const [isStreamingAny, setIsStreamingAny] = useState(false);
-    const [processingState, setProcessingState] = useState<string>('idle');
+    const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
     const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
@@ -112,6 +119,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsStreamingAny(true);
             return next;
         });
+        updateProcessingState(id, 'sending');
     }, []);
 
     const removeStreamingConversation = useCallback((id: string) => {
@@ -133,7 +141,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsStreamingAny(prev.size > 1);
             return prev;
         });
+        
+        // Auto-reset processing state when streaming ends
+        updateProcessingState(id, 'idle');
     }, [streamingConversations]);
+
+    const updateProcessingState = useCallback((conversationId: string, state: ProcessingState) => {
+        setProcessingStates(prev => {
+            const next = new Map(prev);
+            next.set(conversationId, {
+                state,
+                lastUpdated: Date.now()
+            });
+            return next;
+        });
+    }, []);
+
+    const getProcessingState = useCallback((conversationId: string): ProcessingState => {
+        return processingStates.get(conversationId)?.state || 'idle';
+    }, [processingStates]);
 
     // Enhanced backup system with corruption detection
     const createBackup = useCallback(async (conversations: Conversation[]) => {
@@ -755,8 +781,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         dynamicTitleLength,
         setDynamicTitleLength,
         setStreamedContentMap,
-        processingState,
-        setProcessingState,
+        getProcessingState,
+        updateProcessingState,
         isStreaming,
         isStreamingAny,
         streamingConversations,
@@ -797,8 +823,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         dynamicTitleLength,
         setDynamicTitleLength,
         setStreamedContentMap,
-        processingState,
-        setProcessingState,
+        getProcessingState,
+        updateProcessingState,
         isStreaming,
         isStreamingAny,
         streamingConversations,

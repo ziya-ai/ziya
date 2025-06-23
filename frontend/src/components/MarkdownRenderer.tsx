@@ -3517,8 +3517,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Pre-process math expressions
             // Handle display math $$...$$
             processedMarkdown = processedMarkdown.replace(
-                /\$\$([\s\S]*?)\$\$/g,
-                '<div class="math-display-block">$$MATH_DISPLAY:$1$$</div>'
+                /\$\$([\s\S]+?)\$\$/gm,
+                '\n<div class="math-display-block">$$MATH_DISPLAY:$1$$</div>\n'
             );
             // Handle inline math $...$
             processedMarkdown = processedMarkdown.replace(
