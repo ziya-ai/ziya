@@ -366,7 +366,6 @@ export function initMermaidEnhancer(): void {
       }
       return line;
     }).join('\n');
-
     return finalDef;
   }, {
     name: 'gitgraph-syntax-fix',
@@ -847,6 +846,7 @@ export function initMermaidEnhancer(): void {
             // Remove the deactivate keyword since the participant isn't active
             const cleanLine = line.replace(/\s*deactivate\s*$/, '');
             result.push(cleanLine);
+            console.warn(`Removed deactivation for inactive participant: ${targetParticipant}`);
             continue;
           } else if (targetParticipant) {
             activationState[targetParticipant] = false;
@@ -893,6 +893,7 @@ export function initMermaidEnhancer(): void {
     // Fix class diagram ">" dependency syntax
     processedDef = processedDef.replace(/}\s*>\s*(\w+)\s*{/g, '}\n    $1 --|> ');
     processedDef = processedDef.replace(/(class\s+\w+\s*{\s*)>\s*/g, '$1');
+
     // Fix for `OrderStatus --|> PENDING` where PENDING is not a class
     // If Y in X --|> Y is all caps and not defined as a class, comment it out.
     processedDef = processedDef.replace(/^(\s*)(\w+)\s*--\|>\s*([A-Z_]+)\s*$/gm, (match, indent, classX, classY) => {
@@ -901,6 +902,7 @@ export function initMermaidEnhancer(): void {
       }
       return match;
     });
+
     return processedDef;
   }, {
     name: 'parsing-error-fix',

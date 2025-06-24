@@ -1300,4 +1300,3 @@ function isProblematicBackground(color: string): boolean {
     // Check if this color matches any of the problematic ones
     return result;
 }
-
