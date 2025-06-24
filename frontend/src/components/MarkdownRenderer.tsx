@@ -63,9 +63,9 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
     let isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
         content.includes('Command not allowed') ||
         content.includes('COMMAND BLOCKED');
-    
+
     let securityErrorMessage = content;
-    
+
     // Check if content is a JSON error object from MCP server
     if (content.includes("'error': True") && content.includes('SECURITY BLOCK')) {
         try {
@@ -3120,7 +3120,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         tokenWithText.text.includes('COMMAND BLOCKED') ||
                         (tokenWithText.text.includes("'error': True") && tokenWithText.text.includes('SECURITY BLOCK'))
                     );
-                    
+
                     if (isSecurityError) {
                         // Extract the actual message from Python dict format
                         let errorMessage = tokenWithText.text;
@@ -3204,6 +3204,20 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'paragraph':
                     // Render paragraph, processing inline tokens recursively
                     const pTokens = (token as Tokens.Paragraph).tokens || [];
+
+                    // Check if any paragraph content has inline math
+                    const paragraphContent = pTokens.map(t => (t as TokenWithText).text || '').join('');
+                    if (paragraphContent.includes('⟨MATH_INLINE:')) {
+                        const parts = paragraphContent.split(/(⟨MATH_INLINE:[^⟩]*⟩)/);
+                        return <p key={index}>{parts.map((part, i) => {
+                            if (part.startsWith('⟨MATH_INLINE:')) {
+                                const math = part.replace('⟨MATH_INLINE:', '').replace('⟩', '').trim();
+                                return <MathRenderer key={i} math={math} displayMode={false} />;
+                            }
+                            return part || null;
+                        })}</p>;
+                    }
+
                     // Filter out empty text tokens that might remain after processing
                     const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
@@ -3317,6 +3331,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
                     }
 
+                    if (htmlContent.includes('class="math-inline-span"') && htmlContent.includes('MATH_INLINE:')) {
+                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                    }
+
                     const tagMatches = htmlContent.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g);
 
                     if (tagMatches) {
@@ -3336,16 +3355,24 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
-                    const decodedText = decodeHtmlEntities(tokenWithText.text);
+                    let decodedText = decodeHtmlEntities(tokenWithText.text);
 
                     // Handle math expressions in text tokens
-                    if (decodedText.includes('MATH_DISPLAY:')) {
-                        const mathMatch = decodedText.match(/MATH_DISPLAY:([^<]*)/s);
-                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
-                    }
-                    if (decodedText.includes('MATH_INLINE:')) {
-                        const mathMatch = decodedText.match(/MATH_INLINE:([^<]*)/s);
-                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                    if (decodedText.includes('(MATH_INLINE:')) {
+                        // const mathMatch = decodedText.match(/MATH_DISPLAY:([^<]*)/s);
+                        // if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
+                        const parts = decodedText.split(/(⟨MATH_INLINE:[^⟩]*⟩)/);
+                        return (
+                            <>
+                                {parts.map((part, i) => {
+                                    if (part.startsWith('⟨MATH_INLINE:')) {
+                                        const math = part.replace('⟨MATH_INLINE:', '').replace('⟩', '').trim();
+                                        return <MathRenderer key={i} math={math} displayMode={false} />;
+                                    }
+                                    return part || null;
+                                })}
+                            </>
+                        );
                     }
 
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
@@ -3582,13 +3609,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Pre-process math expressions
             // Handle display math $$...$$
             processedMarkdown = processedMarkdown.replace(
-                /\$\$([\s\S]+?)\$\$/gm,
-                '\n<div class="math-display-block">$$MATH_DISPLAY:$1$$</div>\n'
+                /\$\$([\s\S]+?)\$\$/g,
+                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
             );
             // Handle inline math $...$
             processedMarkdown = processedMarkdown.replace(
-                /\$([^$\n]+?)\$/g,
-                '<span class="math-inline-span">MATH_INLINE:$1</span>'
+                /\$([^$]+?)\$/g,
+                (match, p1) => `⟨MATH_INLINE:${p1.trim()}⟩`
             );
 
             // Pre-process MathML blocks to prevent fragmentation
