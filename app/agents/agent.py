@@ -560,6 +560,13 @@ class RetryingChatBedrock(Runnable):
 
     async def astream(self, input: Any, config: Optional[Dict] = None, **kwargs):
         """Stream responses with retries and proper message formatting."""
+        # Reset MCP tool execution counter for new request cycle
+        try:
+            from app.mcp.tools import _reset_counter_async
+            await _reset_counter_async()
+        except Exception as e:
+            logger.warning(f"Failed to reset MCP tool counter: {e}")
+        
         max_retries = 3
         base_retry_delay = 1
 
@@ -615,6 +622,9 @@ class RetryingChatBedrock(Runnable):
         
         accumulated_content = []
         accumulated_text = ""  # String accumulation for preservation
+        
+        # Limits to prevent context bloat
+        MAX_PRESERVED_TOOL_RESULTS = 10
         successful_tool_results = []  # Track successful tool executions
         tool_execution_count = 0
         pre_streaming_work = []  # Track work done before streaming starts
@@ -689,20 +699,29 @@ class RetryingChatBedrock(Runnable):
             logger.info(f"Attempt {attempt + 1} of {max_retries}")
             try:
                 # Track pre-streaming work
-                pre_streaming_work.append(f"Starting attempt {attempt + 1}/{max_retries}")
+                pre_streaming_work.append(f"🔄 Starting attempt {attempt + 1}/{max_retries}")
                 
-                # Check if we have cache information from the logs
-                if hasattr(self, '_cache_info'):
-                    pre_streaming_work.append(f"Cache: {self._cache_info}")
-                    processing_context["cache_benefit"] = self._cache_info
-                
-                # Track message preparation
-                pre_streaming_work.append("Preparing messages for model")
+                # Try to capture cache information from recent logs
+                try:
+                    # Look for cache benefit information in the conversation context
+                    if conversation_id and hasattr(input, 'to_messages'):
+                        messages = input.to_messages()
+                        # Check if any message contains cache information
+                        for msg in messages:
+                            if hasattr(msg, 'content') and 'CACHE BENEFIT' in str(msg.content):
+                                import re
+                                cache_match = re.search(r'CACHE BENEFIT: ~([\d,]+) tokens', str(msg.content))
+                                if cache_match:
+                                    tokens = cache_match.group(1)
+                                    pre_streaming_work.append(f"💾 Cache benefit: ~{tokens} tokens will be reused")
+                                    processing_context["cache_benefit"] = f"~{tokens} tokens cached"
+                except Exception as e:
+                    logger.debug(f"Could not extract cache info: {e}")
                 
                 # Convert input to messages if needed
                 if hasattr(input, 'to_messages'):
                     messages = input.to_messages()
-                    pre_streaming_work.append(f"Converted to {len(messages)} messages")
+                    pre_streaming_work.append(f"📝 Prepared {len(messages)} messages for model")
                     logger.debug(f"Using messages from ChatPromptValue: {len(messages)} messages")
                 else:
                     messages = input
@@ -717,7 +736,7 @@ class RetryingChatBedrock(Runnable):
                     if not messages:
                         raise ValueError("No valid messages with content")
                     logger.debug(f"Filtered to {len(messages)} non-empty messages")
-                    pre_streaming_work.append(f"Filtered to {len(messages)} valid messages")
+                    pre_streaming_work.append(f"✅ Validated {len(messages)} messages ready for processing")
 
                 logger.info("LLM_INPUT_DEBUG: Preparing to call LLM.") # ADD THIS BLOCK
                 for i, msg in enumerate(messages): # ADD THIS BLOCK
@@ -731,7 +750,7 @@ class RetryingChatBedrock(Runnable):
 
 
                 
-                pre_streaming_work.append("Starting model stream")
+                pre_streaming_work.append("🚀 Initiating model stream connection")
                 
                 # Debug the Bedrock client being used
                 if hasattr(self.model, 'client'):
@@ -759,6 +778,7 @@ class RetryingChatBedrock(Runnable):
                 async for chunk in self.model.astream(messages, model_config, **kwargs):
                     # Check if this is an error chunk that should terminate this specific stream
                     # If we reach here, we've successfully started streaming
+                    
                     if not processing_context.get("streaming_started"):
                         processing_context["streaming_started"] = True
                     if isinstance(chunk, AIMessageChunk):
@@ -766,10 +786,24 @@ class RetryingChatBedrock(Runnable):
                         content = chunk.content() if callable(chunk.content) else chunk.content
                         if content and isinstance(content, str):
                             # Look for tool execution patterns
-                            if "MCP Tool" in content or "Tool:" in content or "```" in content:
+                            if self._is_tool_execution_content(content):
                                 tool_execution_count += 1
                                 if not any(error_indicator in content.lower() for error_indicator in ["error", "timeout", "failed"]):
-                                    successful_tool_results.append(content)
+                                    # Limit size of individual tool results
+                                    tool_result = content
+                                    if len(tool_result) > 5000:
+                                        tool_result = tool_result[:5000] + f"\n... [Tool result truncated - {len(content)} total chars]"
+                                    successful_tool_results.append(tool_result)
+                                    
+                                    # Limit total number of preserved results
+                                    if len(successful_tool_results) > MAX_PRESERVED_TOOL_RESULTS:
+                                        successful_tool_results = successful_tool_results[-MAX_PRESERVED_TOOL_RESULTS:]
+                                
+                                # Notify frontend about tool execution (but don't await to avoid blocking)
+                                try:
+                                    asyncio.create_task(self._notify_tool_execution_state(content))
+                                except Exception as e:
+                                    logger.debug(f"Could not notify tool execution state: {e}")
                         
                         content = chunk.content() if callable(chunk.content) else chunk.content
                         if content:
@@ -946,7 +980,7 @@ class RetryingChatBedrock(Runnable):
                     error_chunk.response_metadata = {"error_response": True}
                     yield error_chunk
                     return
-                
+
                 # Log any accumulated content before error handling
                 if hasattr(self, '_accumulated_content') and self._accumulated_content:
                     logger.info(f"PARTIAL RESPONSE DEBUG: {len(self._accumulated_content)} characters in _accumulated_content before exception")
@@ -975,6 +1009,7 @@ class RetryingChatBedrock(Runnable):
                         error_message["processing_context"] = processing_context
                         error_message["has_pre_streaming_work"] = True
                         logger.info(f"[ERROR_SSE] Including pre-streaming work: {len(pre_streaming_work)} steps")
+                        logger.info(f"[ERROR_SSE] Pre-streaming work details: {pre_streaming_work}")
                     else:
                         logger.info("[ERROR_SSE] No pre-streaming work to preserve")
                     
@@ -1039,6 +1074,39 @@ class RetryingChatBedrock(Runnable):
                 error_chunk.response_metadata = {"error_response": True}
                 yield error_chunk
                 return
+
+    def _is_tool_execution_content(self, content: str) -> bool:
+        """Check if content indicates tool execution."""
+        tool_indicators = [
+            "MCP Tool",
+            "Tool:",
+            "$ ",  # Shell command indicator
+            "```shell",
+            "```bash",
+            "Executing tool",
+            "Running command",
+        ]
+        # placeholder always returns false until logic is implemented
+        return False
+
+    def _is_tool_execution_content(self, content: str) -> bool:
+        """Check if content indicates tool execution."""
+        tool_indicators = [
+            "MCP Tool",
+            "Tool:",
+            "$ ",  # Shell command indicator
+            "```shell",
+            "```bash",
+            "Executing tool",
+            "Running command",
+            "SECURITY BLOCK",
+            "Tool execution"
+        ]
+        return any(indicator in content for indicator in tool_indicators)
+
+    async def _notify_tool_execution_state(self, content: str):
+        """Notify about tool execution state changes."""
+        logger.info(f"🔧 Tool execution detected in content: {content[:100]}...")
 
     def _format_messages(self, input_messages: List[Any]) -> List[Dict[str, str]]:
         """Format messages according to provider requirements."""
@@ -1675,6 +1743,12 @@ def create_agent_chain(chat_model: BaseChatModel):
  
 # Initialize the agent chain
 agent = create_agent_chain(model)
+
+def reset_mcp_tool_counter():
+    """Reset the MCP tool execution counter for a new request cycle."""
+    from app.mcp.tools import _tool_execution_counter, _tool_execution_lock
+    import asyncio
+    asyncio.create_task(_reset_counter_async())
 
 logger.info("Agent chain defined with parse_output")
 def update_conversation_state(conversation_id: str, file_paths: List[str]) -> None:

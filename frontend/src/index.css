@@ -213,8 +213,7 @@ body.dark {
 .panel-toggle {
   position: fixed;
   left: var(--folder-panel-width);
-  top: calc(var(--header-height) + 50%);
-  top: 50%;
+  top: calc(var(--header-height) + 50vh);
   z-index: 3;
   transform: translateY(-50%);
   transition: left 0.5s ease-in-out, transform 0.5s ease-in-out;
@@ -234,7 +233,7 @@ body.dark {
 .panel-toggle::before {
   content: '';
   position: absolute;
-  left: -1px;
+  left: -2px;
   top: calc(var(--header-height) +50vh);
   bottom: -100vh;
   width: 2px;

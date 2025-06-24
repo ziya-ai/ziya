@@ -1936,7 +1936,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             if (hunkStatus) {
                                 console.log(`Setting status for hunk #${hunkId} with key ${hunkKey}:`, hunkStatus);
                                 instanceHunkStatusMap.set(hunkKey, {
-                                    applied: hunkStatus.status === 'succeeded',
+                                    applied: hunkStatus.status === 'succeeded' || hunkStatus.status === 'already_applied',
                                     alreadyApplied: hunkStatus.status === 'already_applied',
                                     reason: hunkStatus.status === 'failed'
                                         ? 'Failed in ' + hunkStatus.stage + ' stage'
@@ -2956,11 +2956,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
     return tokens.map((token, index) => {
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
+        const tokenWithText = token as TokenWithText; // Helper cast
 
         if ((token as any).lang?.startsWith('tool:')) {
-            console.log(`Tool token processing - originalType: ${token.type}, determinedType: ${determinedType}, lang: ${(token as any).lang}`);
+            console.log(`Tool token processing - originalType: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, lang: ${(token as any).lang}`);
         }
-        const tokenWithText = token as TokenWithText; // Helper cast
+        
+        // Debug math tokens
+        if (tokenWithText.text && (tokenWithText.text.includes('MATH_INLINE:') || tokenWithText.text.includes('MATH_DISPLAY:'))) {
+            console.log(`Math token detected - type: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, content: ${tokenWithText.text.substring(0, 100)}`);
+        }
 
         try {
             switch (determinedType) {
@@ -3283,6 +3288,17 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
                     const decodedText = decodeHtmlEntities(tokenWithText.text);
+                    
+                    // Handle math expressions in text tokens
+                    if (decodedText.includes('MATH_DISPLAY:')) {
+                        const mathMatch = decodedText.match(/MATH_DISPLAY:([^<]*)/s);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
+                    }
+                    if (decodedText.includes('MATH_INLINE:')) {
+                        const mathMatch = decodedText.match(/MATH_INLINE:([^<]*)/s);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                    }
+                    
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
                     if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
                         // If it has nested tokens, render them recursively

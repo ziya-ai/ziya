@@ -268,6 +268,10 @@ export const App: React.FC = () => {
             const newState = !isPanelCollapsed;
             setIsPanelCollapsed(newState);
             localStorage.setItem(PANEL_COLLAPSED_KEY, JSON.stringify(newState));
+            
+            // Update CSS variable to match panel state
+            const newWidth = newState ? 0 : panelWidth;
+            document.documentElement.style.setProperty('--folder-panel-width', `${newWidth}px`);
         });
     };
 
@@ -371,7 +375,6 @@ export const App: React.FC = () => {
                         style={{
                             padding: '4px 8px',
                             color: isDarkMode ? undefined : (isPanelCollapsed ? '#ffffff' : '#1890ff'),
-                            left: isPanelCollapsed ? '-1px' : `${panelWidth}px`, // Position at right edge of resizer (-4px spacing)
                             backgroundColor: isDarkMode ? undefined : (isPanelCollapsed ? '#1890ff' : undefined),
                         }}
                         ghost={!isDarkMode || !isPanelCollapsed}

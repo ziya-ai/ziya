@@ -31,6 +31,15 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             status_code: 413
         };
     }
+    
+    // Check for throttling errors
+    if (content.includes('ThrottlingException') || content.includes('Too many requests')) {
+        return {
+            error: 'throttling_error',
+            detail: 'Too many requests to AWS Bedrock. Please wait a moment before trying again.',
+            status_code: 429
+        };
+    }
 
     // Check for other validation errors
     try {
@@ -366,7 +375,35 @@ export const sendPayload = async (
                     const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(data);
 
                     if (errorResponse) {
+                        console.log("Current content when error detected:", currentContent.substring(0, 200) + "...");
+                        console.log("Current content length:", currentContent.length);
                         console.log("Error detected in SSE data:", errorResponse);
+                        
+                        // Check if the error data contains preserved content and dispatch it
+                        try {
+                            const errorData = JSON.parse(data);
+                            
+                            // Include the current streamed content in the preserved data
+                            if (currentContent && currentContent.trim()) {
+                                errorData.existing_streamed_content = currentContent;
+                                console.log('Including existing streamed content in preserved data:', currentContent.length, 'characters');
+                            }
+                            
+                            if (errorData.pre_streaming_work || errorData.preserved_content || errorData.successful_tool_results) {
+                                console.log('Dispatching preserved content event from error data:', {
+                                    hasPreStreamingWork: !!errorData.pre_streaming_work,
+                                    hasPreservedContent: !!errorData.preserved_content,
+                                    hasSuccessfulTools: !!errorData.successful_tool_results
+                                });
+                                
+                                // Dispatch the preserved content event
+                                document.dispatchEvent(new CustomEvent('preservedContent', {
+                                    detail: errorData
+                                }));
+                            }
+                        } catch (e) {
+                            console.debug('Could not parse error data for preserved content:', e);
+                        }
 
                         // Show different message for partial responses vs complete failures
                         const isPartialResponse = currentContent.length > 0;
@@ -380,7 +417,8 @@ export const sendPayload = async (
                             key: 'stream-error'
                         });
                         errorOccurred = true;
-                        removeStreamingConversation(conversationId);
+                        // Don't remove streaming conversation yet - let the preserved content handler do it
+                        // removeStreamingConversation(conversationId);
                         return;
                     }
 

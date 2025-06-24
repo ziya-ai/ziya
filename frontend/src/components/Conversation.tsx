@@ -32,6 +32,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         streamedContentMap,
         userHasScrolled,
         updateProcessingState,
+        setConversations,
         toggleMessageMute,
     } = useChatContext();
 
@@ -281,18 +282,45 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         height: '32px'
                     }}
                     onClick={() => {
-                        // Set the question in the input field
-                        setQuestion(message.content);
-                        // Scroll to the input field and focus it
-                        setTimeout(() => {
-                            const textarea = document.getElementById('chat-question-textarea');
-                            if (textarea) {
-                                textarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                textarea.focus();
-                                // Place cursor at the end of the text
-                                (textarea as HTMLTextAreaElement).setSelectionRange(message.content.length, message.content.length);
+                        // Clear any existing streamed content
+                        setStreamedContentMap(new Map());
+
+                        // Create truncated message array up to and including this message
+                        const truncatedMessages = currentMessages.slice(0, index + 1);
+
+                        // Set conversation to just the truncated messages
+                        setConversations(prev => prev.map(conv =>
+                            conv.id === currentConversationId
+                                ? { ...conv, messages: truncatedMessages, _version: Date.now() }
+                                : conv
+                        ));
+
+                        // Start streaming immediately
+                        addStreamingConversation(currentConversationId);
+
+                        // Send the payload
+                        (async () => {
+                            try {
+                                await sendPayload(
+                                    truncatedMessages,
+                                    message.content,
+                                    convertKeysToStrings(checkedKeys || []),
+                                    currentConversationId,
+                                    setStreamedContentMap,
+                                    setIsStreaming,
+                                    removeStreamingConversation,
+                                    addMessageToConversation,
+                                    streamingConversations.has(currentConversationId),
+                                    (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state)
+                                );
+                            } catch (error) {
+                                setIsStreaming(false);
+                                removeStreamingConversation(currentConversationId);
+                                console.error('Error resubmitting message:', error);
                             }
-                        }, 100);
+                        })();
+                        // Clear the question field since we're submitting directly
+                        setQuestion('');
                     }}
                 />
             </Tooltip>

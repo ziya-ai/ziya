@@ -80,6 +80,10 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         self._recent_lines = []
         accumulated_content = ""
         accumulated_chunks = []  # Track all chunks for better preservation
+        
+        # Limits for preserved content to prevent context bloat
+        MAX_PRESERVED_TOOLS = 10
+        MAX_TOOL_OUTPUT_LENGTH = 5000
         successful_tool_outputs = []  # Track successful tool executions
         tool_sequence_count = 0
         content_buffer = ""  # Buffer to hold content while checking for tool calls
@@ -143,10 +147,19 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             if self._looks_like_tool_output(raw_content):
                                 tool_sequence_count += 1
                                 if not self._contains_error_indicators(raw_content):
+                                    # Limit size of individual tool outputs
+                                    tool_output = raw_content
+                                    if len(tool_output) > MAX_TOOL_OUTPUT_LENGTH:
+                                        tool_output = tool_output[:MAX_TOOL_OUTPUT_LENGTH] + f"\n... [Tool output truncated - {len(raw_content)} total chars]"
+                                    
                                     successful_tool_outputs.append({
                                         "sequence": tool_sequence_count,
-                                        "content": raw_content
+                                        "content": tool_output
                                     })
+                                    
+                                    # Limit total number of preserved tool outputs
+                                    if len(successful_tool_outputs) > MAX_PRESERVED_TOOLS:
+                                        successful_tool_outputs = successful_tool_outputs[-MAX_PRESERVED_TOOLS:]
                         if isinstance(raw_content, dict):
                             # For structured content like thinking mode, preserve the structure
                             logger.debug(f"Preserving structured content: {list(raw_content.keys())}")

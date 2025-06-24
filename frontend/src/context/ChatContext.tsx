@@ -4,10 +4,13 @@ import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import { message } from 'antd';
 
-type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error';
+export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'error';
 
 interface ConversationProcessingState {
     state: ProcessingState;
+    toolExecutionCount?: number;
+    throttlingDelay?: number;
+    lastToolName?: string;
     lastUpdated: number;
 }
 
@@ -141,7 +144,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsStreamingAny(prev.size > 1);
             return prev;
         });
-        
+
         // Auto-reset processing state when streaming ends
         updateProcessingState(id, 'idle');
     }, [streamingConversations]);
@@ -548,7 +551,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Set conversations immediately to unblock message loading
             if (!isInitialized) {
                 console.log('✅ Setting conversations immediately:', savedConversations.length);
-            setConversations(savedConversations);
+                setConversations(savedConversations);
                 setIsInitialized(true);
             }
 

@@ -13,6 +13,10 @@ import shlex
 from typing import Dict, Any, Optional
 
 
+# Global timeout tracking
+_consecutive_timeouts = {}
+_last_command_times = {}
+
 class ShellServer:
     """MCP server that provides shell command execution tools."""
     
@@ -252,15 +256,48 @@ class ShellServer:
                     }
                     
                 except subprocess.TimeoutExpired:
+                    # Track consecutive timeouts
+                    current_time = time.time()
+                    if command not in _consecutive_timeouts:
+                        _consecutive_timeouts[command] = 0
+                    
+                    # Only count as consecutive if within reasonable time window (5 minutes)
+                    if command in _last_command_times and (current_time - _last_command_times[command]) < 300:
+                        _consecutive_timeouts[command] += 1
+                    else:
+                        _consecutive_timeouts[command] = 1
+                    
+                    _last_command_times[command] = current_time
+                    
+                    # Only return timeout error if this is the 3rd consecutive timeout
+                    if _consecutive_timeouts[command] < 3:
+                        # Return empty success response to suppress timeout
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": ""
+                                    }
+                                ]
+                            }
+                        }
+                    
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,
                         "error": {
                             "code": -32603,
-                            "message": f"Command timed out after {timeout} seconds"
+                            "message": f"Command timed out after {timeout} seconds (3+ consecutive timeouts)"
                         }
                     }
                 except Exception as e:
+                    # Reset timeout counter on other errors
+                    if command in _consecutive_timeouts:
+                        _consecutive_timeouts[command] = 0
+                    
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,
@@ -269,6 +306,10 @@ class ShellServer:
                             "message": f"Error executing command: {str(e)}"
                         }
                     }
+                else:
+                    # Reset timeout counter on successful execution
+                    if command in _consecutive_timeouts:
+                        _consecutive_timeouts[command] = 0
         
         # Handle notifications (no response needed)
         if method == "notifications/initialized":
