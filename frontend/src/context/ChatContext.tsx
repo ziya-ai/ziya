@@ -266,6 +266,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Add a function to handle model change notifications
     const handleModelChange = useCallback((event: CustomEvent) => {
         const { previousModel, newModel, modelId, previousModelId } = event.detail;
+        if (!previousModel || !newModel) return; // Skip invalid model changes
 
         console.log('ChatContext received modelChanged event:', {
             previousModel,
@@ -283,12 +284,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return;
         }
 
-        // Skip if we've already processed this exact change
-        if (processedModelChanges.current.has(changeKey)) {
-            return;
-        }
         // Only add model change message if we have a valid conversation
-
         if (currentConversationId) {
             // Explicitly type the modelChangeMessage as Message
             const modelChangeMessage: Message = {

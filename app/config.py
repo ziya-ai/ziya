@@ -187,6 +187,7 @@ MODEL_CONFIGS = {
             "supports_thinking": True,  # Override global default
             "family": "claude",
             "supports_context_caching": True,
+            "region": "eu-west-1"  # Ensure sonnet3.7 uses EU region
         },
         "sonnet3.5-v2": {
             "model_id": {

@@ -547,7 +547,7 @@ export const StreamedContent: React.FC = () => {
                                 {/* Only render if we have actual content */}
                                 {error && <><ErrorDisplay message={error} /><br /></>}
                                 {!error && streamedContent && streamedContent.trim() && (
-                                    <div className="streamed-content-wrapper">
+                                    <div className="message-content">
                                         {/* Show preservation notice if this content was preserved */}
                                         {streamedContent.includes('Successful Tool Executions Before Error:') && (
                                             <Alert
@@ -569,7 +569,7 @@ export const StreamedContent: React.FC = () => {
                                 )}
                                 {/* Show content even when there's an error */}
                                 {error && streamedContent && streamedContent.trim() && (
-                                    <div style={{ opacity: 0.8 }}>
+                                    <div className="message-content" style={{ opacity: 0.8 }}>
                                         <MarkdownRenderer
                                             key={`stream-${currentConversationId}-with-error`}
                                             markdown={streamedContent}

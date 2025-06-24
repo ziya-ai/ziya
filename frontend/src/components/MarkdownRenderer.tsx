@@ -60,9 +60,28 @@ interface ToolBlockProps {
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
     // Check if this is a security error from shell command blocking
-    const isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
+    let isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
         content.includes('Command not allowed') ||
         content.includes('COMMAND BLOCKED');
+    
+    let securityErrorMessage = content;
+    
+    // Check if content is a JSON error object from MCP server
+    if (content.includes("'error': True") && content.includes('SECURITY BLOCK')) {
+        try {
+            // Extract the message from the JSON-like string
+            const messageMatch = content.match(/'message': "([^"]+)"/);
+            if (messageMatch) {
+                let message = messageMatch[1].replace(/\\n/g, '\n');
+                // Remove the redundant "🚫 SECURITY BLOCK:" prefix since we show it in the title
+                message = message.replace(/^🚫 SECURITY BLOCK:\s*/, '');
+                securityErrorMessage = message;
+                isSecurityError = true;
+            }
+        } catch (e) {
+            // If parsing fails, use original content
+        }
+    }
 
     // Check if this is an MCP tool error
     const isMCPError = content.includes('MCP Tool Error') ||
@@ -73,10 +92,10 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
         return (
             <Alert
                 message="🚫 Command Blocked"
-                description={content}
+                description={securityErrorMessage}
                 type="warning"
                 showIcon
-                style={{ margin: '16px 0', border: '2px solid #faad14' }}
+                style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }}
             />
         );
     }
@@ -2954,6 +2973,7 @@ const decodeHtmlEntities = (text: string): string => {
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
     return tokens.map((token, index) => {
+        const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
         const tokenWithText = token as TokenWithText; // Helper cast
@@ -2961,10 +2981,30 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         if ((token as any).lang?.startsWith('tool:')) {
             console.log(`Tool token processing - originalType: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, lang: ${(token as any).lang}`);
         }
-        
+
         // Debug math tokens
         if (tokenWithText.text && (tokenWithText.text.includes('MATH_INLINE:') || tokenWithText.text.includes('MATH_DISPLAY:'))) {
             console.log(`Math token detected - type: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, content: ${tokenWithText.text.substring(0, 100)}`);
+        }
+
+        // Override code detection if this token follows a tool token
+        if (determinedType === 'code' && previousToken) {
+            const prevTokenWithText = previousToken as TokenWithText;
+            if (prevTokenWithText.toolName || (prevTokenWithText.lang && prevTokenWithText.lang.startsWith('tool:'))) {
+                // This token follows a tool - check if it should really be treated as regular text/paragraph
+                if (!tokenWithText.text?.startsWith('```') && !tokenWithText.text?.startsWith('    ')) {
+                    // Force this to be treated as markdown instead of code
+                    return (
+                        <div key={index}>
+                            <MarkdownRenderer
+                                markdown={tokenWithText.text || ''}
+                                enableCodeApply={enableCodeApply}
+                                isStreaming={isStreaming}
+                            />
+                        </div>
+                    );
+                }
+            }
         }
 
         try {
@@ -3074,13 +3114,22 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     }
 
                     // Check for security errors in tool output and render them prominently
-                    if (tokenWithText.text && (
+                    const isSecurityError = tokenWithText.text && (
                         tokenWithText.text.includes('🚫 SECURITY BLOCK') ||
                         tokenWithText.text.includes('Command not allowed') ||
-                        tokenWithText.text.includes('COMMAND BLOCKED')
-                    )) {
+                        tokenWithText.text.includes('COMMAND BLOCKED') ||
+                        (tokenWithText.text.includes("'error': True") && tokenWithText.text.includes('SECURITY BLOCK'))
+                    );
+                    
+                    if (isSecurityError) {
+                        // Extract the actual message from Python dict format
+                        let errorMessage = tokenWithText.text;
+                        const pythonDictMatch = tokenWithText.text.match(/\{'error': True, 'message': "([^"]*(?:\\.[^"]*)*)"/);
+                        if (pythonDictMatch) {
+                            errorMessage = pythonDictMatch[1].replace(/\\n/g, '\n').replace(/^🚫 SECURITY BLOCK:\s*/, '');
+                        }
                         return (
-                            <Alert key={index} message="🚫 Command Blocked" description={tokenWithText.text} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14' }} />
+                            <Alert key={index} message="🚫 Command Blocked" description={errorMessage} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
                         );
                     }
 
@@ -3288,7 +3337,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
                     const decodedText = decodeHtmlEntities(tokenWithText.text);
-                    
+
                     // Handle math expressions in text tokens
                     if (decodedText.includes('MATH_DISPLAY:')) {
                         const mathMatch = decodedText.match(/MATH_DISPLAY:([^<]*)/s);
@@ -3298,7 +3347,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         const mathMatch = decodedText.match(/MATH_INLINE:([^<]*)/s);
                         if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
                     }
-                    
+
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
                     if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
                         // If it has nested tokens, render them recursively
