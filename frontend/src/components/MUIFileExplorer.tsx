@@ -94,8 +94,9 @@ export const MUIFileExplorer = () => {
     const isExpanded = expandedKeys.includes(String(node.key));
     const isChecked = checkedKeys.includes(String(node.key));
 
-    // Calculate token counts using the same logic as Ant Design version
-    const { total, included } = calculateTokens(node, folders);
+    // Always calculate token counts using the original full tree, not filtered data
+    const originalNode = findNodeInOriginalTree(node.key);
+    const { total, included } = calculateTokens(originalNode || node, folders);
 
     // Check if this node is indeterminate (some but not all children selected)
     const isIndeterminate = hasChildren && !isChecked &&
@@ -229,6 +230,23 @@ export const MUIFileExplorer = () => {
         )}
       </Box>
     );
+  };
+
+  // Helper function to find a node in the original unfiltered tree
+  const findNodeInOriginalTree = (nodeKey: string): any => {
+    const findInTree = (tree: any[], key: string): any => {
+      for (const node of tree) {
+        if (String(node.key) === String(key)) {
+          return node;
+        }
+        if (node.children) {
+          const found = findInTree(node.children, key);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return findInTree(muiTreeData, nodeKey);
   };
 
   // Effect to load folders on component mount
@@ -471,7 +489,9 @@ export const MUIFileExplorer = () => {
 
     if (node.children && node.children.length > 0) {
       for (const child of node.children) {
-        const childResult = calculateTokens(child, folders);
+        // Always use original tree structure for child calculations
+        const originalChild = findNodeInOriginalTree(child.key) || child;
+        const childResult = calculateTokens(originalChild, folders);
         directoryTotalTokens += childResult.total;
         directoryIncludedTokens += childResult.included;
       }
