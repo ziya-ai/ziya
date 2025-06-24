@@ -62,7 +62,6 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     logger.info(f"Sent error as SSE data: {error_msg}")
                     # We can't do anything here, the response has already started
                     return Response(status_code=500, content=json.dumps(error_msg))
-                    return Response(status_code=500, content=json.dumps(error_msg))
                 
                 # Create a streaming response with the error
                 # Use a more descriptive error format for SSE
