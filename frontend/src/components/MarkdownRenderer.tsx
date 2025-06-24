@@ -3614,11 +3614,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             );
             // Handle inline math $...$
             processedMarkdown = processedMarkdown.replace(
-                /\$([^$]+?)\$/g,
+                /\$([^⟩]+?)\$/g,
                 (match, p1) => {
-                    // Only treat as math if it contains mathematical indicators
-                    const mathIndicators = /[\\{}^_=+\-*/()[\]αβγδεζηθικλμνξοπρστυφχψω∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩]/;
-                    return mathIndicators.test(p1) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                    // Only treat as math if it contains LaTeX commands or mathematical symbols
+                    const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
+                    const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
+                    return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
                 }
             );
 
