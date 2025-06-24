@@ -3358,7 +3358,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     let decodedText = decodeHtmlEntities(tokenWithText.text);
 
                     // Handle math expressions in text tokens
-                    if (decodedText.includes('(MATH_INLINE:')) {
+                    if (decodedText.includes('⟨MATH_INLINE:')) {
                         // const mathMatch = decodedText.match(/MATH_DISPLAY:([^<]*)/s);
                         // if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
                         const parts = decodedText.split(/(⟨MATH_INLINE:[^⟩]*⟩)/);
@@ -3615,7 +3615,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Handle inline math $...$
             processedMarkdown = processedMarkdown.replace(
                 /\$([^$]+?)\$/g,
-                (match, p1) => `⟨MATH_INLINE:${p1.trim()}⟩`
+                (match, p1) => {
+                    // Only treat as math if it contains mathematical indicators
+                    const mathIndicators = /[\\{}^_=+\-*/()[\]αβγδεζηθικλμνξοπρστυφχψω∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩]/;
+                    return mathIndicators.test(p1) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                }
             );
 
             // Pre-process MathML blocks to prevent fragmentation

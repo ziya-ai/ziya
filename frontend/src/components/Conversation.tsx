@@ -237,13 +237,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     onClick={() => {
                         console.log(`Toggling mute for message ${index}, current state:`, message.muted);
                         toggleMessageMute(currentConversationId, index);
-
-                        // Trigger token count update by dispatching a custom event
-                        setTimeout(() => {
-                            window.dispatchEvent(new CustomEvent('messagesMutedChanged', {
-                                detail: { conversationId: currentConversationId }
-                            }));
-                        }, 100);
                     }}
                 />
             </Tooltip>

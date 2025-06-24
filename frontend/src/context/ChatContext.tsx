@@ -94,6 +94,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
+    const [messageUpdateCounter, setMessageUpdateCounter] = useState(0);
 
     // Monitor ChatProvider render performance
     // Remove performance monitoring that's causing overhead
@@ -531,7 +532,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
             setCurrentMessages(messages);
         }
-    }, [conversations, currentConversationId]);
+    }, [conversations, currentConversationId, messageUpdateCounter]);
 
 
     // Enhanced initialization with corruption detection and recovery
@@ -773,6 +774,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }));
             return updated;
         });
+        
+        // Force currentMessages to update
+        setMessageUpdateCounter(prev => prev + 1);
     }, [queueSave]);
 
     const value = useMemo(() => ({
