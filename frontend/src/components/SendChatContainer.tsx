@@ -4,9 +4,8 @@ import { sendPayload } from "../apis/chatApi";
 import { Message } from "../utils/types";
 import { convertKeysToStrings } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
-import { Button, Input, message, Tooltip } from 'antd';
+import { Button, Input, message } from 'antd';
 import { SendOutlined } from "@ant-design/icons";
-import { usePerformanceMonitor } from './PerformanceMonitor';
 import { useQuestionContext } from '../context/QuestionContext';
 
 const { TextArea } = Input;
@@ -32,6 +31,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         streamingConversations,
         addStreamingConversation,
         removeStreamingConversation,
+        updateProcessingState,
         setUserHasScrolled
     } = useChatContext();
 
@@ -74,7 +74,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             console.warn(`🐌 Input change slow: ${inputTime.toFixed(2)}ms for ${newValue.length} chars`);
         }
     }, [setQuestion]);
-    
+
     // Cleanup timeout on unmount
     useEffect(() => {
         return () => {
@@ -151,7 +151,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         const baseMessages = isRetry ? currentMessages : [...currentMessages, newHumanMessage!];
         // Filter out muted messages before sending to API - this is the definitive filter
         const messagesToSend = baseMessages.filter(msg => msg.muted !== true);
-        
+
         addStreamingConversation(currentConversationId);
         const targetConversationId = currentConversationId;
 
@@ -167,7 +167,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 setIsStreaming,
                 removeStreamingConversation,
                 addMessageToConversation,
-                streamingConversations.has(currentConversationId)
+                streamingConversations.has(currentConversationId),
+                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state)
             );
             // Check if result is an error response
             if (typeof result === 'string' && result.includes('"error":"validation_error"')) {

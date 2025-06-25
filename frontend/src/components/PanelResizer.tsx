@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
 
 interface PanelResizerProps {
@@ -10,6 +10,8 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
   const { isDarkMode } = useTheme();
   const [isDragging, setIsDragging] = useState(false);
   const resizerRef = useRef<HTMLDivElement>(null);
+  const lastUpdateTime = useRef<number>(0);
+  const animationFrameId = useRef<number | null>(null);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -17,6 +19,23 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   };
+
+  // Throttled resize function using requestAnimationFrame
+  const throttledResize = useCallback((newWidth: number) => {
+    if (animationFrameId.current) {
+      cancelAnimationFrame(animationFrameId.current);
+    }
+
+    animationFrameId.current = requestAnimationFrame(() => {
+      const now = performance.now();
+      // Throttle to ~60fps (16ms between updates)
+      if (now - lastUpdateTime.current >= 16) {
+        onResize(newWidth);
+        lastUpdateTime.current = now;
+      }
+      animationFrameId.current = null;
+    });
+  }, [onResize]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -34,8 +53,8 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
 
       // Calculate and validate new width
       const newWidth = validateWidth(e.clientX);
-      
-      onResize(newWidth);
+
+      throttledResize(newWidth);
     };
 
     const handleMouseUp = () => {
@@ -52,8 +71,13 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
+      // Clean up any pending animation frame
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+        animationFrameId.current = null;
+      }
     };
-  }, [isDragging, onResize]);
+  }, [isDragging, throttledResize]);
 
   if (isPanelCollapsed) return null;
 
@@ -67,8 +91,8 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
         left: 'var(--folder-panel-width)',
         top: 'var(--header-height)',
         bottom: 0,
-        width: '10px',
-        marginLeft: '-5px', // Center the handle on the border
+        width: '8px',
+        marginLeft: '-4px', // Center the handle on the border
         cursor: 'col-resize',
         zIndex: 100,
         backgroundColor: isDragging ? (isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)') : 'transparent',

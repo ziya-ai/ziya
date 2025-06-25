@@ -1,16 +1,27 @@
-import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo, memo, useLayoutEffect } from 'react';
+import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
-import { debounce } from '../utils/debounce';
-import { Modal, message } from 'antd';
-import { performEmergencyRecovery } from '../utils/emergencyRecovery';
+import { message } from 'antd';
+
+export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'error';
+
+interface ConversationProcessingState {
+    state: ProcessingState;
+    toolExecutionCount?: number;
+    throttlingDelay?: number;
+    lastToolName?: string;
+    lastUpdated: number;
+}
+
 interface ChatContext {
     streamedContentMap: Map<string, string>;
+    dynamicTitleLength: number;
+    setDynamicTitleLength: (length: number) => void;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
-    processingState: string;
-    setProcessingState: Dispatch<SetStateAction<string>>;
+    getProcessingState: (conversationId: string) => ProcessingState;
+    updateProcessingState: (conversationId: string, state: ProcessingState) => void;
     isStreamingAny: boolean;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
@@ -59,9 +70,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
     const [isStreamingAny, setIsStreamingAny] = useState(false);
-    const [processingState, setProcessingState] = useState<string>('idle');
+    const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
-    const [currentResponse, setCurrentResponse] = useState<Message | null>(null);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
     const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
     const currentConversationRef = useRef<string>(currentConversationId);
@@ -69,33 +79,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
     const [isTopToBottom, setIsTopToBottom] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
-    const lastSavedState = useRef<string>('');
     const [userHasScrolled, setUserHasScrolled] = useState(false);
+    const initializationStarted = useRef(false);
     const [folders, setFolders] = useState<ConversationFolder[]>([]);
     const [dbError, setDbError] = useState<string | null>(null);
     const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
     const folderRef = useRef<string | null>(null);
     const [folderFileSelections, setFolderFileSelections] = useState<Map<string, string[]>>(new Map());
-    const [folderPanelWidth, setFolderPanelWidth] = useState<number>(300); // Default width
+    const [dynamicTitleLength, setDynamicTitleLength] = useState<number>(50); // Default reasonable length
     const processedModelChanges = useRef<Set<string>>(new Set());
-    const contentRef = useRef<HTMLDivElement>(null);
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
     const isRecovering = useRef<boolean>(false);
-    const pendingSave = useRef<NodeJS.Timeout | null>(null);
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
+    const [messageUpdateCounter, setMessageUpdateCounter] = useState(0);
 
     // Monitor ChatProvider render performance
-    useLayoutEffect(() => {
-        renderCount.current++;
-        const renderTime = performance.now() - renderStart.current;
-        if (renderTime > 10 || renderCount.current % 20 === 0) {
-            console.log(`📊 ChatProvider render #${renderCount.current}: ${renderTime.toFixed(2)}ms`);
-        }
-        renderStart.current = performance.now();
-    });
+    // Remove performance monitoring that's causing overhead
 
     // Modified scrollToBottom function to respect user scroll
     const scrollToBottom = () => {
@@ -111,38 +113,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         streamingConversationsRef.current = streamingConversations;
     }, [conversations, streamingConversations]);
 
-    // Add a resize observer effect to monitor panel width changes
-    useEffect(() => {
-        const resizeObserver = new ResizeObserver(entries => {
-            for (const entry of entries) {
-                const folderPanel = document.querySelector('.folder-tree-panel');
-                if (folderPanel) {
-                    setFolderPanelWidth(entry.contentRect.width);
-                }
-            }
-        });
-
-        const folderPanel = document.querySelector('.folder-tree-panel');
-        if (folderPanel) {
-            resizeObserver.observe(folderPanel);
-        }
-
-        return () => {
-            resizeObserver.disconnect();
-        };
-    }, []);
-
-    // Listen for panel width changes
-    useEffect(() => {
-        const handlePanelResize = (e: CustomEvent) => {
-            if (e.detail && e.detail.width) {
-                setFolderPanelWidth(e.detail.width);
-            }
-        };
-        window.addEventListener('folderPanelResize', handlePanelResize as EventListener);
-        return () => window.removeEventListener('folderPanelResize', handlePanelResize as EventListener);
-    }, []);
-
     const addStreamingConversation = useCallback((id: string) => {
         setStreamingConversations(prev => {
             const next = new Set(prev);
@@ -153,6 +123,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsStreamingAny(true);
             return next;
         });
+        updateProcessingState(id, 'sending');
     }, []);
 
     const removeStreamingConversation = useCallback((id: string) => {
@@ -174,26 +145,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsStreamingAny(prev.size > 1);
             return prev;
         });
+
+        // Auto-reset processing state when streaming ends
+        updateProcessingState(id, 'idle');
     }, [streamingConversations]);
 
-    const shouldUpdateState = (newState: Conversation[], force: boolean = false) => {
+    const updateProcessingState = useCallback((conversationId: string, state: ProcessingState) => {
+        setProcessingStates(prev => {
+            const next = new Map(prev);
+            next.set(conversationId, {
+                state,
+                lastUpdated: Date.now()
+            });
+            return next;
+        });
+    }, []);
 
-        const newStateStr = JSON.stringify(newState);
-
-        // Check if current conversation exists in new state
-        const currentConvExists = newState.some(conv => conv.id === currentConversationRef.current);
-        if (!currentConvExists && conversations.some(conv => conv.id === currentConversationRef.current)) {
-            console.warn('Preventing update that would remove current conversation');
-            return false;
-        }
-
-        if (newStateStr === lastSavedState.current) {
-            return false;
-        }
-
-        lastSavedState.current = newStateStr;
-        return true;
-    };
+    const getProcessingState = useCallback((conversationId: string): ProcessingState => {
+        return processingStates.get(conversationId)?.state || 'idle';
+    }, [processingStates]);
 
     // Enhanced backup system with corruption detection
     const createBackup = useCallback(async (conversations: Conversation[]) => {
@@ -226,32 +196,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
         return saveQueue.current;
     }, [createBackup]);
 
-    const saveConversationsWithDebounce = useCallback(async (conversations: Conversation[]) => {
-        if (pendingSave.current) {
-            clearTimeout(pendingSave.current);
-        }
-
-        pendingSave.current = setTimeout(async () => {
-            try {
-                await queueSave(conversations);
-            } catch (error) {
-                console.error('Failed to save conversations:', error);
-                setDbError(error instanceof Error ? error.message : 'Failed to save conversations');
-            }
-            pendingSave.current = null;
-        }, 1000);
-    }, [queueSave]);
-
     const addMessageToConversation = useCallback((message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
         const conversationId = targetConversationId || currentConversationId;
         if (!conversationId) return;
 
         const folderId = currentFolderId;
-        // Calculate dynamic title length based on panel width
-        // We'll use a ratio of approximately 1 character per 6 pixels of width
-        const dynamicTitleLength = Math.max(30, Math.floor(folderPanelWidth / 6));
+        // Use the dynamicTitleLength from state - updated only by UI components
 
-        console.log('Dynamic title length:', { folderPanelWidth, dynamicTitleLength });
+        // Debug logging to see when messages are added
+        console.log('📝 Adding message:', { role: message.role, conversationId: targetConversationId, titleLength: dynamicTitleLength });
 
         messageUpdateCount.current += 1;
         setConversations(prevConversations => {
@@ -309,12 +262,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             return updatedConversations;
         });
-    }, [currentConversationId, currentFolderId, folderPanelWidth, conversations]);
+    }, [currentConversationId, currentFolderId, dynamicTitleLength, queueSave]);
 
     // Add a function to handle model change notifications
     const handleModelChange = useCallback((event: CustomEvent) => {
-        // Extract model change details
         const { previousModel, newModel, modelId, previousModelId } = event.detail;
+        if (!previousModel || !newModel) return; // Skip invalid model changes
 
         console.log('ChatContext received modelChanged event:', {
             previousModel,
@@ -332,12 +285,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return;
         }
 
-        // Skip if we've already processed this exact change
-        if (processedModelChanges.current.has(changeKey)) {
-            return;
-        }
         // Only add model change message if we have a valid conversation
-
         if (currentConversationId) {
             // Explicitly type the modelChangeMessage as Message
             const modelChangeMessage: Message = {
@@ -381,7 +329,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Mark this change as processed
             processedModelChanges.current.add(changeKey);
         }
-    }, [currentFolderId]);
+    }, [currentConversationId, conversations]);
 
     const startNewChat = useCallback((specificFolderId?: string | null) => {
         return new Promise<void>((resolve, reject) => {
@@ -425,7 +373,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 reject(error);
             }
         });
-    }, [currentConversationId, currentFolderId, conversations]);
+    }, [currentConversationId, currentFolderId, conversations, queueSave]);
 
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
@@ -479,7 +427,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsLoadingConversation(false);
         }
         setStreamedContentMap(new Map());
-    }, [currentConversationId, conversations, streamingConversations, streamedContentMap]);
+    }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave]);
 
     // Folder management functions
     const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
@@ -556,7 +504,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const freshFolders = await db.getFolders();
             setFolders(freshFolders);
         }
-    }, [currentFolderId, setConversations, setFolders, setCurrentFolderId]); // Removed 'conversations' from deps, relies on fetching fresh from DB
+    }, [currentFolderId, setConversations, setFolders, setCurrentFolderId, queueSave]);
 
     const moveConversationToFolder = useCallback(async (conversationId: string, folderId: string | null): Promise<void> => {
         try {
@@ -584,12 +532,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
             setCurrentMessages(messages);
         }
-    }, [conversations, currentConversationId]);
+    }, [conversations, currentConversationId, messageUpdateCounter]);
 
 
     // Enhanced initialization with corruption detection and recovery
     const initializeWithRecovery = useCallback(async () => {
-        if (isRecovering.current) return;
+        if (isRecovering.current || initializationStarted.current) return;
+        initializationStarted.current = true;
         isRecovering.current = true;
 
         try {
@@ -597,17 +546,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const savedConversations = await db.getConversations();
 
             // Set conversations immediately to unblock message loading
-            console.log('✅ Setting conversations immediately:', savedConversations.length);
-            setConversations(savedConversations);
-            setIsInitialized(true);
-
-            // Set current messages immediately if we have a current conversation
-            if (currentConversationId) {
-                const currentConv = savedConversations.find(c => c.id === currentConversationId);
-                if (currentConv) {
-                    console.log('✅ Setting current messages immediately:', currentConv.messages.length);
-                    setCurrentMessages(currentConv.messages);
-                }
+            if (!isInitialized) {
+                console.log('✅ Setting conversations immediately:', savedConversations.length);
+                setConversations(savedConversations);
+                setIsInitialized(true);
             }
 
             // Handle backup/recovery operations asynchronously - don't block UI
@@ -633,7 +575,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
             }, 0);
 
-            console.log('✅ Conversations initialized, folder loading will continue in background');
         } catch (error) {
             console.error('Initialization failed:', error);
             // Existing error handling...
@@ -641,7 +582,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
         } finally {
             isRecovering.current = false;
         }
-    }, [createBackup]);
+    }, [createBackup, currentConversationId]);
+
+    // Load current messages when conversation changes
+    useEffect(() => {
+        if (currentConversationId && isInitialized) {
+            const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
+            setCurrentMessages(messages);
+        }
+    }, [conversations, currentConversationId, isInitialized]);
 
     useEffect(() => {
         initializeWithRecovery();
@@ -660,23 +609,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
 
         return () => {
-            if (db.db) {
-                db.db.close();
-                clearInterval(backupInterval);
-            }
+            clearInterval(backupInterval);
+            // Don't close database connection here - it may interrupt ongoing transactions
+            // The database connection will be managed by the DB class itself
+            // if (db.db) {
+            //     db.db.close();
+            // }
         };
-    }, [initializeWithRecovery, createBackup]);
+    }, [initializeWithRecovery, createBackup, conversations]);
 
+    // Load folders independently of initialization state
+    // This ensures folder loading doesn't block conversation loading
     useEffect(() => {
-        // Load current messages immediately when conversation changes, regardless of folder state
-        if (currentConversationId) {
-            const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
-            setCurrentMessages(messages);
-        }
-    }, [conversations, currentConversationId]);
-
-    // Load folders when component mounts
-    useEffect(() => {
+        if (!isInitialized) return;
         // Load folders independently of initialization state
         // This ensures folder loading doesn't block conversation loading
         const loadFoldersIndependently = async () => {
@@ -694,7 +639,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         };
         loadFoldersIndependently();
-    }, []); // Remove isInitialized dependency
+    }, [isInitialized]); // Only run after initialization
 
     // Listen for model change events
     useEffect(() => {
@@ -717,7 +662,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             activeConversations: conversations.filter(c => c.isActive).map(c => c.id),
             streamingToOther: streamingConversations.has(currentConversationId)
         });
-    }, [currentConversationId]);
+    }, [currentConversationId, conversations, currentFolderId, streamedContentMap, streamingConversations]);
 
     const mergeConversations = useCallback((local: Conversation[], remote: Conversation[]) => {
         const merged = new Map<string, Conversation>();
@@ -780,7 +725,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             isMounted = false;
             window.removeEventListener('storage', handleStorageChange);
         };
-    }, [isInitialized, conversations, folders, mergeConversations, setConversations, setFolders]); // Added folders and setFolders
+    }, [conversations, folders, mergeConversations, setConversations, setFolders]);
 
 
     useEffect(() => {
@@ -804,7 +749,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             queueSave(updated).catch(console.error);
             return updated;
         });
-    }, []);
+    }, [queueSave]);
 
     const toggleMessageMute = useCallback((conversationId: string, messageIndex: number) => {
         setConversations(prev => {
@@ -822,20 +767,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return conv;
             });
             queueSave(updated).catch(console.error);
-            
+
             // Dispatch event to notify token counter of mute state change
             window.dispatchEvent(new CustomEvent('messagesMutedChanged', {
                 detail: { conversationId, messageIndex }
             }));
             return updated;
         });
-    }, []);
+        
+        // Force currentMessages to update
+        setMessageUpdateCounter(prev => prev + 1);
+    }, [queueSave]);
 
     const value = useMemo(() => ({
         streamedContentMap,
+        dynamicTitleLength,
+        setDynamicTitleLength,
         setStreamedContentMap,
-        processingState,
-        setProcessingState,
+        getProcessingState,
+        updateProcessingState,
         isStreaming,
         isStreamingAny,
         streamingConversations,
@@ -873,9 +823,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setEditingMessageIndex,
     }), [
         streamedContentMap,
+        dynamicTitleLength,
+        setDynamicTitleLength,
         setStreamedContentMap,
-        processingState,
-        setProcessingState,
+        getProcessingState,
+        updateProcessingState,
         isStreaming,
         isStreamingAny,
         streamingConversations,

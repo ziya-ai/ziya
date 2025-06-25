@@ -9,10 +9,10 @@ def clean_nova_chunk(chunk: Any) -> str:
     """Removes empty brackets from Nova streaming chunks."""
     if isinstance(chunk, AIMessageChunk):
         content = chunk.content
-        if isinstance(content, list):
+        if isinstance(content, list) or isinstance(content, dict):
             # Handle list of content blocks
             return "".join([block['text'] for block in content if 'text' in block and block['text'].strip()])
-        elif isinstance(content, dict) and 'content' in content:
+        elif isinstance(content, str):
             # Handle nested content structure
             return "".join([block['text'] for block in content['content'] if 'text' in block and block['text'].strip()])
     elif isinstance(chunk, str):

@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { Card, Divider, Space, Typography, Switch, Radio, Tag, Tooltip, Button, Empty } from 'antd';
+import { Card, Space, Typography, Switch, Radio, Tag, Tooltip, Button, Empty } from 'antd';
 import { D3Renderer } from './D3Renderer';
-import { 
-    CodeOutlined, 
-    BarChartOutlined, 
-    LineChartOutlined, 
-    DotChartOutlined, 
+import {
+    CodeOutlined,
+    BarChartOutlined,
+    LineChartOutlined,
+    DotChartOutlined,
     FunctionOutlined,
     AreaChartOutlined,
     StockOutlined,
@@ -85,21 +85,27 @@ const TEST_CASES: TestCase[] = [
         spec: {
             type: "bar",
             data: [
-                { label: "Product A", categories: [
-                    { name: "Revenue", value: 500 },
-                    { name: "Costs", value: 300 },
-                    { name: "Profit", value: 200 }
-                ]},
-                { label: "Product B", categories: [
-                    { name: "Revenue", value: 800 },
-                    { name: "Costs", value: 400 },
-                    { name: "Profit", value: 400 }
-                ]},
-                { label: "Product C", categories: [
-                    { name: "Revenue", value: 400 },
-                    { name: "Costs", value: 200 },
-                    { name: "Profit", value: 200 }
-                ]}
+                {
+                    label: "Product A", categories: [
+                        { name: "Revenue", value: 500 },
+                        { name: "Costs", value: 300 },
+                        { name: "Profit", value: 200 }
+                    ]
+                },
+                {
+                    label: "Product B", categories: [
+                        { name: "Revenue", value: 800 },
+                        { name: "Costs", value: 400 },
+                        { name: "Profit", value: 400 }
+                    ]
+                },
+                {
+                    label: "Product C", categories: [
+                        { name: "Revenue", value: 400 },
+                        { name: "Costs", value: 200 },
+                        { name: "Profit", value: 200 }
+                    ]
+                }
             ],
             options: {
                 stacked: true,
@@ -133,7 +139,7 @@ const TEST_CASES: TestCase[] = [
             }
         }
     },
-// LINE CHARTS
+    // LINE CHARTS
     {
         title: "Simple Line Chart",
         description: "Basic line chart with smooth interpolation",
@@ -143,9 +149,9 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "line",
-            data: Array.from({length: 10}, (_, i) => ({
-                date: `2024-${i+1}`,
-                value: Math.sin(i/2) * 10 + 20
+            data: Array.from({ length: 10 }, (_, i) => ({
+                date: `2024-${i + 1}`,
+                value: Math.sin(i / 2) * 10 + 20
             })),
             options: {
                 interactive: true,
@@ -169,25 +175,25 @@ const TEST_CASES: TestCase[] = [
                 series: [
                     {
                         name: "Temperature",
-                        values: Array.from({length: 24}, (_, i) => ({
-                            date: `2024-${i+1}`,
-                            value: Math.sin(i/3) * 10 + 20
+                        values: Array.from({ length: 24 }, (_, i) => ({
+                            date: `2024-${i + 1}`,
+                            value: Math.sin(i / 3) * 10 + 20
                         })),
                         pattern: "solid"
                     },
                     {
                         name: "Pressure",
-                        values: Array.from({length: 24}, (_, i) => ({
-                            date: `2024-${i+1}`,
-                            value: Math.cos(i/4) * 100 + 1000
+                        values: Array.from({ length: 24 }, (_, i) => ({
+                            date: `2024-${i + 1}`,
+                            value: Math.cos(i / 4) * 100 + 1000
                         })),
                         pattern: "dashed"
                     },
                     {
                         name: "Humidity",
-                        values: Array.from({length: 24}, (_, i) => ({
-                            date: `2024-${i+1}`,
-                            value: Math.sin(i/6) * 20 + 50
+                        values: Array.from({ length: 24 }, (_, i) => ({
+                            date: `2024-${i + 1}`,
+                            value: Math.sin(i / 6) * 20 + 50
                         })),
                         pattern: "dotted"
                     }
@@ -213,24 +219,24 @@ const TEST_CASES: TestCase[] = [
                 series: [
                     {
                         name: "Series A",
-                        values: Array.from({length: 12}, (_, i) => ({
-                            date: `2024-${i+1}`,
+                        values: Array.from({ length: 12 }, (_, i) => ({
+                            date: `2024-${i + 1}`,
                             value: Math.random() * 50 + 50
                         })),
                         fill: "gradient"
                     },
                     {
                         name: "Series B",
-                        values: Array.from({length: 12}, (_, i) => ({
-                            date: `2024-${i+1}`,
+                        values: Array.from({ length: 12 }, (_, i) => ({
+                            date: `2024-${i + 1}`,
                             value: Math.random() * 40 + 30
                         })),
                         fill: "gradient"
                     },
                     {
                         name: "Series C",
-                        values: Array.from({length: 12}, (_, i) => ({
-                            date: `2024-${i+1}`,
+                        values: Array.from({ length: 12 }, (_, i) => ({
+                            date: `2024-${i + 1}`,
                             value: Math.random() * 30 + 20
                         })),
                         fill: "gradient"
@@ -253,8 +259,8 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "line",
-            data: Array.from({length: 10}, (_, i) => ({
-                date: `2024-${i+1}`,
+            data: Array.from({ length: 10 }, (_, i) => ({
+                date: `2024-${i + 1}`,
                 value: Math.floor(Math.random() * 5) * 10
             })),
             options: {
@@ -276,9 +282,9 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "line",
-            data: Array.from({length: 30}, (_, i) => ({
-                date: new Date(Date.now() - (30-i)*1000).toISOString(),
-                value: Math.sin(i/5) * 10 + 20 + Math.random() * 5
+            data: Array.from({ length: 30 }, (_, i) => ({
+                date: new Date(Date.now() - (30 - i) * 1000).toISOString(),
+                value: Math.sin(i / 5) * 10 + 20 + Math.random() * 5
             })),
             options: {
                 realtime: true,
@@ -299,7 +305,7 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "scatter",
-            data: Array.from({length: 50}, () => ({
+            data: Array.from({ length: 50 }, () => ({
                 x: Math.random() * 100,
                 y: Math.random() * 100,
                 label: "Point"
@@ -319,11 +325,11 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "bubble",
-            data: Array.from({length: 30}, (_, i) => ({
+            data: Array.from({ length: 30 }, (_, i) => ({
                 x: Math.random() * 100,
                 y: Math.random() * 100,
                 size: Math.random() * 50 + 10,
-                category: `Group ${Math.floor(i/10)}`,
+                category: `Group ${Math.floor(i / 10)}`,
                 value: Math.random() * 1000,
                 color: `hsl(${Math.random() * 360}, 70%, 50%)`
             })),
@@ -350,7 +356,7 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "scatter",
-            data: Array.from({length: 100}, () => ({
+            data: Array.from({ length: 100 }, () => ({
                 x: (Math.random() - 0.5) * 100,
                 y: (Math.random() - 0.5) * 100,
                 category: Math.random() > 0.5 ? "A" : "B"
@@ -374,7 +380,7 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "scatter",
-            data: Array.from({length: 50}, (_, i) => {
+            data: Array.from({ length: 50 }, (_, i) => {
                 const x = i * 2 + Math.random() * 10;
                 return {
                     x: x,
@@ -496,18 +502,18 @@ const TEST_CASES: TestCase[] = [
         spec: {
             type: "multiaxis",
             data: {
-                x: Array.from({length: 12}, (_, i) => i + 1),
+                x: Array.from({ length: 12 }, (_, i) => i + 1),
                 series: [
                     {
                         name: "Revenue",
-                        values: Array.from({length: 12}, () => Math.random() * 1000 + 500),
+                        values: Array.from({ length: 12 }, () => Math.random() * 1000 + 500),
                         axis: "y1",
                         color: "#1890ff",
                         type: "bar"
                     },
                     {
                         name: "Growth Rate",
-                        values: Array.from({length: 12}, () => Math.random() * 30 - 10),
+                        values: Array.from({ length: 12 }, () => Math.random() * 30 - 10),
                         axis: "y2",
                         color: "#52c41a",
                         type: "line"
@@ -533,23 +539,23 @@ const TEST_CASES: TestCase[] = [
         spec: {
             type: "multiaxis",
             data: {
-                x: Array.from({length: 24}, (_, i) => i),
+                x: Array.from({ length: 24 }, (_, i) => i),
                 series: [
                     {
                         name: "Users",
-                        values: Array.from({length: 24}, () => Math.floor(Math.random() * 1000)),
+                        values: Array.from({ length: 24 }, () => Math.floor(Math.random() * 1000)),
                         axis: "y1",
                         type: "area"
                     },
                     {
                         name: "Response Time",
-                        values: Array.from({length: 24}, () => Math.random() * 100 + 50),
+                        values: Array.from({ length: 24 }, () => Math.random() * 100 + 50),
                         axis: "y2",
                         type: "line"
                     },
                     {
                         name: "Error Rate",
-                        values: Array.from({length: 24}, () => Math.random() * 5),
+                        values: Array.from({ length: 24 }, () => Math.random() * 5),
                         axis: "y3",
                         type: "bar"
                     }
@@ -572,23 +578,23 @@ const TEST_CASES: TestCase[] = [
         spec: {
             type: "multiaxis",
             data: {
-                x: Array.from({length: 60}, (_, i) => i),
+                x: Array.from({ length: 60 }, (_, i) => i),
                 series: [
                     {
                         name: "CPU",
-                        values: Array.from({length: 60}, () => Math.random() * 100),
+                        values: Array.from({ length: 60 }, () => Math.random() * 100),
                         axis: "y1",
                         thresholds: [80, 90]
                     },
                     {
                         name: "Memory",
-                        values: Array.from({length: 60}, () => Math.random() * 16),
+                        values: Array.from({ length: 60 }, () => Math.random() * 16),
                         axis: "y2",
                         thresholds: [14, 15]
                     },
                     {
                         name: "Network",
-                        values: Array.from({length: 60}, () => Math.random() * 1000),
+                        values: Array.from({ length: 60 }, () => Math.random() * 1000),
                         axis: "y3",
                         thresholds: [800, 900]
                     }
@@ -615,7 +621,7 @@ const TEST_CASES: TestCase[] = [
             data: {
                 series: [{
                     name: "Metric",
-                    values: Array.from({length: 100}, (_, i) => ({
+                    values: Array.from({ length: 100 }, (_, i) => ({
                         date: new Date(2024, 0, i + 1).toISOString(),
                         value: Math.random() * 100
                     }))
@@ -650,8 +656,8 @@ const TEST_CASES: TestCase[] = [
         spec: {
             type: "timeseries",
             data: {
-                raw: Array.from({length: 1000}, (_, i) => ({
-                    date: new Date(2024, 0, 1 + i/24).toISOString(),
+                raw: Array.from({ length: 1000 }, (_, i) => ({
+                    date: new Date(2024, 0, 1 + i / 24).toISOString(),
                     value: Math.random() * 100
                 })),
                 aggregations: ["hour", "day", "week", "month"]
@@ -665,7 +671,7 @@ const TEST_CASES: TestCase[] = [
             }
         }
     },
-// SPECIAL CASES
+    // SPECIAL CASES
     {
         title: "Large Dataset Performance",
         description: "Handling and optimizing large datasets",
@@ -675,10 +681,10 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "scatter",
-            data: Array.from({length: 10000}, (_, i) => ({
+            data: Array.from({ length: 10000 }, (_, i) => ({
                 x: Math.random() * 1000,
                 y: Math.random() * 1000,
-                category: `Group ${Math.floor(i/1000)}`,
+                category: `Group ${Math.floor(i / 1000)}`,
                 size: Math.random() * 10
             })),
             options: {
@@ -709,15 +715,15 @@ const TEST_CASES: TestCase[] = [
                 series: [
                     {
                         name: "Valid Data",
-                        values: Array.from({length: 10}, () => Math.random() * 100)
+                        values: Array.from({ length: 10 }, () => Math.random() * 100)
                     },
                     {
                         name: "Missing Data",
-                        values: Array.from({length: 10}, (_, i) => i % 3 === 0 ? null : Math.random() * 100)
+                        values: Array.from({ length: 10 }, (_, i) => i % 3 === 0 ? null : Math.random() * 100)
                     },
                     {
                         name: "Invalid Data",
-                        values: Array.from({length: 10}, (_, i) => i % 4 === 0 ? "invalid" : Math.random() * 100)
+                        values: Array.from({ length: 10 }, (_, i) => i % 4 === 0 ? "invalid" : Math.random() * 100)
                     }
                 ]
             },
@@ -739,7 +745,7 @@ const TEST_CASES: TestCase[] = [
         status: "working",
         spec: {
             type: "scatter",
-            data: Array.from({length: 100}, () => ({
+            data: Array.from({ length: 100 }, () => ({
                 x: Math.random() * 100,
                 y: Math.random() * 100,
                 category: Math.random() > 0.5 ? "A" : "B"
@@ -775,9 +781,9 @@ const TEST_CASES: TestCase[] = [
             type: "bar",
             data: {
                 states: [
-                    Array.from({length: 5}, () => ({ value: Math.random() * 100 })),
-                    Array.from({length: 5}, () => ({ value: Math.random() * 100 })),
-                    Array.from({length: 5}, () => ({ value: Math.random() * 100 }))
+                    Array.from({ length: 5 }, () => ({ value: Math.random() * 100 })),
+                    Array.from({ length: 5 }, () => ({ value: Math.random() * 100 })),
+                    Array.from({ length: 5 }, () => ({ value: Math.random() * 100 }))
                 ],
                 transitions: [
                     { duration: 1000, ease: "linear" },
@@ -793,177 +799,177 @@ const TEST_CASES: TestCase[] = [
             }
         }
     },
-     // Add Basic Sine Wave with Cosine
-   {
-       title: "Basic Sine Wave with Cosine",
-       description: "Trigonometric function comparison",
-       type: "simple",
-       category: "function",
-       testedFeatures: ["Multiple functions", "Grid lines", "Legend"],
-       status: "working",
-       spec: {
-           type: "function",
-           data: [
-               {
-                   fn: "Math.sin(x)",
-                   domain: [-6.283185307179586, 6.283185307179586],
-                   label: "sin(x)"
-               },
-               {
-                   fn: "Math.cos(x)",
-                   domain: [-6.283185307179586, 6.283185307179586],
-                   label: "cos(x)"
-               }
-           ],
-           options: {
-               interactive: true,
-               xDomain: [-7, 7],
-               yDomain: [-1.5, 1.5],
-               grid: true
-           }
-       }
-   },
+    // Add Basic Sine Wave with Cosine
+    {
+        title: "Basic Sine Wave with Cosine",
+        description: "Trigonometric function comparison",
+        type: "simple",
+        category: "function",
+        testedFeatures: ["Multiple functions", "Grid lines", "Legend"],
+        status: "working",
+        spec: {
+            type: "function",
+            data: [
+                {
+                    fn: "Math.sin(x)",
+                    domain: [-6.283185307179586, 6.283185307179586],
+                    label: "sin(x)"
+                },
+                {
+                    fn: "Math.cos(x)",
+                    domain: [-6.283185307179586, 6.283185307179586],
+                    label: "cos(x)"
+                }
+            ],
+            options: {
+                interactive: true,
+                xDomain: [-7, 7],
+                yDomain: [-1.5, 1.5],
+                grid: true
+            }
+        }
+    },
 
-   // Add Complex Wave Interference
-   {
-       title: "Complex Wave Interference",
-       description: "Wave interference patterns with multiple frequencies",
-       type: "complex",
-       category: "function",
-       testedFeatures: ["Wave interference", "Multiple frequencies", "Animation"],
-       status: "working",
-       spec: {
-           type: "function",
-           data: [
-               {
-                   fn: "Math.sin(5*x) * Math.cos(3*x)",
-                   domain: [-6.283185307179586, 6.283185307179586],
-                   label: "Wave 1"
-               },
-               {
-                   fn: "Math.sin(7*x) * Math.cos(2*x)",
-                   domain: [-6.283185307179586, 6.283185307179586],
-                   label: "Wave 2"
-               },
-               {
-                   fn: "(Math.sin(5*x) * Math.cos(3*x) + Math.sin(7*x) * Math.cos(2*x))/2",
-                   domain: [-6.283185307179586, 6.283185307179586],
-                   label: "Interference"
-               }
-           ],
-           options: {
-               samples: 1000,
-               interactive: true,
-               animation: true
-           }
-       }
-   },
+    // Add Complex Wave Interference
+    {
+        title: "Complex Wave Interference",
+        description: "Wave interference patterns with multiple frequencies",
+        type: "complex",
+        category: "function",
+        testedFeatures: ["Wave interference", "Multiple frequencies", "Animation"],
+        status: "working",
+        spec: {
+            type: "function",
+            data: [
+                {
+                    fn: "Math.sin(5*x) * Math.cos(3*x)",
+                    domain: [-6.283185307179586, 6.283185307179586],
+                    label: "Wave 1"
+                },
+                {
+                    fn: "Math.sin(7*x) * Math.cos(2*x)",
+                    domain: [-6.283185307179586, 6.283185307179586],
+                    label: "Wave 2"
+                },
+                {
+                    fn: "(Math.sin(5*x) * Math.cos(3*x) + Math.sin(7*x) * Math.cos(2*x))/2",
+                    domain: [-6.283185307179586, 6.283185307179586],
+                    label: "Interference"
+                }
+            ],
+            options: {
+                samples: 1000,
+                interactive: true,
+                animation: true
+            }
+        }
+    },
 
-   // Add Parametric Heart Curve
-   {
-       title: "Parametric Heart Curve",
-       description: "Heart-shaped curve using parametric equations",
-       type: "complex",
-       category: "function",
-       testedFeatures: ["Parametric equations", "Custom domain", "Animation"],
-       status: "working",
-       spec: {
-           type: "function",
-           data: [
-               {
-                   parameterX: "16 * Math.pow(Math.sin(t), 3)",
-                   parameterY: "13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)",
-                   parameter: "t",
-                   domain: [0, 2 * Math.PI],
-                   label: "Heart",
-                   samples: 1000
-               }
-           ],
-           options: {
-               aspectRatio: 1,
-               xDomain: [-20, 20],
-               yDomain: [-20, 20],
-               animation: {
-                   duration: 3000,
-                   repeat: true
-               }
-           }
-       }
-   },
-   // Add Statistical Distribution
-   {
-       title: "Statistical Distributions",
-       description: "Normal and other probability distributions",
-       type: "complex",
-       category: "function",
-       testedFeatures: ["Multiple distributions", "Area filling", "Interactive parameters"],
-       status: "working",
-       spec: {
-           type: "function",
-           data: [
-               {
-                   fn: "Math.exp(-Math.pow(x,2)/2)/Math.sqrt(2*Math.PI)",
-                   domain: [-4, 4],
-                   label: "N(0,1)",
-                   fill: true
-               },
-               {
-                   fn: "Math.exp(-Math.pow(x-1,2)/4)/Math.sqrt(4*Math.PI)",
-                   domain: [-4, 4],
-                   label: "N(1,2)",
-                   fill: true
-               }
-           ],
-           options: {
-               yDomain: [0, 0.5],
-               interactive: true,
-               grid: true,
-               fillOpacity: 0.3
-           }
-       }
-   },
+    // Add Parametric Heart Curve
+    {
+        title: "Parametric Heart Curve",
+        description: "Heart-shaped curve using parametric equations",
+        type: "complex",
+        category: "function",
+        testedFeatures: ["Parametric equations", "Custom domain", "Animation"],
+        status: "working",
+        spec: {
+            type: "function",
+            data: [
+                {
+                    parameterX: "16 * Math.pow(Math.sin(t), 3)",
+                    parameterY: "13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)",
+                    parameter: "t",
+                    domain: [0, 2 * Math.PI],
+                    label: "Heart",
+                    samples: 1000
+                }
+            ],
+            options: {
+                aspectRatio: 1,
+                xDomain: [-20, 20],
+                yDomain: [-20, 20],
+                animation: {
+                    duration: 3000,
+                    repeat: true
+                }
+            }
+        }
+    },
+    // Add Statistical Distribution
+    {
+        title: "Statistical Distributions",
+        description: "Normal and other probability distributions",
+        type: "complex",
+        category: "function",
+        testedFeatures: ["Multiple distributions", "Area filling", "Interactive parameters"],
+        status: "working",
+        spec: {
+            type: "function",
+            data: [
+                {
+                    fn: "Math.exp(-Math.pow(x,2)/2)/Math.sqrt(2*Math.PI)",
+                    domain: [-4, 4],
+                    label: "N(0,1)",
+                    fill: true
+                },
+                {
+                    fn: "Math.exp(-Math.pow(x-1,2)/4)/Math.sqrt(4*Math.PI)",
+                    domain: [-4, 4],
+                    label: "N(1,2)",
+                    fill: true
+                }
+            ],
+            options: {
+                yDomain: [0, 0.5],
+                interactive: true,
+                grid: true,
+                fillOpacity: 0.3
+            }
+        }
+    },
 
-   // Add Combined Bar and Line Chart
-   {
-       title: "Monthly Revenue with Trend",
-       description: "Bar chart with trend line overlay",
-       type: "complex",
-       category: "multiaxis",
-       testedFeatures: ["Mixed chart types", "Trend line", "Dual axes"],
-       status: "working",
-       spec: {
-           type: "multiaxis",
-           data: {
-               labels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
-               series: [
-                   {
-                       name: "Revenue",
-                       type: "bar",
-                       values: [1000, 1200, 900, 1500, 2000, 1800],
-                       axis: "y1"
-                   },
-                   {
-                       name: "Trend",
-                       type: "line",
-                       values: [1100, 1150, 1300, 1450, 1600, 1750],
-                       axis: "y1",
-                       style: {
-                           stroke: "#ff4d4f",
-                           strokeWidth: 2,
-                           strokeDasharray: "5,5"
-                       }
-                   }
-               ]
-           },
-           options: {
-               axes: {
-                   y1: { label: "Revenue ($)", domain: [0, 2500] }
-               },
-               legend: true,
-               animation: true
-           }
-       }
-   },
+    // Add Combined Bar and Line Chart
+    {
+        title: "Monthly Revenue with Trend",
+        description: "Bar chart with trend line overlay",
+        type: "complex",
+        category: "multiaxis",
+        testedFeatures: ["Mixed chart types", "Trend line", "Dual axes"],
+        status: "working",
+        spec: {
+            type: "multiaxis",
+            data: {
+                labels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+                series: [
+                    {
+                        name: "Revenue",
+                        type: "bar",
+                        values: [1000, 1200, 900, 1500, 2000, 1800],
+                        axis: "y1"
+                    },
+                    {
+                        name: "Trend",
+                        type: "line",
+                        values: [1100, 1150, 1300, 1450, 1600, 1750],
+                        axis: "y1",
+                        style: {
+                            stroke: "#ff4d4f",
+                            strokeWidth: 2,
+                            strokeDasharray: "5,5"
+                        }
+                    }
+                ]
+            },
+            options: {
+                axes: {
+                    y1: { label: "Revenue ($)", domain: [0, 2500] }
+                },
+                legend: true,
+                animation: true
+            }
+        }
+    },
     {
         title: "Empty and Edge Cases",
         description: "Handling of empty and edge case data",
@@ -1133,13 +1139,13 @@ export const D3Test: React.FC = () => {
                             )}
                         </Space>
                     )}>
-                        <D3Renderer
-                            spec={JSON.stringify(test.spec)}
-                            width={test.spec.options?.width || 600}
-                            height={test.spec.options?.height || 400}
-                            type="d3"
-                        />
-                    
+                    <D3Renderer
+                        spec={JSON.stringify(test.spec)}
+                        width={test.spec.options?.width || 600}
+                        height={test.spec.options?.height || 400}
+                        type="d3"
+                    />
+
                     {showSource && (
                         <pre style={{
                             padding: '16px',

@@ -1,6 +1,5 @@
 import React from 'react';
 import { Button, Tooltip } from 'antd';
-import { StopOutlined } from '@ant-design/icons';
 import { useChatContext } from '../context/ChatContext';
 
 interface StopStreamButtonProps {
@@ -31,16 +30,16 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
   const handleStopStream = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    
+
     // Use direct stop function if provided
     if (onStop) {
       onStop();
       return;
     }
-    
-    
+
+
     // Abort the fetch request (this will be handled in the API layer)
-    const abortEvent = new CustomEvent('abortStream', { 
+    const abortEvent = new CustomEvent('abortStream', {
       detail: { conversationId }
     });
     console.log('StopStreamButton: Dispatching abortStream event for conversation:', conversationId);
@@ -53,9 +52,9 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversation_id: conversationId }),
       })
-      .then(response => console.log('Abort API response:', response.status))
-      .catch(e => console.warn('Error sending abort notification to server:', e));
-    } catch (e) {}
+        .then(response => console.log('Abort API response:', response.status))
+        .catch(e => console.warn('Error sending abort notification to server:', e));
+    } catch (e) { }
 
     // Also directly update the state (this should trigger UI updates)
     removeStreamingConversation(conversationId);

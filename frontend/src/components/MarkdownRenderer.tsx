@@ -1,41 +1,26 @@
-import React, { useState, useEffect, memo, useMemo, Suspense, useCallback, useRef, useLayoutEffect, useTransition, useId, useContext, createContext, useDebugValue, forwardRef } from 'react';
+import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId } from 'react';
 import 'prismjs/themes/prism.css';
 import { marked, Tokens } from 'marked';
-import { Alert, Button, message, Space, Spin, Tooltip } from 'antd';
-import { parseDiff, tokenize, RenderToken, HunkProps } from 'react-diff-view';
+import { Alert, Button, message, Tooltip } from 'antd';
+import { parseDiff, tokenize } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import {
-    CodeOutlined, ToolOutlined, ArrowUpOutlined, ArrowDownOutlined, SplitCellsOutlined, BorderlessTableOutlined, NumberOutlined, EyeOutlined, FileTextOutlined, CodepenOutlined, CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, ExclamationCircleOutlined
+    SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
+    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
 } from '@ant-design/icons';
 import 'prismjs/themes/prism.css';
-import { loadPrismLanguage, isLanguageLoaded } from '../utils/prismLoader';
+import { loadPrismLanguage } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
 import type * as PrismType from 'prismjs';
-import { renderFileHeader } from './renderFileHeader';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
 
 // Define the status interface
-
-// Create a context for diff view settings to avoid window variable dependencies
-interface DiffViewContextType {
-    viewType: 'split' | 'unified';
-    setViewType: (type: 'split' | 'unified') => void;
-    displayMode: 'raw' | 'pretty';
-    setDisplayMode: (mode: 'raw' | 'pretty') => void;
-}
-
-const DiffViewContext = createContext<DiffViewContextType>({
-    viewType: 'unified',
-    setViewType: () => { },
-    displayMode: 'pretty',
-    setDisplayMode: () => { }
-});
-
+import 'katex/dist/katex.min.css';
 interface HunkStatus {
     applied: boolean;
     alreadyApplied?: boolean;
@@ -54,9 +39,6 @@ const hunkStatusEventBus = new EventTarget();
 const HUNK_STATUS_EVENT = 'hunkStatusUpdate';
 // Add a global set to track processed window events
 const processedWindowEvents = new Set<string>();
-
-// Add a cache for whitespace visualization
-const whitespaceVisualizationCache = new Map<string, string>();
 
 // Add a map to track which request ID corresponds to which diff element
 const diffRequestMap = new Map<string, string>();
@@ -77,6 +59,56 @@ interface ToolBlockProps {
 }
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
+    // Check if this is a security error from shell command blocking
+    let isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
+        content.includes('Command not allowed') ||
+        content.includes('COMMAND BLOCKED');
+
+    let securityErrorMessage = content;
+
+    // Check if content is a JSON error object from MCP server
+    if (content.includes("'error': True") && content.includes('SECURITY BLOCK')) {
+        try {
+            // Extract the message from the JSON-like string
+            const messageMatch = content.match(/'message': "([^"]+)"/);
+            if (messageMatch) {
+                let message = messageMatch[1].replace(/\\n/g, '\n');
+                // Remove the redundant "🚫 SECURITY BLOCK:" prefix since we show it in the title
+                message = message.replace(/^🚫 SECURITY BLOCK:\s*/, '');
+                securityErrorMessage = message;
+                isSecurityError = true;
+            }
+        } catch (e) {
+            // If parsing fails, use original content
+        }
+    }
+
+    // Check if this is an MCP tool error
+    const isMCPError = content.includes('MCP Tool Error') ||
+        content.includes('MCP Resource Error');
+
+    // If this is a security error, render it with special styling
+    if (isSecurityError) {
+        return (
+            <Alert
+                message="🚫 Command Blocked"
+                description={securityErrorMessage}
+                type="warning"
+                showIcon
+                style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }}
+            />
+        );
+    }
+
+    if (isMCPError) {
+        return (
+            <Alert
+                message="MCP External Error"
+                description={content}
+            />
+        );
+    }
+
     const isShellCommand = toolName === 'mcp_run_shell_command';
 
     // Clean up content by removing any literal tool markers
@@ -211,6 +243,9 @@ declare global {
     interface Window {
         Prism: typeof PrismType;
         diffElementPaths?: Map<string, string>;
+        diffViewType?: 'unified' | 'split';
+        diffShowLineNumbers?: boolean;
+        diffDisplayMode?: 'raw' | 'pretty';
         hunkStatusRegistry: Map<string, Map<string, HunkStatus>>;
     }
 }
@@ -395,8 +430,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
         // Clean up file path for matching
         const cleanFilePath = filePath.replace(/^[ab]\//, '');
 
-        let currentFile: { oldPath: string; newPath: string } | null = null;
-        let currentFileIndex = -1;
         let inTargetFile = false;
         let collectingHunk = false;
         let currentHunkHeader: string | null = null;
@@ -418,7 +451,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
                 // Reset state for new file
                 collectingHunk = false;
                 currentHunkHeader = null;
-                currentFileIndex++;
                 currentHunkContent = [];
                 inTargetFile = false;
 
@@ -432,7 +464,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
                     if (oldPath === cleanFilePath || newPath === cleanFilePath ||
                         oldPath.endsWith(`/${cleanFilePath}`) || newPath.endsWith(`/${cleanFilePath}`)) {
                         inTargetFile = true;
-                        currentFile = { oldPath, newPath };
                         result.push(line);
 
                         // Also check the next line for index info
@@ -442,7 +473,6 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
                         }
                     } else {
                         inTargetFile = false;
-                        currentFile = null;
 
                         // Log for debugging
                         console.debug(`Skipping file: old=${oldPath}, new=${newPath}, target=${cleanFilePath}`);
@@ -514,19 +544,12 @@ const isDeletionDiff = (content: string) => {
         content.includes('+++ /dev/null');
 };
 
-// Helper function to check if this is a new file diff
-const isNewFileDiff = (content: string) => {
-    return (content.includes('--- /dev/null') && content.includes('+++ b/')) ||
-        content.includes('new file mode') ||
-        (content.includes('new file mode') && content.includes('+++ b/'));
-};
-
 const normalizeGitDiff = (diff: string): string => {
     // because LLMs tend to ignore instructions and get lazy
-    if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null')) {
+    if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null') ||
+        diff.match(/^@@\s+-\d+/m)) {
         const lines: string[] = diff.split('\n');
         const normalizedLines: string[] = [];
-        let fileIndex = 0;
 
         // Check if this is a properly formatted diff
         const hasDiffHeaders = lines.some(line =>
@@ -536,7 +559,9 @@ const normalizeGitDiff = (diff: string): string => {
                 lines.some(line => line.startsWith('--- /dev/null')) // Support new file diffs
             );
         const hasHunkHeader = lines.some(line =>
-            /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line)
+            /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line) ||
+            /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/.test(line) ||
+            /^@@\s+-\d+,\d+\s+@@/.test(line)
         );
 
         if (hasDiffHeaders && hasHunkHeader) {
@@ -590,6 +615,19 @@ const normalizeGitDiff = (diff: string): string => {
                 return false;
             }
             if (line.startsWith('@@')) {
+                // Normalize hunk headers with leading zeros or incomplete format
+                const normalizedHunk = line.replace(/^@@\s+-0*(\d+),?(\d*)\s+\+?0*(\d+),?(\d*)\s*@@?.*$/,
+                    (match, oldStart, oldCount, newStart, newCount) => {
+                        const oldLines = oldCount || '1';
+                        const newLines = newCount || '1';
+                        return `@@ -${oldStart},${oldLines} +${newStart},${newLines} @@`;
+                    });
+                return normalizedHunk !== line; // Only include if we normalized it
+            }
+            if (line.startsWith('---') || line.startsWith('+++')) {
+                return false;
+            }
+            if (line.startsWith('@@')) {
                 // Keep hunk headers
                 return true;
             }
@@ -621,11 +659,29 @@ const normalizeGitDiff = (diff: string): string => {
             return false;
         });
 
+        // Find and normalize any hunk headers in the content
+        const normalizedContentLines = contentLines.map(line => {
+            if (line.startsWith('@@')) {
+                return line.replace(/^@@\s+-0*(\d+),?(\d*)\s+\+?0*(\d+),?(\d*)\s*@@?.*$/,
+                    (match, oldStart, oldCount, newStart, newCount) => {
+                        const oldLines = oldCount || '1';
+                        const newLines = newCount || '1';
+                        return `@@ -${oldStart},${oldLines} +${newStart},${newLines} @@`;
+                    });
+            }
+            return line;
+        });
+
         // Add hunk header
-        normalizedLines.push(`@@ -1,${removeCount + contextCount} +1,${addCount + contextCount} @@`);
+        const existingHunkHeaders = normalizedContentLines.filter(line => line.startsWith('@@'));
+        if (existingHunkHeaders.length > 0) {
+            normalizedLines.push(...existingHunkHeaders);
+        } else {
+            normalizedLines.push(`@@ -1,${removeCount + contextCount} +1,${addCount + contextCount} @@`);
+        }
 
         // Add content lines, preserving +/- and adding spaces for context
-        contentLines.forEach(line => {
+        normalizedContentLines.filter(line => !line.startsWith('@@')).forEach(line => {
             const trimmed = line.trimStart();
             if (trimmed.startsWith('+') || trimmed.startsWith('-')) {
                 // For indented +/- lines, preserve only the content indentation
@@ -661,15 +717,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty'); // Use window setting
     const diffRef = useRef<string>(diff);
-    const parseInProgressRef = useRef<boolean>(false);
     const forceRenderRef = useRef<boolean>(false);
-    const componentIdRef = useRef(`diff-${Date.now()}-${Math.random()}`);
 
     // Use a stable ID that doesn't change on re-renders
-    const diffIdRef = useRef<string>(elementId || (() => {
-        const id = `diff-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-        return id;
-    })());
     const diffId = useRef<string>(elementId || `diff-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`).current;
 
     // Flag to prevent rendering during streaming
@@ -706,15 +756,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         return () => {
             hunkStatusEventBus.removeEventListener(HUNK_STATUS_EVENT, handleStatusUpdate);
         };
-
-        // Check the global registry for existing status updates for this diff
-        if (window.hunkStatusRegistry && window.hunkStatusRegistry.has(diffId)) {
-            const existingStatuses = window.hunkStatusRegistry.get(diffId);
-            if (existingStatuses) {
-                setInstanceHunkStatusMap(new Map(existingStatuses));
-                setStatusUpdateCounter(prev => prev + 1);
-            }
-        }
     }, []);
 
     // Function to update hunk statuses from API response
@@ -772,7 +813,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             const errorMsg = error instanceof Error ? error.message : String(error);
             console.error("Error updating hunk statuses:", errorMsg);
         }
-    }, [diff]);
+    }, [diff, diffId]);
 
     // Listen for window-level hunk status updates with data, but don't update during streaming
     useEffect(() => {
@@ -818,7 +859,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
             };
         }
-    }, [updateHunkStatuses]);
+    }, [updateHunkStatuses, diffId]);
 
 
     // detect language from file path
@@ -947,7 +988,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             }
         };
         parseAndSetFiles();
-    }, [diff]);
+    }, [diff, isGlobalStreaming]);
 
     // tokenize hunks
     useEffect(() => {
@@ -1058,7 +1099,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         // Create a stable key for this hunk
                         const hunkKey = `${fileIndex}-${hunkIndex}`;
                         const status = instanceHunkStatusMap.get(hunkKey);
-                        const hunkId = hunkIndex + 1;
                         const isApplied = status?.applied;
                         const statusReason = status?.reason || '';
                         const isAlreadyApplied = status?.alreadyApplied;
@@ -1154,9 +1194,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
 
     const renderContent = (hunk: any, filePath: string, status?: any, fileIndex?: number, hunkIndex?: number): JSX.Element[] => {
-
-        // Add a status row at the top of the hunk if status is available
-        const changes = [...(hunk.changes || [])];
 
         // Define base style for rows
         const rowStyle: React.CSSProperties = {};
@@ -1604,7 +1641,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
     const statusUpdateCounterRef = useRef<number>(0);
     const isStreamingRef = useRef<boolean>(false);
-    const stableRequestIdRef = useRef<string>(`req-${diffElementId}-${Date.now()}`);
     const appliedRef = useRef<boolean>(false);
     const buttonInstanceId = useRef(`button-${diffElementId}-${Date.now()}`).current;
 
@@ -1614,9 +1650,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const buttonId = useId();
     // Define a function to trigger diff updates
     const triggerDiffUpdate = (hunkStatuses: Record<string, any> | null = null, requestId: string | null = null, diffElementId: string | null = null) => {
-        // Create a unique event key for this specific diff element
-        const event = new CustomEvent(HUNK_STATUS_EVENT, { detail: { hunkStatuses, requestId, isCompletionEvent: true } });
-        // hunkStatusEventBus.dispatchEvent(event); // We'll use component-specific updates instead
 
         // Also dispatch a window event for backward compatibility
         console.log(`Triggering diff update event with statuses for request ${requestId}:`, hunkStatuses);
@@ -1839,7 +1872,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                                     'Successfully applied' :
                                                     hunkStatus.status === 'already_applied' ? 'Already applied' : 'Failed'
                                             } as HunkStatus);
-                                            return newMap;
 
                                             // Also update the global registry
                                             if (window.hunkStatusRegistry) {
@@ -1849,6 +1881,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                                 const registryMap = window.hunkStatusRegistry.get(diffElementId)!;
                                                 registryMap.set(hunkKey, newMap.get(hunkKey) as HunkStatus);
                                             }
+                                            return newMap;
                                         });
                                         // Default to success if not found in hunk_statuses
 
@@ -1922,7 +1955,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             if (hunkStatus) {
                                 console.log(`Setting status for hunk #${hunkId} with key ${hunkKey}:`, hunkStatus);
                                 instanceHunkStatusMap.set(hunkKey, {
-                                    applied: hunkStatus.status === 'succeeded',
+                                    applied: hunkStatus.status === 'succeeded' || hunkStatus.status === 'already_applied',
                                     alreadyApplied: hunkStatus.status === 'already_applied',
                                     reason: hunkStatus.status === 'failed'
                                         ? 'Failed in ' + hunkStatus.stage + ' stage'
@@ -2174,7 +2207,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             const eventKey = `${e.detail.requestId || ''}-${e.detail.targetDiffElementId || ''}`;
             setTimeout(() => processedWindowEvents.delete(eventKey), 500);
 
-            const targetDiffElementId = diffRequestMap.get(e.detail.requestId);
             const targetDiffElementIdFromMap = diffRequestMap.get(e.detail.requestId)?.replace(/^diff-/, 'diff-view-');
             let isRelevantUpdate = false;
 
@@ -2184,9 +2216,6 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 console.debug(`Skipping already processed window event: ${eventKey}`);
                 return;
             }
-
-            // Create a unique identifier for this specific button instance
-            const thisButtonId = buttonInstanceId;
 
             // Log the event and our identifiers for debugging
             console.log(`Checking if update matches our element: target=${e.detail.targetDiffElementId}, ours=${diffElementId}, buttonId=${buttonInstanceId}`);
@@ -2284,12 +2313,9 @@ interface DiffTokenProps {
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
     const { isStreaming } = useChatContext();
-    // Check if we're in a streaming response
-    const streamingCheckedRef = useRef(false);
     // Generate a unique ID once when the component mounts
     const [diffId] = useState(() =>
         `diff-${Math.random().toString(36).substring(2, 9)}-${Date.now()}`);
-    const [streamingContent, setStreamingContent] = useState<string | null>(null);
     const contentRef = useRef<string | null>(null);
 
     // Store the content in a ref to avoid re-renders
@@ -2310,49 +2336,6 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
     );
 });
 
-const BasicDiffView = ({ diff }: { diff: string }) => {
-    const [lines, setLines] = useState<string[]>([]);
-
-    useEffect(() => {
-        if (diff) {
-            setLines(diff.split('\n'));
-        }
-    }, [diff]);
-
-    return (
-        <div className="basic-diff-view">
-            {lines.map((line, i) => (
-                <div
-                    key={i}
-                    className={`diff-line ${line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove' : ''}`}
-                >
-                    <span className="diff-marker">
-                        {line.startsWith('+') ? '+' : line.startsWith('-') ? '-' : ' '}
-                    </span>
-                    <code>{line.slice(1)}</code>
-                </div>
-            ))}
-        </div>
-    );
-};
-
-// Component to handle streaming diffs
-const StreamingDiffView = ({ content }: { content: string }) => {
-    const [lines, setLines] = useState<string[]>([]);
-
-    useEffect(() => {
-        if (content) {
-            setLines(content.split('\n'));
-        }
-    }, [content]);
-
-    return (
-        <div className="streaming-diff-view">
-            <BasicDiffView diff={content} />
-        </div>
-    );
-};
-
 interface DiffViewWrapperProps {
     token: TokenWithText;
     enableCodeApply: boolean;
@@ -2364,8 +2347,8 @@ interface DiffViewWrapperProps {
 
 const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
-    const [showLineNumbers, setShowLineNumbers] = useState<boolean>(false);
-    const [displayMode, setDisplayMode] = useState<DisplayMode>('pretty');
+    const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
+    const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty');
     const [isVisible, setIsVisible] = useState<boolean>(true);
     const [currentContent, setCurrentContent] = useState<string>(token.text || '');
     const lastValidDiffRef = useRef<string | null>(null);
@@ -2429,7 +2412,11 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
 
     // Ensure window settings are synced with initial state
     useEffect(() => {
-        if (window.diffViewType !== viewType) {
+        // Sync window settings with component state
+        if (window.diffViewType && window.diffViewType !== viewType) {
+            setViewType(window.diffViewType);
+        }
+        if (window.diffShowLineNumbers !== undefined && window.diffShowLineNumbers !== showLineNumbers) {
             window.diffViewType = viewType;
         }
     }, [token, viewType]);
@@ -2588,11 +2575,15 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const tokenRef = useRef<TokenWithText>(token);
     const contentRef = useRef<HTMLDivElement>(null);
 
+    // Stable reference to prevent unnecessary re-renders
+    const stableToken = useMemo(() => token, [token.text, token.lang, token.type]);
+
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
     const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
     const [debugInfo, setDebugInfo] = useState<any>({});
+    const renderCountRef = useRef(0);
 
     const { isStreaming: isGlobalStreaming } = useChatContext();
 
@@ -2659,9 +2650,20 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 
     // Store token in ref to avoid unnecessary re-renders
     useEffect(() => {
+        // Only update if content actually changed
+        if (tokenRef.current.text !== token.text || tokenRef.current.lang !== token.lang) {
+            tokenRef.current = token;
+            if (contentRef.current) highlightCodeIfNeeded();
+        }
+    }, [token.text, token.lang, highlightCodeIfNeeded]);
+
+    // Remove the effect that was causing continuous re-renders
+    /*
+    useEffect(() => {
         tokenRef.current = token;
         if (contentRef.current) highlightCodeIfNeeded();
-    }, [token]);
+    }, [token, highlightCodeIfNeeded]);
+    */
 
     useEffect(() => {
         if (token.lang !== undefined && !prismInstance) {
@@ -2707,14 +2709,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         return <ToolBlock toolName={toolName} content={token.text || ''} isDarkMode={isDarkMode} />;
     }
 
-    console.debug('CodeBlock rendering:', {
-        id: index,
-        tokenType: token.type,
-        language: token.lang,
-        isStreaming: token.text?.endsWith('\n'),
-        contentLength: token.text?.length,
-        contentPreview: token.text?.substring(0, 50)
-    });
+    // Remove debug logging that was causing performance overhead
 
     // Get the effective language for highlighting
     const getEffectiveLang = (rawLang: string | undefined): string => {
@@ -2771,7 +2766,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 // Define the possible determined types
 type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'file-operation' | 'tool' |
-    'code' | 'html' | 'text' | 'list' | 'table' | 'escape' |
+    'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' |
@@ -2780,12 +2775,6 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
-    
-    // Debug logging for problematic tokens
-    if (tokenType === 'code' && 'text' in token && (!token.lang || token.lang === '')) {
-        console.log('Code block without lang detected:', { text: (token.text || '').substring(0, 100), hasLang: !!token.lang, lang: token.lang });
-    }
-    console.log(`determineTokenType called: tokenType=${tokenType}, lang=${(token as any).lang}`);
 
     // 1. Prioritize content-based detection for diffs, regardless of lang tag
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
@@ -2795,7 +2784,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
         const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
-        const hasHunkHeader = linesToCheck.some(line => line.trim().startsWith('@@ '));
+        const hasHunkHeader = linesToCheck.some(line => {
+            const trimmed = line.trim();
+            return trimmed.startsWith('@@') && trimmed.match(/^@@\s+-\d+/);
+        });
         const diffMarkersFound = [hasGitHeader, hasMinusHeader, hasPlusHeader, hasHunkHeader].filter(Boolean).length;
 
         // More lenient check for diff --git, allowing it not to be the very first thing
@@ -2865,13 +2857,13 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         // Enhanced tool block detection by content
         // Look for tool block markers that might have been missed by lang detection
-        if (trimmedText.startsWith('```tool:mcp_') || 
+        if (trimmedText.startsWith('```tool:mcp_') ||
             trimmedText.includes('```tool:mcp_') ||
             (trimmedText.startsWith('$ ') && trimmedText.length > 10) ||
             trimmedText.match(/^[A-Z_]+:\s*\S+/) || // Environment variables or command outputs
-            trimmedText.includes('🔧') || 
+            trimmedText.includes('🔧') ||
             trimmedText.includes('🛠️')) {
-            
+
             // Try to extract tool name from content
             const toolMatch = trimmedText.match(/```?tool:(mcp_\w+)/);
             const toolName = toolMatch ? toolMatch[1] : 'mcp_run_shell_command';
@@ -2937,14 +2929,15 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
         const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
-        const hasHunkHeader = linesToCheck.some(line => line.trim().startsWith('@@ ')); // More lenient check
+        const hasHunkHeader = linesToCheck.some(line => {
+            const trimmed = line.trim();
+            return trimmed.startsWith('@@') && trimmed.match(/^@@\s+-\d+/);
+        });
 
         // Check for common valid diff starting patterns
         // Require at least two characteristic lines for content-based detection
         const diffMarkersFound = [hasGitHeader, hasMinusHeader, hasPlusHeader, hasHunkHeader].filter(Boolean).length;
         if (diffMarkersFound >= 2) {
-            // Log which condition matched for debugging
-            const matchReason = `${hasGitHeader ? 'git ' : ''}${hasMinusHeader ? '--- ' : ''}${hasPlusHeader ? '+++ ' : ''}${hasHunkHeader ? '@@ ' : ''}`.trim();
             return 'diff';
         }
         // If no special content detected, treat as generic code
@@ -2980,14 +2973,39 @@ const decodeHtmlEntities = (text: string): string => {
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
     return tokens.map((token, index) => {
+        const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
-        console.log(`Token ${index}: type=${token.type}, lang=${(token as any).lang}, determinedType=${determinedType}`);
+        const tokenWithText = token as TokenWithText; // Helper cast
 
         if ((token as any).lang?.startsWith('tool:')) {
-            console.log(`Tool token processing - originalType: ${token.type}, determinedType: ${determinedType}, lang: ${(token as any).lang}`);
+            console.log(`Tool token processing - originalType: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, lang: ${(token as any).lang}`);
         }
-        const tokenWithText = token as TokenWithText; // Helper cast
+
+        // Debug math tokens
+        if (tokenWithText.text && (tokenWithText.text.includes('MATH_INLINE:') || tokenWithText.text.includes('MATH_DISPLAY:'))) {
+            console.log(`Math token detected - type: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, content: ${tokenWithText.text.substring(0, 100)}`);
+        }
+
+        // Override code detection if this token follows a tool token
+        if (determinedType === 'code' && previousToken) {
+            const prevTokenWithText = previousToken as TokenWithText;
+            if (prevTokenWithText.toolName || (prevTokenWithText.lang && prevTokenWithText.lang.startsWith('tool:'))) {
+                // This token follows a tool - check if it should really be treated as regular text/paragraph
+                if (!tokenWithText.text?.startsWith('```') && !tokenWithText.text?.startsWith('    ')) {
+                    // Force this to be treated as markdown instead of code
+                    return (
+                        <div key={index}>
+                            <MarkdownRenderer
+                                markdown={tokenWithText.text || ''}
+                                enableCodeApply={enableCodeApply}
+                                isStreaming={isStreaming}
+                            />
+                        </div>
+                    );
+                }
+            }
+        }
 
         try {
             switch (determinedType) {
@@ -3094,6 +3112,27 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         console.warn('Tool token missing toolName or text:', { hasText: hasText(tokenWithText), toolName: tokenWithText.toolName });
                         return null;
                     }
+
+                    // Check for security errors in tool output and render them prominently
+                    const isSecurityError = tokenWithText.text && (
+                        tokenWithText.text.includes('🚫 SECURITY BLOCK') ||
+                        tokenWithText.text.includes('Command not allowed') ||
+                        tokenWithText.text.includes('COMMAND BLOCKED') ||
+                        (tokenWithText.text.includes("'error': True") && tokenWithText.text.includes('SECURITY BLOCK'))
+                    );
+
+                    if (isSecurityError) {
+                        // Extract the actual message from Python dict format
+                        let errorMessage = tokenWithText.text;
+                        const pythonDictMatch = tokenWithText.text.match(/\{'error': True, 'message': "([^"]*(?:\\.[^"]*)*)"/);
+                        if (pythonDictMatch) {
+                            errorMessage = pythonDictMatch[1].replace(/\\n/g, '\n').replace(/^🚫 SECURITY BLOCK:\s*/, '');
+                        }
+                        return (
+                            <Alert key={index} message="🚫 Command Blocked" description={errorMessage} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
+                        );
+                    }
+
                     console.log('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
                     return (
                         <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
@@ -3103,13 +3142,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (!hasText(tokenWithText)) return null;
                     return (
                         <D3Renderer key={index} spec={tokenWithText.text} type="d3" isStreaming={isStreaming} />
-                    );
-
-                case 'tool':
-                    if (!hasText(tokenWithText) || !tokenWithText.toolName) return null;
-                    console.log('Rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
-                    return (
-                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
                     );
 
                 case 'code':
@@ -3172,6 +3204,20 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'paragraph':
                     // Render paragraph, processing inline tokens recursively
                     const pTokens = (token as Tokens.Paragraph).tokens || [];
+
+                    // Check if any paragraph content has inline math
+                    const paragraphContent = pTokens.map(t => (t as TokenWithText).text || '').join('');
+                    if (paragraphContent.includes('⟨MATH_INLINE:')) {
+                        const parts = paragraphContent.split(/(⟨MATH_INLINE:[^⟩]*⟩)/);
+                        return <p key={index}>{parts.map((part, i) => {
+                            if (part.startsWith('⟨MATH_INLINE:')) {
+                                const math = part.replace('⟨MATH_INLINE:', '').replace('⟩', '').trim();
+                                return <MathRenderer key={i} math={math} displayMode={false} />;
+                            }
+                            return part || null;
+                        })}</p>;
+                    }
+
                     // Filter out empty text tokens that might remain after processing
                     const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
@@ -3275,6 +3321,21 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
                     }
 
+                    // Check for KATEX/LATEX math expressions
+                    if (htmlContent.includes('MATH_DISPLAY:')) {
+                        const mathMatch = htmlContent.match(/MATH_DISPLAY:([^<]*)/s);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
+                    }
+                    if (htmlContent.includes('MATH_INLINE:')) {
+                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/s);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                    }
+
+                    if (htmlContent.includes('class="math-inline-span"') && htmlContent.includes('MATH_INLINE:')) {
+                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                    }
+
                     const tagMatches = htmlContent.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g);
 
                     if (tagMatches) {
@@ -3294,7 +3355,26 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
-                    const decodedText = decodeHtmlEntities(tokenWithText.text);
+                    let decodedText = decodeHtmlEntities(tokenWithText.text);
+
+                    // Handle math expressions in text tokens
+                    if (decodedText.includes('⟨MATH_INLINE:')) {
+                        // const mathMatch = decodedText.match(/MATH_DISPLAY:([^<]*)/s);
+                        // if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
+                        const parts = decodedText.split(/(⟨MATH_INLINE:[^⟩]*⟩)/);
+                        return (
+                            <>
+                                {parts.map((part, i) => {
+                                    if (part.startsWith('⟨MATH_INLINE:')) {
+                                        const math = part.replace('⟨MATH_INLINE:', '').replace('⟩', '').trim();
+                                        return <MathRenderer key={i} math={math} displayMode={false} />;
+                                    }
+                                    return part || null;
+                                })}
+                            </>
+                        );
+                    }
+
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
                     if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
                         // If it has nested tokens, render them recursively
@@ -3464,15 +3544,37 @@ const markedOptions = {
     pedantic: false
 };
 
+// Math rendering component
+const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, displayMode }) => {
+    const katex = require('katex');
+
+    try {
+        const html = katex.renderToString(math, {
+            displayMode,
+            throwOnError: false,
+            strict: false
+        });
+
+        return displayMode ?
+            <div className="math-display" dangerouslySetInnerHTML={{ __html: html }} /> :
+            <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />;
+    } catch (error) {
+        console.warn('KaTeX rendering error:', error);
+        return displayMode ?
+            <div className="math-error">Math Error: {math}</div> :
+            <span className="math-error">Math Error: {math}</span>;
+    }
+};
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
-    const [isPending, startTransition] = useTransition();
     // State for the tokens that are currently displayed with stable reference
     const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
     // Ref to store the previous set of tokens, useful for certain streaming optimizations or comparisons
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
     // Track if we're in a streaming response - this is for the overall component 
+    const parseTimeoutRef = useRef<NodeJS.Timeout>();
     const markdownRef = useRef<string>(markdown);
     const isStreamingState = isStreaming;
 
@@ -3480,37 +3582,45 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // This is critical for stability - we need to ensure tokens don't change unnecessarily
     const lexedTokens = useMemo(() => {
         if (!markdown?.trim()) {
+            clearTimeout(parseTimeoutRef.current);
             return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
         }
 
         try {
             markdownRef.current = markdown;
             // During streaming, if we already have a diff being rendered, keep it stable
-            if ((externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
-                const hasDiff = previousTokensRef.current?.some(token =>
-                    token.type === 'code' && (token as TokenWithText).lang === 'diff');
-                if (hasDiff && false) { // Disable this optimization to allow streaming diffs
-                    return previousTokensRef.current;
-                }
-            }
-
-            // Use marked.lexer directly
             let processedMarkdown = markdown;
 
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
-                console.log('Skipping empty markdown during streaming');
                 return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
             }
 
             // Pre-process tool blocks to clean up literal inclusions
             processedMarkdown = processedMarkdown.replace(
-                /```tool:(mcp_\w+)\s*```tool:(mcp_\w+)/g, 
+                /```tool:(mcp_\w+)\s*```tool:(mcp_\w+)/g,
                 '```tool:$1'
             );
             processedMarkdown = processedMarkdown.replace(
                 /^```tool:(mcp_\w+)\s*$/gm,
                 '```tool:$1'
+            );
+
+            // Pre-process math expressions
+            // Handle display math $$...$$
+            processedMarkdown = processedMarkdown.replace(
+                /\$\$([\s\S]+?)\$\$/g,
+                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
+            );
+            // Handle inline math $...$
+            processedMarkdown = processedMarkdown.replace(
+                /\$([^⟩]+?)\$/g,
+                (match, p1) => {
+                    // Only treat as math if it contains LaTeX commands or mathematical symbols
+                    const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
+                    const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
+                    return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                }
             );
 
             // Pre-process MathML blocks to prevent fragmentation
@@ -3532,12 +3642,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
             return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
         } catch (error) {
-            // During streaming, if parsing fails but we have previous valid tokens, keep using them
-            if ((externalStreaming || isStreamingState) && previousTokensRef.current.length > 0) {
-                console.log('Parse error during streaming, keeping previous tokens:', error);
-                return previousTokensRef.current;
-            }
-            
             // Don't create fallback code blocks for empty content
             if (!markdown || markdown.trim() === '') {
                 return [];
@@ -3548,37 +3652,24 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
     }, [markdown, externalStreaming, isStreamingState]);
 
+    // Cleanup timeout on unmount
+    useEffect(() => {
+        return () => clearTimeout(parseTimeoutRef.current);
+    }, []);
+
     // Update tokens state when the memoized tokens change
     useEffect(() => {
-        // Only update if streaming is complete or if we don't have tokens yet
+        // Always update immediately for live streaming
         if (lexedTokens.length > 0) {
             previousTokensRef.current = lexedTokens;
             setDisplayTokens(lexedTokens);
-
-            // Debug log for streaming updates
-            if (isStreamingState) {
-                const codeBlocks = lexedTokens.filter(token =>
-                    token.type === 'code' && (token as TokenWithText).lang !== 'diff'
-                );
-                console.debug('Streaming update:', {
-                    tokenCount: lexedTokens.length,
-                    codeBlockCount: codeBlocks.length
-                });
-            }
         }
-    }, [lexedTokens, isStreamingState]); // This effect runs when lexedTokens (from useMemo) is updated.
+    }, [lexedTokens]); // Remove streaming state dependency for immediate updates
 
-    // Debug log streaming state - keep this for debugging
-    // but it doesn't affect functionality
-    useEffect(() => {
-        console.log(`MarkdownRenderer streaming state: ${externalStreaming || isStreamingState ? 'streaming' : 'not streaming'}`);
-    }, [externalStreaming, isStreamingState]);
-
-    // Only memoize the rendered content when not streaming or when streaming completes 
+    // Only memoize the rendered content when not streaming or when streaming completes
     const renderedContent = useMemo(() => {
         return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming);
-    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, isStreamingState]); // Add isStreamingState to dependencies
-
+    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Remove streaming state for live updates
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
@@ -3587,7 +3678,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         <div>{renderedContent}</div>;
 }, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply);
 // Note: forceRender prop is intentionally not included in the memo comparison to ensure re-rendering during streaming
-export default MarkdownRenderer;
 
 const cleanDiffContent = (content: string): string => {
     const lines = content.split('\n');
@@ -3618,3 +3708,5 @@ const cleanDiffContent = (content: string): string => {
     });
     return cleanedLines.join('\n');
 };
+
+export default MarkdownRenderer;

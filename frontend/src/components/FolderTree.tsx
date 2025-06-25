@@ -1,13 +1,10 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo, useLayoutEffect, CSSProperties } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Tabs, message } from 'antd';
-import { useFolderContext } from '../context/FolderContext';
 import { useChatContext } from '../context/ChatContext';
 import { TokenCountDisplay } from "./TokenCountDisplay";
-import { FolderOutlined, FileOutlined } from '@ant-design/icons'; // Import icons
-import { debounce } from 'lodash';
+import { FolderOutlined } from '@ant-design/icons'; // Import icons
 import { ModelConfigButton } from './ModelConfigButton';
-import { ReloadOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons';
-import { convertToTreeData } from '../utils/folderUtil';
+import { MessageOutlined } from '@ant-design/icons';
 import MUIChatHistory from './MUIChatHistory';
 import { MUIFileExplorer } from './MUIFileExplorer';
 import { useTheme } from '../context/ThemeContext';
@@ -21,10 +18,6 @@ interface FolderTreeProps {
     isPanelCollapsed: boolean;
 }
 
-// Create a cache for token calculations to avoid redundant logs
-const tokenCalculationCache = new Map<string, { included: number, total: number }>();
-const DEBUG_LOGGING_ENABLED = false; // Set to false to disable verbose logging
-
 const ACTIVE_TAB_KEY = 'ZIYA_ACTIVE_TAB';
 
 export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => {
@@ -32,14 +25,12 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Extract only the specific values needed from ChatContext
     // to prevent unnecessary re-renders
     const [modelId, setModelId] = useState<string>('');
-    const { } = useChatContext();
     const { isDarkMode } = useTheme();
 
     // Use a more selective approach to extract only what we need from ChatContext
     const chatContext = useChatContext();
     const { startNewChat, createFolder } = useChatContext();
     const currentFolderId = chatContext.currentFolderId;
-    const chatFolders = chatContext.folders;
 
     // Add state to track panel width
     const [panelWidth, setPanelWidth] = useState<number>(300);
@@ -74,7 +65,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Handle creating a new folder at current level
     const handleCreateFolderAtCurrentLevel = useCallback(async () => {
         try {
-            const createdFolderId = await createFolder('New Folder', currentFolderId);
+            await createFolder('New Folder', currentFolderId);
             message.success('New folder created successfully');
         } catch (error) {
             console.error('Error creating folder:', error);

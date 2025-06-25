@@ -22,6 +22,7 @@ const AST_STATUS_ENDPOINT: string = '/api/ast/status';
 // State
 let astStatusCheckTimer: number | null = null;
 let lastPercentage: number = -1;
+let hasSeenActiveIndexing: boolean = false;
 
 /**
  * Format elapsed time in a human-readable format
@@ -51,6 +52,11 @@ function formatElapsedTime(seconds: number | null): string {
 function updateAstStatusUI(status: AstStatus): void {
   // Find or create the status container
   let statusContainer = document.getElementById('ast-status-container');
+  
+  // Don't show UI unless we've seen active indexing or there's actual indexing happening
+  if (!hasSeenActiveIndexing && !status.is_indexing && !status.is_complete) {
+    return;
+  }
   
   if (!statusContainer) {
     // Create the status container if it doesn't exist
@@ -130,6 +136,13 @@ function checkAstStatus(): void {
     })
     .then(status => {
       // Only update UI if status has changed
+      
+      // Track if we've ever seen active indexing
+      if (status.is_indexing || status.is_complete) {
+        hasSeenActiveIndexing = true;
+      }
+      
+      // Only show UI if we've seen active indexing or there's an actual indexing process
       if (status.completion_percentage !== lastPercentage) {
         updateAstStatusUI(status);
         lastPercentage = status.completion_percentage;
@@ -151,11 +164,15 @@ function checkAstStatus(): void {
     })
     .catch(error => {
       console.error('Error checking AST status:', error);
-      // Try again after a delay
-      if (astStatusCheckTimer !== null) {
-        window.clearTimeout(astStatusCheckTimer);
+      
+      // Only show error UI if we've previously seen active indexing
+      if (hasSeenActiveIndexing) {
+        // Try again after a delay
+        if (astStatusCheckTimer !== null) {
+          window.clearTimeout(astStatusCheckTimer);
+        }
+        astStatusCheckTimer = window.setTimeout(checkAstStatus, AST_STATUS_CHECK_INTERVAL);
       }
-      astStatusCheckTimer = window.setTimeout(checkAstStatus, AST_STATUS_CHECK_INTERVAL);
     });
 }
 
@@ -181,6 +198,15 @@ export function initAstStatusMonitoring(): void {
       }
     }
   });
+}
+
+/**
+ * Trigger immediate AST status check (useful after config changes)
+ */
+export function triggerAstStatusCheck(): void {
+  // Reset the tracking flag to allow fresh detection
+  hasSeenActiveIndexing = false;
+  checkAstStatus();
 }
 
 // Initialize when the DOM is ready

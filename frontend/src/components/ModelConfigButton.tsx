@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Button, Tooltip, message, Form } from 'antd';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Button, message, Form } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
 import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo } from './ModelConfigModal';
 
@@ -41,7 +41,6 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       const response = await fetch('/api/current-model');
       if (!response.ok) {
         throw new Error('Failed to verify current model');
-        return;
       }
       const data = await response.json();
       const actualModelId = data.model_id;
@@ -168,12 +167,6 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
   }, [modalVisible]);
 
   // Fetch model capabilities
-  const handleModelSelect = (newModelId: string) => {
-    form.setFieldsValue({ model: newModelId });
-    console.log('Model selected:', newModelId);
-    fetchModelCapabilities(newModelId, true);
-  };
-
   const fetchModelCapabilities = async (specificModelId?: string, isModelChange: boolean = false) => {
     try {
       const url = modelId ?

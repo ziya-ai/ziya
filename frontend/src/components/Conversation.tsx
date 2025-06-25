@@ -1,19 +1,16 @@
 import React, { useEffect, useRef, Suspense, memo, useCallback, useMemo } from "react";
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
-import { Space, Spin, Button, Tooltip } from 'antd';
-import { LoadingOutlined, RobotOutlined, RedoOutlined, SoundOutlined, MutedOutlined } from "@ant-design/icons";
+import { Spin, Button, Tooltip } from 'antd';
+import { RedoOutlined, SoundOutlined, MutedOutlined } from "@ant-design/icons";
 import { sendPayload } from "../apis/chatApi";
 import { useFolderContext } from "../context/FolderContext";
 import ModelChangeNotification from './ModelChangeNotification';
-import { convertKeysToStrings, Message } from "../utils/types";
+import { convertKeysToStrings } from "../utils/types";
 import { useQuestionContext } from '../context/QuestionContext';
 
 // Lazy load the MarkdownRenderer
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
-
-// Update the Message type to include system role and modelChange property
-type MessageRole = 'human' | 'assistant' | 'system';
 
 interface ConversationProps {
     enableCodeApply: boolean;
@@ -28,14 +25,14 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         streamingConversations,
         currentConversationId,
         setIsStreaming,
-        isStreamingAny,
         setStreamedContentMap,
         isStreaming,
         addMessageToConversation,
-        setProcessingState,
         removeStreamingConversation,
         streamedContentMap,
         userHasScrolled,
+        updateProcessingState,
+        setConversations,
         toggleMessageMute,
     } = useChatContext();
 
@@ -45,14 +42,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     const { setQuestion } = useQuestionContext();
     const visibilityRef = useRef<boolean>(true);
     // Sort messages to maintain order
-    const messageIds = useMemo(() => currentMessages.map(m => m.id), [currentMessages]);
     const displayMessages = isTopToBottom ? currentMessages : [...currentMessages].reverse();
 
     // Keep track of rendered messages for performance monitoring
-    const modelChangeHandlerRef = useRef<((event: CustomEvent) => void) | null>(null);
     const renderedCountRef = useRef(0);
     const renderedSystemMessagesRef = useRef<Set<string>>(new Set());
-    const activeStreamingRef = useRef<Set<string>>(new Set());
     const processedModelChangesRef = useRef<Set<string>>(new Set());
 
     // Track which conversations have received streaming content
@@ -97,7 +91,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         );
 
         return () => observer.disconnect();
-    }, [currentMessages.length]);
+    }, [isTopToBottom, currentMessages.length]);
 
     // Update active streaming conversations reference
     useEffect(() => {
@@ -198,7 +192,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 removeStreamingConversation,
                                 addMessageToConversation,
                                 streamingConversations.has(currentConversationId),
-                                setProcessingState
+                                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state)
                             );
                         } catch (error) {
                             setIsStreaming(false);
@@ -219,7 +213,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         if (editingMessageIndex === index) {
             return null;
         }
-        
+
         const message = currentMessages[index];
 
         // Don't show mute button if there's an error state (retry button is showing)
@@ -243,13 +237,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     onClick={() => {
                         console.log(`Toggling mute for message ${index}, current state:`, message.muted);
                         toggleMessageMute(currentConversationId, index);
-
-                        // Trigger token count update by dispatching a custom event
-                        setTimeout(() => {
-                            window.dispatchEvent(new CustomEvent('messagesMutedChanged', {
-                                detail: { conversationId: currentConversationId }
-                            }));
-                        }, 100);
                     }}
                 />
             </Tooltip>
@@ -262,7 +249,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         if (editingMessageIndex === index) {
             return null;
         }
-        
+
         const message = currentMessages[index];
 
         // Don't show resubmit button if there's an error state (retry button is showing)
@@ -288,18 +275,45 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         height: '32px'
                     }}
                     onClick={() => {
-                        // Set the question in the input field
-                        setQuestion(message.content);
-                        // Scroll to the input field and focus it
-                        setTimeout(() => {
-                            const textarea = document.getElementById('chat-question-textarea');
-                            if (textarea) {
-                                textarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                textarea.focus();
-                                // Place cursor at the end of the text
-                                (textarea as HTMLTextAreaElement).setSelectionRange(message.content.length, message.content.length);
+                        // Clear any existing streamed content
+                        setStreamedContentMap(new Map());
+
+                        // Create truncated message array up to and including this message
+                        const truncatedMessages = currentMessages.slice(0, index + 1);
+
+                        // Set conversation to just the truncated messages
+                        setConversations(prev => prev.map(conv =>
+                            conv.id === currentConversationId
+                                ? { ...conv, messages: truncatedMessages, _version: Date.now() }
+                                : conv
+                        ));
+
+                        // Start streaming immediately
+                        addStreamingConversation(currentConversationId);
+
+                        // Send the payload
+                        (async () => {
+                            try {
+                                await sendPayload(
+                                    truncatedMessages,
+                                    message.content,
+                                    convertKeysToStrings(checkedKeys || []),
+                                    currentConversationId,
+                                    setStreamedContentMap,
+                                    setIsStreaming,
+                                    removeStreamingConversation,
+                                    addMessageToConversation,
+                                    streamingConversations.has(currentConversationId),
+                                    (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state)
+                                );
+                            } catch (error) {
+                                setIsStreaming(false);
+                                removeStreamingConversation(currentConversationId);
+                                console.error('Error resubmitting message:', error);
                             }
-                        }, 100);
+                        })();
+                        // Clear the question field since we're submitting directly
+                        setQuestion('');
                     }}
                 />
             </Tooltip>
@@ -350,7 +364,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     </div>
                 )}
                 {displayMessages.map((msg, index) => {
-                    const isLastMessage = index === displayMessages.length - 1;
                     // Convert display index to actual index for bottom-up mode
                     const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
                     const nextActualIndex = actualIndex + 1;
@@ -406,8 +419,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                     {msg.role === 'human' && (
                                         <div style={{ display: editingMessageIndex === actualIndex ? 'none' : 'flex', justifyContent: 'space-between' }}>
                                             <div className="message-sender">You:</div>
-                                            <div style={{ 
-                                                display: 'flex', 
+                                            <div style={{
+                                                display: 'flex',
                                                 gap: '8px',
                                                 alignItems: 'center',
                                                 marginRight: '8px'
@@ -419,7 +432,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                             </div>
                                         </div>
                                     )}
-                                    
+
                                     {/* Only show edit section when editing, otherwise show message content */}
                                     {msg.role === 'human' && editingMessageIndex === actualIndex ? (
                                         <EditSection index={actualIndex} isInline={false} />

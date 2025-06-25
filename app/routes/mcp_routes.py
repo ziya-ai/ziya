@@ -24,6 +24,8 @@ class MCPServerConfig(BaseModel):
 class ShellConfig(BaseModel):
     enabled: bool = True
     allowedCommands: List[str] = ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"]
+    gitOperationsEnabled: bool = True
+    safeGitOperations: List[str] = ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"]
     timeout: int = 10
 
 
@@ -265,6 +267,8 @@ async def get_shell_config():
             return {
                 "enabled": False,
                 "allowedCommands": ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"],
+                "gitOperationsEnabled": True,
+                "safeGitOperations": ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"],
                 "timeout": 10
             }
         
@@ -281,15 +285,24 @@ async def get_shell_config():
             if current_config and "env" in current_config and "ALLOW_COMMANDS" in current_config["env"]:
                 allowed_commands = [cmd.strip() for cmd in current_config["env"]["ALLOW_COMMANDS"].split(",") if cmd.strip()]
             
+            # Extract git operations from environment or use defaults
+            git_operations = ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"]
+            if current_config and "env" in current_config and "SAFE_GIT_OPERATIONS" in current_config["env"]:
+                git_operations = [op.strip() for op in current_config["env"]["SAFE_GIT_OPERATIONS"].split(",") if op.strip()]
+            
             return {
                 "enabled": True,
                 "allowedCommands": allowed_commands,
+                "gitOperationsEnabled": True,
+                "safeGitOperations": git_operations,
                 "timeout": 10
             }
         else:
             return {
                 "enabled": False,
                 "allowedCommands": ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"],
+                "gitOperationsEnabled": True,
+                "safeGitOperations": ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"],
                 "timeout": 10
             }
         
@@ -320,7 +333,10 @@ async def update_shell_config(config: ShellConfig):
             "command": ["python", "-u", "mcp_servers/shell_server.py"],
             "enabled": config.enabled,
             "env": {
-                "ALLOW_COMMANDS": ",".join(config.allowedCommands)
+                "ALLOW_COMMANDS": ",".join(config.allowedCommands),
+                "GIT_OPERATIONS_ENABLED": "true" if config.gitOperationsEnabled else "false",
+                "SAFE_GIT_OPERATIONS": ",".join(config.safeGitOperations),
+                "COMMAND_TIMEOUT": str(config.timeout)
             }
         }
         
@@ -332,7 +348,7 @@ async def update_shell_config(config: ShellConfig):
                 logger.info(f"Shell server restarted with new config: {config.allowedCommands}")
                 return {
                     "success": True, 
-                    "message": f"Shell server updated instantly. Commands: {', '.join(config.allowedCommands)}"
+                    "message": f"Shell server updated instantly. Basic commands: {', '.join(config.allowedCommands)}, Git operations: {'enabled' if config.gitOperationsEnabled else 'disabled'}"
                 }
             else:
                 return {"success": False, "message": "Failed to restart shell server"}
