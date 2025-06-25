@@ -26,7 +26,6 @@ export class DiffTestRunner {
     }
 
     private async runTestCase(testCase: DiffTestCase): Promise<DiffTestResult> {
-        const startTime = performance.now();
         const result: DiffTestResult = {
             success: false,
             renderingErrors: [],
@@ -47,8 +46,8 @@ export class DiffTestRunner {
 
             // Compare actual result with expected
             result.success = (
-                (!result.validationErrors?.length || 
-                 testCase.expectedResult.validationErrors?.length === result.validationErrors?.length) &&
+                (!result.validationErrors?.length ||
+                    testCase.expectedResult.validationErrors?.length === result.validationErrors?.length) &&
                 (result.appliedCleanly === testCase.expectedResult.appliedCleanly)
             );
 

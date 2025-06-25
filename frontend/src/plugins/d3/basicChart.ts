@@ -1,4 +1,3 @@
-import * as d3 from 'd3';
 import { D3RenderPlugin } from '../../types/d3';
 
 export interface BasicChartSpec {
@@ -19,19 +18,6 @@ export interface BasicChartSpec {
 
 const defaultMargin = { top: 20, right: 20, bottom: 30, left: 40 };
 
-const isBasicChartSpec = (spec: any): spec is BasicChartSpec => {
-    return (
-        typeof spec === 'object' &&
-        (spec.type === 'bar' || spec.type === 'line') &&
-        Array.isArray(spec.data) &&
-        spec.data.length > 0 &&
-        spec.data.every((d: any) => 
-            typeof d.label === 'string' && 
-            typeof d.value === 'number'
-        )
-    );
-};
-
 export const basicChartPlugin: D3RenderPlugin = {
     name: 'basic-chart',
     priority: 10, // Higher priority than network diagram
@@ -47,7 +33,7 @@ export const basicChartPlugin: D3RenderPlugin = {
         try {
             // Clear any existing content
             d3.select(container).selectAll('*').remove();
-            
+
             const margin = spec.margin || defaultMargin;
             const width = (spec.width || 600) - margin.left - margin.right;
             const height = (spec.height || 400) - margin.top - margin.bottom;
@@ -59,7 +45,7 @@ export const basicChartPlugin: D3RenderPlugin = {
                 .attr('height', height + margin.top + margin.bottom)
                 .append('g')
                 .attr('transform', `translate(${margin.left},${margin.top})`)
-                
+
             const data = Array.isArray(spec.data) ? spec.data : [];;
 
             // Create scales
@@ -81,7 +67,7 @@ export const basicChartPlugin: D3RenderPlugin = {
             svg.append('g')
                 .call(d3.axisLeft(y));
 
-             if (spec.type === 'bar') {
+            if (spec.type === 'bar') {
                 // Add bars
                 svg.selectAll('rect')
                     .data(data)
@@ -96,7 +82,7 @@ export const basicChartPlugin: D3RenderPlugin = {
                 const line = d3.line()
                     .x((d: any) => x(d.label) + x.bandwidth() / 2)
                     .y((d: any) => y(d.value));
- 
+
                 if (spec.type === 'line') {
                     // Add line
                     svg.append('path')
@@ -106,7 +92,7 @@ export const basicChartPlugin: D3RenderPlugin = {
                         .attr('stroke-width', 2)
                         .attr('d', line);
                 }
- 
+
                 // Add points
                 svg.selectAll('circle')
                     .data(data)

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Card, Table, Tag, Button, Space, message } from 'antd';
 import { loadPrismLanguage } from '../utils/prismLoader';
 import './debug.css';
@@ -86,7 +86,7 @@ const PrismTest: React.FC = () => {
         }
 
         setIsTestingAll(false);
-        
+
         // Calculate statistics
         const successful = results.filter(r => r.status === 'success').length;
         const failed = results.filter(r => r.status === 'failed').length;

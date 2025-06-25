@@ -6,7 +6,6 @@ import {
     EditOutlined,
     SwapOutlined,
     PlayCircleOutlined,
-    WarningOutlined,
     CheckCircleOutlined,
     CloseCircleOutlined
 } from '@ant-design/icons';

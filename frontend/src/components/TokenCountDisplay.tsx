@@ -1,10 +1,9 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
-import { Folders, Message } from '../utils/types';
+import { Message } from '../utils/types';
 import { useFolderContext } from "../context/FolderContext";
 import { Tooltip, Spin, Progress, Typography, message, ProgressProps, Dropdown } from "antd";
 import { useTheme } from '../context/ThemeContext';
 import { ModelSettings } from './ModelConfigModal';
-import { InfoCircleOutlined } from '@ant-design/icons';
 import { useChatContext } from "../context/ChatContext";
 
 const getTokenCount = async (text: string): Promise<number> => {
@@ -55,6 +54,7 @@ export const TokenCountDisplay = memo(() => {
     const [currentAstResolution, setCurrentAstResolution] = useState<string>('medium');
     const [astResolutionLoading, setAstResolutionLoading] = useState(false);
 
+    const lastMuteSignatureRef = useRef<string>('');
     const tokenLimit = modelLimits.max_input_tokens || modelLimits.token_limit || 4096;
     const warningThreshold = useMemo(() => Math.floor(tokenLimit * 0.7), [tokenLimit]);
     const dangerThreshold = useMemo(() => Math.floor(tokenLimit * 0.9), [tokenLimit]);
@@ -348,7 +348,7 @@ export const TokenCountDisplay = memo(() => {
             window.removeEventListener('modelSettingsChanged', handleModelSettingsChange as unknown as EventListener);
         };
 
-    }, []);
+    }, [modelLimits]);
 
     // Include AST tokens in the total when AST is enabled
     const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0);
@@ -360,18 +360,6 @@ export const TokenCountDisplay = memo(() => {
         if (folders && checkedKeys.length > 0) {
             // Check if we're in a folder with folder-specific file selections
             const currentFolder = currentFolderId ? chatFolders.find(f => f.id === currentFolderId) : null;
-            const usesFolderContext = currentFolder && !currentFolder.useGlobalContext;
-
-            // Determine which file selections to use
-            let effectiveCheckedKeys = [...checkedKeys];
-            if (usesFolderContext) {
-                const folderSelections = currentFolderId ? folderFileSelections.get(currentFolderId) : undefined;
-                if (folderSelections) {
-                    effectiveCheckedKeys = folderSelections;
-                }
-            }
-
-            // Only recalculate without logging every time
 
             let total = 0;
             const details: { [key: string]: number } = {};
@@ -435,28 +423,36 @@ export const TokenCountDisplay = memo(() => {
         if (count >= warningThreshold) return '#faad14'; // Orange
         return '#52c41a';  // Green
     };
+
     const getTokenStyle = (count: number) => ({
         color: getTokenColor(count),
         fontWeight: 'bold'
     });
 
+    const currentConversationRef = useRef<string>('');
     const previousMessagesRef = useRef<string>('');
     const hasMessagesChanged = useCallback((messages: Message[]) => {
         // Include mute state in change detection to catch mute/unmute actions
         const activeMessages = messages.filter(msg => msg.muted !== true);
+        const muteStates = messages.map(msg => msg.muted || false).join(',');
         const messagesContent = activeMessages.length > 0 ? activeMessages.map(msg => msg.content).join('\n') : '';
-        const messageSignature = `${messages.length}:${activeMessages.length}:${messagesContent}`;
-        
+        const messageSignature = `${messages.length}:${activeMessages.length}:${muteStates}:${messagesContent}`;
+
+        // Reset the previous signature when conversation changes
+        if (currentConversationId !== currentConversationRef.current) {
+            currentConversationRef.current = currentConversationId;
+        }
+
         if (messageSignature !== previousMessagesRef.current) {
             previousMessagesRef.current = messageSignature;
             console.debug('Messages changed:', { length: messages.length, content: messagesContent.slice(0, 100) });
             return true;
         }
         return false;
-    }, [previousMessagesRef]);
+    }, [previousMessagesRef, currentConversationId]);
 
     const updateChatTokens = useCallback(async () => {
-        if (currentMessages.length === 0) {
+        if (!currentMessages || currentMessages.length === 0) {
             setChatTokenCount(0);
             lastMessageCount.current = 0;
             lastMessageContent.current = '';
@@ -510,24 +506,44 @@ export const TokenCountDisplay = memo(() => {
         }
     }, [currentMessages, updateChatTokens, currentConversationId, hasMessagesChanged, isStreaming]);
 
-    // Listen for mute state changes to trigger token count updates
+    // Listen for mute changes with updated messages
     useEffect(() => {
         const handleMuteChange = (event: CustomEvent) => {
-            if (event.detail?.conversationId === currentConversationId) {
-                console.log('Token counter: Mute state changed, updating chat tokens');
-                // Use setTimeout to ensure state has been updated
-                setTimeout(() => {
-                    updateChatTokens();
-                }, 50);
+            if (event.detail?.conversationId === currentConversationId && event.detail?.updatedMessages) {
+                console.log('Token counter: Received updated messages from mute event');
+                // Calculate tokens directly from the updated messages
+                const updatedMessages = event.detail.updatedMessages;
+                const allText = updatedMessages.filter(msg => msg.muted !== true).map(msg => msg.content).join('\n');
+                getTokenCount(allText).then(tokens => setChatTokenCount(tokens));
             }
         };
         
-        // Also listen for general message updates that might include mute changes
-        window.addEventListener('conversationUpdated', handleMuteChange as EventListener);
-        
         window.addEventListener('messagesMutedChanged', handleMuteChange as EventListener);
         return () => window.removeEventListener('messagesMutedChanged', handleMuteChange as EventListener);
-    }, [currentConversationId, updateChatTokens]);
+    }, [currentConversationId]);
+    // Listen for conversation updates (including mute changes)
+    useEffect(() => {
+        const handleConversationUpdate = () => {
+            if (currentMessages && currentMessages.length > 0) {
+                updateChatTokens();
+            }
+        };
+        
+        window.addEventListener('conversationsUpdated', handleConversationUpdate);
+        return () => window.removeEventListener('conversationsUpdated', handleConversationUpdate);
+    }, [currentMessages, updateChatTokens]);
+
+    // Instead of listening to events, just recalculate whenever messages change
+    // This ensures we always use the current muted state
+    useEffect(() => {
+        if (currentMessages && currentMessages.length > 0) {
+            const currentSignature = currentMessages.map(m => `⟨MATH_INLINE:{m.id}:⟩{m.muted || false}`).join('|');
+            if (currentSignature !== lastMuteSignatureRef.current) {
+                lastMuteSignatureRef.current = currentSignature;
+                updateChatTokens();
+            }
+        }
+    }, [currentMessages, updateChatTokens]);
 
     const getProgressStatus = (count: number): ProgressProps['status'] => {
         if (count >= dangerThreshold) return 'exception';
@@ -674,7 +690,7 @@ export const TokenCountDisplay = memo(() => {
                 </Tooltip>
             </div>
         </div>
-    ), [isLoading, totalTokenCount, chatTokenCount, combinedTokenCount, containerWidth, showDetailedTotal]);
+    ), [isLoading, combinedTokenCount, getProgressStatus, isDarkMode, tokenItems, tokenLimit]);
 
     return (
         <div className="token-display-container">

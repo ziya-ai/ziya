@@ -560,6 +560,13 @@ class RetryingChatBedrock(Runnable):
 
     async def astream(self, input: Any, config: Optional[Dict] = None, **kwargs):
         """Stream responses with retries and proper message formatting."""
+        # Reset MCP tool execution counter for new request cycle
+        try:
+            from app.mcp.tools import _reset_counter_async
+            await _reset_counter_async()
+        except Exception as e:
+            logger.warning(f"Failed to reset MCP tool counter: {e}")
+        
         max_retries = 3
         base_retry_delay = 1
 
@@ -613,6 +620,15 @@ class RetryingChatBedrock(Runnable):
         # Use filtered kwargs for the model call
         kwargs = filtered_kwargs
         
+        accumulated_content = []
+        accumulated_text = ""  # String accumulation for preservation
+        
+        # Limits to prevent context bloat
+        MAX_PRESERVED_TOOL_RESULTS = 10
+        successful_tool_results = []  # Track successful tool executions
+        tool_execution_count = 0
+        pre_streaming_work = []  # Track work done before streaming starts
+        processing_context = {}  # Track processing context for preservation
         # Add AWS credential debugging
         from app.utils.aws_utils import debug_aws_credentials
         # debug_aws_credentials()
@@ -682,9 +698,30 @@ class RetryingChatBedrock(Runnable):
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1} of {max_retries}")
             try:
+                # Track pre-streaming work
+                pre_streaming_work.append(f"🔄 Starting attempt {attempt + 1}/{max_retries}")
+                
+                # Try to capture cache information from recent logs
+                try:
+                    # Look for cache benefit information in the conversation context
+                    if conversation_id and hasattr(input, 'to_messages'):
+                        messages = input.to_messages()
+                        # Check if any message contains cache information
+                        for msg in messages:
+                            if hasattr(msg, 'content') and 'CACHE BENEFIT' in str(msg.content):
+                                import re
+                                cache_match = re.search(r'CACHE BENEFIT: ~([\d,]+) tokens', str(msg.content))
+                                if cache_match:
+                                    tokens = cache_match.group(1)
+                                    pre_streaming_work.append(f"💾 Cache benefit: ~{tokens} tokens will be reused")
+                                    processing_context["cache_benefit"] = f"~{tokens} tokens cached"
+                except Exception as e:
+                    logger.debug(f"Could not extract cache info: {e}")
+                
                 # Convert input to messages if needed
                 if hasattr(input, 'to_messages'):
                     messages = input.to_messages()
+                    pre_streaming_work.append(f"📝 Prepared {len(messages)} messages for model")
                     logger.debug(f"Using messages from ChatPromptValue: {len(messages)} messages")
                 else:
                     messages = input
@@ -699,6 +736,7 @@ class RetryingChatBedrock(Runnable):
                     if not messages:
                         raise ValueError("No valid messages with content")
                     logger.debug(f"Filtered to {len(messages)} non-empty messages")
+                    pre_streaming_work.append(f"✅ Validated {len(messages)} messages ready for processing")
 
                 logger.info("LLM_INPUT_DEBUG: Preparing to call LLM.") # ADD THIS BLOCK
                 for i, msg in enumerate(messages): # ADD THIS BLOCK
@@ -711,6 +749,8 @@ class RetryingChatBedrock(Runnable):
 
 
 
+                
+                pre_streaming_work.append("🚀 Initiating model stream connection")
                 
                 # Debug the Bedrock client being used
                 if hasattr(self.model, 'client'):
@@ -737,6 +777,41 @@ class RetryingChatBedrock(Runnable):
                     
                 async for chunk in self.model.astream(messages, model_config, **kwargs):
                     # Check if this is an error chunk that should terminate this specific stream
+                    # If we reach here, we've successfully started streaming
+                    
+                    if not processing_context.get("streaming_started"):
+                        processing_context["streaming_started"] = True
+                    if isinstance(chunk, AIMessageChunk):
+                        # Check if this chunk contains a tool result
+                        content = chunk.content() if callable(chunk.content) else chunk.content
+                        if content and isinstance(content, str):
+                            # Look for tool execution patterns
+                            if self._is_tool_execution_content(content):
+                                tool_execution_count += 1
+                                if not any(error_indicator in content.lower() for error_indicator in ["error", "timeout", "failed"]):
+                                    # Limit size of individual tool results
+                                    tool_result = content
+                                    if len(tool_result) > 5000:
+                                        tool_result = tool_result[:5000] + f"\n... [Tool result truncated - {len(content)} total chars]"
+                                    successful_tool_results.append(tool_result)
+                                    
+                                    # Limit total number of preserved results
+                                    if len(successful_tool_results) > MAX_PRESERVED_TOOL_RESULTS:
+                                        successful_tool_results = successful_tool_results[-MAX_PRESERVED_TOOL_RESULTS:]
+                                
+                                # Notify frontend about tool execution (but don't await to avoid blocking)
+                                try:
+                                    asyncio.create_task(self._notify_tool_execution_state(content))
+                                except Exception as e:
+                                    logger.debug(f"Could not notify tool execution state: {e}")
+                        
+                        content = chunk.content() if callable(chunk.content) else chunk.content
+                        if content:
+                            accumulated_content.append(content)
+                            if isinstance(content, str):
+                                accumulated_text += content
+                            logger.debug(f"Accumulated content size: {len(''.join(accumulated_content))} chars")
+
                     if isinstance(chunk, ChatGoogleGenerativeAIError):
                         error_response = {
                             "error": "server_error",
@@ -769,18 +844,39 @@ class RetryingChatBedrock(Runnable):
                 break  # Success, exit retry loop
                 
                 # Re-raise the exception for the middleware to handle
-                raise
-                # Format as proper SSE message
-                sse_message = f"data: {error_json}\n\n"
-                logger.info(f"[ERROR_SSE] Preparing throttling error message: {sse_message}")
-                yield AIMessageChunk(content=sse_message)
+                # Create error response while preserving any existing content
+                error_response = {
+                    "error": "throttling_error",
+                    "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
+                    "status_code": 429,
+                    "retry_after": "5",
+                    "stream_id": stream_id,
+                    "preserved_content": ''.join(accumulated_content) if accumulated_content else None,
+                    "preserved_text": accumulated_text if accumulated_text else None,
+                    "successful_tool_results": successful_tool_results if successful_tool_results else None,
+                    "tool_execution_summary": {
+                        "total_attempts": tool_execution_count,
+                        "successful_executions": len(successful_tool_results),
+                        "has_partial_success": len(successful_tool_results) > 0
+                    }
+                }
+                
+                error_json = json.dumps(error_response)
+                logger.info(f"[ERROR_SSE] Preparing throttling error with preserved content: {error_json}")
+                
+                # Create a special error chunk that includes preserved content
+                error_chunk = AIMessageChunk(content=error_json)
+                error_chunk.response_metadata = {
+                    "error_response": True,
+                    "has_preserved_content": True
+                }
+                yield error_chunk
                 
                 # Send DONE marker
                 done_message = "data: [DONE]\n\n"
                 logger.info(f"[ERROR_SSE] Preparing DONE marker after throttle error: {done_message}")
                 yield AIMessageChunk(content=done_message)
                 return
-
             except ChatGoogleGenerativeAIError as e:
                 # Format Gemini errors as structured error payload within a chunk
                 logger.error(f"ChatGoogleGenerativeAI error: {str(e)}")
@@ -813,6 +909,29 @@ class RetryingChatBedrock(Runnable):
             except ClientError as e:
                 error_str = str(e)
                 logger.warning(f"Bedrock client error: {error_str}")
+                
+                # Check for validation errors first (these are more important than throttling)
+                if "ValidationException" in error_str and "Input is too long" in error_str:
+                    error_message = {
+                        "error": "context_size_error",
+                        "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
+                        "status_code": 413
+                    }
+                    error_json = json.dumps(error_message)
+                    error_chunk = AIMessageChunk(content=error_json)
+                    error_chunk.response_metadata = {"error_response": True}
+                    yield error_chunk
+                    return
+                
+                # Log any accumulated content before error handling
+                if hasattr(self, '_accumulated_content') and self._accumulated_content:
+                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(self._accumulated_content)} characters in _accumulated_content before error")
+                    print(f"_ACCUMULATED_CONTENT BEFORE ERROR:\n{self._accumulated_content}")
+                
+                if accumulated_text:
+                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(accumulated_text)} characters in accumulated_text before error")
+                    print(f"ACCUMULATED_TEXT BEFORE ERROR:\n{accumulated_text}")
+                
                 
                 # Run credential debug again on error
                 
@@ -848,6 +967,29 @@ class RetryingChatBedrock(Runnable):
             except Exception as e:
                 error_str = str(e)
                 logger.warning(f"Error on attempt {attempt + 1}: {error_str}")
+                
+                # Check for validation errors first (these are more important than throttling)
+                if "ValidationException" in error_str and "Input is too long" in error_str:
+                    error_message = {
+                        "error": "context_size_error", 
+                        "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
+                        "status_code": 413
+                    }
+                    error_json = json.dumps(error_message)
+                    error_chunk = AIMessageChunk(content=error_json)
+                    error_chunk.response_metadata = {"error_response": True}
+                    yield error_chunk
+                    return
+
+                # Log any accumulated content before error handling
+                if hasattr(self, '_accumulated_content') and self._accumulated_content:
+                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(self._accumulated_content)} characters in _accumulated_content before exception")
+                    print(f"_ACCUMULATED_CONTENT BEFORE EXCEPTION:\n{self._accumulated_content}")
+                
+                if accumulated_text:
+                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(accumulated_text)} characters in accumulated_text before exception")
+                    print(f"ACCUMULATED_TEXT BEFORE EXCEPTION:\n{accumulated_text}")
+                
 
                 # Check if this is a throttling error wrapped in another exception
                 if "ThrottlingException" in error_str or "Too many requests" in error_str:
@@ -861,11 +1003,42 @@ class RetryingChatBedrock(Runnable):
                         "retry_after": "5"
                     }
                     
+                    # Include pre-streaming work in preservation
+                    if pre_streaming_work:
+                        error_message["pre_streaming_work"] = pre_streaming_work
+                        error_message["processing_context"] = processing_context
+                        error_message["has_pre_streaming_work"] = True
+                        logger.info(f"[ERROR_SSE] Including pre-streaming work: {len(pre_streaming_work)} steps")
+                        logger.info(f"[ERROR_SSE] Pre-streaming work details: {pre_streaming_work}")
+                    else:
+                        logger.info("[ERROR_SSE] No pre-streaming work to preserve")
+                    
                     error_json = json.dumps(error_message)
                     logger.info(f"[ERROR_TRACE] Yielding structured throttling error response: {error_json}")
                     
                     # Let the streaming middleware handle SSE formatting
-                    logger.info(f"[ERROR_SSE] Yielding throttling error chunk: {error_json}")
+                    # Add any accumulated content to the error response
+                    if accumulated_content:
+                        error_message["preserved_content"] = ''.join(accumulated_content)
+                        error_message["preserved_text"] = accumulated_text
+                        error_message["successful_tool_results"] = successful_tool_results
+                        error_message["has_preserved_content"] = True
+                        error_message["tool_execution_summary"] = {
+                            "pre_streaming_work": pre_streaming_work,
+                            "processing_context": processing_context,
+                            "total_attempts": tool_execution_count,
+                            "successful_executions": len(successful_tool_results),
+                            "has_partial_success": len(successful_tool_results) > 0
+                        }
+                        logger.info(f"[ERROR_SSE] Including preserved content with {len(successful_tool_results)} successful tool results")
+                    else:
+                        logger.info("[ERROR_SSE] No content to preserve")
+                        # Even if no streaming content, preserve pre-streaming work
+                        if pre_streaming_work:
+                            error_message["pre_streaming_work"] = pre_streaming_work
+                            error_message["processing_context"] = processing_context
+                            logger.info(f"[ERROR_SSE] Preserving pre-streaming work: {len(pre_streaming_work)} steps")
+                        
                     # Create a special error chunk that the streaming middleware can detect
                     error_chunk = AIMessageChunk(content=error_json)
                     error_chunk.response_metadata = {"error_response": True}
@@ -901,6 +1074,39 @@ class RetryingChatBedrock(Runnable):
                 error_chunk.response_metadata = {"error_response": True}
                 yield error_chunk
                 return
+
+    def _is_tool_execution_content(self, content: str) -> bool:
+        """Check if content indicates tool execution."""
+        tool_indicators = [
+            "MCP Tool",
+            "Tool:",
+            "$ ",  # Shell command indicator
+            "```shell",
+            "```bash",
+            "Executing tool",
+            "Running command",
+        ]
+        # placeholder always returns false until logic is implemented
+        return False
+
+    def _is_tool_execution_content(self, content: str) -> bool:
+        """Check if content indicates tool execution."""
+        tool_indicators = [
+            "MCP Tool",
+            "Tool:",
+            "$ ",  # Shell command indicator
+            "```shell",
+            "```bash",
+            "Executing tool",
+            "Running command",
+            "SECURITY BLOCK",
+            "Tool execution"
+        ]
+        return any(indicator in content for indicator in tool_indicators)
+
+    async def _notify_tool_execution_state(self, content: str):
+        """Notify about tool execution state changes."""
+        logger.info(f"🔧 Tool execution detected in content: {content[:100]}...")
 
     def _format_messages(self, input_messages: List[Any]) -> List[Dict[str, str]]:
         """Format messages according to provider requirements."""
@@ -1537,6 +1743,12 @@ def create_agent_chain(chat_model: BaseChatModel):
  
 # Initialize the agent chain
 agent = create_agent_chain(model)
+
+def reset_mcp_tool_counter():
+    """Reset the MCP tool execution counter for a new request cycle."""
+    from app.mcp.tools import _tool_execution_counter, _tool_execution_lock
+    import asyncio
+    asyncio.create_task(_reset_counter_async())
 
 logger.info("Agent chain defined with parse_output")
 def update_conversation_state(conversation_id: str, file_paths: List[str]) -> None:

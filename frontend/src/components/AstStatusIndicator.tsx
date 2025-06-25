@@ -28,12 +28,21 @@ const formatElapsedTime = (seconds: number | null): string => {
 };
 
 /**
+ * Trigger immediate AST status check (can be called from other components)
+ */
+export const triggerAstStatusCheck = () => {
+  // This could dispatch a custom event that the component listens for
+  window.dispatchEvent(new CustomEvent('ast-config-changed'));
+};
+
+/**
  * AST Status Indicator Component
  * Shows the current status of AST indexing
  */
 const AstStatusIndicator: React.FC = () => {
   const [status, setStatus] = useState<AstStatus | null>(null);
   const [visible, setVisible] = useState<boolean>(false);
+  const [hasSeenActiveIndexing, setHasSeenActiveIndexing] = useState<boolean>(false);
   const { isDarkMode } = useTheme();
 
   useEffect(() => {
@@ -46,6 +55,11 @@ const AstStatusIndicator: React.FC = () => {
 
         if (mounted) {
           setStatus(astStatus);
+          
+          // Track if we've ever seen active indexing
+          if (astStatus.is_indexing || astStatus.is_complete) {
+            setHasSeenActiveIndexing(true);
+          }
 
           // Show the indicator if indexing is in progress
           if (astStatus.is_indexing || astStatus.error) {
@@ -66,9 +80,13 @@ const AstStatusIndicator: React.FC = () => {
         }
       } catch (error) {
         console.error('Error checking AST status:', error);
-        // Try again after a delay
-        if (mounted) {
-          timer = window.setTimeout(checkStatus, AST_STATUS_CHECK_INTERVAL);
+        
+        // Only continue checking if we've previously seen active indexing
+        if (hasSeenActiveIndexing) {
+          // Try again after a delay
+          if (mounted) {
+            timer = window.setTimeout(checkStatus, AST_STATUS_CHECK_INTERVAL);
+          }
         }
       }
     };
@@ -94,6 +112,14 @@ const AstStatusIndicator: React.FC = () => {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    // Listen for AST config changes
+    const handleConfigChange = () => {
+      setHasSeenActiveIndexing(false); // Reset to allow fresh detection
+      checkStatus(); // Immediately check status
+    };
+
+    window.addEventListener('ast-config-changed', handleConfigChange);
+
     // Cleanup
     return () => {
       mounted = false;
@@ -101,16 +127,22 @@ const AstStatusIndicator: React.FC = () => {
         window.clearTimeout(timer);
       }
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('ast-config-changed', handleConfigChange);
     };
-  }, []);
+  }, [hasSeenActiveIndexing]);
 
-  // Don't render anything if there's no status or if it shouldn't be visible
+  // Don't render anything if there's no status, if it shouldn't be visible, or if we haven't seen active indexing
   if (!status || !visible) {
     return null;
   }
 
   // Render error state
   if (status.error) {
+    // Only show error if we've previously seen active indexing
+    if (!hasSeenActiveIndexing) {
+      return null;
+    }
+    
     return (
       <Card
         className="ast-status-error"

@@ -1,4 +1,3 @@
-import { BaseType, Selection } from 'd3';
 import { D3RenderPlugin, D3Node, D3Link, D3Style } from '../../types/d3';
 
 export interface NetworkDiagramSpec {
@@ -35,7 +34,7 @@ export const networkDiagramPlugin: D3RenderPlugin = {
     canHandle: isNetworkDiagramSpec,
     render: (container: HTMLElement, d3: any, spec: any) => {
         console.debug('Network diagram plugin rendering:', { spec });
-        
+
         if (!isNetworkDiagramSpec(spec)) {
             throw new Error('Invalid network diagram specification');
         }

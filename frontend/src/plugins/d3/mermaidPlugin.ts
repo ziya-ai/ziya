@@ -1,7 +1,5 @@
 import mermaid from 'mermaid';
 import { D3RenderPlugin } from '../../types/d3';
-import { PictureOutlined, DownloadOutlined } from '@ant-design/icons';
-import { Spin } from 'antd'; // For loading indicator
 import initMermaidSupport from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 
@@ -320,7 +318,7 @@ export const mermaidPlugin: D3RenderPlugin = {
             let svg: string;
             try {
                 const result = await mermaid.render(mermaidId, processedDefinition);
-                
+
                 // Check if result is valid
                 if (!result || typeof result !== 'object') {
                     console.error('Invalid mermaid render result:', result);
@@ -344,14 +342,14 @@ export const mermaidPlugin: D3RenderPlugin = {
                 }
             } catch (renderError) {
                 console.error('Error rendering mermaid diagram:', renderError);
-                
+
                 // Log the specific error details
                 if (renderError instanceof Error) {
                     console.error('Error name:', renderError.name);
                     console.error('Error message:', renderError.message);
                     console.error('Error stack:', renderError.stack);
                 }
-                
+
                 console.error('Failed definition (first 500 chars):', processedDefinition.substring(0, 500));
                 console.error('Processed definition that failed:', processedDefinition.substring(0, 500));
                 throw renderError;
@@ -439,21 +437,21 @@ export const mermaidPlugin: D3RenderPlugin = {
             const enhanceDarkModeTextVisibility = (svgElement: SVGElement) => {
                 // Get all text elements
                 const textElements = svgElement.querySelectorAll('text');
-                
+
                 textElements.forEach(textEl => {
                     // Find the parent node to get its styling context
                     let parentNode = textEl.parentElement;
                     while (parentNode && !parentNode.classList.contains('node') && !parentNode.classList.contains('cluster')) {
                         parentNode = parentNode.parentElement;
                     }
-                    
+
                     if (parentNode) {
                         // Look for shape elements (rect, circle, polygon, path) in the parent
                         const shapeElement = parentNode.querySelector('rect, circle, polygon, path');
                         if (shapeElement) {
                             const stroke = shapeElement.getAttribute('stroke');
                             const fill = shapeElement.getAttribute('fill');
-                            
+
                             // If we have a stroke color, use it for text (it's usually darker/more saturated)
                             if (stroke && stroke !== 'none' && stroke !== '#333' && stroke !== '#333333') {
                                 textEl.setAttribute('fill', stroke);
@@ -468,7 +466,7 @@ export const mermaidPlugin: D3RenderPlugin = {
                         }
                     }
                 });
-                
+
                 // Special handling for edge labels and other floating text
                 svgElement.querySelectorAll('.edgeLabel text').forEach(textEl => {
                     const currentFill = textEl.getAttribute('fill');
@@ -514,7 +512,7 @@ export const mermaidPlugin: D3RenderPlugin = {
 
                     // Apply enhanced text visibility improvements
                     enhanceDarkModeTextVisibility(svgElement);
-                    
+
                     svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
                         el.setAttribute('stroke', '#88c0d0');
                         el.setAttribute('stroke-width', '1.5px');
@@ -537,6 +535,154 @@ export const mermaidPlugin: D3RenderPlugin = {
                 // Even in light mode, apply custom styles
                 applyCustomStyles(svgElement);
             }
+
+            // Helper functions for contrast calculation
+            const getColorLuminance = (color: string): number => {
+                const rgb = color.match(/\d+/g);
+                if (!rgb || rgb.length < 3) return 0.5;
+                const [r, g, b] = rgb.map(x => {
+                    const val = parseInt(x) / 255;
+                    return val <= 0.03928 ? val / 12.92 : Math.pow((val + 0.055) / 1.055, 2.4);
+                });
+                return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            };
+
+            const calculateContrastRatio = (textColor: string, backgroundColor: string): number => {
+                const textLum = getColorLuminance(textColor);
+                const bgLum = getColorLuminance(backgroundColor);
+                const lighter = Math.max(textLum, bgLum);
+                const darker = Math.min(textLum, bgLum);
+                return (lighter + 0.05) / (darker + 0.05);
+            };
+
+            // TEXT VISIBILITY FIX - Focus on foreignObject children only
+            setTimeout(() => {
+                console.log('🔍 TEXT VISIBILITY FIX: Starting analysis');
+                const foreignObjects = container.querySelectorAll('foreignObject');
+                console.log(`Found ${foreignObjects.length} foreignObject elements`);
+                let fixCount = 0;
+                let totalTextElements = 0;
+                let elementsWithBackground = 0;
+
+                foreignObjects.forEach((foreignObj, foreignIndex) => {
+                    const textElements = foreignObj.querySelectorAll('div, span');
+                    console.log(`ForeignObject ${foreignIndex}: contains ${textElements.length} text elements`);
+
+                    textElements.forEach((textEl) => {
+                        const content = textEl.textContent?.trim();
+                        if (!content) return;
+
+                        totalTextElements++;
+                        console.log(`Text element ${totalTextElements}: "${content}"`);
+
+                        const computedStyle = window.getComputedStyle(textEl);
+                        const textColor = computedStyle.color;
+                        console.log(`  Text color: ${textColor}`);
+
+                        // Find background color by walking up the DOM within this foreignObject
+                        let backgroundColor: string | null = null;
+                        let currentElement: Element | null = textEl;
+                        let depth = 0;
+
+                        while (currentElement && currentElement !== foreignObj) {
+                            const elementStyle = window.getComputedStyle(currentElement);
+                            const bgColor = elementStyle.backgroundColor;
+                            console.log(`  Level ${depth}: element ${currentElement.tagName}, bg: ${bgColor}`);
+
+                            if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') {
+                                backgroundColor = bgColor;
+                                console.log(`  Found background: ${backgroundColor}`);
+                                break;
+                            }
+                            currentElement = currentElement.parentElement;
+                            depth++;
+                        }
+
+                        // Strategy 2: If no background found in DOM hierarchy, look for sibling SVG elements
+                        if (!backgroundColor) {
+                            console.log(`  No background in DOM hierarchy, checking SVG siblings`);
+
+                            // Look at the parent group of this foreignObject
+                            const parentGroup = foreignObj.parentElement;
+                            if (parentGroup) {
+                                console.log(`  Parent group: ${parentGroup.tagName}`);
+
+                                // Look for rect, circle, polygon, path elements in the same group
+                                const shapeElements = parentGroup.querySelectorAll('rect, circle, polygon, path, ellipse');
+                                console.log(`  Found ${shapeElements.length} shape elements in parent group`);
+
+                                for (const shape of shapeElements) {
+                                    const fill = shape.getAttribute('fill');
+                                    const computedFill = window.getComputedStyle(shape).fill;
+                                    console.log(`    Shape ${shape.tagName}: fill="${fill}" computed="${computedFill}"`);
+
+                                    if (fill && fill !== 'none' && fill !== 'transparent') {
+                                        backgroundColor = fill;
+                                        console.log(`  Found SVG background: ${backgroundColor}`);
+                                        break;
+                                    } else if (computedFill && computedFill !== 'none' && computedFill !== 'transparent' && computedFill !== 'rgb(0, 0, 0)') {
+                                        backgroundColor = computedFill;
+                                        console.log(`  Found computed SVG background: ${backgroundColor}`);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Strategy 3: If still no background, search the entire SVG for ALL shapes
+                        if (!backgroundColor) {
+                            console.log(`  Still no background, searching entire SVG`);
+                            const allShapes = container.querySelectorAll('rect, circle, polygon, path, ellipse');
+                            console.log(`  Found ${allShapes.length} total shapes in SVG`);
+
+                            // Log all shapes and their colors to see what we're missing
+                            const allColors = new Set<string>();
+                            allShapes.forEach((shape, i) => {
+                                const fill = shape.getAttribute('fill');
+                                const computedFill = window.getComputedStyle(shape).fill;
+                                if (fill && fill !== 'none') allColors.add(fill);
+                                if (computedFill && computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)') allColors.add(computedFill);
+
+                                // Log first 10 shapes for debugging
+                                if (i < 10) {
+                                    console.log(`    All shapes ${i}: ${shape.tagName} fill="${fill}" computed="${computedFill}"`);
+                                }
+                            });
+
+                            console.log(`  All unique colors found:`, Array.from(allColors));
+
+                            // For now, don't assign a background from this broad search
+                            // We just want to see what colors are available
+                        }
+
+                        if (backgroundColor) {
+                            elementsWithBackground++;
+                            console.log(`  Background found: ${backgroundColor}`);
+                            const isProblematic = isProblematicBackground(backgroundColor);
+                            console.log(`  Is problematic: ${isProblematic}`);
+
+                            if (isProblematic) {
+                                const contrastRatio = calculateContrastRatio(textColor, backgroundColor);
+                                console.log(`  Contrast ratio: ${contrastRatio.toFixed(2)}`);
+
+                                if (contrastRatio < 3.0) {
+                                    console.log(`  🔧 FIXING: "${content}" - poor contrast (${contrastRatio.toFixed(2)})`);
+                                    (textEl as HTMLElement).style.color = '#000000';
+                                    (textEl as HTMLElement).style.setProperty('color', '#000000', 'important');
+                                    fixCount++;
+                                } else {
+                                    console.log(`  ✓ SKIPPING: "${content}" - good contrast (${contrastRatio.toFixed(2)})`);
+                                }
+                            }
+                        } else {
+                            console.log(`  No background found for: "${content}"`);
+                        }
+
+                        // Check if we need to fix this text
+                    });
+                });
+                console.log(`🔍 SUMMARY: Processed ${totalTextElements} text elements, ${elementsWithBackground} had backgrounds, fixed ${fixCount}`);
+            }, 1000);
 
             // Wait for next frame to ensure SVG is rendered
             requestAnimationFrame(() => {
@@ -1075,7 +1221,7 @@ function getTextContrastColor(backgroundColor: string): string {
 
     // Calculate relative luminance using proper sRGB formula
     const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-    
+
     // Use a more conservative threshold - prefer black text unless background is quite dark
     return luminance > 0.4 ? '#000000' : '#ffffff';
 }
@@ -1112,4 +1258,45 @@ function getOptimalTextColor(backgroundColor: string): string {
     // Calculate relative luminance and use conservative threshold
     const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
     return luminance > 0.4 ? '#000000' : '#ffffff';
+}
+
+function isProblematicBackground(color: string): boolean {
+    if (!color || color === 'none' || color === 'transparent') return false;
+
+    // Normalize the color to uppercase and remove # if present
+    console.log(`  Checking if background is problematic: ${color}`);
+
+    let normalizedColor: string;
+
+    // Handle RGB format: rgb(255, 245, 157) -> FFF59D
+    if (color.startsWith('rgb(')) {
+        const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (rgbMatch) {
+            const [, r, g, b] = rgbMatch;
+            normalizedColor = [r, g, b]
+                .map(x => parseInt(x).toString(16).padStart(2, '0'))
+                .join('').toUpperCase();
+            console.log(`  Converted RGB ${color} to hex: ${normalizedColor}`);
+        } else {
+            return false;
+        }
+    } else {
+        normalizedColor = color.toUpperCase();
+    }
+
+    if (normalizedColor.startsWith('#')) {
+        normalizedColor = normalizedColor.substring(1);
+    }
+
+    // The exact list of problematic background colors you identified
+    const problematicColors = [
+        'FFEA2E', 'FFB50D', 'FFF58C', 'FFF59D', 'FFF0D9', 'E2F4E2', 'F0DDF3',
+        'DBF2FE', 'FFF7DA', 'DDEFFD', 'FDC0C8', 'F5A9D1', 'D4EA8C',
+        'FFEB3B'
+    ];
+
+    const result = problematicColors.includes(normalizedColor);
+    console.log(`  ${normalizedColor} in problematic list: ${result}`);
+    // Check if this color matches any of the problematic ones
+    return result;
 }

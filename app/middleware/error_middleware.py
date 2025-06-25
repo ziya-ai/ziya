@@ -277,7 +277,7 @@ class ErrorHandlingMiddleware:
                             "error": "throttling_error",
                             "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
                             "status_code": 429,
-                            "retry_after": "5"
+                            "retry_after": "5",
                         }
                         
                         await safe_send({
@@ -457,6 +457,7 @@ class ErrorHandlingMiddleware:
                             (b"cache-control", b"no-cache"),
                         ]
                     })
+                                    logger.info("Sent preserved content before error message")
                     
                     # Send error message as SSE data
                     error_content = format_error_response(

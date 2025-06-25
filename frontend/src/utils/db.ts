@@ -135,14 +135,20 @@ class ConversationDB implements DB {
                         this.db = dbRequest.result;
 
                         this.db.onversionchange = () => {
-                            this.db?.close();
-                            this.db = null;
-                            this.initPromise = null;
+                            console.warn('Database version change detected, will reinitialize on next operation');
+                            // Don't immediately close - let current operations complete
+                            setTimeout(() => {
+                                if (this.db && !this.saveInProgress) {
+                                    this.db.close();
+                                    this.db = null;
+                                    this.initPromise = null;
+                                }
+                            }, 1000);
                         };
 
                         this.db.onclose = () => {
                             console.debug('Database connection closed');
-                            if (this.initializing && !upgradeCompleted) {
+                            if (this.initializing && !upgradeCompleted && !this.saveInProgress) {
                                 console.warn('Database closed during initialization');
                                 this.initPromise = null;
                             }
@@ -307,6 +313,14 @@ class ConversationDB implements DB {
                 try {
                     return await this._saveConversationsWithLock(conversations);
                 } catch (error) {
+                    // If database connection error, try to recover once
+                    if (error instanceof Error &&
+                        (error.message.includes('closing') || error.message.includes('InvalidStateError'))) {
+                        console.warn('Database connection error, attempting recovery');
+                        await this.init();
+                        return await this._saveConversationsWithLock(conversations);
+                    }
+
                     // If this is a missing store error, attempt recovery
                     if (error instanceof Error &&
                         error.name === 'NotFoundError' &&
@@ -335,6 +349,14 @@ class ConversationDB implements DB {
 
     private async _saveConversationsWithLock(conversations: Conversation[]): Promise<void> {
         console.debug('Starting _saveConversationsWithLock with', conversations.length, 'conversations');
+
+        // Check if database is available and not closing
+        if (!this.db || this.initializing) {
+            console.warn('Database not ready, attempting to initialize');
+            await this.init();
+            if (!this.db) throw new Error('Database initialization failed');
+        }
+
         if (this.saveInProgress) {
             console.warn('Save already in progress, skipping');
             return;
@@ -344,7 +366,7 @@ class ConversationDB implements DB {
         let saveCompleted = false;
 
         // Check if the store exists before attempting to save
-        if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+        if (!this.db.objectStoreNames.contains(STORE_NAME)) {
             console.error('Cannot save - conversations store not found');
             this.saveInProgress = false;
             throw new Error('Conversations store not found');
@@ -410,7 +432,14 @@ class ConversationDB implements DB {
 
                 tx.onerror = () => {
                     console.error('Transaction error:', tx.error);
-                    reject(tx.error);
+                    // Provide more specific error information
+                    const errorMsg = tx.error?.message || 'Unknown transaction error';
+                    reject(new Error(`Transaction failed: ${errorMsg}`));
+                };
+
+                tx.onabort = () => {
+                    console.error('Transaction aborted');
+                    reject(new Error('Transaction was aborted'));
                 };
             });
         } finally {
@@ -455,7 +484,6 @@ class ConversationDB implements DB {
                 console.warn('Failed to initialize database, returning empty conversations array');
                 console.error('Failed to initialize database:', error);
                 return this.restoreFromBackup();
-                throw new Error('Database initialization failed');
             }
             if (!this.db) throw new Error('Database not initialized');
         }
