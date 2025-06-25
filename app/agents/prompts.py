@@ -150,6 +150,7 @@ when they would provide clearer understanding, especially for:
 - Timelines (Gantt charts)
 - Complex structures or processes
 Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, Mermaid for flowcharts, sequence diagrams, class diagrams, etc, Vega-Lite for data analysis).
+Mathematical expressions in KaTeX: (use `$$...$$` for display math, `$...$` for inline LaTeX)
 
 IMPORTANT: When making changes:
 1. Focus only on fixing the specific problem described by the user

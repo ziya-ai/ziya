@@ -142,17 +142,6 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     }
   }, [capabilities]);
 
-  // Format model ID for display
-  const formatModelId = useCallback((id: string | Record<string, string>): string => {
-    if (typeof id === 'string') {
-      return id;
-    }
-
-    // If it's an object, just return it as a string for debugging
-    // The backend should be sending us the actual model ID being used
-    return JSON.stringify(id);
-  }, []);
-
   // Debug logging for form values - only log once when form changes
   const formLoggedRef = useRef(false);
 
@@ -270,13 +259,6 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     capabilities?.max_input_tokens_range ||
     defaultRange;
 
-  // Determine the effective max output/input tokens for display/default
-  const effectiveMaxOutput = selectedModelCapabilities?.max_output_tokens || capabilities?.max_output_tokens || outputRange.default;
-  const effectiveMaxInput = selectedModelCapabilities?.max_input_tokens || capabilities?.max_input_tokens || inputRange.default;
-
-  // Check if thinking mode is supported
-  const supportsThinking = capabilities?.supports_thinking || false;
-
   const handleApply = async () => {
     try {
       const values = await form.validateFields();
@@ -300,9 +282,6 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     // Ensure loading state is reset
     setIsUpdating(false);
   };
-
-  // Determine if form should be enabled
-  const formEnabled = !!selectedModelCapabilities;
 
   return (
     <Modal

@@ -1,15 +1,11 @@
-import clsx from 'clsx';
-import React, { useState, useCallback, useEffect, memo, useRef, useMemo, useLayoutEffect } from 'react';
-import { message, Modal, Form, notification, Spin, Input, Switch, theme, Dropdown, Menu as AntMenu } from 'antd'; // Added AntD Dropdown & Menu
+import React, { useState, useCallback, useEffect, memo, useRef, useMemo } from 'react';
+import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } from 'antd'; // Added AntD Dropdown & Menu
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { Conversation, ConversationFolder } from '../utils/types';
 import { db } from '../utils/db';
 import { v4 as uuidv4 } from 'uuid';
-import { useFolderContext } from '../context/FolderContext';
-import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 // MUI imports
-import { Radio } from 'antd';
 import { styled } from '@mui/material/styles';
 import { TreeView } from '@mui/x-tree-view/TreeView';
 import { TreeItem, TreeItemProps } from '@mui/x-tree-view/TreeItem';
@@ -20,20 +16,12 @@ import Menu from '@mui/material/Menu';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import IconButton from '@mui/material/IconButton';
-import { Divider as MuiDivider } from '@mui/material';
-import Dialog from '@mui/material/Dialog';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContent from '@mui/material/DialogContent';
-import DialogContentText from '@mui/material/DialogContentText';
 import Tooltip from '@mui/material/Tooltip';
-import FormControlLabel from '@mui/material/FormControlLabel';
-import Fab from '@mui/material/Fab';
 import { Divider as AntDivider } from 'antd';
 
 // MUI icons
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
 import FolderIcon from '@mui/icons-material/Folder';
-import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import Box from '@mui/material/Box';
 import MenuItem from '@mui/material/MenuItem';
 import ChatIcon from '@mui/icons-material/Chat';
@@ -46,8 +34,6 @@ import UploadIcon from '@mui/icons-material/Upload';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import SyncIcon from '@mui/icons-material/Sync';
-import AddCommentIcon from '@mui/icons-material/AddComment';
-import NoteAddIcon from '@mui/icons-material/NoteAdd';
 
 // Ant Design Icons for the menu items
 import {
@@ -73,12 +59,6 @@ const SpinningSync = styled(SyncIcon)(({ theme }) => ({
     },
   },
 }));
-
-// Define drag data type
-interface DragData {
-  nodeId: string;
-  nodeType: 'conversation' | 'folder';
-}
 
 // Completely rewritten StyledTreeItem with proper syntax
 const StyledTreeItem = styled((props: TreeItemProps) => (
@@ -211,7 +191,6 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
 
   const { isDarkMode } = useTheme();
   const [isHovered, setIsHovered] = useState(false);
-  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
 
   // Focus the edit input when it becomes visible
@@ -544,10 +523,9 @@ const MoveToFolderMenu = ({
 const MUIChatHistory = () => {
   const {
     conversations,
-    setCurrentConversationId,
     currentConversationId,
+    setDynamicTitleLength,
     setConversations,
-    currentMessages,
     isLoadingConversation,
     streamingConversations,
     startNewChat,
@@ -564,6 +542,7 @@ const MUIChatHistory = () => {
 
   const { isDarkMode } = useTheme();
   const [expandedNodes, setExpandedNodes] = useState<React.Key[]>([]);
+  const chatHistoryRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState<string>('');
   const [pinnedFolders, setPinnedFolders] = useState<Set<string>>(new Set());
@@ -611,6 +590,34 @@ const MUIChatHistory = () => {
     }
   }, [pinnedFolders]);
 
+  // Handle panel width measurement for dynamic title length
+  useEffect(() => {
+    let lastWidth = 0;
+    let timeoutId: NodeJS.Timeout;
+    
+    const resizeObserver = new ResizeObserver((entries) => {
+      // Debounce resize events to prevent excessive firing
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        const entry = entries[0];
+        if (entry && Math.abs(entry.contentRect.width - lastWidth) > 10) {
+          lastWidth = entry.contentRect.width;
+          const calculatedLength = Math.max(30, Math.min(80, Math.floor(lastWidth / 6)));
+          setDynamicTitleLength(calculatedLength);
+        }
+      }, 250); // 250ms debounce
+    });
+
+    if (chatHistoryRef.current) {
+      resizeObserver.observe(chatHistoryRef.current);
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      resizeObserver.disconnect();
+    };
+  }, [setDynamicTitleLength]);
+
   // Handle opening the move menu
   const handleOpenMoveMenu = (nodeId: string, anchorEl: HTMLElement) => {
     console.log("Opening move menu for:", nodeId, "anchored to:", anchorEl);
@@ -637,43 +644,6 @@ const MUIChatHistory = () => {
       return newPinned;
     });
   }
-
-  // Handle creating a new folder at current level
-  const handleCreateFolderAtCurrentLevel = async () => {
-    try {
-      // Create a new folder at the current folder level (as a sibling)
-      const createdFolderId = await createFolder('New Folder', currentFolderId);
-      const newFolderId = String(createdFolderId);
-
-      // Ensure parent folder is expanded if creating a subfolder
-      if (currentFolderId && !expandedNodes.includes(currentFolderId)) {
-        setExpandedNodes(prev => [...prev, currentFolderId]);
-      }
-
-      message.success('New folder created successfully');
-
-      // Start editing the folder name immediately
-      if (newFolderId) {
-        setTimeout(() => {
-          setEditingId(newFolderId);
-          setEditValue('New Folder');
-        }, 100);
-      }
-    } catch (error) {
-      console.error('Error creating folder:', error);
-      message.error('Failed to create folder');
-    }
-  };
-
-  // Handle creating a new chat at current folder level
-  const handleCreateChatAtCurrentLevel = async () => {
-    try {
-      await setCurrentFolderId(currentFolderId);
-      await startNewChat(currentFolderId);
-    } catch (error) {
-      message.error('Failed to create new chat');
-    }
-  };
 
   // Handle moving a folder
   const handleMoveFolder = async (folderId: string, targetParentId: string | null) => {
@@ -947,29 +917,6 @@ const MUIChatHistory = () => {
     });
   };
 
-
-  // Handle creating a new folder
-  const handleCreateFolder = async () => {
-    if (!newFolderName.trim()) {
-      message.error('Folder name cannot be empty');
-      return;
-    }
-
-    try {
-      const newFolderId = await createFolder(newFolderName, currentFolderId);
-      setNewFolderDialogOpen(false);
-      setNewFolderName('');
-      message.success('Folder created successfully');
-
-      // Expand the parent folder if it exists
-      if (currentFolderId && !expandedNodes.includes(currentFolderId)) {
-        setExpandedNodes(prev => [...prev, currentFolderId]);
-      }
-    } catch (error) {
-      message.error('Failed to create folder');
-    }
-  };
-
   // Handle moving a conversation to a folder
   const handleMoveConversation = async (conversationId: string, folderId: string | null) => {
     if (conversationId.startsWith('conv-')) {
@@ -1076,7 +1023,7 @@ const MUIChatHistory = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [currentConversationId, isLoadingConversation, loadConversation]);
+  }, [currentConversationId, loadConversation]);
 
   // Export/import functionality
 
@@ -1608,33 +1555,6 @@ const MUIChatHistory = () => {
     });
   };
 
-  // Handle creating a new folder
-  const handleCreateNewFolder = async () => {
-    try {
-      // Create a new folder with default name and settings at root level
-      const createdFolderId = await createFolder('New Folder', currentFolderId);
-      const newFolderId = String(createdFolderId);
-
-      // Ensure parent folder is expanded if creating a subfolder
-      if (currentFolderId && !expandedNodes.includes(currentFolderId)) {
-        setExpandedNodes(prev => [...prev, currentFolderId]);
-      }
-
-      message.success('New folder created successfully');
-
-      // Start editing the folder name immediately
-      if (newFolderId) {
-        setTimeout(() => {
-          setEditingId(newFolderId);
-          setEditValue('New Folder');
-        }, 100);
-      }
-    } catch (error) {
-      console.error('Error creating folder:', error);
-      message.error('Failed to create folder');
-    }
-  };
-
   // Render the tree recursively
   const renderTree = (nodes: any[]) => {
     return nodes.map(node => {
@@ -1702,7 +1622,7 @@ const MUIChatHistory = () => {
       <Spin size="large" />
     </Box>
   ) : (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <Box ref={chatHistoryRef} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Tree View with integrated action buttons */}
       <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
         {(() => {

@@ -830,7 +830,7 @@ async def stream_chunks(body):
 
         # Initialize variables for agent iteration loop
         processed_tool_calls = set()
-        max_iterations = 5
+        max_iterations = 10
         iteration = 0
         messages_for_model = []
         all_tool_results = []  # Track all tool results across iterations
@@ -1053,6 +1053,21 @@ async def stream_chunks(body):
 
             except Exception as e:
                 logger.error(f"Error in agent iteration {iteration}: {str(e)}", exc_info=True)
+                
+                # Preserve any accumulated response content before handling the error
+                if current_response and len(current_response.strip()) > 0:
+                    logger.info(f"Preserving {len(current_response)} characters of partial response before error")
+                    print(f"PARTIAL RESPONSE PRESERVED (AGENT ERROR):\n{current_response}")
+                    
+                    # Send the partial content to the frontend
+                    ops = [{"op": "add", "path": "/streamed_output_str/-", "value": current_response}]
+                    yield f"data: {json.dumps({'ops': ops})}\n\n"
+                    
+                    # Send warning about partial response
+                    warning_signal = {"op": "add", "path": "/warning", "value": f"Server encountered an error after generating {len(current_response)} characters. The partial response has been preserved."}
+                    yield f"data: {json.dumps({'ops': [warning_signal]})}\n\n"
+                    
+                    full_response = current_response  # Ensure it's preserved in full_response
                 
                 # Handle ValidationError specifically by sending proper SSE error
                 if isinstance(e, ValidationError):

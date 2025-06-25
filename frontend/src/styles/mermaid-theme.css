@@ -112,3 +112,31 @@
     fill: #88c0d0 !important;
     stroke: #88c0d0 !important;
 }
+
+/* Text visibility fixes for problematic background colors */
+/* Force black text on light/problematic backgrounds */
+.mermaid-container svg [fill="#FFEA2E"] ~ text,
+.mermaid-container svg [fill="#FFB50D"] ~ text,
+.mermaid-container svg [fill="#FFF58C"] ~ text,
+.mermaid-container svg [fill="#FFF0D9"] ~ text,
+.mermaid-container svg [fill="#E2F4E2"] ~ text,
+.mermaid-container svg [fill="#F0DDF3"] ~ text,
+.mermaid-container svg [fill="#DBF2FE"] ~ text,
+.mermaid-container svg [fill="#FFF7DA"] ~ text,
+.mermaid-container svg [fill="#DDEFFD"] ~ text,
+.mermaid-container svg [fill="#FDC0C8"] ~ text,
+.mermaid-container svg [fill="#F5A9D1"] ~ text,
+.mermaid-container svg [fill="#D4EA8C"] ~ text {
+    fill: #000000 !important;
+    color: #000000 !important;
+}
+
+/* Alternative approach - target text within groups that contain problematic backgrounds */
+.mermaid-container svg g:has([fill="#FFEA2E"]) text,
+.mermaid-container svg g:has([fill="#FFB50D"]) text,
+.mermaid-container svg g:has([fill="#FFF58C"]) text,
+.mermaid-container svg g:has([fill="#FFF0D9"]) text,
+.mermaid-container svg g:has([fill="#E2F4E2"]) text,
+.mermaid-container svg g:has([fill="#F0DDF3"]) text {
+    fill: #000000 !important;
+}

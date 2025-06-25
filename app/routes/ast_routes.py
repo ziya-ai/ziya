@@ -39,6 +39,9 @@ async def get_status():
     try:
         status = get_ast_indexing_status()
         
+        # Add flag to indicate if AST is enabled/configured
+        status['ast_enabled'] = os.environ.get("ZIYA_AST_RESOLUTION", "medium") != "disabled"
+        
         # Add token count if AST is available
         try:
             status['token_count'] = get_ast_token_count()

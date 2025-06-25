@@ -1,4 +1,4 @@
-import React, { createContext, ReactNode, useContext, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { createContext, ReactNode, useContext, useCallback, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
 import { Folders } from "../utils/types";
 import { convertToTreeData } from "../utils/folderUtil";
 import { useChatContext } from "./ChatContext";
@@ -29,7 +29,6 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     return saved ? JSON.parse(saved) : [];
   });
 
-  const { currentFolderId, folderFileSelections, folders: chatFolders } = useChatContext();
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
     const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
@@ -37,16 +36,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   });
 
   // Monitor FolderProvider render performance
-  useLayoutEffect(() => {
-    renderCount.current++;
-    const renderTime = performance.now() - renderStart.current;
-    if (renderTime > 5 || renderCount.current % 30 === 0) {
-      console.log(`📊 FolderProvider render #${renderCount.current}: ${renderTime.toFixed(2)}ms`);
-    }
-    renderStart.current = performance.now();
-  });
+  // Remove performance monitoring that's causing overhead
 
-  const getFolderTokenCount = (path: string, folderData: Folders | undefined): number => {
+  const getFolderTokenCount = useCallback((path: string, folderData: Folders | undefined): number => {
     if (!folderData) {
       // console.warn(`getFolderTokenCount: folderData is undefined for path "${path}"`);
       return 0;
@@ -72,7 +64,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
 
     return 0;
-  };
+  }, []);
 
   // Save expanded folders whenever they change
   useEffect(() => {
@@ -92,18 +84,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   }, [checkedKeys]);
 
-  // Update checked keys when folder changes if folder has specific file selections
-  useEffect(() => {
-    if (currentFolderId) {
-      const folder = chatFolders.find(f => f.id === currentFolderId);
-      if (folder && !folder.useGlobalContext) {
-        const folderSelections = folderFileSelections.get(currentFolderId);
-        if (folderSelections) {
-          setCheckedKeys(folderSelections);
-        }
-      }
-    }
-  }, [currentFolderId, folders, folderFileSelections]);
+  // Remove chat context dependency that was causing render loops
 
   useEffect(() => {
     // Make folder loading independent and non-blocking
@@ -127,95 +108,104 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         setFolders(data);
 
         // Move heavy computation to async to avoid blocking UI
-        setTimeout(async () => {
-          try {
-            // Get all available file paths recursively
-        const getAllPaths = (obj: any, prefix: string = ''): string[] => {
-          return Object.entries(obj).flatMap(([key, value]: [string, any]) => {
-            const path = prefix ? `${prefix}/${key}` : key;
-            return value.children ? [...getAllPaths(value.children, path), path] : [path];
-          });
+        // Use requestIdleCallback if available, otherwise setTimeout
+        const scheduleWork = (callback: () => void) => {
+          if ('requestIdleCallback' in window) {
+            requestIdleCallback(callback, { timeout: 1000 });
+          } else {
+            setTimeout(callback, 0);
+          }
         };
 
-        const availablePaths = getAllPaths(data);
-        console.debug('Available paths:', {
-          total: availablePaths.length,
-          d3Files: availablePaths.filter(p => p.includes('D3') || p.includes('Debug.tsx')),
-          componentFiles: availablePaths.filter(p => p.includes('components/'))
-        });
+        scheduleWork(async () => {
+          try {
+            // Get all available file paths recursively
+            const getAllPaths = (obj: any, prefix: string = ''): string[] => {
+              return Object.entries(obj).flatMap(([key, value]: [string, any]) => {
+                const path = prefix ? `${prefix}/${key}` : key;
+                return value.children ? [...getAllPaths(value.children, path), path] : [path];
+              });
+            };
 
-        // Convert to tree data and set expanded keys for top-level folders
-        const treeNodes = convertToTreeData(data);
-        setTreeData(treeNodes);
-        setExpandedKeys(prev => [...prev, ...treeNodes.map(node => node.key)]);
+            const availablePaths = getAllPaths(data);
+            console.debug('Available paths:', {
+              total: availablePaths.length,
+              d3Files: availablePaths.filter(p => p.includes('D3') || p.includes('Debug.tsx')),
+              componentFiles: availablePaths.filter(p => p.includes('components/'))
+            });
 
-        // Update checked keys to include all available files and maintain selections
-        setCheckedKeys(prev => {
-          const currentChecked = new Set(prev as string[]);
+            // Convert to tree data and set expanded keys for top-level folders
+            const treeNodes = convertToTreeData(data);
+            setTreeData(treeNodes);
+            setExpandedKeys(prev => [...prev, ...treeNodes.map(node => node.key)]);
 
-          // Get the parent directory of any checked directory
-          const getParentDir = (path: string) => {
-            const parts = path.split('/');
-            return parts.slice(0, -1).join('/');
-          };
+            // Update checked keys to include all available files and maintain selections
+            setCheckedKeys(prev => {
+              const currentChecked = new Set(prev as string[]);
 
-          // If a directory is checked, include all its files
-          const newChecked = new Set<string>();
-          for (const path of availablePaths) {
-            const parentDir = getParentDir(path);
-            if (currentChecked.has(path) || currentChecked.has(parentDir)) {
-              newChecked.add(path);
-            }
-          }
+              // Get the parent directory of any checked directory
+              const getParentDir = (path: string) => {
+                const parts = path.split('/');
+                return parts.slice(0, -1).join('/');
+              };
 
-          console.log('Syncing checked keys:', {
-            before: currentChecked.size,
-            after: newChecked.size,
-            added: [...newChecked].filter(k => !currentChecked.has(k)),
-            removed: [...currentChecked].filter(k => !newChecked.has(k))
-          });
+              // If a directory is checked, include all its files
+              const newChecked = new Set<string>();
+              for (const path of availablePaths) {
+                const parentDir = getParentDir(path);
+                if (currentChecked.has(path) || currentChecked.has(parentDir)) {
+                  newChecked.add(path);
+                }
+              }
 
-          // Debug log for D3 files
-          const d3Files = [...newChecked].filter(k => k.includes('D3') || k.includes('Debug.tsx'));
-          if (d3Files.length > 0) {
-            console.log('D3 files in checked keys:', d3Files);
-          }
+              console.log('Syncing checked keys:', {
+                before: currentChecked.size,
+                after: newChecked.size,
+                added: [...newChecked].filter(k => !currentChecked.has(k)),
+                removed: [...currentChecked].filter(k => !newChecked.has(k))
+              });
 
-          // Return the updated set of checked keys
-          return [...newChecked];
-        });
+              // Debug log for D3 files
+              const d3Files = [...newChecked].filter(k => k.includes('D3') || k.includes('Debug.tsx'));
+              if (d3Files.length > 0) {
+                console.log('D3 files in checked keys:', d3Files);
+              }
+
+              // Return the updated set of checked keys
+              return [...newChecked];
+            });
           } catch (error) {
             console.error('Error processing folder paths:', error);
           }
-        }, 0); // Run in next tick to avoid blocking
+        });
       } catch (error) {
         console.error('Error fetching folders:', error);
       }
     };
-    
+
     // Start folder loading immediately but don't await it
     // This prevents blocking other initialization processes
     fetchFoldersAsync();
-    }, []);
+  }, []);
 
-    const contextValue = useMemo(() => ({
-        folders,
-        getFolderTokenCount,
-        setTreeData,
-        treeData,
-        checkedKeys,
-        setCheckedKeys,
-        searchValue,
-        setSearchValue,
-        expandedKeys,
-        setExpandedKeys
-    }), [folders, treeData, checkedKeys, searchValue, expandedKeys]);
+  const contextValue = useMemo(() => ({
+    folders,
+    getFolderTokenCount,
+    setTreeData,
+    treeData,
+    checkedKeys,
+    setCheckedKeys,
+    searchValue,
+    setSearchValue,
+    expandedKeys,
+    setExpandedKeys
+  }), [folders, treeData, checkedKeys, searchValue, expandedKeys, getFolderTokenCount]);
 
-    return (
-        <FolderContext.Provider value={contextValue}>
-            {children}
-        </FolderContext.Provider>
-    );
+  return (
+    <FolderContext.Provider value={contextValue}>
+      {children}
+    </FolderContext.Provider>
+  );
 };
 
 export const useFolderContext = () => {
@@ -227,12 +217,12 @@ export const useFolderContext = () => {
       folders: undefined,
       treeData: [],
       checkedKeys: [],
-      setTreeData: () => {},
-      setCheckedKeys: () => {},
+      setTreeData: () => { },
+      setCheckedKeys: () => { },
       searchValue: '',
-      setSearchValue: () => {},
+      setSearchValue: () => { },
       expandedKeys: [],
-      setExpandedKeys: () => {},
+      setExpandedKeys: () => { },
       getFolderTokenCount: () => 0
     };
   }

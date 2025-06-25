@@ -1,5 +1,5 @@
 import React, { Suspense, useState } from 'react';
-import { Card, Tabs, Typography, Space, Collapse, Alert, Spin } from 'antd';
+import { Card, Typography, Space, Collapse, Alert, Spin } from 'antd';
 import { D3Renderer } from './D3Renderer';
 import './debug.css';
 
@@ -37,8 +37,8 @@ const examples: VegaExample[] = [
             "width": 600,
             "height": 300,
             "data": {
-		    "name": "timeseries",  // Add unique name for dataset
-                    "values": Array.from({ length: 50 }, (_, i) => ({
+                "name": "timeseries",  // Add unique name for dataset
+                "values": Array.from({ length: 50 }, (_, i) => ({
                     "date": new Date(2023, 0, i + 1).toISOString().slice(0, 10),
                     "series1": Math.sin(i / 10) * 10 + Math.random() * 5 + 20,
                     "series2": Math.cos(i / 10) * 8 + Math.random() * 3 + 15,
@@ -49,7 +49,7 @@ const examples: VegaExample[] = [
                 { "fold": ["series1", "series2", "series3"] }
             ],
             "selection": {
-                "series": {"type": "multi", "fields": ["key"], "bind": "legend"}
+                "series": { "type": "multi", "fields": ["key"], "bind": "legend" }
             },
             "mark": {
                 "type": "line",
@@ -59,16 +59,16 @@ const examples: VegaExample[] = [
                 "x": {
                     "field": "date",
                     "type": "temporal",
-                    "scale": {"type": "time"}
+                    "scale": { "type": "time" }
                 },
                 "y": {
                     "field": "value",
                     "type": "quantitative",
-                    "scale": {"zero": false}
+                    "scale": { "zero": false }
                 },
-                "color": {"field": "key", "type": "nominal"},
+                "color": { "field": "key", "type": "nominal" },
                 "opacity": {
-                    "condition": {"selection": "series", "value": 1},
+                    "condition": { "selection": "series", "value": 1 },
                     "value": 0.2
                 }
             }
@@ -84,7 +84,7 @@ const examples: VegaExample[] = [
                     "width": 600,
                     "height": 300,
                     "data": {
-			 "name": "scatter",
+                        "name": "scatter",
                         "values": Array.from({ length: 100 }, () => ({
                             "x": Math.random() * 100,
                             "y": Math.random() * 100,
@@ -92,14 +92,14 @@ const examples: VegaExample[] = [
                         }))
                     },
                     "selection": {
-                        "brush": {"type": "interval"}
+                        "brush": { "type": "interval" }
                     },
                     "mark": "circle",
                     "encoding": {
-                        "x": {"field": "x", "type": "quantitative"},
-                        "y": {"field": "y", "type": "quantitative"},
+                        "x": { "field": "x", "type": "quantitative" },
+                        "y": { "field": "y", "type": "quantitative" },
                         "color": {
-                            "condition": {"selection": "brush", "field": "category", "type": "nominal"},
+                            "condition": { "selection": "brush", "field": "category", "type": "nominal" },
                             "value": "grey"
                         }
                     }
@@ -107,12 +107,12 @@ const examples: VegaExample[] = [
                 {
                     "width": 600,
                     "height": 100,
-                    "transform": [{"filter": {"selection": "brush"}}],
+                    "transform": [{ "filter": { "selection": "brush" } }],
                     "mark": "bar",
                     "encoding": {
-                        "x": {"field": "category", "type": "nominal"},
-                        "y": {"aggregate": "count"},
-                        "color": {"field": "category", "type": "nominal"}
+                        "x": { "field": "category", "type": "nominal" },
+                        "y": { "aggregate": "count" },
+                        "color": { "field": "category", "type": "nominal" }
                     }
                 }
             ]
@@ -126,7 +126,7 @@ const examples: VegaExample[] = [
             "width": 600,
             "height": 400,
             "data": {
-		  "name": "heatmap",
+                "name": "heatmap",
                 "values": Array.from({ length: 100 }, (_, i) => ({
                     "x": Math.floor(i / 10),
                     "y": i % 10,
@@ -135,8 +135,8 @@ const examples: VegaExample[] = [
             },
             "mark": "rect",
             "encoding": {
-                "x": {"field": "x", "type": "ordinal", "title": "X Axis"},
-                "y": {"field": "y", "type": "ordinal", "title": "Y Axis"},
+                "x": { "field": "x", "type": "ordinal", "title": "X Axis" },
+                "y": { "field": "y", "type": "ordinal", "title": "Y Axis" },
                 "color": {
                     "field": "value",
                     "type": "quantitative",
@@ -146,14 +146,14 @@ const examples: VegaExample[] = [
                     }
                 },
                 "tooltip": [
-                    {"field": "x", "type": "ordinal"},
-                    {"field": "y", "type": "ordinal"},
-                    {"field": "value", "type": "quantitative", "format": ".2f"}
+                    { "field": "x", "type": "ordinal" },
+                    { "field": "y", "type": "ordinal" },
+                    { "field": "value", "type": "quantitative", "format": ".2f" }
                 ]
             },
             "config": {
-                "axis": {"grid": true},
-                "view": {"strokeWidth": 0}
+                "axis": { "grid": true },
+                "view": { "strokeWidth": 0 }
             }
         }
     },
@@ -166,9 +166,9 @@ const examples: VegaExample[] = [
             "height": 300,
             "data": {
                 "values": Array.from({ length: 150 }, (_, i) => ({
-                    "time": new Date(2023, 0, Math.floor(i/5) + 1).toISOString().slice(0, 10),
+                    "time": new Date(2023, 0, Math.floor(i / 5) + 1).toISOString().slice(0, 10),
                     "category": `Category ${i % 5 + 1}`,
-                    "value": Math.sin(i/10) * Math.cos(i/20) * 20 + Math.random() * 10 + 30
+                    "value": Math.sin(i / 10) * Math.cos(i / 20) * 20 + Math.random() * 10 + 30
                 }))
             },
             "selection": {
@@ -180,7 +180,7 @@ const examples: VegaExample[] = [
                         "options": ["stacked", "streamgraph"],
                         "name": "Layout: "
                     },
-                    "init": {"layout": "stacked"}
+                    "init": { "layout": "stacked" }
                 }
             },
             "mark": "area",
@@ -196,7 +196,7 @@ const examples: VegaExample[] = [
                     "title": "Value",
                     "stack": {
                         "offset": {
-                            "condition": {"selection": "layout", "value": "normalize"},
+                            "condition": { "selection": "layout", "value": "normalize" },
                             "value": "zero"
                         }
                     }
@@ -204,12 +204,12 @@ const examples: VegaExample[] = [
                 "color": {
                     "field": "category",
                     "type": "nominal",
-                    "scale": {"scheme": "category10"}
+                    "scale": { "scheme": "category10" }
                 },
                 "tooltip": [
-                    {"field": "time", "type": "temporal"},
-                    {"field": "category", "type": "nominal"},
-                    {"field": "value", "type": "quantitative"}
+                    { "field": "time", "type": "temporal" },
+                    { "field": "category", "type": "nominal" },
+                    { "field": "value", "type": "quantitative" }
                 ]
             }
         }
@@ -224,24 +224,24 @@ const examples: VegaExample[] = [
             "data": {
                 "values": Array.from({ length: 24 }, (_, i) => ({
                     "hour": i,
-                    "value": Math.sin(i/4) * 10 + Math.random() * 5 + 15
+                    "value": Math.sin(i / 4) * 10 + Math.random() * 5 + 15
                 }))
             },
-            "mark": {"type": "arc", "innerRadius": 80},
+            "mark": { "type": "arc", "innerRadius": 80 },
             "encoding": {
-                "theta": {"field": "hour", "type": "quantitative", "scale": {"domain": [0, 24]}},
-                "radius": {"field": "value", "type": "quantitative", "scale": {"type": "sqrt"}},
+                "theta": { "field": "hour", "type": "quantitative", "scale": { "domain": [0, 24] } },
+                "radius": { "field": "value", "type": "quantitative", "scale": { "type": "sqrt" } },
                 "color": {
                     "field": "value",
                     "type": "quantitative",
-                    "scale": {"scheme": "viridis"}
+                    "scale": { "scheme": "viridis" }
                 },
                 "tooltip": [
-                    {"field": "hour", "type": "quantitative", "title": "Hour"},
-                    {"field": "value", "type": "quantitative", "title": "Value"}
+                    { "field": "hour", "type": "quantitative", "title": "Hour" },
+                    { "field": "value", "type": "quantitative", "title": "Value" }
                 ]
             },
-            "view": {"stroke": null}
+            "view": { "stroke": null }
         }
     }
 ];

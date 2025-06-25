@@ -1,8 +1,9 @@
 [tool.poetry]
 name = "ziya"
-version = "0.2.3"
+version = "0.2.4"
 description = ""
-authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>"]
+authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>",
+           "Dan Cohn <chroma@gmail.com>"]
 
 packages = [
     { include = "app", from = "." },

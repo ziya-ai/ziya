@@ -1,7 +1,8 @@
-import { SetStateAction, Dispatch, MouseEvent } from 'react';
-import { createParser } from 'eventsource-parser';
+import { SetStateAction, Dispatch } from 'react';
 import { message } from 'antd';
 import { Message } from '../utils/types';
+
+type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error';
 
 interface ErrorResponse {
     error: string;
@@ -22,6 +23,25 @@ const isValidMessage = (message: any) => {
 function extractErrorFromSSE(content: string): ErrorResponse | null {
     if (!content) return null;
 
+    // Check for validation errors first (these are critical and should be shown)
+    if (content.includes('ValidationException') && content.includes('Input is too long')) {
+        return {
+            error: 'context_size_error',
+            detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+            status_code: 413
+        };
+    }
+    
+    // Check for throttling errors
+    if (content.includes('ThrottlingException') || content.includes('Too many requests')) {
+        return {
+            error: 'throttling_error',
+            detail: 'Too many requests to AWS Bedrock. Please wait a moment before trying again.',
+            status_code: 429
+        };
+    }
+
+    // Check for other validation errors
     try {
         // Check for JSON error format
         if (content.includes('"error"') || content.includes('"detail"')) {
@@ -37,6 +57,14 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             } catch (e) {
                 // Not valid JSON, continue with other checks
             }
+        }
+
+        // Check for validation exception patterns in plain text
+        if (content.includes('ValidationException') || content.includes('Input is too long')) {
+            return {
+                error: 'validation_error',
+                detail: 'The request contains invalid data or is too large for the model.'
+            };
         }
 
         // Check for specific error patterns - only at the beginning of lines
@@ -87,6 +115,16 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
 function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
     try {
         // Try to find JSON objects in the chunk
+        
+        // First check for validation errors in plain text
+        if (chunk.includes('ValidationException') && chunk.includes('Input is too long')) {
+            return {
+                error: 'context_size_error',
+                detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                status_code: 413
+            };
+        }
+        
         const jsonMatches = chunk.match(/(\{.*?\})/g);
         if (!jsonMatches) return null;
 
@@ -119,6 +157,13 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                             // Check for error in messages array - but be careful not to match code examples
                             if (op.value.messages && Array.isArray(op.value.messages)) {
                                 for (const msg of op.value.messages) {
+                                    // Check for validation errors in message content
+                                    if (msg.content && typeof msg.content === 'string' && 
+                                        msg.content.includes('ValidationException') && 
+                                        msg.content.includes('Input is too long')) {
+                                        return { error: 'context_size_error', detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.', status_code: 413 };
+                                    }
+                                    
                                     if (msg.content && typeof msg.content === 'string') {
                                         // Only check for errors outside of code blocks
                                         const isInCodeBlock = /```[\s\S]*?(?:Error:|error:)[\s\S]*?```/m.test(msg.content);
@@ -167,8 +212,6 @@ async function handleStreamError(response: Response): Promise<Error> {
     }
 }
 
-const STREAMING_CHUNK_DELAY = 10; // ms delay between processing chunks to allow rendering
-
 export const sendPayload = async (
     messages: Message[],
     question: string,
@@ -179,7 +222,7 @@ export const sendPayload = async (
     removeStreamingConversation: (id: string) => void,
     addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void,
     isStreamingToCurrentConversation: boolean = true,
-    setProcessingState?: Dispatch<SetStateAction<string>>
+    setProcessingState?: (state: ProcessingState) => void
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
@@ -265,12 +308,6 @@ export const sendPayload = async (
             throw new Error('No body in response');
         }
 
-        // Set up cleanup on unmount or error
-        const cleanup = () => {
-            if (eventSource && typeof eventSource.close === 'function') eventSource.close();
-            setIsStreaming(false);
-        };
-
         // Use ReadableStream API for more reliable streaming
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -311,20 +348,77 @@ export const sendPayload = async (
                         // Not JSON or not a hunk status update, ignore
                     }
 
+                    // Check for partial response preservation warnings
+                    try {
+                        const jsonData = JSON.parse(data);
+                        if (jsonData.warning === 'partial_response_preserved') {
+                            console.warn('⚠️ PARTIAL RESPONSE PRESERVED:', jsonData.detail);
+                            console.log('Preserved content:', jsonData.partial_content);
+
+                            // Add the preserved content to current content
+                            if (jsonData.partial_content && !currentContent.includes(jsonData.partial_content)) {
+                                currentContent += jsonData.partial_content;
+                                setStreamedContentMap((prev: Map<string, string>) => {
+                                    const next = new Map(prev);
+                                    next.set(conversationId, currentContent);
+                                    return next;
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        // Not a warning JSON, continue processing
+                    }
+
                     // Check for errors using our new function - but be careful not to match code examples
                     // Skip error checking if the data looks like it contains code blocks or diffs
                     const containsCodeBlock = data.includes('```');
                     const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(data);
 
                     if (errorResponse) {
+                        console.log("Current content when error detected:", currentContent.substring(0, 200) + "...");
+                        console.log("Current content length:", currentContent.length);
                         console.log("Error detected in SSE data:", errorResponse);
-                        message.error({
-                            content: errorResponse.detail || 'An error occurred',
-                            duration: 10,
+                        
+                        // Check if the error data contains preserved content and dispatch it
+                        try {
+                            const errorData = JSON.parse(data);
+                            
+                            // Include the current streamed content in the preserved data
+                            if (currentContent && currentContent.trim()) {
+                                errorData.existing_streamed_content = currentContent;
+                                console.log('Including existing streamed content in preserved data:', currentContent.length, 'characters');
+                            }
+                            
+                            if (errorData.pre_streaming_work || errorData.preserved_content || errorData.successful_tool_results) {
+                                console.log('Dispatching preserved content event from error data:', {
+                                    hasPreStreamingWork: !!errorData.pre_streaming_work,
+                                    hasPreservedContent: !!errorData.preserved_content,
+                                    hasSuccessfulTools: !!errorData.successful_tool_results
+                                });
+                                
+                                // Dispatch the preserved content event
+                                document.dispatchEvent(new CustomEvent('preservedContent', {
+                                    detail: errorData
+                                }));
+                            }
+                        } catch (e) {
+                            console.debug('Could not parse error data for preserved content:', e);
+                        }
+
+                        // Show different message for partial responses vs complete failures
+                        const isPartialResponse = currentContent.length > 0;
+                        const errorMessage = isPartialResponse
+                            ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
+                            : errorResponse.detail || 'An error occurred';
+
+                        message.warning({
+                            content: errorMessage,
+                            duration: isPartialResponse ? 15 : 10,
                             key: 'stream-error'
                         });
                         errorOccurred = true;
-                        removeStreamingConversation(conversationId);
+                        // Don't remove streaming conversation yet - let the preserved content handler do it
+                        // removeStreamingConversation(conversationId);
                         return;
                     }
 
@@ -365,9 +459,13 @@ export const sendPayload = async (
                         for (const op of ops) {
                             if (op.op === 'add' && op.path === '/processing_state' && typeof setProcessingState === 'function') {
                                 // Handle processing state updates
-                                setProcessingState(op.value);
+                                const stateValue = op.value;
+                                if (stateValue === 'awaiting_model_response') {
+                                    setProcessingState('processing_tools');
+                                }
+                                // Note: State will auto-reset to 'idle' when removeStreamingConversation is called
                                 continue;
-                            } 
+                            }
                             if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
                                 const newContent = op.value || '';
                                 if (!newContent) continue;
@@ -476,9 +574,16 @@ export const sendPayload = async (
                                 const nestedError = extractErrorFromNestedOps(chunk);
                                 if (nestedError) {
                                     console.log("Nested error detected in ops structure:", nestedError);
-                                    message.error({
-                                        content: nestedError.detail || 'An error occurred',
-                                        duration: 10,
+
+                                    // Show different message for partial responses vs complete failures
+                                    const isPartialResponse = currentContent.length > 0;
+                                    const errorMessage = isPartialResponse
+                                        ? `${nestedError.detail} (Partial response preserved - ${currentContent.length} characters)`
+                                        : nestedError.detail || 'An error occurred';
+
+                                    message.warning({
+                                        content: errorMessage,
+                                        duration: isPartialResponse ? 15 : 10,
                                         key: 'stream-error'
                                     });
                                     errorOccurred = true;
@@ -539,9 +644,16 @@ export const sendPayload = async (
 
                 if (errorResponse) {
                     console.log("Error detected in final content:", errorResponse);
-                    message.error({
-                        content: errorResponse.detail || 'An error occurred',
-                        duration: 10,
+
+                    // Show different message for partial responses vs complete failures
+                    const isPartialResponse = currentContent.length > 0;
+                    const errorMessage = isPartialResponse
+                        ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
+                        : errorResponse.detail || 'An error occurred';
+
+                    message.warning({
+                        content: errorMessage,
+                        duration: isPartialResponse ? 15 : 10,
                         key: 'stream-error'
                     });
                     errorOccurred = true;
