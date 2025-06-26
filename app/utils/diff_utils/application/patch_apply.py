@@ -338,8 +338,74 @@ def apply_diff_with_difflib_hybrid_forced(
             hunk_failures.append((f"Unexpected duplicates detected for Hunk #{hunk_idx}", failure_info))
             continue
 
-        # --- Apply the hunk (only if duplication check passes) ---
-        final_lines_with_endings[remove_pos:end_remove_pos] = new_lines_with_endings
+        # --- Apply the hunk with precise indentation preservation ---
+        # Target the specific pattern of systematic indentation loss in multi-hunk diffs
+        
+        original_lines_to_replace = final_lines_with_endings[remove_pos:end_remove_pos]
+        
+        # Precise detection for the multi-hunk line adjustment issue
+        needs_indentation_preservation = False
+        if (len(new_lines_content) >= 3 and  # Multi-line hunk (not too restrictive)
+            len(original_lines_to_replace) >= 3):  # With original content to compare
+            
+            # Check for systematic indentation loss pattern
+            context_matches = 0
+            total_content_lines = 0
+            indentation_loss_count = 0
+            
+            for new_line in new_lines_content:
+                new_content = new_line.strip()
+                if new_content:
+                    total_content_lines += 1
+                    for orig_line in original_lines_to_replace:
+                        orig_content = orig_line.strip()
+                        if orig_content and re.sub(r'\s+', ' ', orig_content) == re.sub(r'\s+', ' ', new_content):
+                            context_matches += 1
+                            # Check for systematic indentation loss (original has more spaces)
+                            orig_indent = len(orig_line) - len(orig_line.lstrip())
+                            new_indent = len(new_line) - len(new_line.lstrip())
+                            if orig_indent > new_indent and (orig_indent - new_indent) == 1:
+                                # Exactly 1 space lost - this is the systematic pattern
+                                indentation_loss_count += 1
+                            break
+            
+            # Apply preservation if we have high context match ratio AND systematic 1-space loss
+            if (total_content_lines >= 3 and 
+                context_matches >= max(2, total_content_lines * 0.6) and  # At least 60% context matches
+                indentation_loss_count >= max(2, context_matches * 0.5)):  # At least 50% have 1-space loss
+                needs_indentation_preservation = True
+        
+        if needs_indentation_preservation:
+            # Apply with indentation preservation
+            corrected_new_lines = []
+            for new_line in new_lines_content:
+                new_content = new_line.strip()
+                
+                if not new_content:
+                    corrected_new_lines.append(new_line + dominant_ending)
+                    continue
+                
+                # Look for matching content in original to preserve indentation
+                found_original_indentation = None
+                for orig_line in original_lines_to_replace:
+                    orig_content = orig_line.strip()
+                    if orig_content and re.sub(r'\s+', ' ', orig_content) == re.sub(r'\s+', ' ', new_content):
+                        orig_indent = orig_line[:len(orig_line) - len(orig_line.lstrip())]
+                        found_original_indentation = orig_indent
+                        break
+                
+                if found_original_indentation is not None:
+                    corrected_new_lines.append(found_original_indentation + new_content + dominant_ending)
+                else:
+                    corrected_new_lines.append(new_line + dominant_ending)
+            
+            final_lines_with_endings[remove_pos:end_remove_pos] = corrected_new_lines
+        else:
+            # Standard application
+            new_lines_with_endings = []
+            for line in new_lines_content:
+                new_lines_with_endings.append(line + dominant_ending)
+            final_lines_with_endings[remove_pos:end_remove_pos] = new_lines_with_endings
 
         # --- Update Offset ---
         # The actual number of lines removed might be different from actual_remove_count
