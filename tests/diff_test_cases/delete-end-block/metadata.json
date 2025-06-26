@@ -1,0 +1,6 @@
+{
+  "description": "removal of final code block in swift code",
+  "target_file": "miditrim/MIDIManager.swift",
+  "expected_to_fail": false,
+  "apply_twice": false
+}
