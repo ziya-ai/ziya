@@ -1459,6 +1459,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_MRE_hunk_context_mismatch(self):
         """Test handling of hunk context mismatches"""
         self.run_diff_test('MRE_hunk_context_mismatch')
+
+    def test_delete_end_block(self):
+        """Test deletion of final codeblock"""
+        self.run_diff_test("delete-end-block")
         
     def test_apply_state_reporting(self):
         """
