@@ -175,7 +175,25 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # If force difflib flag is set, skip system patch and git apply
     if os.environ.get('ZIYA_FORCE_DIFFLIB'):
         logger.info("Force difflib mode enabled, bypassing system patch and git apply")
-        return run_difflib_stage(pipeline, file_path, git_diff, original_lines)
+        pipeline.update_stage(PipelineStage.DIFFLIB)
+        difflib_result = run_difflib_stage(pipeline, file_path, git_diff, original_lines)
+        
+        # Complete the pipeline and return the proper result dictionary
+        if difflib_result:
+            pipeline.result.changes_written = True
+        
+        # Set the final status based on hunk results
+        if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
+               for tracker in pipeline.result.hunks.values()):
+            pipeline.result.status = "success"
+        elif any(tracker.status == HunkStatus.SUCCEEDED 
+                for tracker in pipeline.result.hunks.values()):
+            pipeline.result.status = "partial"
+        else:
+            pipeline.result.status = "error"
+            
+        pipeline.complete()
+        return pipeline.result.to_dict()
     
     # Stage 1: System Patch
     pipeline.update_stage(PipelineStage.SYSTEM_PATCH)
