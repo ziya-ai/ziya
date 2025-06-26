@@ -871,6 +871,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             'jsx': 'javascript',
             'ts': 'typescript',
             'tsx': 'typescript',
+            'swift': 'swift',
+            'objectivec': 'objectivec',
+            'objc': 'objectivec',
+            'metal': 'c',
             'py': 'python',
             'rb': 'ruby',
             'php': 'php',
@@ -2964,11 +2968,25 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 const decodeHtmlEntities = (text: string): string => {
     if (typeof document === 'undefined') {
         // Basic fallback for server-side or environments without DOM
-        return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+        return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/"/g, '"').replace(/'/g, "'");
     }
-    const textarea = document.createElement('textarea');
-    textarea.innerHTML = text;
-    return textarea.value;
+
+    // Use a more controlled approach to avoid false entity decoding
+    // Only decode known HTML entities to prevent issues like ¶m becoming ¶m
+    return text
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&#39;/g, "'")
+        .replace(/&#x27;/g, "'")
+        .replace(/&#x60;/g, '`')
+        .replace(/&#x3D;/g, '=')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&copy;/g, '©')
+        .replace(/&reg;/g, '®')
+        .replace(/&trade;/g, '™');
 };
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
