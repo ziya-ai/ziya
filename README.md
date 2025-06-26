@@ -134,7 +134,9 @@ These parameters can also be configured in the web interface:
 `--max-output-tokens`: Maximum number of tokens to generate in the response.
 
 #### Advanced Options
-`--mcp`: Enable MCP agent capabilities
+
+`--mcp`: Enable MCP agent capabilities.
+
 `--ast`: Enable AST-based code understanding capabilities.
 
 ```bash

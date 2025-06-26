@@ -133,6 +133,24 @@ def check_aws_credentials(is_server_startup=True, profile_name=None):
             return False, error_msg
     except Exception as e:
         logger.error(f"AWS credentials check failed: {e}")
+
+        import os
+        # First, check if we have any AWS credentials at all
+        has_any_credentials = (
+            os.environ.get("AWS_ACCESS_KEY_ID") or
+            os.environ.get("AWS_SECRET_ACCESS_KEY") or
+            os.environ.get("AWS_SESSION_TOKEN") or
+            os.path.exists(os.path.expanduser("~/.aws/credentials")) or
+            os.path.exists(os.path.expanduser("~/.aws/config"))
+        )
+        
+        if not has_any_credentials:
+            return False, """⚠️ AWS CREDENTIALS ERROR: No AWS credentials found.
+ 
+Please set up your AWS credentials using one of these methods:
+1. Run 'aws configure' to set up credentials
+2. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables
+3. For Amazon internal users, run 'mwinit' to get temporary credentials"""
         
         # Create a more user-friendly error message
         error_msg = str(e)
@@ -179,29 +197,17 @@ Please run the following command to refresh your credentials:
 Then try your query again."""
         except Exception as cli_error:
             logger.debug(f"Failed to get detailed error from AWS CLI: {cli_error}")
-        
         # If we couldn't get a better message from the CLI, use our standard error handling
         # For Amazon internal users, we should always suggest mwinit for credential errors
         # Check if this is an Amazon internal environment first
-        is_amazon_internal = False
-        try:
-            # Check for common Amazon internal environment indicators
-            import os
-            is_amazon_internal = (
-                os.path.exists('/apollo') or 
-                os.path.exists('/home/ec2-user') or
-                'AWS_PROFILE' in os.environ and 'isengard' in os.environ.get('AWS_PROFILE', '').lower() or
-                'AWS_CONFIG_FILE' in os.environ and 'midway' in os.environ.get('AWS_CONFIG_FILE', '').lower() or
-                any(pattern in error_msg for pattern in ["amazon.com", "corp.amazon", "midway", "isengard"])
-            )
-        except:
-            pass
+        is_amazon_internal = _is_amazon_internal_environment(error_msg)
             
-        # If we're in an Amazon internal environment, always suggest mwinit for credential errors
+        # If we're in an Amazon internal environment, suggest mwinit for credential errors
         if is_amazon_internal and ("InvalidClientTokenId" in error_msg or "ExpiredToken" in error_msg or 
                                   "AccessDenied" in error_msg or "NoCredentialProviders" in error_msg):
             if is_server_startup:
                 return False, """⚠️ AWS CREDENTIALS ERROR: Your Amazon internal credentials have expired.
+
 
 Please run the following command to refresh your credentials:
 
@@ -233,27 +239,6 @@ Then try your query again."""
             # Generic error message for other cases
             return False, f"⚠️ AWS CREDENTIALS ERROR: {e}. Please check your AWS credentials and try again."
         
-        # For Amazon internal users, we should always suggest mwinit for credential errors
-        # Check if this is an Amazon internal environment first
-        is_amazon_internal = False
-        try:
-            # Check for common Amazon internal environment indicators
-            import os
-            is_amazon_internal = (
-                os.path.exists('/apollo') or 
-                os.path.exists('/home/ec2-user') or
-                'AWS_PROFILE' in os.environ and 'isengard' in os.environ.get('AWS_PROFILE', '').lower() or
-                'AWS_CONFIG_FILE' in os.environ and 'midway' in os.environ.get('AWS_CONFIG_FILE', '').lower() or
-                any(pattern in error_msg for pattern in ["amazon.com", "corp.amazon", "midway", "isengard"])
-            )
-        except:
-            pass
-            
-        # If we're in an Amazon internal environment, always suggest mwinit for credential errors
-        if is_amazon_internal and ("InvalidClientTokenId" in error_msg or "ExpiredToken" in error_msg or 
-                                  "AccessDenied" in error_msg or "NoCredentialProviders" in error_msg):
-            return False, "⚠️ AWS CREDENTIALS ERROR: Your Amazon internal credentials have expired. Please run 'mwinit' to refresh them."
-            
         # Standard error detection for non-Amazon environments
         if "ExpiredToken" in error_msg:
             return False, "⚠️ AWS CREDENTIALS ERROR: Your AWS credentials have expired. Please refresh your credentials."
@@ -266,6 +251,33 @@ Then try your query again."""
         else:
             # Generic error message for other cases
             return False, f"⚠️ AWS CREDENTIALS ERROR: {e}. Please check your AWS credentials and try again."
+
+def _is_amazon_internal_environment(error_message=""):
+    """
+    Determine if this is an Amazon internal environment.
+    Uses more conservative detection to avoid false positives.
+    """
+    try:
+        # Check for definitive Amazon internal indicators
+        definitive_indicators = [
+            os.path.exists('/apollo'),  # Apollo environment
+            'midway' in error_message.lower(),  # Midway auth mentioned in error
+            'mwinit' in error_message.lower(),  # mwinit mentioned in error
+            'iibs-midway' in error_message.lower(),  # IIBS Midway auth
+        ]
+        
+        # Check AWS profile/config for Amazon-specific patterns
+        aws_profile_indicators = [
+            'AWS_PROFILE' in os.environ and 'isengard' in os.environ.get('AWS_PROFILE', '').lower(),
+            'AWS_CONFIG_FILE' in os.environ and 'midway' in os.environ.get('AWS_CONFIG_FILE', '').lower(),
+        ]
+        
+        # Only consider it Amazon internal if we have definitive indicators
+        # OR AWS profile indicators combined with credential-related errors
+        return any(definitive_indicators) or (any(aws_profile_indicators) and 
+                                            any(term in error_message for term in ["ExpiredToken", "InvalidClientTokenId"]))
+    except:
+        return False
 
 def debug_aws_credentials():
     """Debug function to print AWS credential information."""
