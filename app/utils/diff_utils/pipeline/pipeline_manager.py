@@ -882,6 +882,23 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     
                     # If the file already contains the target state, mark it as already applied
                     if normalized_file_slice == normalized_new_lines:
+                        # CRITICAL FIX: For deletion hunks, we need to check if the content to be deleted
+                        # still exists in the file. If it does, the hunk is NOT already applied.
+                        if 'removed_lines' in hunk:
+                            removed_lines = hunk.get('removed_lines', [])
+                            
+                            # If this is a deletion hunk (has lines to remove)
+                            if removed_lines:
+                                # Check if the content to be deleted still exists anywhere in the file
+                                removed_content = "\n".join([normalize_line_for_comparison(line) for line in removed_lines])
+                                file_content = "\n".join([normalize_line_for_comparison(line) for line in original_lines])
+                                
+                                # If the content to be deleted still exists in the file, 
+                                # then the hunk is NOT already applied
+                                if removed_content in file_content:
+                                    logger.debug(f"Deletion hunk not applied - content to be deleted still exists in file at pos {pos}")
+                                    continue
+                        
                         # CRITICAL FIX: Also check if the old_block matches what's in the file
                         # This prevents marking a hunk as "already applied" when the file has content
                         # that doesn't match what we're trying to remove
