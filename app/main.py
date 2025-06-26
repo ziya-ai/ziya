@@ -300,10 +300,11 @@ def start_server(args):
         logger.info("Performing initial authentication check...")
         try:
             # Only check AWS credentials if using Bedrock endpoint
+            from app.utils.custom_exceptions import KnownCredentialException
+            
             if args.endpoint == "bedrock":
                 # Check AWS credentials first - specify this is server startup
                 from app.utils.aws_utils import check_aws_credentials
-                from app.utils.custom_exceptions import KnownCredentialException
                 
                 # Pass the profile from command line args if provided
                 valid, message = check_aws_credentials(is_server_startup=True, profile_name=args.profile)

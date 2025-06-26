@@ -19,6 +19,11 @@ jinja2 = "^3.1.3"
 tiktoken = "^0.8.0"
 boto3 = "^1.34.88"
 langchain-aws = ">=0.2,<0.3"
+# Cryptography and SSL dependencies - constrain versions for compatibility
+cryptography = ">=3.4.8,<43.0.0"
+pyOpenSSL = ">=20.0.0,<25.0.0"
+# NumPy version constraint to support older GCC versions
+numpy = ">=1.21.0,<2.0.0"
 langchain-google-genai = "^2.1.0"
 langchain = ">=0.3,<0.4"
 langgraph = ">=0.2,<0.3"
@@ -38,7 +43,7 @@ PyPDF2 = "^3.0.1"
 pdfplumber = "^0.10.0"
 python-docx = "^1.1.0"
 openpyxl = "^3.1.2"
-pandas = "^2.1.0"
+pandas = ">=2.0.0,<2.3.0"
 python-pptx = "^0.6.21"
 
 [tool.poetry.group.dev.dependencies]
