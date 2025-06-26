@@ -67,11 +67,29 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     
     if len(individual_diffs) > 1:
         # Find the diff that matches our target file
-        matching_diff = next((diff for diff in individual_diffs 
-                            if extract_target_file_from_diff(diff) == file_path), None)
+        # Compare using basename to handle full paths vs relative paths
+        target_basename = os.path.basename(file_path)
+        matching_diff = None
+        
+        for diff in individual_diffs:
+            diff_target = extract_target_file_from_diff(diff)
+            if diff_target:
+                # Try exact match first
+                if diff_target == file_path or diff_target == target_basename:
+                    matching_diff = diff
+                    break
+                # Try basename match
+                elif os.path.basename(diff_target) == target_basename:
+                    matching_diff = diff
+                    break
+        
         if matching_diff:
+            logger.debug(f"Found matching diff for target file: {file_path}")
             git_diff = matching_diff
             pipeline.current_diff = git_diff
+        else:
+            logger.warning(f"No matching diff found for target file: {file_path}")
+            logger.debug(f"Available diff targets: {[extract_target_file_from_diff(d) for d in individual_diffs]}")
     
     # Get the base directory
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
