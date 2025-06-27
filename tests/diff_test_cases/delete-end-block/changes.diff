@@ -1,0 +1,12 @@
+diff --git a/miditrim/MIDIManager.swift b/miditrim/MIDIManager.swift
+--- a/miditrim/MIDIManager.swift
++++ b/miditrim/MIDIManager.swift
+@@ -122,10 +122,3 @@
+     }
+ }
+  
+-extension MIDIEndpointRef: Identifiable {
+-    public var id: MIDIObjectRef {
+-        return self
+-    }
+-}

@@ -67,11 +67,29 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     
     if len(individual_diffs) > 1:
         # Find the diff that matches our target file
-        matching_diff = next((diff for diff in individual_diffs 
-                            if extract_target_file_from_diff(diff) == file_path), None)
+        # Compare using basename to handle full paths vs relative paths
+        target_basename = os.path.basename(file_path)
+        matching_diff = None
+        
+        for diff in individual_diffs:
+            diff_target = extract_target_file_from_diff(diff)
+            if diff_target:
+                # Try exact match first
+                if diff_target == file_path or diff_target == target_basename:
+                    matching_diff = diff
+                    break
+                # Try basename match
+                elif os.path.basename(diff_target) == target_basename:
+                    matching_diff = diff
+                    break
+        
         if matching_diff:
+            logger.debug(f"Found matching diff for target file: {file_path}")
             git_diff = matching_diff
             pipeline.current_diff = git_diff
+        else:
+            logger.warning(f"No matching diff found for target file: {file_path}")
+            logger.debug(f"Available diff targets: {[extract_target_file_from_diff(d) for d in individual_diffs]}")
     
     # Get the base directory
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
@@ -175,7 +193,25 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # If force difflib flag is set, skip system patch and git apply
     if os.environ.get('ZIYA_FORCE_DIFFLIB'):
         logger.info("Force difflib mode enabled, bypassing system patch and git apply")
-        return run_difflib_stage(pipeline, file_path, git_diff, original_lines)
+        pipeline.update_stage(PipelineStage.DIFFLIB)
+        difflib_result = run_difflib_stage(pipeline, file_path, git_diff, original_lines)
+        
+        # Complete the pipeline and return the proper result dictionary
+        if difflib_result:
+            pipeline.result.changes_written = True
+        
+        # Set the final status based on hunk results
+        if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
+               for tracker in pipeline.result.hunks.values()):
+            pipeline.result.status = "success"
+        elif any(tracker.status == HunkStatus.SUCCEEDED 
+                for tracker in pipeline.result.hunks.values()):
+            pipeline.result.status = "partial"
+        else:
+            pipeline.result.status = "error"
+            
+        pipeline.complete()
+        return pipeline.result.to_dict()
     
     # Stage 1: System Patch
     pipeline.update_stage(PipelineStage.SYSTEM_PATCH)
@@ -882,6 +918,23 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     
                     # If the file already contains the target state, mark it as already applied
                     if normalized_file_slice == normalized_new_lines:
+                        # CRITICAL FIX: For deletion hunks, we need to check if the content to be deleted
+                        # still exists in the file. If it does, the hunk is NOT already applied.
+                        if 'removed_lines' in hunk:
+                            removed_lines = hunk.get('removed_lines', [])
+                            
+                            # If this is a deletion hunk (has lines to remove)
+                            if removed_lines:
+                                # Check if the content to be deleted still exists anywhere in the file
+                                removed_content = "\n".join([normalize_line_for_comparison(line) for line in removed_lines])
+                                file_content = "\n".join([normalize_line_for_comparison(line) for line in original_lines])
+                                
+                                # If the content to be deleted still exists in the file, 
+                                # then the hunk is NOT already applied
+                                if removed_content in file_content:
+                                    logger.debug(f"Deletion hunk not applied - content to be deleted still exists in file at pos {pos}")
+                                    continue
+                        
                         # CRITICAL FIX: Also check if the old_block matches what's in the file
                         # This prevents marking a hunk as "already applied" when the file has content
                         # that doesn't match what we're trying to remove

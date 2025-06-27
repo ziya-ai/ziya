@@ -238,6 +238,13 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
             continue
 
         if line.startswith('@@ '):
+            # If we were already in a hunk, finish processing it first
+            if in_hunk and current_hunk:
+                # Finalize the previous hunk
+                hunk_key = (tuple(current_hunk['old_block']), tuple(current_hunk['new_lines']))
+                if hunk_key not in seen_hunks:
+                    seen_hunks.add(hunk_key)
+                
             match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:\s+Hunk #(\d+))?', line)
             hunk_num = int(match.group(5)) if match and match.group(5) else len(hunks) + 1
             if match:
@@ -279,29 +286,46 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                 current_hunk = hunk
 
             i += 1
-            # Validate the hunk header against the actual content
-            # This helps catch malformed hunks early
-            if current_hunk:
-                # Count the number of lines in the hunk
-                hunk_lines = []
-                j = i
-                while j < len(lines) and lines[j].startswith((' ', '+', '-', '\\')):
-                    hunk_lines.append(lines[j])
-                    j += 1
-                current_hunk['expected_line_count'] = len(hunk_lines)
             continue
 
         if in_hunk:
-            # End of hunk reached if we see a line that doesn't start with ' ', '+', '-', or '\'
-            if not line.startswith((' ', '+', '-', '\\')):
+            # Check if this line starts a new hunk (another @@ line) - this should end the current hunk
+            if line.startswith('@@ '):
+                # This will be handled by the @@ section above, so just end this hunk
                 in_hunk = False
                 if current_hunk:
                     # Check if this hunk is complete and unique
                     hunk_key = (tuple(current_hunk['old_block']), tuple(current_hunk['new_lines']))
                     if hunk_key not in seen_hunks:
                         seen_hunks.add(hunk_key)
-                i += 1
+                # Don't increment i here, let the @@ handler process this line
                 continue
+                
+            # End of hunk reached if we see a line that doesn't start with ' ', '+', '-', or '\'
+            # BUT we need to be more careful about what constitutes the end of a hunk
+            if not line.startswith((' ', '+', '-', '\\')):
+                # Check if this is actually the end of the diff content or just an empty line
+                # Empty lines within a hunk should be treated as context lines
+                if line.strip() == '':
+                    # This is an empty line - treat it as a context line if we're still within the hunk bounds
+                    if current_hunk:
+                        current_hunk['lines'].append(line)
+                        # Empty lines are context lines (should be in both old and new)
+                        current_hunk['new_lines'].append('')
+                        current_hunk['old_block'].append('')
+                    i += 1
+                    continue
+                else:
+                    # This is a non-diff line, end the hunk
+                    in_hunk = False
+                    if current_hunk:
+                        # Check if this hunk is complete and unique
+                        hunk_key = (tuple(current_hunk['old_block']), tuple(current_hunk['new_lines']))
+                        if hunk_key not in seen_hunks:
+                            seen_hunks.add(hunk_key)
+                    i += 1
+                    continue
+                    
             if current_hunk:
                 current_hunk['lines'].append(line)
                 if line.startswith('-'):

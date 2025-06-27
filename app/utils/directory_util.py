@@ -4,6 +4,7 @@ import time
 import signal
 from typing import List, Tuple, Dict, Any, Optional
 from app.utils.logging_utils import logger
+import re
 
 from app.utils.file_utils import is_binary_file, is_document_file, is_processable_file, read_file_content
 from app.utils.logging_utils import logger
@@ -33,9 +34,16 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     # Add additional exclude directories from environment variable if it exists
     additional_excludes = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
     if additional_excludes:
+        logger.info(f"Processing additional excludes: {additional_excludes}")
         for pattern in additional_excludes.split(','):
+            pattern = pattern.strip()
             if pattern:
                 ignored_patterns.append((pattern, user_codebase_dir))
+                logger.info(f"Added exclude pattern: {pattern}")
+    
+    logger.info(f"Total ignore patterns: {len(ignored_patterns)}")
+    for pattern, base in ignored_patterns:
+        logger.debug(f"Ignore pattern: {pattern} (base: {base})")
 
     def read_gitignore(path: str) -> List[Tuple[str, str]]:
         gitignore_patterns: List[Tuple[str, str]] = []
@@ -44,7 +52,14 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
                 for line_number, line in enumerate(f, 1):
                     line = line.strip()
                     if line and not line.startswith("#"):
-                        gitignore_patterns.append((line, os.path.dirname(path)))
+                        try:
+                            # Test if the pattern would create a valid regex
+                            from app.utils.gitignore_parser import rule_from_pattern
+                            test_rule = rule_from_pattern(line, base_path=os.path.dirname(path))
+                            if test_rule:
+                                gitignore_patterns.append((line, os.path.dirname(path)))
+                        except re.error as e:
+                            logger.warning(f"Skipping invalid gitignore pattern '{line}' in {path}:{line_number}: {e}")
         except FileNotFoundError:
             logger.debug(f".gitignore not found at {path}")
         except Exception as e:
@@ -59,7 +74,15 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             patterns.extend(read_gitignore(gitignore_path))
 
         for subdir in glob.glob(os.path.join(path, "*/")):
-            patterns.extend(get_patterns_recursive(subdir))
+            # Skip directories with problematic characters that cause regex errors
+            dir_name = os.path.basename(subdir.rstrip('/'))
+            if '[' in dir_name or ']' in dir_name:
+                logger.debug(f"Skipping directory with brackets: {subdir}")
+                continue
+            try:
+                patterns.extend(get_patterns_recursive(subdir))
+            except re.error as e:
+                logger.warning(f"Skipping directory due to regex error: {subdir} - {e}")
 
         return patterns
 
@@ -77,7 +100,11 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], 
     for pattern in included_relative_dirs:
         for root, dirs, files in os.walk(os.path.normpath(os.path.join(user_codebase_dir, pattern))):
             # Filter out ignored directories and hidden directories
-            dirs[:] = [d for d in dirs if not should_ignore_fn(os.path.join(root, d)) and not d.startswith('.')]
+            # Also filter out symlinks to prevent following them into ignored directories
+            dirs[:] = [d for d in dirs 
+                      if not should_ignore_fn(os.path.join(root, d)) 
+                      and not d.startswith('.') 
+                      and not os.path.islink(os.path.join(root, d))]
 
             for file in files:
                 file_path = os.path.join(root, file)
@@ -216,10 +243,14 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 continue
                 
             entry_path = os.path.join(path, entry)
+            
+            # Skip symlinks early to prevent following them into ignored directories
             if os.path.islink(entry_path):  # Skip symlinks
+                logger.debug(f"Skipping symlink: {entry_path}")
                 continue
                 
             if should_ignore_fn(entry_path):  # Skip ignored files
+                logger.debug(f"Ignoring path: {entry_path}")
                 continue
                 
             if os.path.isdir(entry_path):
