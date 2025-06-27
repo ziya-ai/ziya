@@ -1878,8 +1878,17 @@ async def api_get_folders():
             max_depth = 15
             
         # Get ignored patterns
-        ignored_patterns = get_ignored_patterns(user_codebase_dir)
-        logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
+        try:
+            ignored_patterns = get_ignored_patterns(user_codebase_dir)
+            logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
+        except re.error as e:
+            logger.error(f"Invalid gitignore pattern detected: {e}")
+            # Use minimal default patterns if gitignore parsing fails
+            ignored_patterns = [
+                (".git", user_codebase_dir),
+                ("node_modules", user_codebase_dir),
+                ("__pycache__", user_codebase_dir)
+            ]
         
         # Use our enhanced cached folder structure function
         result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
