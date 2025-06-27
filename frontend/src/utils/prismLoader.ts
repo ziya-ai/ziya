@@ -24,6 +24,11 @@ const languageMap: { [key: string]: string } = {
     go: 'go',
     rs: 'rust',
     php: 'php',
+    objectivec: 'objectivec',
+    objc: 'objectivec',
+    'objective-c': 'objectivec',
+    swift: 'swift',
+    metal: 'c', // Metal Shading Language is C-based, use C highlighting
     sh: 'bash',
     'bash': 'bash',
     'shell': 'bash',
@@ -32,6 +37,8 @@ const languageMap: { [key: string]: string } = {
     json: 'json',
     md: 'markdown',
     sql: 'sql',
+    plist: 'markup', // Property lists are XML-based
+    xml: 'markup',
     dockerfile: 'docker',
     diff: 'diff',
     'markup': 'markup',
@@ -213,6 +220,31 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                     await import('prismjs/components/prism-markup-templating');
                     await import('prismjs/components/prism-python');
                     loadedLanguages.add('python');
+                    break;
+                }
+                case 'swift': {
+                    // Swift-specific dependencies
+                    if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
+                        await import('prismjs/components/prism-clike');
+                    }
+                    await import('prismjs/components/prism-swift');
+                    break;
+                }
+                case 'objectivec': {
+                    // Objective-C specific dependencies
+                    if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
+                        await import('prismjs/components/prism-clike');
+                    }
+                    await import('prismjs/components/prism-objectivec');
+                    // Also mark objc and objective-c as loaded
+                    loadedLanguages.add('objc');
+                    loadedLanguages.add('objective-c');
+                    break;
+                }
+                case 'cpp': {
+                    // C++ specific dependencies
+                    await import('prismjs/components/prism-clike');
+                    await import('prismjs/components/prism-cpp');
                     break;
                 }
                 default:

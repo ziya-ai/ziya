@@ -1,6 +1,7 @@
 from typing import List, Optional, Tuple
 import re
 import logging
+import difflib
 from ..core.exceptions import PatchApplicationError
 from ..core.config import get_max_offset, get_confidence_threshold
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
@@ -201,15 +202,20 @@ def apply_diff_with_difflib_hybrid_forced(
                 fuzzy_initial_pos_search
             )
             
+            # Store fuzzy match results for later use in indentation adaptation
+            hunk_fuzzy_ratio = fuzzy_best_ratio  # Store for use in indentation adaptation
+            
             # Special handling for whitespace-only changes
             if whitespace_only and (fuzzy_best_ratio < MIN_CONFIDENCE or fuzzy_best_pos is None):
                 logger.info(f"Hunk #{hunk_idx}: Detected whitespace-only change, using specialized handling")
                 fuzzy_best_pos = fuzzy_initial_pos_search
                 fuzzy_best_ratio = 0.9  # High confidence for whitespace changes
+                hunk_fuzzy_ratio = fuzzy_best_ratio
             if fuzzy_best_ratio < MIN_CONFIDENCE and is_whitespace_only_change(h['old_block'], h['new_lines']):
                 logger.info(f"Hunk #{hunk_idx}: Detected whitespace-only change, using specialized handling")
                 fuzzy_best_pos = fuzzy_initial_pos_search
                 fuzzy_best_ratio = 0.9  # High confidence for whitespace changes
+                hunk_fuzzy_ratio = fuzzy_best_ratio
             
             # --- End Inlined ---
 
@@ -338,8 +344,248 @@ def apply_diff_with_difflib_hybrid_forced(
             hunk_failures.append((f"Unexpected duplicates detected for Hunk #{hunk_idx}", failure_info))
             continue
 
-        # --- Apply the hunk (only if duplication check passes) ---
-        final_lines_with_endings[remove_pos:end_remove_pos] = new_lines_with_endings
+        # --- Apply the hunk with intelligent indentation adaptation ---
+        # Handle systematic indentation loss and indentation mismatches from fuzzy matching
+        
+        original_lines_to_replace = final_lines_with_endings[remove_pos:end_remove_pos]
+        
+        # Check if we need indentation adaptation
+        needs_indentation_adaptation = False
+        adaptation_type = None
+        
+        if len(new_lines_content) >= 1 and len(original_lines_to_replace) >= 1:
+            # Analyze indentation patterns
+            context_matches = 0
+            total_content_lines = 0
+            indentation_loss_count = 0
+            indentation_mismatch_count = 0
+            
+            # Calculate average indentation in original and new content
+            orig_indents = []
+            new_indents = []
+            
+            for new_line in new_lines_content:
+                new_content = new_line.strip()
+                if new_content:
+                    total_content_lines += 1
+                    new_indent = len(new_line) - len(new_line.lstrip())
+                    new_indents.append(new_indent)
+                    
+                    # Find matching content in original
+                    for orig_line in original_lines_to_replace:
+                        orig_content = orig_line.strip()
+                        if orig_content and re.sub(r'\s+', ' ', orig_content) == re.sub(r'\s+', ' ', new_content):
+                            context_matches += 1
+                            orig_indent = len(orig_line) - len(orig_line.lstrip())
+                            orig_indents.append(orig_indent)
+                            
+                            # Check for systematic indentation patterns
+                            indent_diff = orig_indent - new_indent
+                            if indent_diff == 1:
+                                indentation_loss_count += 1
+                            elif abs(indent_diff) > 4:  # Significant indentation mismatch
+                                indentation_mismatch_count += 1
+                            break
+            
+            # Determine adaptation strategy
+            if (total_content_lines >= 3 and 
+                context_matches >= max(2, total_content_lines * 0.6) and  # At least 60% context matches
+                indentation_loss_count >= max(2, context_matches * 0.5)):  # At least 50% have 1-space loss
+                needs_indentation_adaptation = True
+                adaptation_type = "systematic_loss"
+            elif (context_matches >= max(1, total_content_lines * 0.5) and  # At least 50% context matches
+                  indentation_mismatch_count >= max(1, context_matches * 0.5) and  # Significant mismatches
+                  orig_indents and new_indents):  # We have indentation data
+                # This is likely a fuzzy match with indentation mismatch
+                avg_orig_indent = sum(orig_indents) / len(orig_indents)
+                avg_new_indent = sum(new_indents) / len(new_indents)
+                
+                # If the diff has much more indentation than the target, adapt it
+                if avg_new_indent > avg_orig_indent + 8:  # Significant indentation difference
+                    needs_indentation_adaptation = True
+                    adaptation_type = "fuzzy_mismatch"
+                    logger.info(f"Hunk #{hunk_idx}: Detected indentation mismatch - diff avg: {avg_new_indent:.1f}, target avg: {avg_orig_indent:.1f}")
+        
+        if needs_indentation_adaptation:
+            # Apply with indentation adaptation
+            corrected_new_lines = []
+            
+            if adaptation_type == "systematic_loss":
+                # Original systematic loss handling
+                for new_line in new_lines_content:
+                    new_content = new_line.strip()
+                    
+                    if not new_content:
+                        corrected_new_lines.append(new_line + dominant_ending)
+                        continue
+                    
+                    # Look for matching content in original to preserve indentation
+                    found_original_indentation = None
+                    for orig_line in original_lines_to_replace:
+                        orig_content = orig_line.strip()
+                        if orig_content and re.sub(r'\s+', ' ', orig_content) == re.sub(r'\s+', ' ', new_content):
+                            orig_indent = orig_line[:len(orig_line) - len(orig_line.lstrip())]
+                            found_original_indentation = orig_indent
+                            break
+                    
+                    if found_original_indentation is not None:
+                        corrected_new_lines.append(found_original_indentation + new_content + dominant_ending)
+                    else:
+                        corrected_new_lines.append(new_line + dominant_ending)
+                        
+            elif adaptation_type == "fuzzy_mismatch":
+                # Adapt diff indentation to match target file's indentation style
+                # For high-confidence fuzzy matches with structural differences, 
+                # analyze the semantic intent of the diff
+                
+                if hunk_fuzzy_ratio > 0.9:  # Very high confidence
+                    # For very high confidence matches, try to understand the semantic intent
+                    old_block = h.get('old_block', [])
+                    new_lines = h.get('new_lines', [])
+                    
+                    # Check if this is a removal operation (fewer new lines than old)
+                    if len(new_lines) < len(old_block):
+                        # This is likely a removal operation
+                        # Find which lines from old_block are NOT in new_lines (these are being removed)
+                        # Find which lines from old_block ARE in new_lines (these are being kept)
+                        
+                        lines_to_remove = []
+                        lines_to_keep_content = []
+                        
+                        # Identify content that's being removed vs kept
+                        for old_line in old_block:
+                            old_content = old_line.strip()
+                            if not old_content:
+                                continue
+                                
+                            # Check if this content appears in the new_lines
+                            found_in_new = False
+                            for new_line in new_lines:
+                                new_content = new_line.strip()
+                                if new_content and re.sub(r'\s+', ' ', old_content) == re.sub(r'\s+', ' ', new_content):
+                                    found_in_new = True
+                                    lines_to_keep_content.append(old_content)
+                                    break
+                            
+                            if not found_in_new:
+                                lines_to_remove.append(old_content)
+                        
+                        logger.debug(f"Hunk #{hunk_idx}: Removal operation - keeping {len(lines_to_keep_content)} lines, removing {len(lines_to_remove)} lines")
+                        
+                        # Now apply this semantic transformation to the original lines
+                        result_lines = []
+                        skip_until_closing = None
+                        
+                        for orig_line in original_lines_to_replace:
+                            orig_content = orig_line.strip()
+                            should_keep = True
+                            
+                            # Check if this line should be removed based on semantic analysis
+                            for remove_content in lines_to_remove:
+                                # Use fuzzy matching to handle minor differences
+                                similarity = difflib.SequenceMatcher(None, 
+                                                                   re.sub(r'\s+', ' ', orig_content), 
+                                                                   re.sub(r'\s+', ' ', remove_content)).ratio()
+                                if similarity > 0.8:  # High similarity threshold
+                                    should_keep = False
+                                    logger.debug(f"Removing line due to semantic match: {repr(orig_content)}")
+                                    
+                                    # Special handling for container elements
+                                    if orig_content.startswith('<div') and not orig_content.endswith('/>'):
+                                        # This opens a container, we should skip until its closing tag
+                                        skip_until_closing = '</div>'
+                                    break
+                            
+                            # Handle skipping until closing tag
+                            if skip_until_closing and orig_content == skip_until_closing:
+                                should_keep = False
+                                skip_until_closing = None
+                                logger.debug(f"Removing closing tag: {repr(orig_content)}")
+                            elif skip_until_closing:
+                                should_keep = False
+                                logger.debug(f"Skipping content inside container: {repr(orig_content)}")
+                            
+                            if should_keep:
+                                result_lines.append(orig_line)
+                        
+                        corrected_new_lines = result_lines
+                    else:
+                        # Not a removal operation, use standard indentation adaptation
+                        corrected_new_lines = []
+                        for new_line in new_lines_content:
+                            new_content = new_line.strip()
+                            
+                            if not new_content:
+                                corrected_new_lines.append(new_line + dominant_ending)
+                                continue
+                            
+                            # Find the best matching line in the original to determine target indentation
+                            best_match_indent = None
+                            best_match_ratio = 0.0
+                            
+                            for orig_line in original_lines_to_replace:
+                                orig_content = orig_line.strip()
+                                if orig_content:
+                                    # Calculate content similarity
+                                    content_ratio = difflib.SequenceMatcher(None, 
+                                                                          re.sub(r'\s+', ' ', new_content), 
+                                                                          re.sub(r'\s+', ' ', orig_content)).ratio()
+                                    if content_ratio > best_match_ratio:
+                                        best_match_ratio = content_ratio
+                                        best_match_indent = orig_line[:len(orig_line) - len(orig_line.lstrip())]
+                            
+                            # If we found a good match, use its indentation
+                            if best_match_indent is not None and best_match_ratio > 0.6:
+                                corrected_new_lines.append(best_match_indent + new_content + dominant_ending)
+                            else:
+                                # Use common indentation from original
+                                if original_lines_to_replace:
+                                    indents = [len(line) - len(line.lstrip()) 
+                                             for line in original_lines_to_replace if line.strip()]
+                                    if indents:
+                                        common_indent = max(set(indents), key=indents.count)
+                                        adapted_indent = ' ' * common_indent
+                                        corrected_new_lines.append(adapted_indent + new_content + dominant_ending)
+                                    else:
+                                        corrected_new_lines.append(new_line + dominant_ending)
+                                else:
+                                    corrected_new_lines.append(new_line + dominant_ending)
+                else:
+                    # Lower confidence, use standard indentation adaptation
+                    corrected_new_lines = []
+                    for new_line in new_lines_content:
+                        new_content = new_line.strip()
+                        
+                        if not new_content:
+                            corrected_new_lines.append(new_line + dominant_ending)
+                            continue
+                        
+                        # Use the most common indentation level in the original lines
+                        if original_lines_to_replace:
+                            indents = []
+                            for orig_line in original_lines_to_replace:
+                                if orig_line.strip():
+                                    indent_len = len(orig_line) - len(orig_line.lstrip())
+                                    indents.append(indent_len)
+                            
+                            if indents:
+                                # Use the most common indentation level
+                                common_indent = max(set(indents), key=indents.count)
+                                adapted_indent = ' ' * common_indent
+                                corrected_new_lines.append(adapted_indent + new_content + dominant_ending)
+                            else:
+                                corrected_new_lines.append(new_line + dominant_ending)
+                        else:
+                            corrected_new_lines.append(new_line + dominant_ending)
+            
+            final_lines_with_endings[remove_pos:end_remove_pos] = corrected_new_lines
+            logger.info(f"Hunk #{hunk_idx}: Applied indentation adaptation ({adaptation_type})")
+        else:
+            # Standard application
+            new_lines_with_endings = []
+            for line in new_lines_content:
+                new_lines_with_endings.append(line + dominant_ending)
+            final_lines_with_endings[remove_pos:end_remove_pos] = new_lines_with_endings
 
         # --- Update Offset ---
         # The actual number of lines removed might be different from actual_remove_count
