@@ -1398,7 +1398,7 @@ def verify_hunks_with_file_content(pipeline: DiffPipeline, hunk_status: Dict[int
     # Parse the hunks from the diff
     from ..parsing.diff_parser import parse_unified_diff_exact_plus
     try:
-        hunks = list(parse_unified_diff_exact_plus(pipeline.git_diff, pipeline.file_path))
+        hunks = list(parse_unified_diff_exact_plus(pipeline.current_diff, pipeline.file_path))
     except Exception as e:
         logger.error(f"Error parsing diff: {str(e)}")
         # Mark all needs_verification hunks as failed

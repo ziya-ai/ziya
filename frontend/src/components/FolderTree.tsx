@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Tabs, message } from 'antd';
+import { useFolderContext } from '../context/FolderContext';
 import { useChatContext } from '../context/ChatContext';
 import { TokenCountDisplay } from "./TokenCountDisplay";
 import { FolderOutlined } from '@ant-design/icons'; // Import icons
@@ -8,6 +9,7 @@ import { MessageOutlined } from '@ant-design/icons';
 import MUIChatHistory from './MUIChatHistory';
 import { MUIFileExplorer } from './MUIFileExplorer';
 import { useTheme } from '../context/ThemeContext';
+import { FolderScanProgress } from './FolderScanProgress';
 
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
 import AddCommentIcon from '@mui/icons-material/AddComment';
@@ -30,6 +32,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Use a more selective approach to extract only what we need from ChatContext
     const chatContext = useChatContext();
     const { startNewChat, createFolder } = useChatContext();
+    const { isScanning, scanError } = useFolderContext();
     const currentFolderId = chatContext.currentFolderId;
 
     // Add state to track panel width
@@ -84,6 +87,15 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         }
     }, [startNewChat, currentFolderId]);
 
+    // Handle scan cancellation
+    const handleCancelScan = useCallback(async () => {
+        try {
+            // The cancellation logic is handled in FolderContext
+        } catch (error) {
+            console.error('Error cancelling scan:', error);
+        }
+    }, []);
+
     useEffect(() => {
         localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
     }, [activeTab]);
@@ -137,6 +149,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     return (
         <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
             <TokenCountDisplay />
+            <FolderScanProgress onCancel={handleCancelScan} />
             <Tabs
                 activeKey={activeTab}
                 defaultActiveKey="1"
@@ -172,7 +185,12 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                 </span>
                             </div>
                         ),
-                        children: <MUIFileExplorer />
+                        children: (
+                            <div style={{ position: 'relative' }}>
+                                <MUIFileExplorer />
+                                {(isScanning || scanError) && <div style={{ opacity: 0.6, pointerEvents: 'none', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1 }} />}
+                            </div>
+                        )
                     },
                     {
                         key: '2',

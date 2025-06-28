@@ -3708,20 +3708,41 @@ const cleanDiffContent = (content: string): string => {
             line.startsWith('@@ ')) {
             return line;
         }
-        // Handle content lines with various line number formats
-        // Matches: [NNN ], [NNN+], [NNN,+], [NNN*]
-        const match = line.match(/^(\s*)([+-]+\s*)?\[(\d+)(?:[+*]|\s*,\s*[+-\s])?\s*\](\s*)(.*?)$/);
-        if (match) {
-            const [_, leadingSpace, marker, _num, postSpace, content] = match;
-            // Preserve exact whitespace and handle markers
-            if (marker && marker.trim()) {
-                // For add/remove lines, keep original marker and all whitespace
-                return `${marker.trim()}${postSpace.substring(1)}${content}`;
+        
+        // Handle offset diff format lines
+        // Pattern: optional leading spaces + optional +/- + [number + optional modifier] + space + content
+        // Examples: [001 ], [002+], [003*], [004,+], +[005 ], -[006 ]
+        const offsetMatch = line.match(/^(\s*)([+-]?)?\[(\d+)([+*,\s]*)\]\s(.*)⟩/);
+        if (offsetMatch) {
+            const [_, leadingSpace, diffMarker, lineNum, modifier, content] = offsetMatch;
+            
+            // Determine the actual diff marker based on the modifier or explicit marker
+            let actualMarker = '';
+            if (diffMarker) {
+                // Explicit +/- before the bracket
+                actualMarker = diffMarker;
+            } else if (modifier.includes('+')) {
+                // [NNN+] format - addition
+                actualMarker = '+';
+            } else if (modifier.includes('*')) {
+                // [NNN*] format - modification (treat as context)
+                actualMarker = ' ';
             } else {
-                // For context lines, ensure we have a space marker
-                return `${postSpace}${content}`;
+                // [NNN ] format - context line
+                actualMarker = ' ';
             }
+            
+            return `${actualMarker}${content}`;
         }
+        
+        // Handle lines that might have been partially processed or malformed
+        const simpleOffsetMatch = line.match(/^\s*\[(\d+)[+*\s]*\]\s*(.*)$/);
+        if (simpleOffsetMatch) {
+            const [_, lineNum, content] = simpleOffsetMatch;
+            return ` ${content}`;
+        }
+        
+        // Return line unchanged if no offset format detected
         return line;
     });
     return cleanedLines.join('\n');

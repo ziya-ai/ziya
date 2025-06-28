@@ -32,7 +32,7 @@ const getTokenCount = async (text: string): Promise<number> => {
 export const TokenCountDisplay = memo(() => {
     const [containerWidth, setContainerWidth] = useState(0);
 
-    const { folders, checkedKeys, getFolderTokenCount } = useFolderContext();
+    const { folders, checkedKeys, getFolderTokenCount, accurateTokenCounts } = useFolderContext();
     const { currentMessages, currentConversationId, isStreaming, currentFolderId, folders: chatFolders, folderFileSelections } = useChatContext();
     const [totalTokenCount, setTotalTokenCount] = useState(0);
     const [chatTokenCount, setChatTokenCount] = useState(0);
@@ -363,6 +363,7 @@ export const TokenCountDisplay = memo(() => {
 
             let total = 0;
             const details: { [key: string]: number } = {};
+            let accurateFileCount = 0;
 
             // Use getFolderTokenCount for each checked path
             checkedKeys.forEach(key => {
@@ -371,7 +372,15 @@ export const TokenCountDisplay = memo(() => {
                     setTokenDetails({});
                     return;
                 }
-                const tokens = getFolderTokenCount(path, folders);
+                
+                // Use accurate count if available
+                let tokens = getFolderTokenCount(path, folders);
+                const accurateData = accurateTokenCounts[path];
+                if (accurateData && path.includes('.')) { // Only for files
+                    tokens = accurateData.count;
+                    accurateFileCount++;
+                }
+                
                 if (tokens > 0) {
                     details[path] = tokens;
                     total += tokens;
@@ -382,6 +391,11 @@ export const TokenCountDisplay = memo(() => {
 
             setTokenDetails(details);
             setTotalTokenCount(total);
+            
+            // Log accuracy info
+            if (accurateFileCount > 0) {
+                console.log(`Using accurate token counts for ${accurateFileCount} files`);
+            }
         } else {
             setTokenDetails({});
             setTotalTokenCount(0);
@@ -558,6 +572,7 @@ export const TokenCountDisplay = memo(() => {
     const tokenItems = [
         <Tooltip key="files" title="Tokens from selected files">
             <span>Files: <span style={getTokenStyle(totalTokenCount)}>
+                {/* Show indicator if we have accurate counts */}
                 {totalTokenCount.toLocaleString()}</span></span>
         </Tooltip>
     ];

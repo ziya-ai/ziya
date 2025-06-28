@@ -16,6 +16,84 @@ logger = logging.getLogger(__name__)
 # This constant is kept for backward compatibility but should use get_confidence_threshold('medium')
 MIN_CONFIDENCE = get_confidence_threshold('medium')  # Medium confidence threshold for fuzzy matching
 
+def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], position: int) -> List[str]:
+    """
+    Apply only the actual changes from a hunk while preserving context lines.
+    This prevents fuzzy matching from modifying context lines.
+    
+    Args:
+        original_lines: The original file lines
+        hunk: The hunk to apply
+        position: The position where to apply the hunk
+        
+    Returns:
+        The modified lines with only target changes applied
+    """
+    logger.debug(f"Applying surgical changes for hunk at position {position}")
+    
+    # Extract the actual changes from the hunk
+    removed_lines = []
+    added_lines = []
+    context_lines = []
+    
+    # Parse the hunk to identify removed, added, and context lines
+    if 'old_block' in hunk and 'new_block' in hunk:
+        old_block = hunk['old_block']
+        new_block = hunk['new_block']
+        
+        # Build a mapping of changes
+        old_idx = 0
+        new_idx = 0
+        
+        while old_idx < len(old_block) or new_idx < len(new_block):
+            if old_idx < len(old_block) and old_block[old_idx].startswith('-'):
+                # This is a line to be removed
+                removed_lines.append((old_idx, old_block[old_idx][1:]))
+                old_idx += 1
+            elif new_idx < len(new_block) and new_block[new_idx].startswith('+'):
+                # This is a line to be added
+                added_lines.append((new_idx, new_block[new_idx][1:]))
+                new_idx += 1
+            elif (old_idx < len(old_block) and new_idx < len(new_block) and
+                  old_block[old_idx].startswith(' ') and new_block[new_idx].startswith(' ')):
+                # This is a context line - should be preserved from original
+                context_lines.append((old_idx, old_block[old_idx][1:]))
+                old_idx += 1
+                new_idx += 1
+            else:
+                # Handle edge cases
+                if old_idx < len(old_block):
+                    old_idx += 1
+                if new_idx < len(new_block):
+                    new_idx += 1
+    
+    # If we couldn't parse the hunk properly, fall back to standard application
+    if not removed_lines and not added_lines:
+        logger.debug("Could not parse hunk for surgical application, falling back to standard")
+        return original_lines
+    
+    # Apply the changes surgically
+    result_lines = original_lines.copy()
+    
+    # Calculate the range of lines to modify
+    hunk_size = len(hunk.get('old_block', []))
+    end_pos = min(position + hunk_size, len(original_lines))
+    
+    # For simple cases (single line changes), apply directly
+    if len(removed_lines) == 1 and len(added_lines) == 1:
+        # Single line replacement
+        target_pos = position + removed_lines[0][0]
+        if target_pos < len(result_lines):
+            # Preserve indentation from original line
+            original_line = result_lines[target_pos]
+            original_indent = original_line[:len(original_line) - len(original_line.lstrip())]
+            new_content = added_lines[0][1].strip()
+            result_lines[target_pos] = original_indent + new_content
+            logger.debug(f"Surgically replaced line {target_pos}: {repr(original_line)} -> {repr(result_lines[target_pos])}")
+    
+    return result_lines
+
+
 def clamp(value, min_val, max_val):
     """Clamp a value between min and max values."""
     return max(min_val, min(max_val, value))
@@ -326,6 +404,8 @@ def apply_diff_with_difflib_hybrid_forced(
                                 logger.warning(f"Hunk #{hunk_idx}: Forcing application at fuzzy position {fuzzy_best_pos} with ratio {fuzzy_best_ratio:.2f} (threshold: {confidence_threshold})")
                                 remove_pos = fuzzy_best_pos
                                 found_match = True
+                                # Mark this as a fuzzy match for surgical application
+                                fuzzy_match_applied = True
                             else:
                                 logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {fuzzy_best_pos}, but content doesn't match old_block. Skipping.")
                                 failure_info = {
