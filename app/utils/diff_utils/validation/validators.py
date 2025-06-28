@@ -169,6 +169,10 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     removed_lines, added_lines = extract_diff_changes(hunk)
     new_lines = hunk.get('new_lines', [])
     
+    logger.debug(f"  Extracted removed_lines: {removed_lines}")
+    logger.debug(f"  Extracted added_lines: {added_lines}")
+    logger.debug(f"  Hunk new_lines: {new_lines}")
+    
     # Validate hunk header if present
     if not _is_valid_hunk_header(hunk):
         return False
@@ -180,14 +184,21 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     
     # For pure additions, check if content already exists in file
     if len(removed_lines) == 0 and len(added_lines) > 0:
-        return _check_pure_addition_already_applied(file_lines, added_lines)
+        logger.debug(f"Processing as pure addition with {len(added_lines)} added lines")
+        result = _check_pure_addition_already_applied(file_lines, added_lines)
+        logger.debug(f"Pure addition check result: {result}")
+        return result
     
     # For hunks with removals, validate that the content to be removed matches
     if removed_lines and not _validate_removal_content(file_lines, removed_lines, pos):
+        logger.debug("Removal content validation failed")
         return False
     
     # Check if the expected result (new_lines) is already present at this position
-    return _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace)
+    logger.debug(f"Checking expected content match at position {pos}")
+    result = _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace)
+    logger.debug(f"Expected content match result: {result}")
+    return result
 
 
 def _is_valid_hunk_header(hunk: Dict[str, Any]) -> bool:
@@ -206,46 +217,118 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     added_content = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
     file_content = "\n".join([normalize_line_for_comparison(line) for line in file_lines])
     
+    logger.debug(f"Checking pure addition - added_content: {repr(added_content)}")
+    logger.debug(f"File content preview: {repr(file_content[:200])}...")
+    
     if added_content not in file_content:
         logger.debug("Pure addition not found in file content")
         return False
     
+    logger.debug("Pure addition content found in file, checking for duplicate declarations")
     # Check for duplicate declarations
-    return _check_duplicate_declarations(file_lines, added_lines)
+    result = _check_duplicate_declarations(file_lines, added_lines)
+    logger.debug(f"Duplicate declarations check result: {result}")
+    return result
 
 
 def _check_duplicate_declarations(file_lines: List[str], added_lines: List[str]) -> bool:
     """Check if added lines contain declarations that already exist in the file."""
+    for added_line in added_lines:
+        # Handle import statements specifically
+        if _is_import_statement(added_line):
+            if _is_import_already_present(file_lines, added_line):
+                logger.debug(f"Found duplicate import: {added_line.strip()}")
+                return True
+        else:
+            # Handle other declarations
+            if _is_other_declaration_duplicate(file_lines, added_line):
+                return True
+    return False
+
+
+def _is_import_statement(line: str) -> bool:
+    """Check if a line is an import statement."""
+    normalized = line.strip()
+    return (normalized.startswith('import ') or 
+            normalized.startswith('from ') or
+            normalized.startswith('const ') and ' = require(' in normalized)
+
+
+def _is_import_already_present(file_lines: List[str], import_line: str) -> bool:
+    """Check if an import statement is already present in the file."""
+    # Extract the imported module/items from the import line
+    import_line = import_line.strip()
+    logger.debug(f"Checking if import already present: {repr(import_line)}")
+    
+    # Handle ES6 imports: import {X, Y} from 'module'
+    es6_match = re.match(r'import\s+(?:\{([^}]+)\}|\*\s+as\s+\w+|\w+)\s+from\s+[\'"]([^\'"]+)[\'"]', import_line)
+    if es6_match:
+        imported_items = es6_match.group(1)
+        module_name = es6_match.group(2)
+        logger.debug(f"ES6 import detected - items: {imported_items}, module: {module_name}")
+        
+        # Check if the exact same import already exists
+        for i, line in enumerate(file_lines):
+            line = line.strip()
+            if line == import_line:
+                logger.debug(f"Found exact import match at line {i}: {repr(line)}")
+                return True
+            
+            # Check if importing from the same module
+            existing_match = re.match(r'import\s+(?:\{([^}]+)\}|\*\s+as\s+\w+|\w+)\s+from\s+[\'"]([^\'"]+)[\'"]', line)
+            if existing_match and existing_match.group(2) == module_name:
+                # If importing from same module, check if the specific items are already imported
+                if imported_items:
+                    existing_items = existing_match.group(1)
+                    if existing_items and imported_items in existing_items:
+                        logger.debug(f"Found import from same module with overlapping items at line {i}: {repr(line)}")
+                        return True
+    
+    # Handle CommonJS imports: const X = require('module')
+    cjs_match = re.match(r'const\s+(\w+)\s*=\s*require\([\'"]([^\'"]+)[\'"]\)', import_line)
+    if cjs_match:
+        var_name = cjs_match.group(1)
+        module_name = cjs_match.group(2)
+        logger.debug(f"CommonJS import detected - var: {var_name}, module: {module_name}")
+        
+        for i, line in enumerate(file_lines):
+            line = line.strip()
+            if line == import_line:
+                logger.debug(f"Found exact CommonJS import match at line {i}: {repr(line)}")
+                return True
+            # Check for same variable name and module
+            existing_match = re.match(r'const\s+(\w+)\s*=\s*require\([\'"]([^\'"]+)[\'"]\)', line)
+            if existing_match and existing_match.group(1) == var_name and existing_match.group(2) == module_name:
+                logger.debug(f"Found CommonJS import with same var/module at line {i}: {repr(line)}")
+                return True
+    
+    logger.debug("No matching import found")
+    return False
+
+
+def _is_other_declaration_duplicate(file_lines: List[str], added_line: str) -> bool:
+    """Check if non-import declarations are duplicates."""
     declaration_patterns = [
-        r'const\s+\w+\s*=',  # const x =
-        r'let\s+\w+\s*=',    # let x =
-        r'var\s+\w+\s*=',    # var x =
-        r'function\s+\w+\s*\(',  # function x(
-        r'class\s+\w+\s*{',  # class x {
-        r'interface\s+\w+\s*{',  # interface x {
-        r'type\s+\w+\s*=',   # type x =
-        r'enum\s+\w+\s*{',   # enum x {
+        r'const\s+(\w+)\s*=',  # const x =
+        r'let\s+(\w+)\s*=',    # let x =
+        r'var\s+(\w+)\s*=',    # var x =
+        r'function\s+(\w+)\s*\(',  # function x(
+        r'class\s+(\w+)\s*{',  # class x {
+        r'interface\s+(\w+)\s*{',  # interface x {
+        r'type\s+(\w+)\s*=',   # type x =
+        r'enum\s+(\w+)\s*{',   # enum x {
     ]
     
-    for added_line in added_lines:
-        for pattern in declaration_patterns:
-            match = re.search(pattern, added_line)
-            if match:
-                # Extract declaration name
-                declaration_name = None
-                for m in re.finditer(r'\b(\w+)\b', added_line[match.start():]):
-                    if m.group(1) not in ['const', 'let', 'var', 'function', 'class', 'interface', 'type', 'enum']:
-                        declaration_name = m.group(1)
-                        break
-                
-                if declaration_name:
-                    # Check if this declaration already exists elsewhere in the file
-                    for line in file_lines:
-                        if declaration_name in line:
-                            for p in declaration_patterns:
-                                if re.search(p + r'.*\b' + re.escape(declaration_name) + r'\b', line):
-                                    logger.debug(f"Found duplicate declaration of '{declaration_name}'")
-                                    return True
+    for pattern in declaration_patterns:
+        match = re.search(pattern, added_line)
+        if match:
+            declaration_name = match.group(1)
+            
+            # Check if this exact declaration already exists in the file
+            for line in file_lines:
+                if re.search(pattern.replace(r'(\w+)', re.escape(declaration_name)), line):
+                    logger.debug(f"Found duplicate declaration of '{declaration_name}'")
+                    return True
     return False
 
 
