@@ -438,28 +438,41 @@ def extract_hunk_from_diff(diff_content: str, hunk_id: int, line_adjustment: int
         # Construct the content lines
         content_lines = []
         
-        # Use the 'lines' field if available, otherwise reconstruct from old_block and new_lines
+        # Use the 'lines' field if available, which preserves the original diff structure
         if 'lines' in target_hunk and target_hunk['lines']:
             content_lines = target_hunk['lines']
         else:
-            # Reconstruct the content lines
-            old_block = target_hunk['old_block']
-            new_lines = target_hunk['new_lines']
+            # Fallback: reconstruct from old_block and new_lines
+            # This is a more complex reconstruction that tries to preserve order
+            logger.warning(f"Hunk #{hunk_id} missing 'lines' field, attempting reconstruction")
             
-            # Find lines that are in both old_block and new_lines (context lines)
-            context_lines = set(old_block) & set(new_lines)
+            old_block = target_hunk.get('old_block', [])
+            new_lines = target_hunk.get('new_lines', [])
+            removed_lines = target_hunk.get('removed_lines', [])
+            added_lines = target_hunk.get('added_lines', [])
             
-            # Add removed lines (in old_block but not in context_lines)
+            # Create a simple reconstruction by interleaving removed and added lines
+            # This is not perfect but better than the previous approach
+            old_idx = 0
+            new_idx = 0
+            
+            # First add all removed lines
+            for line in removed_lines:
+                content_lines.append(f"-{line}")
+            
+            # Then add all added lines
+            for line in added_lines:
+                content_lines.append(f"+{line}")
+            
+            # Add context lines (lines that appear in both old and new)
+            context_lines = []
             for line in old_block:
-                if line not in context_lines:
-                    content_lines.append(f"-{line}")
+                if line in new_lines and line not in removed_lines:
+                    context_lines.append(f" {line}")
             
-            # Add context lines and added lines
-            for line in new_lines:
-                if line in context_lines:
-                    content_lines.append(f" {line}")
-                else:
-                    content_lines.append(f"+{line}")
+            # Insert context lines at the beginning if they exist
+            if context_lines:
+                content_lines = context_lines + content_lines
         
         return '\n'.join(header_lines + content_lines)
         

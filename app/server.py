@@ -1346,6 +1346,11 @@ _folder_cache = {'timestamp': 0, 'data': None}
 @app.post("/folder")
 async def get_folder(request: FolderRequest):
     """Get the folder structure of a directory with improved error handling."""
+    # Add timeout configuration
+    timeout = int(os.environ.get("ZIYA_SCAN_TIMEOUT", "45"))
+    logger.info(f"Starting folder scan with {timeout}s timeout for: {request.directory}")
+    logger.info(f"Max depth: {request.max_depth}")
+    
     start_time = time.time()
     logger.info(f"Starting folder scan for: {request.directory}")
     logger.info(f"Max depth: {request.max_depth}")
@@ -1392,18 +1397,54 @@ async def get_folder(request: FolderRequest):
         # Check if we got an error result
         if isinstance(result, dict) and "error" in result:
             logger.warning(f"Folder scan returned error: {result['error']}")
+            
+            # For timeout errors, provide more helpful response
+            if result.get("timeout"):
+                result["suggestion"] = f"Scan timed out after {timeout}s. Try:\n" + \
+                                     "1. Increase timeout with ZIYA_SCAN_TIMEOUT environment variable\n" + \
+                                     "2. Reduce max depth\n" + \
+                                     "3. Add more patterns to .gitignore to exclude large directories"
+                result["timeout_seconds"] = timeout
             # Add helpful context for home directory scans
             if "home" in request.directory.lower() or request.directory.endswith(os.path.expanduser("~")):
                 result["suggestion"] = "Home directory scans can be very slow. Consider using a specific project directory instead."
             return result
             
         logger.info(f"Folder scan completed successfully in {time.time() - start_time:.2f}s")
+        
+        # Add metadata about the scan
+        if isinstance(result, dict):
+            result["_scan_time"] = time.time() - start_time
+            result["_timeout_used"] = timeout
+            
         return result
     except Exception as e:
         logger.error(f"Error in get_folder: {e}")
         return {"error": str(e)}
 
-@app.post("/file")
+# Import scan progress from directory_util
+from app.utils.directory_util import get_scan_progress, cancel_scan, _scan_progress
+
+@app.get("/folder-progress")
+async def get_folder_progress():
+    """Get current folder scanning progress."""
+    progress = get_scan_progress()
+    # Only return active=True if there's actual progress to report
+    if progress["active"] and not progress["progress"]:
+        # No actual progress data, don't report as active
+        progress["active"] = False
+        progress["progress"] = {}
+    return progress
+
+@app.post("/folder-cancel")
+async def cancel_folder_scan():
+    """Cancel current folder scanning operation."""
+    was_active = cancel_scan()
+    if was_active:
+        logger.info("Folder scan cancellation requested")
+        return {"status": "cancellation_requested"}
+    else:
+        return {"status": "no_active_scan"}
 async def get_file(request: FileRequest):
     """Get the content of a file."""
     try:
@@ -1846,10 +1887,12 @@ async def api_get_folders():
     """Get the folder structure for API compatibility with improved error handling."""
     try:
         # Get the user's codebase directory
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
         if not user_codebase_dir:
-            logger.error("ZIYA_USER_CODEBASE_DIR environment variable not set")
-            return {"error": "Server configuration error: codebase directory not set"}
+            logger.warning("ZIYA_USER_CODEBASE_DIR environment variable not set")
+            user_codebase_dir = os.getcwd()
+            logger.info(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {user_codebase_dir}")
+            os.environ["ZIYA_USER_CODEBASE_DIR"] = user_codebase_dir
             
         # Validate the directory exists and is accessible
         if not os.path.exists(user_codebase_dir):
@@ -1883,10 +1926,15 @@ async def api_get_folders():
         
         # Use our enhanced cached folder structure function
         result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
-        
         # Check if we got an error result
         if isinstance(result, dict) and "error" in result:
             logger.warning(f"Folder scan returned error: {result['error']}")
+            
+            # If the result is completely empty, try to return at least some basic structure
+            if not result.get('children') and not result.get('token_count'):
+                logger.warning("Empty result returned, creating minimal folder structure")
+                result = {"_error": result['error'], "app": {"token_count": 0, "children": {}}}
+                
             return result
             
         # Log a sample of the result to see if token counts are included
@@ -2322,6 +2370,42 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
         logger.error(f"Error counting tokens: {str(e)}", exc_info=True)
         # Return 0 in case of error to avoid breaking the frontend
         return {"token_count": 0}
+
+class AccurateTokenCountRequest(BaseModel):
+    file_paths: List[str]
+    
+@app.post('/api/accurate-token-count')
+async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[str, Any]:
+    """Get accurate token counts for specific files."""
+    try:
+        from app.utils.directory_util import get_accurate_token_count
+        import os
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        logger.info(f"Accurate token count requested for {len(request.file_paths)} files")
+        if not user_codebase_dir:
+            raise ValueError("ZIYA_USER_CODEBASE_DIR not set")
+        
+        results = {}
+        for file_path in request.file_paths:
+            full_path = os.path.join(user_codebase_dir, file_path)
+            if os.path.exists(full_path) and os.path.isfile(full_path):
+                accurate_count = get_accurate_token_count(full_path)
+                # Get the estimated count for comparison
+                from app.utils.directory_util import estimate_tokens_fast
+                estimated_count = estimate_tokens_fast(full_path)
+                logger.info(f"File: {file_path} - Accurate: {accurate_count} vs Estimated: {estimated_count}")
+                results[file_path] = {
+                    "accurate_count": accurate_count,
+                    "timestamp": int(time.time())
+                }
+            else:
+                results[file_path] = {"accurate_count": 0, "error": "File not found"}
+                
+        return {"results": results, "debug_info": {"files_processed": len(results)}}
+    except Exception as e:
+        logger.error(f"Error getting accurate token counts: {str(e)}")
+        return {"error": str(e), "results": {}}
 
 @app.get('/api/cache-stats')
 async def get_cache_stats():

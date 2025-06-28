@@ -14,7 +14,7 @@ diff --git a/test.py b/test.py
      
      # Add text with actual escape sequences
      text += "Actual tab:\t<tab>\n"
-@@ -21,8 +21,12 @@ def parse_escaped_text(text):
+@@ -21,8 +21,16 @@ def parse_escaped_text(text):
      """Parse text with escape sequences"""
      
      # Replace escape sequences with actual characters
@@ -29,5 +29,9 @@ diff --git a/test.py b/test.py
 +        ("\\n", "\n"),
 +        ("\\t", "\t")
 +    ]
++    
++    for old, new in replacements:
++        result = result.replace(old, new)
      
 -    return result
++    return result
