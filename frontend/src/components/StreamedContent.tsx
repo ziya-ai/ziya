@@ -98,7 +98,6 @@ export const StreamedContent: React.FC = () => {
     // Update the ref whenever streamed content changes
     useEffect(() => {
         streamedContentRef.current = streamedContent;
-        console.log('Streamed content updated:', streamedContent.substring(0, 100));
     }, [streamedContent]);
 
     // Add direct method to stop streaming
@@ -364,7 +363,7 @@ export const StreamedContent: React.FC = () => {
                 let preservedContent = preserved_content || '';
                 // Use the existing streamed content from the error data, or fall back to what's in the map
                 const actualExistingContent = existing_streamed_content || streamedContentMap.get(currentConversationId) || '';
-                
+
                 if (actualExistingContent && actualExistingContent.trim()) {
                     // If we have existing streamed content, preserve it at the top
                     preservedContent = actualExistingContent + '\n\n---\n\n**⚠️ Response was interrupted by an error, but content above was successfully generated.**\n\n' + preservedContent;

@@ -655,13 +655,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
     useEffect(() => {
         currentConversationRef.current = currentConversationId;
         folderRef.current = currentFolderId;
-        console.log('Current conversation ref updated:', {
-            id: currentConversationId,
-            streamingConversations: Array.from(streamingConversations),
-            hasStreamingContent: Array.from(streamedContentMap.keys()),
-            activeConversations: conversations.filter(c => c.isActive).map(c => c.id),
-            streamingToOther: streamingConversations.has(currentConversationId)
-        });
     }, [currentConversationId, conversations, currentFolderId, streamedContentMap, streamingConversations]);
 
     const mergeConversations = useCallback((local: Conversation[], remote: Conversation[]) => {
@@ -774,7 +767,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }));
             return updated;
         });
-        
+
         // Force currentMessages to update
         setMessageUpdateCounter(prev => prev + 1);
     }, [queueSave]);

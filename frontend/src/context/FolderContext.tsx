@@ -1,8 +1,10 @@
 import React, { createContext, ReactNode, useContext, useCallback, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
 import { Folders } from "../utils/types";
+import { message } from 'antd';
 import { convertToTreeData } from "../utils/folderUtil";
 import { useChatContext } from "./ChatContext";
 import { TreeDataNode } from "antd";
+import { debounce } from "../utils/debounce";
 
 export interface FolderContextType {
   folders: Folders | undefined;
@@ -14,7 +16,16 @@ export interface FolderContextType {
   setSearchValue: React.Dispatch<React.SetStateAction<string>>;
   expandedKeys: React.Key[];
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>;
+  // New scanning state
+  isScanning: boolean;
+  scanProgress: {
+    directories: number;
+    files: number;
+    elapsed: number;
+  } | null;
+  scanError: string | null;
   getFolderTokenCount: (path: string, folderData: Folders) => number;
+  accurateTokenCounts: Record<string, { count: number; timestamp: number }>;
 }
 
 const FolderContext = createContext<FolderContextType | undefined>(undefined);
@@ -34,6 +45,15 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
   });
+
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<{ directories: number; files: number; elapsed: number } | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const scanTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [forceRefreshCounter, setForceRefreshCounter] = useState(0);
+  const [accurateTokenCounts, setAccurateTokenCounts] = useState<Record<string, { count: number; timestamp: number }>>({});
+  const accurateCountTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Monitor FolderProvider render performance
   // Remove performance monitoring that's causing overhead
@@ -66,6 +86,93 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     return 0;
   }, []);
 
+  // Function to get accurate token counts for selected files
+  const getAccurateTokenCounts = useCallback(async (filePaths: string[]) => {
+    if (filePaths.length === 0) return;
+    
+    // Filter out files we already have recent accurate counts for (within 5 minutes)
+    const now = Date.now() / 1000;
+    const filesToUpdate = filePaths.filter(path => {
+      const existing = accurateTokenCounts[path];
+      return !existing || (now - existing.timestamp) > 300; // 5 minutes
+    });
+    
+    if (filesToUpdate.length === 0) return;
+    
+    try {
+      console.log(`Getting accurate token counts for ${filesToUpdate.length} files`);
+      const response = await fetch('/api/accurate-token-count', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_paths: filesToUpdate }),
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to get accurate token counts: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('Received accurate token counts:', data);
+      if (data.results) {
+        setAccurateTokenCounts(prev => {
+          const updated = { ...prev };
+          Object.entries(data.results).forEach(([path, result]: [string, any]) => {
+            if (result.accurate_count !== undefined) {
+              updated[path] = {
+                count: result.accurate_count,
+                timestamp: result.timestamp
+              };
+            }
+          });
+          
+          // Debug log to compare with estimated counts
+          Object.entries(updated).forEach(([path, result]) => {
+            const estimatedCount = folders ? getFolderTokenCount(path, folders) : 0;
+            console.log(`Path: ${path} - Accurate: ${result.count}, Estimated: ${estimatedCount}, Difference: ${result.count - estimatedCount}`);
+          });
+          
+          return updated;
+        });
+        
+        // Force a refresh of components that depend on token counts
+        setForceRefreshCounter(prev => prev + 1);
+        
+        // Trigger a recalculation of the tree data to update parent directories
+        if (treeData.length > 0) {
+          // Create a deep copy of the tree data with updated token counts
+          try {
+            // Force a deep copy of the tree data to trigger a re-render
+            const deepCopy = JSON.parse(JSON.stringify(treeData));
+            
+            // Update the tree data to trigger recalculation
+            setTreeData(deepCopy);
+            
+            // Clear any token calculation caches that might exist in other components
+            // This is a custom event that MUIFileExplorer will listen for
+            const event = new CustomEvent('accurateTokenCountsUpdated', {
+              detail: { updatedPaths: Object.keys(data.results) }
+            });
+            window.dispatchEvent(event);
+          } catch (error) {
+            console.error('Error updating tree data:', error);
+          }
+        }
+        console.log(`Updated accurate token counts for ${Object.keys(data.results).length} files`);
+      }
+      
+    } catch (error) {
+      console.error('Error getting accurate token counts:', error);
+    }
+  }, [accurateTokenCounts]);
+
+  // Debounced function to get accurate counts
+  const debouncedGetAccurateCounts = useCallback(
+    debounce((filePaths: string[]) => {
+      getAccurateTokenCounts(filePaths);
+    }, 1000), // Wait 1 second after selection changes
+    [getAccurateTokenCounts]
+  );
+
   // Save expanded folders whenever they change
   useEffect(() => {
     try {
@@ -84,17 +191,134 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   }, [checkedKeys]);
 
+  // Get accurate token counts for selected files
+  useEffect(() => {
+    if (!folders || checkedKeys.length === 0) return;
+    
+    // Extract file paths from checked keys (exclude directories)
+    const filePaths = checkedKeys.filter(key => {
+      const keyStr = String(key);
+      // Simple heuristic: if it has an extension, it's likely a file
+      return keyStr.includes('.') && !keyStr.endsWith('/');
+    }).map(key => String(key));
+    
+    if (filePaths.length > 0) {
+      console.log(`Scheduling accurate token count for ${filePaths.length} selected files`);
+      debouncedGetAccurateCounts(filePaths);
+    }
+  }, [checkedKeys, folders, debouncedGetAccurateCounts]);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (accurateCountTimeoutRef.current) clearTimeout(accurateCountTimeoutRef.current);
+    };
+  }, []);
+
   // Remove chat context dependency that was causing render loops
+
+  const startProgressPolling = useCallback(() => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+  }, []);
+
+  const cancelScan = useCallback(async () => {
+    try {
+      const response = await fetch('/folder-cancel', { method: 'POST' });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'cancellation_requested') {
+          message.info('Folder scan cancellation requested');
+          setIsScanning(false);
+          setScanProgress(null);
+          setScanError(null);
+          
+          // Clear intervals
+          if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+          }
+          if (scanTimeoutRef.current) {
+            clearTimeout(scanTimeoutRef.current);
+            scanTimeoutRef.current = null;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error cancelling scan:', error);
+      message.error('Failed to cancel scan');
+    }
+  }, []);
+
+  // Cleanup intervals on unmount
+  useEffect(() => {
+    return () => {
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+      if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+    };
+  }, []);
+
+  // One-time setup for folder progress checking
+  useEffect(() => {
+    const checkFolderProgress = async () => {
+      try {
+        const response = await fetch('/folder-progress');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.active) {
+            setScanProgress({
+              directories: data.progress?.directories || 0,
+              files: data.progress?.files || 0,
+              elapsed: data.progress?.elapsed || 0
+            });
+            
+            // Only schedule another check if scanning is still active
+            setTimeout(checkFolderProgress, 1000);
+          } else {
+            // Scanning completed
+            setScanProgress(null);
+          }
+        }
+      } catch (error) {
+        console.debug('Progress check error:', error);
+      }
+    };
+    
+    // Only check progress if scanning is active
+    if (isScanning) {
+      checkFolderProgress();
+    }
+  }, [isScanning]);
 
   useEffect(() => {
     // Make folder loading independent and non-blocking
     const fetchFoldersAsync = async () => {
       try {
+        setIsScanning(true);
+        setScanError(null);
+        setScanProgress({ directories: 0, files: 0, elapsed: 0 });
+        
+        // Start progress polling
+        startProgressPolling();
+        
         const response = await fetch('/api/folders');
         if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
         }
         const data = await response.json();
+
+        // Handle timeout or error responses
+        if (data.error) {
+          setScanError(data.error);
+          if (data.timeout) {
+            message.warning({
+              content: `Folder scan timed out after ${data.timeout_seconds || 45}s. ${data.suggestion || 'Try reducing the scope or increasing timeout.'}`,
+              duration: 10
+            });
+          }
+          return;
+        }
 
         // Log the raw folder structure
         console.debug('Raw folder structure loaded');
@@ -179,7 +403,21 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           }
         });
       } catch (error) {
+        setScanError(error instanceof Error ? error.message : 'Unknown error occurred');
         console.error('Error fetching folders:', error);
+        message.error({
+          content: `Failed to load folder structure: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          duration: 8
+        });
+      } finally {
+        setIsScanning(false);
+        setScanProgress(null);
+        
+        // Clear progress polling
+        if (progressIntervalRef.current) {
+          clearInterval(progressIntervalRef.current);
+          progressIntervalRef.current = null;
+        }
       }
     };
 
@@ -187,6 +425,46 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     // This prevents blocking other initialization processes
     fetchFoldersAsync();
   }, []);
+
+  // Add timeout handling with user notification
+  useEffect(() => {
+    if (isScanning) {
+      // Set a client-side timeout as backup
+      scanTimeoutRef.current = setTimeout(() => {
+        if (isScanning) {
+          message.warning({
+            content: (
+              <div>
+                Folder scan is taking longer than expected. You can continue using Ziya.
+                <button 
+                  onClick={cancelScan}
+                  style={{ 
+                    background: '#ff4d4f', 
+                    color: 'white', 
+                    border: 'none', 
+                    padding: '4px 8px', 
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    marginLeft: '8px'
+                  }}
+                >
+                  Cancel Scan
+                </button>
+              </div>
+            ),
+            duration: 0, // Don't auto-dismiss
+            key: 'scan-timeout'
+          });
+        }
+      }, 60000); // 60 second warning
+    }
+    
+    return () => {
+      if (scanTimeoutRef.current) {
+        clearTimeout(scanTimeoutRef.current);
+      }
+    };
+  }, [isScanning, cancelScan]);
 
   const contextValue = useMemo(() => ({
     folders,
@@ -198,8 +476,13 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     searchValue,
     setSearchValue,
     expandedKeys,
-    setExpandedKeys
-  }), [folders, treeData, checkedKeys, searchValue, expandedKeys, getFolderTokenCount]);
+    setExpandedKeys,
+    isScanning,
+    scanProgress,
+    scanError,
+    accurateTokenCounts
+  }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning, 
+       scanProgress, scanError, accurateTokenCounts, forceRefreshCounter]);
 
   return (
     <FolderContext.Provider value={contextValue}>
@@ -223,6 +506,10 @@ export const useFolderContext = () => {
       setSearchValue: () => { },
       expandedKeys: [],
       setExpandedKeys: () => { },
+      isScanning: false,
+      scanProgress: null,
+      scanError: null,
+      accurateTokenCounts: {},
       getFolderTokenCount: () => 0
     };
   }
