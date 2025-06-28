@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useFolderContext } from '../context/FolderContext';
 import { useTheme } from '../context/ThemeContext';
 import { Folders } from '../utils/types';
@@ -30,10 +30,13 @@ export const MUIFileExplorer = () => {
     setTreeData,
     folders,
     checkedKeys,
+    isScanning,
+    scanError,
     setCheckedKeys,
     expandedKeys,
     setExpandedKeys,
     getFolderTokenCount,
+    accurateTokenCounts,
   } = useFolderContext();
 
   const { isDarkMode } = useTheme();
@@ -45,7 +48,9 @@ export const MUIFileExplorer = () => {
 
   // Cache for token calculations
   const tokenCalculationCache = useRef(new Map());
+  const lastAccurateCountsRef = useRef<Record<string, any>>({});
 
+  // Force recalculation when accurate token counts change
   // Helper function to determine if a node has children
   const nodeHasChildren = (node: any): boolean => {
     return !!(node && node.children && Array.isArray(node.children) && node.children.length > 0);
@@ -96,7 +101,19 @@ export const MUIFileExplorer = () => {
 
     // Always calculate token counts using the original full tree, not filtered data
     const originalNode = findNodeInOriginalTree(node.key);
-    const { total, included } = calculateTokens(originalNode || node, folders);
+    
+    // Use accurate count if available for this specific file
+    let nodeTokens = folders ? getFolderTokenCount(String(node.key), folders) : 0;
+    const accurateData = accurateTokenCounts[String(node.key)];
+    
+    // Only use accurate counts for files, not directories
+    // And only log once per render cycle to avoid spamming
+    if (accurateData && !hasChildren && !node.loggedAccurate) {
+      nodeTokens = accurateData.count;
+      console.log(`Using accurate token count for ${node.key}: ${nodeTokens} (estimated would be ${folders ? getFolderTokenCount(String(node.key), folders) : 0})`);
+    }
+    
+    const { total, included } = calculateTokens(originalNode || node, folders, nodeTokens);
 
     // Check if this node is indeterminate (some but not all children selected)
     const isIndeterminate = hasChildren && !isChecked &&
@@ -466,9 +483,9 @@ export const MUIFileExplorer = () => {
   };
 
   // Calculate token counts for a node
-  const calculateTokens = useCallback((node, folders) => {
+  const calculateTokens = useCallback((node, folders, overrideTokens?: number) => {
     const nodePath = node.key;
-    const cacheKey = String(nodePath);
+    const cacheKey = `${String(nodePath)}_${overrideTokens || 0}_${Object.keys(accurateTokenCounts).length}`;
 
     if (tokenCalculationCache.current.has(cacheKey)) {
       const cached = tokenCalculationCache.current.get(cacheKey);
@@ -476,7 +493,12 @@ export const MUIFileExplorer = () => {
     }
 
     if (!node.children || node.children.length === 0) { // It's a file
-      const fileTotalTokens = getFolderTokenCount(String(nodePath), folders);
+      let fileTotalTokens;
+      if (overrideTokens !== undefined) {
+        fileTotalTokens = overrideTokens;
+      } else {
+        fileTotalTokens = folders ? getFolderTokenCount(String(nodePath), folders) : 0;
+      }
       const fileIncludedTokens = checkedKeys.includes(nodePath) ? fileTotalTokens : 0;
       const result = { included: fileIncludedTokens, total: fileTotalTokens };
       tokenCalculationCache.current.set(cacheKey, result);
@@ -503,9 +525,129 @@ export const MUIFileExplorer = () => {
     }
 
     const result = { included: directoryIncludedTokens, total: directoryTotalTokens };
-    tokenCalculationCache.current.set(String(cacheKey), result);
+    tokenCalculationCache.current.set(cacheKey, result);
     return result;
-  }, [checkedKeys, getFolderTokenCount]);
+  }, [checkedKeys, getFolderTokenCount, accurateTokenCounts]);
+  
+  // Clear token calculation cache when accurate counts change
+  useLayoutEffect(() => {
+    // Only run if we have accurate token counts
+    const accurateCountsKeys = Object.keys(accurateTokenCounts);
+    if (accurateCountsKeys.length > 0 && 
+        JSON.stringify(accurateCountsKeys) !== JSON.stringify(Object.keys(lastAccurateCountsRef.current))) {
+      console.log('Accurate token counts changed, clearing calculation cache');
+      
+      // Clear the calculation cache
+      tokenCalculationCache.current.clear();
+      
+      // Force a deep copy and update of the tree data to trigger recalculation
+      const deepCopyTree = (nodes) => {
+        return nodes.map(node => ({
+          ...node,
+          children: node.children ? deepCopyTree(node.children) : undefined
+        }));
+      };
+      
+      if (treeData.length > 0) {
+        // Create a deep copy of the tree data
+        const newTreeData = deepCopyTree(treeData);
+        
+        // Update the tree data to trigger a re-render
+        setTreeData(newTreeData);
+      }
+      
+      // Update the reference to the current accurate counts
+      lastAccurateCountsRef.current = {...accurateTokenCounts};
+    }
+  }, [accurateTokenCounts, setTreeData, treeData]);
+  
+  // Listen for accurate token counts update events
+  useEffect(() => {
+    const handleAccurateTokenCountsUpdated = (event) => {
+      console.log('Received accurateTokenCountsUpdated event:', event.detail);
+      // Clear the token calculation cache
+      tokenCalculationCache.current.clear();
+      // Force a re-render of the tree
+      setTreeData(prevData => JSON.parse(JSON.stringify(prevData)));
+    };
+    
+    window.addEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
+    return () => window.removeEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
+  }, [setTreeData]);
+  // Show loading state while scanning and no data
+  if (isScanning && (!muiTreeData || muiTreeData.length === 0)) {
+    return (
+      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
+        <Box sx={{ 
+          display: 'flex', 
+          flexDirection: 'column', 
+          alignItems: 'center', 
+          justifyContent: 'center', 
+          height: '200px',
+          gap: 2
+        }}>
+          <LinearProgress sx={{ width: '80%' }} />
+          <Typography variant="body2" color="text.secondary" align="center">
+            Loading folder structure...
+            <br />
+            <Typography variant="caption" color="text.secondary">
+              This may take a moment for large repositories
+            </Typography>
+          </Typography>
+        </Box>
+      </Box>
+    );
+  }
+
+  // Show error state if scan failed and no cached data
+  if (scanError && (!muiTreeData || muiTreeData.length === 0)) {
+    return (
+      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
+        <Box sx={{ textAlign: 'center', py: 4 }}>
+          <Typography variant="h6" color="error" gutterBottom>
+            Failed to load folder structure
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {scanError}
+          </Typography>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={refreshFolders}
+            sx={{ mt: 2 }}
+            size="small"
+          >
+            Try Again
+          </Button>
+        </Box>
+      </Box>
+    );
+  }
+
+  // Show empty state if no folders loaded and not scanning
+  if (!isScanning && (!muiTreeData || muiTreeData.length === 0)) {
+    return (
+      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
+        <Box sx={{ textAlign: 'center', py: 4 }}>
+          <Typography variant="body1" color="text.secondary" gutterBottom>
+            No files found
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Try refreshing or check your directory permissions
+          </Typography>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={refreshFolders}
+            sx={{ mt: 2 }}
+            size="small"
+          >
+            Refresh Files
+          </Button>
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
@@ -548,6 +690,11 @@ export const MUIFileExplorer = () => {
       </Box>
 
       <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
+        {/* Show overlay when scanning with existing data */}
+        {isScanning && muiTreeData && muiTreeData.length > 0 && (
+          <LinearProgress sx={{ mb: 1 }} />
+        )}
+        
         {isLoading ? (
           <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
             <LinearProgress sx={{ width: '80%', mb: 2 }} />
@@ -559,10 +706,19 @@ export const MUIFileExplorer = () => {
           <Box sx={{
             height: '100%',
             overflowY: 'auto',
+            position: 'relative',
+            opacity: (isScanning && muiTreeData && muiTreeData.length > 0) ? 0.7 : 1,
+            pointerEvents: (isScanning && muiTreeData && muiTreeData.length > 0) ? 'none' : 'auto',
+            transition: 'opacity 0.3s ease',
             '& .MuiBox-root': {
               maxWidth: '100%'
             }
           }}>
+            {scanError && muiTreeData && muiTreeData.length > 0 && (
+              <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1, px: 1 }}>
+                Warning: {scanError} (showing cached data)
+              </Typography>
+            )}
             {(searchValue ? filteredTreeData : muiTreeData).map(node => (
               <TreeNode key={node.key} node={node} level={0} />
             ))}
