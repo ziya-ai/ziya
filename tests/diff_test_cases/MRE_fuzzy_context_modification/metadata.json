@@ -1,0 +1,6 @@
+{
+  "description": "Test case where fuzzy matching incorrectly modifies context lines instead of only target lines",
+  "target_file": "components/StyleComponent.tsx",
+  "expected_to_fail": false,
+  "apply_twice": false
+}
