@@ -478,6 +478,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test handling of CSS property incorrectly marked as already applied"""
         self.run_diff_test('MRE_css_property_already_applied')
         
+    def test_MRE_fuzzy_context_modification(self):
+        """Test case where fuzzy matching incorrectly modifies context lines instead of only target lines"""
+        self.run_diff_test('MRE_fuzzy_context_modification')
+        
     def test_send_chat_container_fix(self):
         """Test fixing SendChatContainer.tsx with proper diff application"""
         self.run_diff_test('send_chat_container_fix')

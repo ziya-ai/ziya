@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 import re
 import logging
 import difflib
@@ -30,66 +30,81 @@ def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], posi
         The modified lines with only target changes applied
     """
     logger.debug(f"Applying surgical changes for hunk at position {position}")
+    logger.debug(f"Hunk structure: {hunk.keys()}")
     
-    # Extract the actual changes from the hunk
+    # Extract removed and added lines from the hunk
     removed_lines = []
     added_lines = []
-    context_lines = []
     
-    # Parse the hunk to identify removed, added, and context lines
-    if 'old_block' in hunk and 'new_block' in hunk:
-        old_block = hunk['old_block']
-        new_block = hunk['new_block']
-        
-        # Build a mapping of changes
-        old_idx = 0
-        new_idx = 0
-        
-        while old_idx < len(old_block) or new_idx < len(new_block):
-            if old_idx < len(old_block) and old_block[old_idx].startswith('-'):
-                # This is a line to be removed
-                removed_lines.append((old_idx, old_block[old_idx][1:]))
-                old_idx += 1
-            elif new_idx < len(new_block) and new_block[new_idx].startswith('+'):
-                # This is a line to be added
-                added_lines.append((new_idx, new_block[new_idx][1:]))
-                new_idx += 1
-            elif (old_idx < len(old_block) and new_idx < len(new_block) and
-                  old_block[old_idx].startswith(' ') and new_block[new_idx].startswith(' ')):
-                # This is a context line - should be preserved from original
-                context_lines.append((old_idx, old_block[old_idx][1:]))
-                old_idx += 1
-                new_idx += 1
-            else:
-                # Handle edge cases
-                if old_idx < len(old_block):
-                    old_idx += 1
-                if new_idx < len(new_block):
-                    new_idx += 1
+    # Parse the hunk to get the actual changes
+    if 'removed_lines' in hunk and 'added_lines' in hunk:
+        removed_lines = hunk['removed_lines']
+        added_lines = hunk['added_lines']
+    elif 'old_block' in hunk and 'new_block' in hunk:
+        # Parse from old_block and new_block
+        for line in hunk['old_block']:
+            if line.startswith('-'):
+                removed_lines.append(line[1:])
+        for line in hunk['new_block']:
+            if line.startswith('+'):
+                added_lines.append(line[1:])
     
-    # If we couldn't parse the hunk properly, fall back to standard application
+    logger.debug(f"Removed lines: {removed_lines}")
+    logger.debug(f"Added lines: {added_lines}")
+    
+    # If we can't parse the changes, return original lines unchanged
     if not removed_lines and not added_lines:
-        logger.debug("Could not parse hunk for surgical application, falling back to standard")
+        logger.debug("No changes found in hunk, returning original lines")
         return original_lines
     
-    # Apply the changes surgically
     result_lines = original_lines.copy()
     
-    # Calculate the range of lines to modify
-    hunk_size = len(hunk.get('old_block', []))
-    end_pos = min(position + hunk_size, len(original_lines))
-    
-    # For simple cases (single line changes), apply directly
+    # For simple single-line replacements, find and replace the content
     if len(removed_lines) == 1 and len(added_lines) == 1:
-        # Single line replacement
-        target_pos = position + removed_lines[0][0]
-        if target_pos < len(result_lines):
-            # Preserve indentation from original line
-            original_line = result_lines[target_pos]
-            original_indent = original_line[:len(original_line) - len(original_line.lstrip())]
-            new_content = added_lines[0][1].strip()
-            result_lines[target_pos] = original_indent + new_content
-            logger.debug(f"Surgically replaced line {target_pos}: {repr(original_line)} -> {repr(result_lines[target_pos])}")
+        removed_content = removed_lines[0].strip()
+        added_content = added_lines[0].strip()
+        
+        logger.debug(f"Looking for content to replace: {repr(removed_content)}")
+        
+        # Search in a reasonable range around the position
+        search_start = max(0, position - 10)
+        search_end = min(len(result_lines), position + 20)
+        
+        found = False
+        for i in range(search_start, search_end):
+            line = result_lines[i]
+            line_content = line.strip()
+            
+            # Check if this line contains the content to be removed
+            if removed_content in line_content:
+                # Perform a more precise replacement - replace only the specific part
+                # while preserving comments and other content
+                new_line_content = line.replace(removed_content, added_content)
+                result_lines[i] = new_line_content
+                
+                logger.debug(f"Surgically changed line {i}: {repr(line)} -> {repr(result_lines[i])}")
+                found = True
+                break
+        
+        if not found:
+            logger.debug(f"Could not find content '{removed_content}' in lines {search_start}-{search_end}")
+            # Try a broader search with partial matching
+            for i in range(len(result_lines)):
+                line = result_lines[i]
+                # Look for key parts of the content (e.g., "padding-bottom" in "padding-bottom: 4px !important;")
+                key_parts = removed_content.split()
+                if len(key_parts) > 0 and key_parts[0] in line:
+                    logger.debug(f"Found potential match at line {i} with key part '{key_parts[0]}': {repr(line)}")
+                    # Try the replacement
+                    new_line_content = line.replace(removed_content, added_content)
+                    if new_line_content != line:  # Only if something actually changed
+                        result_lines[i] = new_line_content
+                        logger.debug(f"Surgically changed line {i}: {repr(line)} -> {repr(result_lines[i])}")
+                        found = True
+                        break
+        
+        if not found:
+            logger.warning(f"Surgical application failed to find content to replace: {repr(removed_content)}")
     
     return result_lines
 
@@ -195,6 +210,9 @@ def apply_diff_with_difflib_hybrid_forced(
     applied_hunks = []
 
     for hunk_idx, h in enumerate(hunks, start=1):
+        # Initialize fuzzy match tracking
+        fuzzy_match_applied = False
+        
         # Skip hunks that are in the skip_hunks list
         if h.get('number') in skip_hunks:
             logger.info(f"Skipping hunk #{hunk_idx} (ID #{h.get('number')}) as it's in the skip list")
@@ -766,11 +784,48 @@ def apply_diff_with_difflib_hybrid_forced(
             final_lines_with_endings[insert_pos:end_remove_pos] = corrected_new_lines
             logger.info(f"Hunk #{hunk_idx}: Applied indentation adaptation ({adaptation_type})")
         else:
-            # Standard application
-            new_lines_with_endings = []
-            for line in new_lines_content:
-                new_lines_with_endings.append(line + dominant_ending)
-            final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+            # Standard application - check if we should use surgical approach for fuzzy matches
+            if fuzzy_match_applied:
+                # Only use surgical application for replacements, not pure additions
+                has_removals = len(h.get('removed_lines', [])) > 0
+                has_additions = len(h.get('added_lines', [])) > 0
+                
+                if has_removals and has_additions:
+                    # Use surgical application to preserve context lines
+                    logger.info(f"Hunk #{hunk_idx}: Using surgical application due to fuzzy matching")
+                    try:
+                        surgical_result = apply_surgical_changes(final_lines_with_endings, h, remove_pos)
+                        # Check if surgical application actually made changes
+                        if surgical_result != final_lines_with_endings:
+                            final_lines_with_endings = surgical_result
+                            logger.info(f"Hunk #{hunk_idx}: Successfully applied surgical changes")
+                        else:
+                            logger.warning(f"Hunk #{hunk_idx}: Surgical application made no changes, falling back to standard")
+                            # Fall back to standard application
+                            new_lines_with_endings = []
+                            for line in new_lines_content:
+                                new_lines_with_endings.append(line + dominant_ending)
+                            final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                    except Exception as e:
+                        logger.warning(f"Hunk #{hunk_idx}: Surgical application failed ({str(e)}), falling back to standard")
+                        # Fall back to standard application
+                        new_lines_with_endings = []
+                        for line in new_lines_content:
+                            new_lines_with_endings.append(line + dominant_ending)
+                        final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                else:
+                    logger.info(f"Hunk #{hunk_idx}: Skipping surgical application for pure addition/deletion, using standard approach")
+                    # Use standard application for pure additions/deletions
+                    new_lines_with_endings = []
+                    for line in new_lines_content:
+                        new_lines_with_endings.append(line + dominant_ending)
+                    final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+            else:
+                # Standard application
+                new_lines_with_endings = []
+                for line in new_lines_content:
+                    new_lines_with_endings.append(line + dominant_ending)
+                final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
 
         # --- Update Offset ---
         # The actual number of lines removed might be different from actual_remove_count
