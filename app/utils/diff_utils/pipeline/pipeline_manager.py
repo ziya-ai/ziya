@@ -823,8 +823,15 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     continue
             
             # Check if essential hunk data is missing
-            if not hunk.get('old_block') or not hunk.get('new_lines'):
-                logger.warning(f"Malformed hunk detected: missing old_block or new_lines")
+            # Note: old_block can be an empty list for empty files, so check for key existence
+            if 'old_block' not in hunk or 'new_lines' not in hunk:
+                logger.warning(f"Malformed hunk detected: missing old_block or new_lines keys")
+                malformed_hunks.append(hunk_id)
+                continue
+            
+            # Also check that new_lines is not None (empty list is OK for deletions)
+            if hunk.get('new_lines') is None:
+                logger.warning(f"Malformed hunk detected: new_lines is None")
                 malformed_hunks.append(hunk_id)
                 continue
         
