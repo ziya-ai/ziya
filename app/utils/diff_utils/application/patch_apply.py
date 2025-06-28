@@ -89,7 +89,11 @@ def apply_diff_with_difflib_hybrid_forced(
     original_content_str = "".join(original_lines_with_endings)
     crlf_count = original_content_str.count('\r\n')
     lf_count = original_content_str.count('\n') - crlf_count
-    dominant_ending = '\r\n' if crlf_count >= lf_count else '\n'
+    # For empty files or when counts are equal, default to Unix line endings (\n)
+    if crlf_count == 0 and lf_count == 0:
+        dominant_ending = '\n'  # Default to Unix line endings for empty files
+    else:
+        dominant_ending = '\r\n' if crlf_count > lf_count else '\n'
     original_had_final_newline = original_content_str.endswith(('\n', '\r\n'))
     
     logger.debug(f"Detected dominant line ending: {repr(dominant_ending)}")
@@ -365,8 +369,9 @@ def apply_diff_with_difflib_hybrid_forced(
             new_lines_with_endings.append(line + dominant_ending)
             
         # Special handling for pure addition hunks (no removed lines) with malformed line numbers
+        # Note: For empty files, old_start=1 is valid (line 1 of an empty file), so we need to be more careful
         if (len(h['removed_lines']) == 0 and 
-            h['old_start'] > len(final_lines_with_endings) and
+            h['old_start'] > len(final_lines_with_endings) + 1 and  # Allow for off-by-one for empty files
             len(h['added_lines']) > 0):
             
             # This is the specific case of function_collision - pure addition with completely wrong line numbers
@@ -712,17 +717,21 @@ def apply_diff_with_difflib_hybrid_forced(
     # 1. Normalize all line endings to LF for consistency before final check
     normalized_content_str = final_content_str.replace('\r\n', '\n').replace('\r', '\n')
  
-    # 2. Handle the final newline based on original state and diff intent (heuristic)
+    # 2. Handle the final newline based on original state and diff intent
     last_hunk = hunks[-1] if hunks else None
-    diff_likely_added_final_line = False
-    if last_hunk:
-        last_diff_line = diff_content.splitlines()[-1] if diff_content.splitlines() else ""
-        if last_diff_line.startswith('+'):
-            diff_likely_added_final_line = True
- 
-    # Determine if the final file should have a newline at the end
-    # If the last hunk has a "No newline at end of file" marker, respect that
-    should_have_final_newline = original_had_final_newline or diff_likely_added_final_line
+    
+    # Check if the diff has a "No newline at end of file" marker
+    has_no_newline_marker = "No newline at end of file" in diff_content
+    
+    # For empty files, we need to be more careful about final newlines
+    # If the original file was empty and had no final newline, and the diff doesn't
+    # explicitly indicate "No newline at end of file", then the result should have a final newline
+    if len(original_lines_with_endings) == 0:  # Empty file
+        # For empty files, default to having a final newline unless explicitly marked otherwise
+        should_have_final_newline = not has_no_newline_marker
+    else:
+        # For non-empty files, preserve the original behavior or respect the diff marker
+        should_have_final_newline = original_had_final_newline and not has_no_newline_marker
     
     # Check if the last hunk has a missing newline marker
     if last_hunk and last_hunk.get('missing_newline'):

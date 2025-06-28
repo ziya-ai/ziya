@@ -81,7 +81,7 @@ class FileStateCache:
                 current_content = f.read()
                 logger.debug(f"CHECK: Read {file_path}: length={len(current_content)}")
 
-            file_state = thread_state.get(file_path)
+            file_state = self._state.get(file_path)
 
             if not file_state:
                 # First time this thread sees the file
