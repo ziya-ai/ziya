@@ -212,6 +212,7 @@ def apply_diff_with_difflib_hybrid_forced(
     for hunk_idx, h in enumerate(hunks, start=1):
         # Initialize fuzzy match tracking
         fuzzy_match_applied = False
+        skip_duplicate_check = False  # Initialize duplicate check flag
         
         # Skip hunks that are in the skip_hunks list
         if h.get('number') in skip_hunks:
@@ -419,11 +420,87 @@ def apply_diff_with_difflib_hybrid_forced(
                                 confidence_threshold = 0.7
                             
                             if fuzzy_best_ratio > confidence_threshold:
-                                logger.warning(f"Hunk #{hunk_idx}: Forcing application at fuzzy position {fuzzy_best_pos} with ratio {fuzzy_best_ratio:.2f} (threshold: {confidence_threshold})")
-                                remove_pos = fuzzy_best_pos
-                                found_match = True
-                                # Mark this as a fuzzy match for surgical application
-                                fuzzy_match_applied = True
+                                # CRITICAL FIX: Special handling for pure additions with perfect fuzzy match at position 0
+                                # This often indicates the fuzzy matching found the entire file content, but we only want to insert
+                                is_pure_addition = len(h.get('removed_lines', [])) == 0 and len(h.get('added_lines', [])) > 0
+                                if is_pure_addition and fuzzy_best_pos == 0 and fuzzy_best_ratio >= 0.99:
+                                    # For pure additions with perfect match at position 0, this likely means
+                                    # the fuzzy matcher found the entire file content. We need to find the correct insertion point.
+                                    logger.warning(f"Hunk #{hunk_idx}: Pure addition with perfect match at position 0 - finding correct insertion point")
+                                    
+                                    # Look for the specific context where the addition should happen
+                                    # Based on the diff context, find where the new line should be inserted
+                                    insertion_point = -1
+                                    
+                                    # Get the context lines before the addition
+                                    hunk_lines = h.get('lines', [])
+                                    context_before_addition = []
+                                    addition_line = None
+                                    
+                                    for line in hunk_lines:
+                                        if line.startswith('+'):
+                                            addition_line = line[1:]  # Remove the '+' prefix
+                                            break
+                                        elif line.startswith(' '):
+                                            context_before_addition.append(line[1:])  # Remove the ' ' prefix
+                                    
+                                    if context_before_addition and addition_line:
+                                        # Find where the last context line appears in the file
+                                        last_context = context_before_addition[-1]
+                                        for i, file_line in enumerate(final_lines_with_endings):
+                                            if file_line.strip() == last_context.strip():
+                                                insertion_point = i + 1  # Insert after this line
+                                                break
+                                    
+                                    if insertion_point > 0:
+                                        logger.info(f"Hunk #{hunk_idx}: Found correct insertion point at line {insertion_point}")
+                                        
+                                        # Check if the insertion point is an empty line that should be replaced
+                                        if (insertion_point < len(final_lines_with_endings) and 
+                                            final_lines_with_endings[insertion_point].strip() == ''):
+                                            # Replace the empty line instead of inserting after it
+                                            logger.info(f"Hunk #{hunk_idx}: Replacing empty line at position {insertion_point}")
+                                            remove_pos = insertion_point
+                                            actual_remove_count = 1  # Remove the empty line
+                                            end_remove_pos = insertion_point + 1
+                                            insert_pos = insertion_point
+                                        else:
+                                            # Insert after the context line
+                                            remove_pos = insertion_point
+                                            actual_remove_count = 0  # Don't remove any lines
+                                            end_remove_pos = insertion_point
+                                            insert_pos = insertion_point
+                                        
+                                        # CRITICAL FIX: Only insert the added lines, not the entire context
+                                        new_lines_content = h.get('added_lines', [])
+                                        new_lines_with_endings = []
+                                        for line in new_lines_content:
+                                            new_lines_with_endings.append(line + dominant_ending)
+                                        
+                                        found_match = True
+                                        logger.info(f"Hunk #{hunk_idx}: Using corrected insertion logic for pure addition - inserting {len(new_lines_content)} lines")
+                                        
+                                        # Skip duplicate detection for corrected pure insertions
+                                        skip_duplicate_check = True
+                                        
+                                        # Apply the insertion immediately to avoid further processing
+                                        logger.debug(f"Hunk #{hunk_idx}: Replacing/inserting at position {insert_pos}:{end_remove_pos} with: {new_lines_content}")
+                                        final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                                        logger.info(f"Hunk #{hunk_idx}: Successfully applied corrected pure insertion")
+                                        continue  # Skip the rest of the hunk processing
+                                    else:
+                                        # Fall back to standard fuzzy logic
+                                        logger.warning(f"Hunk #{hunk_idx}: Could not find correct insertion point, using fuzzy position")
+                                        remove_pos = fuzzy_best_pos
+                                        found_match = True
+                                        fuzzy_match_applied = True
+                                else:
+                                    # Standard fuzzy matching logic
+                                    logger.warning(f"Hunk #{hunk_idx}: Forcing application at fuzzy position {fuzzy_best_pos} with ratio {fuzzy_best_ratio:.2f} (threshold: {confidence_threshold})")
+                                    remove_pos = fuzzy_best_pos
+                                    found_match = True
+                                    # Mark this as a fuzzy match for surgical application
+                                    fuzzy_match_applied = True
                             else:
                                 logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {fuzzy_best_pos}, but content doesn't match old_block. Skipping.")
                                 failure_info = {
@@ -530,22 +607,25 @@ def apply_diff_with_difflib_hybrid_forced(
         preview_content = ''.join(preview_lines)
         original_content = ''.join(final_lines_with_endings)
         
-        # Check for unexpected duplicates
-        is_safe, duplicate_details = verify_no_duplicates(original_content, preview_content, insert_pos)
-        if not is_safe:
-            logger.warning(f"Hunk #{hunk_idx}: Detected unexpected duplicates that would be created by applying this hunk")
-            logger.warning(f"Duplicate details: {duplicate_details}")
-            
-            # Add to failures and skip this hunk
-            failure_info = {
-                "status": "error",
-                "type": "unexpected_duplicates",
-                "hunk": hunk_idx,
-                "position": remove_pos,
-                "duplicate_details": duplicate_details
-            }
-            hunk_failures.append((f"Unexpected duplicates detected for Hunk #{hunk_idx}", failure_info))
-            continue
+        # Check for unexpected duplicates (skip if this is a corrected pure insertion)
+        if not skip_duplicate_check:
+            is_safe, duplicate_details = verify_no_duplicates(original_content, preview_content, insert_pos)
+            if not is_safe:
+                logger.warning(f"Hunk #{hunk_idx}: Detected unexpected duplicates that would be created by applying this hunk")
+                logger.warning(f"Duplicate details: {duplicate_details}")
+                
+                # Add to failures and skip this hunk
+                failure_info = {
+                    "status": "error",
+                    "type": "unexpected_duplicates",
+                    "hunk": hunk_idx,
+                    "position": remove_pos,
+                    "duplicate_details": duplicate_details
+                }
+                hunk_failures.append((f"Unexpected duplicates detected for Hunk #{hunk_idx}", failure_info))
+                continue
+        else:
+            logger.info(f"Hunk #{hunk_idx}: Skipping duplicate detection for corrected pure insertion")
 
         # --- Apply the hunk with intelligent indentation adaptation ---
         # Handle systematic indentation loss and indentation mismatches from fuzzy matching

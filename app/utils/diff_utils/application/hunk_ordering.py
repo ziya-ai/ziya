@@ -84,6 +84,130 @@ def is_misordered_hunks_case(hunks: List[Dict[str, Any]]) -> bool:
     
     return False
 
+def has_overlapping_hunks(hunks: List[Dict[str, Any]]) -> bool:
+    """
+    Check if hunks have overlapping regions.
+    
+    Args:
+        hunks: The hunks to check
+        
+    Returns:
+        True if hunks overlap, False otherwise
+    """
+    if len(hunks) < 2:
+        return False
+    
+    # Sort hunks by start line
+    sorted_hunks = sorted(hunks, key=lambda h: h['old_start'])
+    
+    for i in range(len(sorted_hunks) - 1):
+        current = sorted_hunks[i]
+        next_hunk = sorted_hunks[i + 1]
+        
+        current_end = current['old_start'] + current['old_count']
+        next_start = next_hunk['old_start']
+        
+        # Check if hunks overlap
+        if next_start < current_end:
+            return True
+    
+    return False
+
+def merge_overlapping_hunks(hunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Merge overlapping hunks into non-overlapping hunks.
+    
+    Args:
+        hunks: The hunks to merge
+        
+    Returns:
+        List of merged hunks, or None if merging failed
+    """
+    try:
+        # Sort hunks by start line
+        sorted_hunks = sorted(hunks, key=lambda h: h['old_start'])
+        
+        merged = []
+        current_group = [sorted_hunks[0]]
+        
+        for i in range(1, len(sorted_hunks)):
+            hunk = sorted_hunks[i]
+            last_in_group = current_group[-1]
+            
+            # Check if this hunk overlaps with the current group
+            group_end = max(h['old_start'] + h['old_count'] for h in current_group)
+            
+            if hunk['old_start'] <= group_end:
+                # Overlapping, add to current group
+                current_group.append(hunk)
+            else:
+                # Not overlapping, merge current group and start new one
+                merged_hunk = merge_hunk_group(current_group)
+                if merged_hunk:
+                    merged.append(merged_hunk)
+                else:
+                    # Merging failed, return original hunks
+                    return None
+                current_group = [hunk]
+        
+        # Merge the last group
+        if current_group:
+            merged_hunk = merge_hunk_group(current_group)
+            if merged_hunk:
+                merged.append(merged_hunk)
+            else:
+                return None
+        
+        return merged
+    
+    except Exception as e:
+        logger.error(f"Error merging overlapping hunks: {e}")
+        return None
+
+def merge_hunk_group(hunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Merge a group of overlapping hunks into a single hunk.
+    
+    Args:
+        hunks: The hunks to merge (should be overlapping)
+        
+    Returns:
+        A single merged hunk, or None if merging failed
+    """
+    if len(hunks) == 1:
+        return hunks[0]
+    
+    try:
+        # Find the overall range
+        min_start = min(h['old_start'] for h in hunks)
+        max_end = max(h['old_start'] + h['old_count'] for h in hunks)
+        
+        # Collect all old and new lines from all hunks
+        all_old_lines = []
+        all_new_lines = []
+        
+        for hunk in hunks:
+            all_old_lines.extend(hunk.get('old_lines', []))
+            all_new_lines.extend(hunk.get('new_lines', []))
+        
+        # Create merged hunk
+        merged_hunk = {
+            'old_start': min_start,
+            'old_count': max_end - min_start,
+            'new_start': min_start,  # This will be adjusted during application
+            'new_count': len(all_new_lines),
+            'old_lines': all_old_lines,
+            'new_lines': all_new_lines,
+            'context_lines': hunks[0].get('context_lines', []),  # Use first hunk's context
+            'header': f"@@ -{min_start},{max_end - min_start} +{min_start},{len(all_new_lines)} @@"
+        }
+        
+        return merged_hunk
+    
+    except Exception as e:
+        logger.error(f"Error merging hunk group: {e}")
+        return None
+
 def handle_misordered_hunks(hunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Handle misordered hunks case.
@@ -94,6 +218,16 @@ def handle_misordered_hunks(hunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     Returns:
         The hunks in optimized order
     """
+    # For overlapping hunks, we need to detect and merge them properly
+    if has_overlapping_hunks(hunks):
+        logger.info("Detected overlapping hunks, attempting to merge them")
+        merged_hunks = merge_overlapping_hunks(hunks)
+        if merged_hunks:
+            logger.info(f"Successfully merged {len(hunks)} overlapping hunks into {len(merged_hunks)} hunks")
+            return merged_hunks
+        else:
+            logger.warning("Failed to merge overlapping hunks, falling back to original order")
+    
     # For misordered hunks, we want to apply the hunks in the order they appear in the file
     # This ensures that function definitions are applied in the correct order
     sorted_hunks = sorted(hunks, key=lambda h: h['old_start'])

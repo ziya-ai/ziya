@@ -49,6 +49,12 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
     # Track line number adjustments as we apply hunks
     line_adjustment = 0
     
+    # Track which hunks have actually been applied successfully
+    successfully_applied_hunks = set()
+    
+    # CRITICAL FIX: Calculate line adjustment based on the order of hunk processing
+    # For each hunk we're about to process, check if earlier hunks in the diff failed
+    
     # CRITICAL FIX: Be more selective about which hunks to try separately
     # If we have specific hunks marked as could_apply_separately, prioritize those
     # Otherwise, only add sequential pending hunks that don't require fuzz/offset
@@ -85,6 +91,22 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
             
         hunk = hunks[hunk_index]
         
+        # CRITICAL FIX: Calculate line adjustment for this specific hunk
+        # based on which earlier hunks have failed to apply
+        current_line_adjustment = 0
+        for i in range(hunk_index):
+            earlier_hunk = hunks[i]
+            earlier_hunk_id = earlier_hunk.get('number', i+1)
+            
+            # Check if this earlier hunk failed to apply
+            if earlier_hunk_id not in successfully_applied_hunks:
+                # This hunk failed, so we need to adjust line numbers
+                old_count = earlier_hunk.get('old_count', 0)
+                new_count = earlier_hunk.get('new_count', 0)
+                net_change = new_count - old_count
+                current_line_adjustment -= net_change  # Subtract because it didn't apply
+                logger.info(f"Adjusting hunk #{hunk_id} by {-net_change} lines due to failed hunk #{earlier_hunk_id}")
+        
         # Extract this hunk into its own diff with line number adjustment
         try:
             # Skip hunks that are already marked as succeeded or already applied
@@ -93,12 +115,12 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
                 continue
                 
             # Extract the hunk with proper line adjustment
-            hunk_diff = extract_hunk_from_diff(pipeline.original_diff, hunk_id, line_adjustment)
+            hunk_diff = extract_hunk_from_diff(pipeline.original_diff, hunk_id, current_line_adjustment)
             if not hunk_diff:
                 logger.warning(f"Failed to extract hunk #{hunk_id} from diff")
                 continue
 
-            logger.info(f"Extracted hunk #{hunk_id} for separate application with line adjustment {line_adjustment}")
+            logger.info(f"Extracted hunk #{hunk_id} for separate application with line adjustment {current_line_adjustment}")
             logger.debug(f"Hunk diff content:\n{hunk_diff}")
             
             # Apply this hunk with system patch
@@ -107,6 +129,10 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
             if success:
                 status = HunkStatus.ALREADY_APPLIED if already_applied else HunkStatus.SUCCEEDED
                 logger.info(f"{'Hunk was already applied' if already_applied else 'Successfully applied hunk'} #{hunk_id} separately")
+                
+                # Mark this hunk as successfully applied
+                successfully_applied_hunks.add(hunk_id)
+                
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
@@ -116,25 +142,7 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
                 )
                 any_changes_written = any_changes_written or not already_applied
                 
-                # Update line adjustment for future hunks
-                # Calculate the net change in line count from this hunk
-                # CRITICAL FIX: More accurate line adjustment calculation
-                if not already_applied:
-                    # Get the old and new line counts directly from the hunk header
-                    old_count = hunk.get('old_count', 0)
-                    new_count = hunk.get('new_count', 0)
-                    
-                    # Calculate net change based on header values
-                    # This is more reliable than trying to count lines
-                    net_change = new_count - old_count
-                    
-                    # Log detailed information for debugging
-                    logger.debug(f"Hunk #{hunk_id} line adjustment calculation:")
-                    logger.debug(f"  old_count: {old_count}, new_count: {new_count}")
-                    logger.debug(f"  net_change: {net_change}")
-                    
-                    line_adjustment += net_change
-                logger.info(f"Updated line adjustment to {line_adjustment} after applying hunk #{hunk_id}")
+                logger.info(f"Successfully applied hunk #{hunk_id} separately")
             else:
                 logger.warning(f"Failed to apply hunk #{hunk_id} separately")
                 # Keep the hunk as is - it will be tried in later stages
@@ -172,7 +180,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         
         # 1. Run Dry Run
         patch_command_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', 
-                             '--reject-file=-', '--batch', '--ignore-whitespace', 
+                             '--reject-file=-', '--batch', '--fuzz=0',  # CRITICAL FIX: Disable fuzzy matching
                              '--verbose', '--dry-run', '-i', temp_path]
         
         logger.debug(f"Running patch command (dry-run): {' '.join(patch_command_dry)}")
@@ -235,7 +243,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         
         # 3. Run Actual Patch (only if dry run was clean success)
         patch_command_apply = ['patch', '-p1', '--forward', '--no-backup-if-mismatch',
-                               '--reject-file=-', '--batch', '--ignore-whitespace',
+                               '--reject-file=-', '--batch', '--fuzz=0',
                                '--verbose', '-i', temp_path]  # No --noreverse
         
         logger.debug(f"Running patch command (actual): {' '.join(patch_command_apply)}")
@@ -285,7 +293,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         
         # 3. Run Actual Patch (only if dry run was clean success)
         patch_command_apply = ['patch', '-p1', '--forward', '--no-backup-if-mismatch',
-                               '--reject-file=-', '--batch', '--ignore-whitespace',
+                               '--reject-file=-', '--batch', '--fuzz=0',
                                '--verbose', '-i', temp_path]  # No --noreverse
         
         logger.debug(f"Running patch command (actual): {' '.join(patch_command_apply)}")
@@ -335,7 +343,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         
         # 3. Run Actual Patch (only if dry run was clean success)
         patch_command_apply = ['patch', '-p1', '--forward', '--no-backup-if-mismatch',
-                               '--reject-file=-', '--batch', '--ignore-whitespace',
+                               '--reject-file=-', '--batch', '--fuzz=0',
                                '--verbose', '-i', temp_path]  # No --noreverse
         
         logger.debug(f"Running patch command (actual): {' '.join(patch_command_apply)}")
@@ -355,6 +363,32 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         # Check if the patch was applied successfully
         if patch_result.returncode == 0:
             logger.info(f"Actual patch succeeded for hunk in {file_path}")
+            
+            # CRITICAL DEBUG: Check what's actually in the file after patch
+            try:
+                full_file_path = os.path.join(user_codebase_dir, file_path)
+                if os.path.exists(full_file_path):
+                    with open(full_file_path, 'r', encoding='utf-8') as f:
+                        file_content = f.read()
+                    
+                    # Check if this patch unexpectedly applied other changes
+                    if 'QuestionProvider' in file_content:
+                        import_count = file_content.count('import {QuestionProvider}')
+                        jsx_count = file_content.count('<QuestionProvider>')
+                        logger.error(f"🚨 PATCH SIDE EFFECT DETECTED!")
+                        logger.error(f"File after patch contains QuestionProvider:")
+                        logger.error(f"  Import statements: {import_count}")
+                        logger.error(f"  JSX elements: {jsx_count}")
+                        logger.error(f"  This suggests the patch applied more than intended!")
+                        
+                        # Show first 20 lines to see what was applied
+                        lines = file_content.splitlines()
+                        logger.error(f"First 20 lines of file after patch:")
+                        for i, line in enumerate(lines[:20]):
+                            logger.error(f"  {i+1:2d}: {line}")
+            except Exception as e:
+                logger.error(f"Error checking file content after patch: {e}")
+            
             return True, False  # Success, Not Already Applied
         else:
             logger.warning(f"Actual patch failed for hunk in {file_path} (exit code {patch_result.returncode}) after clean dry run.")
@@ -423,16 +457,25 @@ def extract_hunk_from_diff(diff_content: str, hunk_id: int, line_adjustment: int
             logger.info(f"Adjusting line numbers for hunk #{hunk_id} by {line_adjustment} lines")
             target_hunk['old_start'] += line_adjustment
             target_hunk['new_start'] += line_adjustment
+            
+            # CRITICAL FIX: Also update the header to reflect the adjustment
+            old_count = target_hunk.get('old_count', len(target_hunk.get('old_block', [])))
+            new_count = len(target_hunk.get('new_lines', []))
+            adjusted_header = f"@@ -{target_hunk['old_start']},{old_count} +{target_hunk['new_start']},{new_count} @@"
+            logger.info(f"Updated hunk header to: {adjusted_header}")
+            
+            # Update the header in the hunk data
+            target_hunk['header'] = adjusted_header
         
         # Construct a new diff with just this hunk
-        # Recreate the hunk header from the hunk data
-        hunk_header = f"@@ -{target_hunk['old_start']},{len(target_hunk['old_block'])} +{target_hunk['new_start']},{len(target_hunk['new_lines'])} @@"
-        logger.debug(f"Adjusted hunk header: {hunk_header}")
+        # Use the updated header if it was adjusted
+        final_header = target_hunk.get('header', f"@@ -{target_hunk['old_start']},{len(target_hunk['old_block'])} +{target_hunk['new_start']},{len(target_hunk['new_lines'])} @@")
+        logger.debug(f"Using final header: {final_header}")
         
         header_lines = [
             f"--- {source_path}",
             f"+++ {target_file}",
-            hunk_header
+            final_header
         ]
         
         # Construct the content lines
