@@ -1650,6 +1650,50 @@ async def get_default_included_folders():
     """Get the default included folders."""
     return []
 
+@app.get('/api/folders-with-accurate-tokens')
+async def get_folders_with_accurate_tokens():
+    """Get folder structure with pre-calculated accurate token counts."""
+    try:
+        # Get the user's codebase directory
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        if not user_codebase_dir:
+            logger.warning("ZIYA_USER_CODEBASE_DIR environment variable not set")
+            user_codebase_dir = os.getcwd()
+            logger.info(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {user_codebase_dir}")
+            os.environ["ZIYA_USER_CODEBASE_DIR"] = user_codebase_dir
+            
+        # Get max depth from environment or use default
+        try:
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        except ValueError:
+            logger.warning("Invalid ZIYA_MAX_DEPTH value, using default of 15")
+            max_depth = 15
+            
+        # Get ignored patterns
+        ignored_patterns = get_ignored_patterns(user_codebase_dir)
+        logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
+        
+        # Check if we have cached accurate token counts
+        from app.utils.directory_util import get_cached_folder_structure_with_tokens
+        result = get_cached_folder_structure_with_tokens(user_codebase_dir, ignored_patterns, max_depth)
+        
+        if result:
+            result["_has_accurate_tokens"] = True
+            # Include accurate token counts if available
+            if "_accurate_tokens" in result:
+                result["_accurate_token_counts"] = result["_accurate_tokens"]
+                logger.info(f"Returning folder structure with {len(result['_accurate_tokens'])} accurate token counts")
+            return result
+            
+        # Get regular folder structure
+        regular_result = await api_get_folders()
+        return regular_result
+        # Fall back to regular folder structure and start background calculation
+        return await api_get_folders()
+    except Exception as e:
+        logger.error(f"Error in get_folders_with_accurate_tokens: {e}")
+        return {"error": f"Unexpected error: {str(e)}"}
+
 @app.post('/api/chat')
 async def chat_endpoint(request: Request):
     """Handle chat requests from the frontend.
@@ -1923,9 +1967,10 @@ async def api_get_folders():
         # Get ignored patterns
         ignored_patterns = get_ignored_patterns(user_codebase_dir)
         logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
-        
         # Use our enhanced cached folder structure function
         result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+        
+        # Background calculation is automatically ensured by get_cached_folder_structure_with_tokens
         # Check if we got an error result
         if isinstance(result, dict) and "error" in result:
             logger.warning(f"Folder scan returned error: {result['error']}")
@@ -2379,6 +2424,24 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
     """Get accurate token counts for specific files."""
     try:
         from app.utils.directory_util import get_accurate_token_count
+
+        # Check if we have pre-calculated accurate counts
+        from app.utils.directory_util import _accurate_token_cache
+        if _accurate_token_cache:
+            logger.info(f"API request for accurate tokens: {len(request.file_paths)} files requested")
+            results = {}
+            for file_path in request.file_paths:
+                if file_path in _accurate_token_cache:
+                    results[file_path] = {
+                        "accurate_count": _accurate_token_cache[file_path],
+                        "timestamp": int(time.time())
+                    }
+            if results:
+                cached_count = sum(1 for path in request.file_paths if path in _accurate_token_cache)
+                calculated_count = len(results) - cached_count
+                logger.info(f"Returning {len(results)} token counts: {cached_count} from cache (accurate), {calculated_count} calculated on-demand")
+                return {"results": results, "debug_info": {"source": "precalculated_cache"}}
+
         import os
         
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
@@ -2394,7 +2457,7 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
                 # Get the estimated count for comparison
                 from app.utils.directory_util import estimate_tokens_fast
                 estimated_count = estimate_tokens_fast(full_path)
-                logger.info(f"File: {file_path} - Accurate: {accurate_count} vs Estimated: {estimated_count}")
+                logger.info(f"File: {file_path} - ACCURATE: {accurate_count} vs ESTIMATED: {estimated_count} (diff: {accurate_count - estimated_count})")
                 results[file_path] = {
                     "accurate_count": accurate_count,
                     "timestamp": int(time.time())

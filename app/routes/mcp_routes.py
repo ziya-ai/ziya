@@ -11,6 +11,20 @@ from typing import Dict, List, Any, Optional
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger
 
+# SINGLE SOURCE OF TRUTH for shell command configuration
+DEFAULT_SHELL_CONFIG = {
+    "enabled": True,
+    "allowedCommands": 
+    ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date", "od", "df", "netstat", "lsof", "ps", "sed", "awk", "cut", "sort", "which", "hexdump", "xxd", "tail", "head", "echo"],
+    "gitOperationsEnabled": True,
+    "safeGitOperations": ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"],
+    "timeout": 10
+}
+
+def get_default_shell_config():
+    """Get the default shell configuration."""
+    return DEFAULT_SHELL_CONFIG.copy()
+
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
 
@@ -22,11 +36,11 @@ class MCPServerConfig(BaseModel):
     enabled: bool = True
 
 class ShellConfig(BaseModel):
-    enabled: bool = True
-    allowedCommands: List[str] = ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"]
-    gitOperationsEnabled: bool = True
-    safeGitOperations: List[str] = ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"]
-    timeout: int = 10
+    enabled: bool = DEFAULT_SHELL_CONFIG["enabled"]
+    allowedCommands: List[str] = DEFAULT_SHELL_CONFIG["allowedCommands"]
+    gitOperationsEnabled: bool = DEFAULT_SHELL_CONFIG["gitOperationsEnabled"]
+    safeGitOperations: List[str] = DEFAULT_SHELL_CONFIG["safeGitOperations"]
+    timeout: int = DEFAULT_SHELL_CONFIG["timeout"]
 
 
 @router.get("/status")
@@ -265,11 +279,8 @@ async def get_shell_config():
         
         if not mcp_manager.is_initialized:
             return {
-                "enabled": False,
-                "allowedCommands": ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"],
-                "gitOperationsEnabled": True,
-                "safeGitOperations": ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"],
-                "timeout": 10
+                **get_default_shell_config(),
+                "enabled": False
             }
         
         # Check if shell server is connected
@@ -281,30 +292,26 @@ async def get_shell_config():
             if hasattr(shell_client, 'server_config'):
                 current_config = shell_client.server_config
             
-            allowed_commands = ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"]
+            allowed_commands = DEFAULT_SHELL_CONFIG["allowedCommands"].copy()
             if current_config and "env" in current_config and "ALLOW_COMMANDS" in current_config["env"]:
                 allowed_commands = [cmd.strip() for cmd in current_config["env"]["ALLOW_COMMANDS"].split(",") if cmd.strip()]
             
             # Extract git operations from environment or use defaults
-            git_operations = ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"]
+            git_operations = DEFAULT_SHELL_CONFIG["safeGitOperations"].copy()
             if current_config and "env" in current_config and "SAFE_GIT_OPERATIONS" in current_config["env"]:
                 git_operations = [op.strip() for op in current_config["env"]["SAFE_GIT_OPERATIONS"].split(",") if op.strip()]
             
-            return {
+            config = get_default_shell_config()
+            config.update({
                 "enabled": True,
                 "allowedCommands": allowed_commands,
-                "gitOperationsEnabled": True,
-                "safeGitOperations": git_operations,
-                "timeout": 10
-            }
+                "safeGitOperations": git_operations
+            })
+            return config
         else:
-            return {
-                "enabled": False,
-                "allowedCommands": ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"],
-                "gitOperationsEnabled": True,
-                "safeGitOperations": ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"],
-                "timeout": 10
-            }
+            config = get_default_shell_config()
+            config["enabled"] = False
+            return config
         
     except Exception as e:
         logger.error(f"Error getting shell config: {e}")
