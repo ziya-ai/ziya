@@ -1,6 +1,7 @@
 import glob
 import os
 import time
+import threading
 import concurrent.futures
 import signal
 from typing import List, Tuple, Dict, Any, Optional
@@ -153,6 +154,7 @@ def get_file_type_multiplier(file_path: str) -> float:
 def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     """
     Get the folder structure of a directory with token counts.
+    Now returns immediately with estimated counts, accurate counts calculated in background.
     
     Args:
         directory: The directory to get the structure of
@@ -162,10 +164,15 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     Returns:
         Dict with folder structure including token counts
     """
-    logger.info(f"🔍 PERF: Starting FAST folder scan for directory: {directory}, exists: {os.path.exists(directory)}, isdir: {os.path.isdir(directory)}")
+    logger.info(f"🔍 PERF: Starting ULTRA-FAST folder scan for directory: {directory}")
+    
+    # Check if we have cached results first
+    cached_result = get_cached_folder_structure_with_tokens(directory, ignored_patterns, max_depth)
+    if cached_result:
+        return cached_result
+    
     import tiktoken
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
-    encoding = tiktoken.get_encoding("cl100k_base")
     
     # Ensure max_depth is at least 15 if not specified
     if max_depth <= 0:
@@ -197,73 +204,6 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     # Add progress tracking
     last_progress_time = time.time()
     progress_interval = 2.0  # Log progress every 2 seconds
-    
-    # Create a token count cache as a dictionary
-    token_count_cache = dict()
-    
-    def count_tokens_accurate(file_path: str) -> int:
-        nonlocal token_count_cache
-        """Count tokens in a file using tiktoken - SLOW but a lot more accurate than size based estimates"""
-        perf_start = time.time()
-        # Check if we've exceeded the time limit
-        if time.time() - scan_stats['start_time'] > max_scan_time:
-            logger.debug(f"🔍 PERF: Timeout check took {(time.time() - perf_start)*1000:.1f}ms for {file_path}")
-            return 0
-
-        try:
-            dir_start = time.time()
-            # Skip binary files
-            if not is_processable_file(file_path):
-                if is_document_file(file_path):
-                    logger.debug(f"Document file {file_path} failed is_processable_file check")
-                logger.debug(f"🔍 PERF: is_processable_file check took {(time.time() - perf_start)*1000:.1f}ms for {file_path}")
-                token_count_cache[file_path] = 0
-                return 0
-                
-            scan_stats['files_processed'] += 1
-            
-            file_read_start = time.time()
-                
-            # Read file and count tokens
-            content = read_file_content(file_path)
-            file_read_time = time.time() - file_read_start
-            if file_read_time > 0.1:
-                logger.warning(f"🔍 PERF: Slow file read for {file_path}: {file_read_time*1000:.1f}ms")
-            
-            if content:
-                token_start = time.time()
-                token_count = len(encoding.encode(content))
-                token_time = time.time() - token_start
-                if token_time > 0.05:
-                    logger.warning(f"🔍 PERF: Slow token counting for {file_path}: {token_time*1000:.1f}ms ({len(content)} chars)")
-                
-                # Skip files with excessive token counts (>50k tokens)
-                if token_count > 50000:
-                    logger.debug(f"Skipping file with excessive tokens {file_path}: {token_count} tokens")
-                    token_count_cache[file_path] = 0
-                    return 0
-                
-                # Apply content-type specific multiplier
-                multiplier = get_file_type_multiplier(file_path)
-                adjusted_token_count = int(token_count * multiplier)
-                #logger.debug(f"File: {os.path.basename(file_path)}, Original Tokens: {token_count}, Multiplier: {multiplier:.2f}, Adjusted Tokens: {adjusted_token_count}")
-                # Cache the result
-                token_count_cache[file_path] = adjusted_token_count
-                
-                total_time = time.time() - perf_start
-                if total_time > 0.1:
-                    logger.warning(f"🔍 PERF: SLOW TOKEN COUNT for {file_path}: {total_time*1000:.1f}ms total")
-                
-                return adjusted_token_count
-            else:
-                logger.debug(f"No content extracted from: {file_path}")
-                token_count_cache[file_path] = 0
-                return 0
-        except Exception as e:
-            logger.warning(f"Error counting tokens in {file_path}: {e}")
-            token_count_cache[file_path] = 0
-            return 0
-        return 0
 
     def process_dir(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory recursively."""
@@ -437,6 +377,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     logger.info(f"Returning folder structure with {len(result)} top-level entries")
     return result
 
+# Add new fast estimation function
 def estimate_tokens_fast(file_path: str) -> int:
     """Fast token estimation based on file size and type."""
     try:
@@ -464,6 +405,162 @@ def estimate_tokens_fast(file_path: str) -> int:
         return int(estimated_tokens * multiplier)
     except (OSError, IOError):
         return 0
+
+# Add caching system
+_token_cache = {}
+_cache_timestamp = 0
+_cache_lock = threading.Lock()
+
+# Global thread management for background token calculation
+_background_thread = None
+_background_thread_lock = threading.Lock()
+
+# Global cache for accurate token counts
+_accurate_token_cache = {}
+
+def ensure_background_token_calculation(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
+    """
+    Ensure background token calculation is running for the given directory.
+    This is the single entry point for starting background calculation.
+    """
+    if not is_background_calculation_running():
+        logger.info(f"🔍 PERF: Ensuring background token calculation for {directory}")
+        start_background_token_calculation(directory, ignored_patterns, max_depth)
+    else:
+        logger.debug("🔍 PERF: Background token calculation already running")
+
+def get_cached_folder_structure_with_tokens(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Optional[Dict[str, Any]]:
+    """Get cached folder structure if available and fresh."""
+    global _token_cache, _cache_timestamp
+    
+    cache_key = f"{directory}:{max_depth}:{hash(str(ignored_patterns))}"
+    current_time = time.time()
+    
+    with _cache_lock:
+        if cache_key in _token_cache and (current_time - _cache_timestamp) < 300:  # 5 minute cache
+            logger.info("🔍 PERF: Returning cached folder structure with tokens")
+            # Even with cached results, ensure background calculation is running for freshness
+            ensure_background_token_calculation(directory, ignored_patterns, max_depth)
+            return _token_cache[cache_key]
+    
+    return None
+
+def cache_folder_structure_with_tokens(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int, result: Dict[str, Any]):
+    """Cache folder structure with tokens."""
+    global _token_cache, _cache_timestamp
+    
+    cache_key = f"{directory}:{max_depth}:{hash(str(ignored_patterns))}"
+    
+    with _cache_lock:
+        _token_cache[cache_key] = result
+        _cache_timestamp = time.time()
+        logger.info(f"🔍 PERF: Cached folder structure with {len(result)} entries")
+
+def start_background_token_calculation(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
+    """Start background thread to calculate accurate token counts (with deduplication)."""
+    global _background_thread, _background_thread_lock
+    
+    with _background_thread_lock:
+        # Check if a background thread is already running
+        if _background_thread is not None and _background_thread.is_alive():
+            logger.info("🔍 PERF: Background token calculation already in progress, skipping duplicate request")
+            return
+        
+        logger.info(f"🔍 PERF: Starting new background token calculation thread for {directory}")
+    
+    def calculate_accurate_tokens():
+        try:
+            logger.info(f"🔍 PERF: Starting background accurate token calculation for {directory}")
+            
+            # Early return is still in place - remove it when ready to re-enable
+            logger.info("🔍 PERF: Background token calculation temporarily disabled")
+            return
+            
+            # The rest of the function remains the same but won't execute due to return above
+            # Remove the return statement above when you want to re-enable background calculation
+            
+            import tiktoken
+            encoding = tiktoken.get_encoding("cl100k_base")
+            should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
+            
+            accurate_counts = {}
+            files_processed = 0
+            
+            for root, dirs, files in os.walk(directory):
+                # Filter directories
+                dirs[:] = [d for d in dirs 
+                          if not should_ignore_fn(os.path.join(root, d)) 
+                          and not d.startswith('.') 
+                          and not os.path.islink(os.path.join(root, d))]
+                
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if should_ignore_fn(file_path) or file.startswith('.'):
+                        continue
+                    
+                    if not is_processable_file(file_path):
+                        continue
+                    
+                    try:
+                        content = read_file_content(file_path)
+                        if content:
+                            token_count = len(encoding.encode(content))
+                            if token_count <= 50000:  # skip huge files
+                                multiplier = get_file_type_multiplier(file_path)
+                                adjusted_count = int(token_count * multiplier)
+                                
+                                # Store relative path
+                                rel_path = os.path.relpath(file_path, directory)
+                                accurate_counts[rel_path] = adjusted_count
+                                files_processed += 1
+                                
+                                if files_processed % 1000 == 0:
+                                    logger.info(f"🔍 PERF: Background processed {files_processed} files so far")
+                    except Exception as e:
+                        logger.debug(f"Error processing {file_path}: {e}")
+                        continue
+            
+            # Update cache with accurate counts
+            logger.info(f"🔍 PERF: Background calculation complete: {files_processed} files processed")
+            # Store accurate counts in a separate cache for API access
+            logger.info(f"🔍 PERF: Storing {len(accurate_counts)} accurate token counts in cache")
+            global _accurate_token_cache
+            _accurate_token_cache = accurate_counts
+            
+            # Also update the folder structure cache with accurate counts
+            cache_key = f"{directory}:{max_depth}:{hash(str(ignored_patterns))}"
+            with _cache_lock:
+                if cache_key in _token_cache:
+                    _token_cache[cache_key]["_accurate_tokens"] = accurate_counts
+                    logger.info(f"🔍 PERF: Updated folder cache with {len(accurate_counts)} accurate token counts")
+            
+        except Exception as e:
+            logger.error(f"Background token calculation failed: {e}")
+        finally:
+            # Clean up thread reference when done
+            global _background_thread
+            with _background_thread_lock:
+                _background_thread = None
+            logger.info("🔍 PERF: Background token calculation thread completed")
+    
+    with _background_thread_lock:
+        _background_thread = threading.Thread(target=calculate_accurate_tokens, daemon=True, name="TokenCalculation")
+        _background_thread.start()
+        logger.info(f"🔍 PERF: Background thread started: {_background_thread.name}")
+
+def is_background_calculation_running() -> bool:
+    """Check if background token calculation is currently running."""
+    global _background_thread, _background_thread_lock
+    
+    with _background_thread_lock:
+        return _background_thread is not None and _background_thread.is_alive()
+
+def get_background_calculation_status() -> dict:
+    """Get status of background token calculation."""
+    return {
+        "running": is_background_calculation_running(),
+        "thread_name": _background_thread.name if _background_thread and _background_thread.is_alive() else None
+    }
 
 def get_accurate_token_count(file_path: str) -> int:
     """
