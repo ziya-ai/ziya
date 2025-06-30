@@ -187,6 +187,14 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         logger.debug(f"Processing as pure addition with {len(added_lines)} added lines")
         result = _check_pure_addition_already_applied(file_lines, added_lines)
         logger.debug(f"Pure addition check result: {result}")
+        
+        # CRITICAL DEBUG: Log when pure addition returns True
+        if result:
+            logger.error(f"🚨 PURE ADDITION FALSE POSITIVE DETECTED!")
+            logger.error(f"Position: {pos}")
+            logger.error(f"Added lines: {added_lines}")
+            logger.error(f"File content around position {pos}: {file_lines[max(0,pos-2):pos+8]}")
+            
         return result
     
     # For hunks with removals, validate that the content to be removed matches
@@ -198,6 +206,14 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     logger.debug(f"Checking expected content match at position {pos}")
     result = _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace)
     logger.debug(f"Expected content match result: {result}")
+    
+    # CRITICAL DEBUG: Log when expected content match returns True
+    if result:
+        logger.error(f"🚨 EXPECTED CONTENT MATCH FALSE POSITIVE!")
+        logger.error(f"Position: {pos}")
+        logger.error(f"New lines: {new_lines}")
+        logger.error(f"File content at position {pos}: {file_lines[pos:pos+len(new_lines)]}")
+        
     return result
 
 
@@ -213,22 +229,28 @@ def _is_valid_hunk_header(hunk: Dict[str, Any]) -> bool:
 
 def _check_pure_addition_already_applied(file_lines: List[str], added_lines: List[str]) -> bool:
     """Check if a pure addition (no removals) is already applied."""
-    # Check if the exact content exists anywhere in the file
-    added_content = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
-    file_content = "\n".join([normalize_line_for_comparison(line) for line in file_lines])
     
-    logger.debug(f"Checking pure addition - added_content: {repr(added_content)}")
-    logger.debug(f"File content preview: {repr(file_content[:200])}...")
+    logger.debug(f"Checking pure addition - added_lines: {added_lines}")
     
-    if added_content not in file_content:
-        logger.debug("Pure addition not found in file content")
-        return False
+    # For each added line, check if it exists exactly in the file
+    for added_line in added_lines:
+        added_line_normalized = normalize_line_for_comparison(added_line)
+        logger.debug(f"Looking for exact match of: {repr(added_line_normalized)}")
+        
+        found_exact_match = False
+        for i, file_line in enumerate(file_lines):
+            file_line_normalized = normalize_line_for_comparison(file_line)
+            if file_line_normalized == added_line_normalized:
+                logger.debug(f"Found exact match at line {i}: {repr(file_line)}")
+                found_exact_match = True
+                break
+        
+        if not found_exact_match:
+            logger.debug(f"No exact match found for: {repr(added_line_normalized)}")
+            return False
     
-    logger.debug("Pure addition content found in file, checking for duplicate declarations")
-    # Check for duplicate declarations
-    result = _check_duplicate_declarations(file_lines, added_lines)
-    logger.debug(f"Duplicate declarations check result: {result}")
-    return result
+    logger.debug("All added lines found as exact matches - pure addition already applied")
+    return True
 
 
 def _check_duplicate_declarations(file_lines: List[str], added_lines: List[str]) -> bool:

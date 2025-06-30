@@ -264,7 +264,21 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             pipeline.complete(error="No hunks were applied")
             return pipeline.result.to_dict()
     
-    git_apply_result = run_git_apply_stage(pipeline, user_codebase_dir, remaining_diff)
+    # Check for problematic patterns that git apply handles poorly
+    if "\\ No newline at end of file" in remaining_diff:
+        logger.info("Detected 'No newline at end of file' pattern - skipping git apply due to known issues")
+        # Mark all pending hunks as failed so they go to difflib
+        for hunk_id, tracker in pipeline.result.hunks.items():
+            if tracker.status == HunkStatus.PENDING:
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.GIT_APPLY,
+                    status=HunkStatus.FAILED,
+                    error_details={"error": "skipped due to newline at EOF issue"}
+                )
+        git_apply_result = False
+    else:
+        git_apply_result = run_git_apply_stage(pipeline, user_codebase_dir, remaining_diff)
     
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
@@ -713,14 +727,26 @@ def run_git_apply_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff
         
         if git_result.returncode == 0:
             logger.info("Git apply succeeded")
-            # Mark all pending hunks as succeeded
-            for hunk_id, tracker in pipeline.result.hunks.items():
-                if tracker.status == HunkStatus.PENDING:
-                    pipeline.update_hunk_status(
-                        hunk_id=hunk_id,
-                        stage=PipelineStage.GIT_APPLY,
-                        status=HunkStatus.SUCCEEDED
-                    )
+            # Check if git apply reports clean application
+            if "Applied patch" in git_result.stderr and "cleanly" in git_result.stderr:
+                logger.info("Git apply reports clean application - marking all hunks as succeeded")
+                # Mark all hunks as succeeded when git apply cleanly applies the entire patch
+                for hunk_id, tracker in pipeline.result.hunks.items():
+                    if tracker.status in (HunkStatus.PENDING, HunkStatus.FAILED):
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.GIT_APPLY,
+                            status=HunkStatus.SUCCEEDED
+                        )
+            else:
+                # Only mark pending hunks as succeeded for partial success
+                for hunk_id, tracker in pipeline.result.hunks.items():
+                    if tracker.status == HunkStatus.PENDING:
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.GIT_APPLY,
+                            status=HunkStatus.SUCCEEDED
+                        )
             changes_written = True
         elif "already applied" in git_result.stderr:
             logger.info("Some hunks were already applied")
