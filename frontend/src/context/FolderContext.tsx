@@ -54,6 +54,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [forceRefreshCounter, setForceRefreshCounter] = useState(0);
   const [accurateTokenCounts, setAccurateTokenCounts] = useState<Record<string, { count: number; timestamp: number }>>({});
   const accurateCountTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastProcessedSelectionRef = useRef<string>('');
 
   // Monitor FolderProvider render performance
   // Remove performance monitoring that's causing overhead
@@ -87,35 +88,42 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, []);
 
   // Function to get accurate token counts for selected files
-  const getAccurateTokenCounts = useCallback(async (filePaths: string[]) => {
-    if (filePaths.length === 0) return;
-    
+  const getAccurateTokenCounts = useMemo(() => debounce(async (filePaths: string[]) => {
+    // More aggressive limits for large repositories
+    if (filePaths.length > 100) {
+      console.warn(`Limiting token count batch from ${filePaths.length} to 100 files`);
+      filePaths = filePaths.slice(0, 100);
+    }
+    if (filePaths.length === 0 || filePaths.length > 50) return;
+
     // Filter out files we already have recent accurate counts for (within 5 minutes)
     const now = Date.now() / 1000;
     const filesToUpdate = filePaths.filter(path => {
       const existing = accurateTokenCounts[path];
       return !existing || (now - existing.timestamp) > 300; // 5 minutes
     });
-    
+
     if (filesToUpdate.length === 0) return;
-    
+
     try {
-      console.log(`Getting accurate token counts for ${filesToUpdate.length} files`);
+      console.log(`Making API request for accurate token counts: ${filesToUpdate.length} files`, filesToUpdate);
+      console.log(`Getting accurate token counts for ${filesToUpdate.length} files (batch)`);
       const response = await fetch('/api/accurate-token-count', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_paths: filesToUpdate }),
       });
-      
+
       if (!response.ok) {
         throw new Error(`Failed to get accurate token counts: ${response.status}`);
       }
-      
+
       const data = await response.json();
       console.log('Received accurate token counts:', data);
       if (data.results) {
         setAccurateTokenCounts(prev => {
           const updated = { ...prev };
+          console.log('Processing accurate token count results:', Object.keys(data.results).length, 'files');
           Object.entries(data.results).forEach(([path, result]: [string, any]) => {
             if (result.accurate_count !== undefined) {
               updated[path] = {
@@ -123,47 +131,34 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
                 timestamp: result.timestamp
               };
             }
+            console.log(`Updated accurate count for ${path}: ${result.accurate_count}`);
           });
-          
+
           // Debug log to compare with estimated counts
           Object.entries(updated).forEach(([path, result]) => {
-            const estimatedCount = folders ? getFolderTokenCount(path, folders) : 0;
-            console.log(`Path: ${path} - Accurate: ${result.count}, Estimated: ${estimatedCount}, Difference: ${result.count - estimatedCount}`);
+            // Remove excessive logging
           });
-          
+
+          // Force a refresh of components that depend on token counts
+          setForceRefreshCounter(prev => prev + 1);
+
           return updated;
         });
-        
-        // Force a refresh of components that depend on token counts
-        setForceRefreshCounter(prev => prev + 1);
-        
-        // Trigger a recalculation of the tree data to update parent directories
-        if (treeData.length > 0) {
-          // Create a deep copy of the tree data with updated token counts
-          try {
-            // Force a deep copy of the tree data to trigger a re-render
-            const deepCopy = JSON.parse(JSON.stringify(treeData));
-            
-            // Update the tree data to trigger recalculation
-            setTreeData(deepCopy);
-            
-            // Clear any token calculation caches that might exist in other components
-            // This is a custom event that MUIFileExplorer will listen for
-            const event = new CustomEvent('accurateTokenCountsUpdated', {
-              detail: { updatedPaths: Object.keys(data.results) }
-            });
-            window.dispatchEvent(event);
-          } catch (error) {
-            console.error('Error updating tree data:', error);
-          }
-        }
-        console.log(`Updated accurate token counts for ${Object.keys(data.results).length} files`);
+
+        // Dispatch update event without forcing tree data changes
+        requestAnimationFrame(() => {
+          const event = new CustomEvent('accurateTokenCountsUpdated', {
+            detail: { updatedPaths: Object.keys(data.results) }
+          });
+          window.dispatchEvent(event);
+        });
+
       }
-      
+
     } catch (error) {
       console.error('Error getting accurate token counts:', error);
     }
-  }, [accurateTokenCounts]);
+  }, 3000), []); // Further increased debounce time for large repos
 
   // Debounced function to get accurate counts
   const debouncedGetAccurateCounts = useCallback(
@@ -185,28 +180,68 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Save checked folders whenever they change
   useEffect(() => {
     try {
-      localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(checkedKeys));
+      localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(Array.from(checkedKeys)));
     } catch (error) {
       console.warn('Failed to save checked folders to localStorage (QuotaExceeded?):', error);
     }
   }, [checkedKeys]);
 
   // Get accurate token counts for selected files
-  useEffect(() => {
+  const updateAccurateTokens = useCallback((checkedKeys) => {
+    console.log('updateAccurateTokens called with:', checkedKeys.length, 'keys');
+    debouncedGetAccurateCounts(checkedKeys);
+  }, []);
+
+  const debouncedUpdateAccurateTokens = useCallback(debounce((checkedKeys) => {
+    // Add much more aggressive throttling
     if (!folders || checkedKeys.length === 0) return;
-    
-    // Extract file paths from checked keys (exclude directories)
+
+    // Check if selection actually changed
+    const selectionSignature = checkedKeys.sort().join(',');
+    if (selectionSignature === lastProcessedSelectionRef.current) {
+      console.log('Selection unchanged, skipping accurate token count request');
+      return;
+    }
+    lastProcessedSelectionRef.current = selectionSignature;
+
+    // Optimize by limiting the number of files we process at once
     const filePaths = checkedKeys.filter(key => {
       const keyStr = String(key);
       // Simple heuristic: if it has an extension, it's likely a file
       return keyStr.includes('.') && !keyStr.endsWith('/');
     }).map(key => String(key));
-    
-    if (filePaths.length > 0) {
-      console.log(`Scheduling accurate token count for ${filePaths.length} selected files`);
-      debouncedGetAccurateCounts(filePaths);
+
+    // Filter out files we already have accurate counts for
+    const now = Date.now() / 1000;
+    const filesToUpdate = filePaths.filter(path => {
+      const existing = accurateTokenCounts[path];
+      return !existing || (now - existing.timestamp) > 3600; // 1 hour cache
+    });
+
+    if (filesToUpdate.length === 0) {
+      console.log('All selected files already have accurate token counts, skipping API call');
+      return;
     }
-  }, [checkedKeys, folders, debouncedGetAccurateCounts]);
+
+    console.log(`Need accurate counts for ${filesToUpdate.length} of ${filePaths.length} selected files`);
+
+
+    if (filePaths.length > 0) {
+      // More reasonable batch size for accurate token counting
+      const limitedPaths = filesToUpdate.slice(0, 20);
+
+      // Use requestIdleCallback to avoid blocking UI
+      const processTokens = () => {
+        debouncedGetAccurateCounts(limitedPaths);
+      };
+
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(processTokens);
+      } else {
+        setTimeout(processTokens, 0);
+      }
+    }
+  }, 1000), [folders, debouncedGetAccurateCounts, accurateTokenCounts]);
 
   // Cleanup timeouts on unmount
   useEffect(() => {
@@ -214,6 +249,16 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       if (accurateCountTimeoutRef.current) clearTimeout(accurateCountTimeoutRef.current);
     };
   }, []);
+
+  // Debounced accurate token updates
+  useEffect(() => {
+    if (checkedKeys.length > 0) {
+      console.log('Checked keys changed, current count:', checkedKeys.length);
+      debouncedUpdateAccurateTokens(checkedKeys);
+    } else {
+      console.log('No items selected, skipping accurate token updates');
+    }
+  }, [checkedKeys, debouncedUpdateAccurateTokens]);
 
   // Remove chat context dependency that was causing render loops
 
@@ -233,7 +278,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           setIsScanning(false);
           setScanProgress(null);
           setScanError(null);
-          
+
           // Clear intervals
           if (progressIntervalRef.current) {
             clearInterval(progressIntervalRef.current);
@@ -272,7 +317,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
               files: data.progress?.files || 0,
               elapsed: data.progress?.elapsed || 0
             });
-            
+
             // Only schedule another check if scanning is still active
             setTimeout(checkFolderProgress, 1000);
           } else {
@@ -284,7 +329,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         console.debug('Progress check error:', error);
       }
     };
-    
+
     // Only check progress if scanning is active
     if (isScanning) {
       checkFolderProgress();
@@ -298,11 +343,17 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         setIsScanning(true);
         setScanError(null);
         setScanProgress({ directories: 0, files: 0, elapsed: 0 });
-        
+
         // Start progress polling
         startProgressPolling();
-        
-        const response = await fetch('/api/folders');
+
+        // Try the fast endpoint first
+        let response = await fetch('/api/folders-with-accurate-tokens');
+        if (!response.ok) {
+          // Fall back to regular endpoint
+          response = await fetch('/api/folders');
+        }
+
         if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
         }
@@ -331,6 +382,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         // Store the complete folder structure
         setFolders(data);
 
+        // Check if we got accurate tokens and update state
+        if (data._has_accurate_tokens) {
+          console.log('Received folder structure with pre-calculated accurate tokens');
+          // No need to fetch accurate tokens separately
+        }
+
         // Move heavy computation to async to avoid blocking UI
         // Use requestIdleCallback if available, otherwise setTimeout
         const scheduleWork = (callback: () => void) => {
@@ -343,12 +400,25 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
         scheduleWork(async () => {
           try {
-            // Get all available file paths recursively
+            // Get all available file paths recursively (optimized)
             const getAllPaths = (obj: any, prefix: string = ''): string[] => {
-              return Object.entries(obj).flatMap(([key, value]: [string, any]) => {
-                const path = prefix ? `${prefix}/${key}` : key;
-                return value.children ? [...getAllPaths(value.children, path), path] : [path];
-              });
+              const paths: string[] = [];
+              const stack: Array<{ obj: any, prefix: string }> = [{ obj, prefix }];
+
+              while (stack.length > 0) {
+                const { obj: currentObj, prefix: currentPrefix } = stack.pop()!;
+
+                for (const [key, value] of Object.entries(currentObj)) {
+                  const path = currentPrefix ? `${currentPrefix}/${key}` : key;
+                  paths.push(path);
+
+                  if (value && typeof value === 'object' && 'children' in value && value.children) {
+                    stack.push({ obj: value.children, prefix: path });
+                  }
+                }
+              }
+
+              return paths;
             };
 
             const availablePaths = getAllPaths(data);
@@ -361,7 +431,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             // Convert to tree data and set expanded keys for top-level folders
             const treeNodes = convertToTreeData(data);
             setTreeData(treeNodes);
-            setExpandedKeys(prev => [...prev, ...treeNodes.map(node => node.key)]);
+            // Don't auto-expand top-level folders - keep them collapsed
+            // setExpandedKeys(prev => [...prev, ...treeNodes.map(node => node.key)]);
 
             // Update checked keys to include all available files and maintain selections
             setCheckedKeys(prev => {
@@ -412,7 +483,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       } finally {
         setIsScanning(false);
         setScanProgress(null);
-        
+
         // Clear progress polling
         if (progressIntervalRef.current) {
           clearInterval(progressIntervalRef.current);
@@ -436,13 +507,13 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             content: (
               <div>
                 Folder scan is taking longer than expected. You can continue using Ziya.
-                <button 
+                <button
                   onClick={cancelScan}
-                  style={{ 
-                    background: '#ff4d4f', 
-                    color: 'white', 
-                    border: 'none', 
-                    padding: '4px 8px', 
+                  style={{
+                    background: '#ff4d4f',
+                    color: 'white',
+                    border: 'none',
+                    padding: '4px 8px',
                     borderRadius: '4px',
                     cursor: 'pointer',
                     marginLeft: '8px'
@@ -458,7 +529,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         }
       }, 60000); // 60 second warning
     }
-    
+
     return () => {
       if (scanTimeoutRef.current) {
         clearTimeout(scanTimeoutRef.current);
@@ -471,7 +542,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     getFolderTokenCount,
     setTreeData,
     treeData,
-    checkedKeys,
+    checkedKeys: checkedKeys.slice(0), // Return a copy to prevent mutation
     setCheckedKeys,
     searchValue,
     setSearchValue,
@@ -481,8 +552,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     scanProgress,
     scanError,
     accurateTokenCounts
-  }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning, 
-       scanProgress, scanError, accurateTokenCounts, forceRefreshCounter]);
+    // Remove forceRefreshCounter from dependencies to prevent unnecessary re-renders
+  }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning,
+    scanProgress, scanError, accurateTokenCounts, forceRefreshCounter]);
 
   return (
     <FolderContext.Provider value={contextValue}>

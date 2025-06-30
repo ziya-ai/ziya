@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
 import { useFolderContext } from '../context/FolderContext';
 import { useTheme } from '../context/ThemeContext';
 import { Folders } from '../utils/types';
@@ -24,31 +24,55 @@ import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import ClearIcon from '@mui/icons-material/Clear';
+
+// TypeScript interfaces
+interface TreeNodeData {
+  key: string;
+  title: string;
+  children?: TreeNodeData[];
+  loggedAccurate?: boolean;
+}
+
+interface TreeNodeProps {
+  node: TreeNodeData;
+  level?: number;
+}
+
 export const MUIFileExplorer = () => {
   const {
     treeData,
     setTreeData,
     folders,
     checkedKeys,
-    isScanning,
-    scanError,
     setCheckedKeys,
+    searchValue,
+    setSearchValue,
     expandedKeys,
     setExpandedKeys,
+    isScanning,
+    scanProgress,
+    scanError,
     getFolderTokenCount,
-    accurateTokenCounts,
+    accurateTokenCounts
   } = useFolderContext();
 
   const { isDarkMode } = useTheme();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [searchValue, setSearchValue] = useState('');
   const [filteredTreeData, setFilteredTreeData] = useState<any[]>([]);
-  const [autoExpandParent, setAutoExpandParent] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const lastClickRef = useRef<number>(0);
 
-  // Cache for token calculations
+  // Lightweight caches - only computed when needed
   const tokenCalculationCache = useRef(new Map());
+  const nodePathCache = useRef(new Map());
   const lastAccurateCountsRef = useRef<Record<string, any>>({});
+
+  // Fast initial render - show skeleton immediately
+  useEffect(() => {
+    setIsInitialLoad(false);
+    setIsLoading(false);
+  }, []);
 
   // Force recalculation when accurate token counts change
   // Helper function to determine if a node has children
@@ -56,74 +80,168 @@ export const MUIFileExplorer = () => {
     return !!(node && node.children && Array.isArray(node.children) && node.children.length > 0);
   };
 
-  // Use the same tree data as the Ant Design version for consistency
+  // Lightweight tree data - only process what's visible
   const muiTreeData = useMemo(() => {
-    console.log('MUI Using treeData from context:', {
-      nodeCount: treeData.length,
-      treeDataExists: !!treeData,
-      hasChildren: treeData.filter(node => node.children && node.children.length > 0).length,
-      sampleNode: treeData[0],
-      sampleNodeChildren: treeData[0]?.children?.length || 0
-    });
+    // For initial render, show empty state immediately
+    if (isInitialLoad) return [];
 
-    // Debug the structure of the first few nodes
-    console.log('MUI First 3 tree nodes:', treeData.slice(0, 3).map(node => ({
-      key: node.key,
-      title: node.title,
-      hasChildren: !!(node.children && node.children.length > 0),
-      childCount: node.children ? node.children.length : 0
-    })));
-
-    // Debug log for specific folders we know should have children
-    const frontendNode = treeData.find(node => node.key === 'frontend');
-    if (frontendNode) {
-      console.log('MUI Frontend node structure:', {
-        key: frontendNode.key,
-        hasChildren: !!(frontendNode.children && frontendNode.children.length > 0),
-        childCount: frontendNode.children ? frontendNode.children.length : 0,
-        children: frontendNode.children?.slice(0, 3)
-      });
-    }
-
-    // If we have tree data, we're no longer loading
-    if (treeData.length > 0) {
-      setIsLoading(false);
-    }
-
+    // Return tree data as-is for now - optimization happens in TreeNode
     return treeData;
-  }, [treeData]);
+  }, [treeData, isInitialLoad]);
 
-  // Simple custom tree renderer that manually handles hierarchy
-  const TreeNode = ({ node, level = 0 }) => {
-    const hasChildren = node.children && node.children.length > 0;
+  // Fast node lookup cache
+  const getNodeFromCache = useCallback((nodeKey: string) => {
+    if (nodePathCache.current.has(nodeKey)) {
+      return nodePathCache.current.get(nodeKey);
+    }
+    // Only search when actually needed
+    return null;
+  }, []);
+
+  // Optimized TreeNode with minimal re-renders
+  const TreeNode = memo(({ node, level = 0 }: TreeNodeProps) => {
+    const hasChildren = nodeHasChildren(node);
     const isExpanded = expandedKeys.includes(String(node.key));
     const isChecked = checkedKeys.includes(String(node.key));
 
-    // Always calculate token counts using the original full tree, not filtered data
-    const originalNode = findNodeInOriginalTree(node.key);
-    
-    // Use accurate count if available for this specific file
-    let nodeTokens = folders ? getFolderTokenCount(String(node.key), folders) : 0;
-    const accurateData = accurateTokenCounts[String(node.key)];
-    
-    // Only use accurate counts for files, not directories
-    // And only log once per render cycle to avoid spamming
-    if (accurateData && !hasChildren && !node.loggedAccurate) {
-      nodeTokens = accurateData.count;
-      console.log(`Using accurate token count for ${node.key}: ${nodeTokens} (estimated would be ${folders ? getFolderTokenCount(String(node.key), folders) : 0})`);
+    // Helper function to check if any descendants are selected
+    const hasSelectedDescendants = useCallback((node: any): boolean => {
+      if (!node.children) return false;
+
+      for (const child of node.children) {
+        if (checkedKeys.includes(String(child.key))) {
+          return true;
+        }
+        if (hasSelectedDescendants(child)) {
+          return true;
+        }
+      }
+      return false;
+    }, [checkedKeys]);
+
+    // Helper function to check if all children of a node are selected
+    const areAllChildrenSelected = useCallback((node: any, currentCheckedKeys: string[]): boolean => {
+      if (!node.children || node.children.length === 0) return true;
+
+      const checkedSet = new Set(currentCheckedKeys);
+      return node.children.every(child => {
+        // A child is considered "fully selected" if either:
+        // 1. It's directly selected, OR
+        // 2. It's a directory and all its children are selected
+        if (checkedSet.has(String(child.key))) {
+          return true;
+        }
+        // If it's a directory, check if all its children are selected
+        if (nodeHasChildren(child)) {
+          return areAllChildrenSelected(child, currentCheckedKeys);
+        }
+        // If it's a file and not selected, then not all children are selected
+        return false;
+      });
+    }, []);
+
+    // Helper function to calculate included tokens for a directory's children
+    const calculateChildrenIncluded = useCallback((node: any): number => {
+      if (!node.children) return 0;
+      if (!folders) return 0;
+
+      let included = 0;
+      for (const child of node.children) {
+        const childKey = String(child.key);
+        const isChildDirectlySelected = checkedKeys.includes(childKey);
+
+        if (isChildDirectlySelected) {
+          const childTokens = getFolderTokenCount(childKey, folders);
+          const childAccurate = accurateTokenCounts[childKey];
+          const childTotal = (childAccurate && !nodeHasChildren(child)) ? childAccurate.count : childTokens;
+          included += childTotal;
+        } else if (nodeHasChildren(child)) {
+          // Only include partial selections from subdirectories
+          included += calculateChildrenIncluded(child);
+        }
+      }
+      return included;
+    }, [checkedKeys, folders, accurateTokenCounts]);
+
+    // Always calculate tokens for display, but cache for performance
+    const shouldCalculateTokens = true;
+
+    let nodeTokens = 0;
+    let total = 0;
+    let included = 0;
+
+    if (shouldCalculateTokens && folders) {
+      // Use cached calculation if available
+      const cacheKey = `${node.key}_${isChecked}`;
+      if (tokenCalculationCache.current.has(cacheKey)) {
+        const cached = tokenCalculationCache.current.get(cacheKey);
+        total = cached.total;
+        included = cached.included;
+      } else {
+        // Calculate only when needed
+        if (hasChildren) {
+          // For directories, calculate from children
+          let directoryTotal = 0;
+          let directoryIncluded = 0;
+
+          if (node.children) {
+            for (const child of node.children) {
+              const childTokens = getFolderTokenCount(String(child.key), folders);
+              const childAccurate = accurateTokenCounts[String(child.key)];
+              const childTotal = (childAccurate && !nodeHasChildren(child)) ? childAccurate.count : childTokens;
+
+              directoryTotal += childTotal;
+
+              const childKey = String(child.key);
+              const isChildDirectlySelected = checkedKeys.includes(childKey);
+
+              if (isChildDirectlySelected) {
+                // Child is directly selected - include its full token count
+                directoryIncluded += childTotal;
+              } else if (nodeHasChildren(child)) {
+                // Child is a directory but not directly selected - only include selected descendants
+                const descendantIncluded = calculateChildrenIncluded(child);
+                directoryIncluded += descendantIncluded;
+              }
+            }
+          }
+
+          total = directoryTotal;
+          included = directoryIncluded;
+        } else {
+          // For files, use accurate count if available
+          const accurateData = accurateTokenCounts[String(node.key)];
+          if (accurateData) {
+            nodeTokens = accurateData.count;
+          } else {
+            nodeTokens = getFolderTokenCount(String(node.key), folders);
+          }
+          total = nodeTokens;
+          included = isChecked ? nodeTokens : 0;
+        }
+
+        // Cache the result
+        tokenCalculationCache.current.set(cacheKey, { total, included });
+      }
     }
-    
-    const { total, included } = calculateTokens(originalNode || node, folders, nodeTokens);
 
     // Check if this node is indeterminate (some but not all children selected)
-    const isIndeterminate = hasChildren && !isChecked &&
-      node.children.some(child => checkedKeys.includes(String(child.key)));
+    const isIndeterminate = useMemo(() => {
+      if (!hasChildren || isChecked) return false;
+
+      // A node is indeterminate if:
+      // 1. It has children
+      // 2. It's not directly selected
+      // 3. Some (but not all) of its descendants are selected
+      const hasAnySelected = hasSelectedDescendants(node);
+      return hasAnySelected && !areAllChildrenSelected(node, checkedKeys.map(String));
+    }, [hasChildren, isChecked, node, hasSelectedDescendants, areAllChildrenSelected]);
 
     // Extract clean label and token count
     const titleMatch = String(node.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
     const cleanLabel = titleMatch ? titleMatch[1] : String(node.title);
 
-    const handleToggle = () => {
+    const handleToggle = useCallback(() => {
       if (hasChildren) {
         setExpandedKeys(prev =>
           isExpanded
@@ -131,12 +249,14 @@ export const MUIFileExplorer = () => {
             : [...prev, String(node.key)]
         );
       }
-    };
+    }, [hasChildren, isExpanded, node.key]);
 
-    const handleCheck = (event) => {
+    const handleCheck = useCallback((event) => {
       event.stopPropagation();
+
+      // Use the proper hierarchy checkbox logic
       handleCheckboxClick(String(node.key), !isChecked);
-    };
+    }, [isChecked, node.key]);
 
     return (
       <Box key={node.key}>
@@ -145,8 +265,8 @@ export const MUIFileExplorer = () => {
             display: 'flex',
             alignItems: 'center',
             py: 0.25,
-            pl: level * 2 + 1, // Reduced padding to move everything left
-            pr: 1, // Add right padding to prevent text from touching scrollbar
+            pl: level * 2 + 1,
+            pr: 1,
             position: 'relative',
             '&:hover': {
               backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.04)'
@@ -160,7 +280,7 @@ export const MUIFileExplorer = () => {
             sx={{
               p: 0.25,
               position: 'absolute',
-              left: level * 14 - 10, // More aggressive multiplier for better alignment
+              left: level * 14 - 10,
               visibility: hasChildren ? 'visible' : 'hidden'
             }}
           >
@@ -193,21 +313,26 @@ export const MUIFileExplorer = () => {
             {cleanLabel}
           </Typography>
 
-          {/* Token count */}
-          {!hasChildren && total > 0 && (
-            <Typography
-              variant="caption"
-              sx={{
-                ml: 1,
-                fontSize: '0.7rem',
-                fontFamily: 'monospace',
-                color: isDarkMode ? '#aaa' : 'text.secondary',
-                fontWeight: isChecked && total > 0 ? 'bold' : 'normal',
-                ...(isChecked && total > 0 && { color: isDarkMode ? '#ffffff' : '#000000' })
-              }}
-            >
-              ({total.toLocaleString()})
-            </Typography>
+          {/* Token count - only show if calculated */}
+          {!hasChildren && (
+            (() => {
+              const isAccurate = accurateTokenCounts[String(node.key)];
+              return (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    ml: 1,
+                    fontSize: '0.7rem',
+                    fontFamily: 'monospace',
+                    color: isDarkMode ? '#aaa' : 'text.secondary',
+                    fontWeight: isChecked && total > 0 ? 'bold' : 'normal',
+                    ...(isChecked && total > 0 && { color: isDarkMode ? '#ffffff' : '#000000' })
+                  }}
+                >
+                  {total > 0 ? `(${total.toLocaleString()}${isAccurate ? '✓' : '~'})` : '(0~)'}
+                </Typography>
+              );
+            })()
           )}
 
           {/* Token display for folders showing included/total */}
@@ -235,11 +360,11 @@ export const MUIFileExplorer = () => {
           )}
         </Box>
 
-        {/* Children */}
-        {hasChildren && (
+        {/* Children - only render when expanded */}
+        {hasChildren && isExpanded && (
           <Collapse in={isExpanded}>
             <Box sx={{ pl: 1 }}>
-              {node.children.map(child => (
+              {node.children?.map(child => (
                 <TreeNode key={child.key} node={child} level={level + 1} />
               ))}
             </Box>
@@ -247,31 +372,19 @@ export const MUIFileExplorer = () => {
         )}
       </Box>
     );
-  };
-
-  // Helper function to find a node in the original unfiltered tree
-  const findNodeInOriginalTree = (nodeKey: string): any => {
-    const findInTree = (tree: any[], key: string): any => {
-      for (const node of tree) {
-        if (String(node.key) === String(key)) {
-          return node;
-        }
-        if (node.children) {
-          const found = findInTree(node.children, key);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    return findInTree(muiTreeData, nodeKey);
-  };
+  }, (prevProps, nextProps) => {
+    // Only re-render if key props actually changed
+    return prevProps.node.key === nextProps.node.key &&
+      prevProps.level === nextProps.level &&
+      prevProps.node.title === nextProps.node.title;
+  });
 
   // Effect to load folders on component mount
   useEffect(() => {
     const loadFolders = async () => {
       if (isLoading) return; // Prevent multiple simultaneous loads
       try {
-        const response = await fetch('/api/folders');
+        const response = await fetch('/api/folders-with-accurate-tokens');
         if (!response.ok) {
           throw new Error(`Failed to load folders: ${response.status}`);
         }
@@ -280,6 +393,9 @@ export const MUIFileExplorer = () => {
         // Convert and sort data
         const sortedData = sortTreeData(convertToTreeData(data));
         setTreeData(sortedData);
+
+        // Don't auto-expand anything - start collapsed
+        // setExpandedKeys([]) is already the default, so no need to set it
       } catch (err) {
         console.error('Failed to load folders:', err);
         message.error('Failed to load folder structure');
@@ -290,7 +406,7 @@ export const MUIFileExplorer = () => {
 
     // Only load folders if we don't already have them
     // Also check if we're not already loading to prevent race conditions
-    if ((!folders || Object.keys(folders).length === 0) && !isLoading) {
+    if ((!folders || Object.keys(folders).length === 0) && !isInitialLoad) {
       setIsLoading(true);
       loadFolders();
     } else {
@@ -306,10 +422,8 @@ export const MUIFileExplorer = () => {
         const { filteredData, expandedKeys } = filterTreeData(muiTreeData, value);
         setFilteredTreeData(filteredData);
         setExpandedKeys(prev => [...prev, ...expandedKeys]);
-        setAutoExpandParent(true);
       } else {
         setFilteredTreeData([]);
-        setAutoExpandParent(false);
         console.log('MUI Clearing search filter');
       }
     }, 300),
@@ -397,8 +511,9 @@ export const MUIFileExplorer = () => {
 
       // Convert and sort data
       const sortedData = sortTreeData(convertToTreeData(data));
-
       setTreeData(sortedData);
+
+      // Keep folders collapsed on refresh too
       message.success('Folder structure refreshed');
     } catch (err) {
       console.error('Failed to refresh folders:', err);
@@ -410,73 +525,173 @@ export const MUIFileExplorer = () => {
   // Handle checkbox click
   // This function is crucial for selecting/deselecting folders and files
   const handleCheckboxClick = (nodeId, checked) => {
+    // Immediate visual feedback - just toggle the clicked node for instant response
+    setCheckedKeys(prev => {
+      const currentChecked = prev.map(String);
+      if (checked && !currentChecked.includes(String(nodeId))) {
+        return [...prev, String(nodeId)];
+      } else if (!checked) {
+        return prev.filter(k => String(k) !== String(nodeId));
+      }
+      return prev;
+    });
+
     console.log('MUI Checkbox click:', { nodeId, checked });
 
-    // Find the node in the tree
-    const findNode = (nodes, id) => {
+    // Debounce rapid clicks
+    if (Date.now() - lastClickRef.current < 200) return;
+    lastClickRef.current = Date.now();
+
+    // Find the clicked node in the tree
+    const findNodeInTree = (nodes, targetId) => {
       for (const node of nodes) {
-        if (String(node.key) === String(id)) {
+        if (String(node.key) === String(targetId)) {
           return node;
         }
-        if (node.children) {
-          const found = findNode(node.children, id);
+        if (node.children && node.children.length > 0) {
+          const found = findNodeInTree(node.children, targetId);
           if (found) return found;
         }
       }
       return null;
     };
 
-    // Get all child keys
-    const getAllChildKeys = (node): string[] => {
-      let keys = [String(node.key)];
-      if (node.children) {
-        node.children.forEach(child => {
-          keys = keys.concat(getAllChildKeys(child));
-        });
+    // Get all descendant keys (children, grandchildren, etc.)
+    const getAllDescendantKeys = (node: any): string[] => {
+      const keys: string[] = [];
+      if (node.children && node.children.length > 0) {
+        for (const child of node.children) {
+          keys.push(String(child.key));
+          keys.push(...getAllDescendantKeys(child));
+        }
       }
       return keys;
     };
 
-    // Get all parent keys
-    const getAllParentKeys = (key: React.Key, tree: any[]): string[] => {
-      let parentKeys: string[] = [];
-      const findParent = (currentKey, nodes) => {
-        for (let i = 0; i < nodes.length; i++) {
-          const node = nodes[i];
-          if (node.children && node.children.some(child => String(child.key) === String(currentKey))) {
-            parentKeys.push(String(node.key));
-            return node.key;
-          } else if (node.children) {
-            const foundParent = findParent(currentKey, node.children);
-            if (foundParent) {
-              parentKeys.push(String(node.key));
-              return foundParent;
-            }
+    // Get all ancestor keys (parent, grandparent, etc.)
+    const getAllAncestorKeys = (targetKey: string, tree: any[]): string[] => {
+      const findPath = (nodes: any[], target: string, path: string[] = []): string[] | null => {
+        for (const node of nodes) {
+          const currentPath = [...path, String(node.key)];
+          if (String(node.key) === target) {
+            return currentPath.slice(0, -1); // Return path without the target itself
+          }
+          if (node.children && node.children.length > 0) {
+            const found = findPath(node.children, target, currentPath);
+            if (found) return found;
           }
         }
         return null;
       };
-
-      findParent(key, tree);
-      return parentKeys;
+      return findPath(tree, targetKey) || [];
     };
 
-    const node = findNode(treeData, nodeId);
+    // Check if all children of a node are selected
+    const areAllChildrenSelected = (node: any, currentCheckedKeys: string[]): boolean => {
+      if (!node.children || node.children.length === 0) return true;
 
-    if (checked) {
-      // Add this node and all its children
-      console.log('MUI Adding node and children:', nodeId, nodeHasChildren(node));
-      const keysToAdd = nodeHasChildren(node) ? getAllChildKeys(node) : [String(nodeId)];
-      setCheckedKeys(prev => [...new Set([...prev.map(String), ...keysToAdd])]);
-    } else {
-      // Remove this node and all its children
-      const keysToRemove = nodeHasChildren(node) ? getAllChildKeys(node) : [String(nodeId)];
-      // Also remove parent selections if needed
-      const parentKeys = getAllParentKeys(nodeId, muiTreeData);
-      setCheckedKeys(prev =>
-        prev.map(String).filter(key => !keysToRemove.includes(key) && !parentKeys.includes(key))
-      );
+      const checkedSet = new Set(currentCheckedKeys);
+      return node.children.every(child => {
+        const childKey = String(child.key);
+        
+        // If the child is directly selected, it's considered selected
+        if (checkedSet.has(childKey)) {
+          // But if it's a directory, we also need to verify all its children are selected
+          if (nodeHasChildren(child)) {
+            return areAllChildrenSelected(child, currentCheckedKeys);
+          }
+          return true; // File is selected
+        }
+        
+        // If child is not directly selected but is a directory, 
+        // check if all its children are selected (making it implicitly selected)
+        if (nodeHasChildren(child)) {
+          return areAllChildrenSelected(child, currentCheckedKeys);
+        }
+        
+        // File is not selected
+        return false;
+      });
+    };
+
+    // Check if any children of a node are selected
+    const areAnyChildrenSelected = (node: any, currentCheckedKeys: string[]): boolean => {
+      if (!node.children || node.children.length === 0) return false;
+
+      const checkedSet = new Set(currentCheckedKeys);
+      return node.children.some(child => {
+        return checkedSet.has(String(child.key)) || areAnyChildrenSelected(child, currentCheckedKeys);
+      });
+    };
+
+    const clickedNode = findNodeInTree(muiTreeData, nodeId);
+    if (!clickedNode) {
+      console.warn('Could not find clicked node:', nodeId);
+      return;
     }
+
+    // Use setTimeout to batch the full hierarchy update after immediate feedback
+    setTimeout(() => {
+      setCheckedKeys(prev => {
+        const currentChecked = prev.map(String);
+        const checkedSet = new Set(currentChecked);
+        let newCheckedKeys = [...currentChecked];
+
+        if (checked) {
+          // Add the node itself
+          if (!checkedSet.has(String(nodeId))) {
+            newCheckedKeys.push(String(nodeId));
+          }
+
+          // Add all descendants
+          const descendantKeys = getAllDescendantKeys(clickedNode);
+          descendantKeys.forEach(key => {
+            if (!checkedSet.has(key)) {
+              newCheckedKeys.push(key);
+            }
+          });
+        } else {
+          // Remove the node itself and all descendants
+          const keysToRemove = new Set([String(nodeId), ...getAllDescendantKeys(clickedNode)]);
+          newCheckedKeys = newCheckedKeys.filter(key => !keysToRemove.has(key));
+        }
+
+        // Also handle the case when selecting a child - update parents
+        if (checked) {
+          const ancestorKeys = getAllAncestorKeys(String(nodeId), muiTreeData);
+          ancestorKeys.forEach(ancestorKey => {
+            const ancestorNode = findNodeInTree(muiTreeData, ancestorKey);
+            if (ancestorNode) {
+              // Only add parent if ALL children are selected - this is the key fix
+              const allChildrenSelected = areAllChildrenSelected(ancestorNode, newCheckedKeys);
+              if (allChildrenSelected && !newCheckedKeys.includes(ancestorKey)) {
+                newCheckedKeys.push(ancestorKey);
+              }
+            }
+          });
+        } else {
+          // When deselecting, remove any ancestors that should no longer be selected
+          const ancestorKeys = getAllAncestorKeys(String(nodeId), muiTreeData);
+          ancestorKeys.forEach(ancestorKey => {
+            const ancestorNode = findNodeInTree(muiTreeData, ancestorKey);
+            if (ancestorNode) {
+              // Remove ancestor if not all children are selected
+              const allChildrenSelected = areAllChildrenSelected(ancestorNode, newCheckedKeys);
+              if (!allChildrenSelected) {
+                // Not all children selected - remove ancestor from selection
+                newCheckedKeys = newCheckedKeys.filter(key => key !== ancestorKey);
+              }
+              // Note: We don't add ancestors here based on partial selection
+              // Ancestors should only be selected when ALL their children are selected
+              // The indeterminate state will be handled by the UI rendering logic,
+              // not by adding the ancestor to the checkedKeys array
+            }
+          });
+        }
+
+        return Array.from(new Set(newCheckedKeys));
+      });
+    }, 0);
 
     // Clear the token calculation cache when selections change
     tokenCalculationCache.current.clear();
@@ -485,7 +700,7 @@ export const MUIFileExplorer = () => {
   // Calculate token counts for a node
   const calculateTokens = useCallback((node, folders, overrideTokens?: number) => {
     const nodePath = node.key;
-    const cacheKey = `${String(nodePath)}_${overrideTokens || 0}_${Object.keys(accurateTokenCounts).length}`;
+    const cacheKey = `${nodePath}_${overrideTokens ?? 0}`;
 
     if (tokenCalculationCache.current.has(cacheKey)) {
       const cached = tokenCalculationCache.current.get(cacheKey);
@@ -497,70 +712,72 @@ export const MUIFileExplorer = () => {
       if (overrideTokens !== undefined) {
         fileTotalTokens = overrideTokens;
       } else {
-        fileTotalTokens = folders ? getFolderTokenCount(String(nodePath), folders) : 0;
+        // First try to get accurate count
+        const accurateData = accurateTokenCounts[String(nodePath)];
+        if (accurateData) {
+          fileTotalTokens = accurateData.count;
+        } else {
+          // Fall back to estimated count
+          fileTotalTokens = folders ? getFolderTokenCount(String(nodePath), folders) : 0;
+        }
       }
       const fileIncludedTokens = checkedKeys.includes(nodePath) ? fileTotalTokens : 0;
       const result = { included: fileIncludedTokens, total: fileTotalTokens };
       tokenCalculationCache.current.set(cacheKey, result);
       return result;
     }
-
-    // It's a directory
+    // It's a directory - handle folder token calculation
     let directoryTotalTokens = 0;
     let directoryIncludedTokens = 0;
 
-    if (node.children && node.children.length > 0) {
+    if (node.children?.length) {
       for (const child of node.children) {
-        // Always use original tree structure for child calculations
-        const originalChild = findNodeInOriginalTree(child.key) || child;
-        const childResult = calculateTokens(originalChild, folders);
+        const childResult = calculateTokens(child, folders);
         directoryTotalTokens += childResult.total;
-        directoryIncludedTokens += childResult.included;
+
+        // Only include child tokens if the child itself is selected OR the directory is fully selected
+        if (checkedKeys.includes(String(nodePath))) {
+          // Directory is fully selected - include all children
+          directoryIncludedTokens += childResult.total;
+        } else {
+          // Directory is not fully selected - only include selected children
+          directoryIncludedTokens += childResult.included;
+        }
       }
     }
 
-    // Fix for base directories: if this directory is checked, all its tokens should be included
-    if (checkedKeys.includes(String(nodePath))) {
-      directoryIncludedTokens = directoryTotalTokens;
-    }
+    // Cache result for 5 minutes
+    tokenCalculationCache.current.set(cacheKey, { included: directoryIncludedTokens, total: directoryTotalTokens });
 
     const result = { included: directoryIncludedTokens, total: directoryTotalTokens };
-    tokenCalculationCache.current.set(cacheKey, result);
     return result;
   }, [checkedKeys, getFolderTokenCount, accurateTokenCounts]);
-  
+
   // Clear token calculation cache when accurate counts change
   useLayoutEffect(() => {
     // Only run if we have accurate token counts
+    // Clear cache immediately when accurate counts change
+    tokenCalculationCache.current.clear();
+
     const accurateCountsKeys = Object.keys(accurateTokenCounts);
-    if (accurateCountsKeys.length > 0 && 
-        JSON.stringify(accurateCountsKeys) !== JSON.stringify(Object.keys(lastAccurateCountsRef.current))) {
+    if (accurateCountsKeys.length > 0 &&
+      JSON.stringify(accurateCountsKeys) !== JSON.stringify(Object.keys(lastAccurateCountsRef.current))) {
       console.log('Accurate token counts changed, clearing calculation cache');
-      
+
       // Clear the calculation cache
       tokenCalculationCache.current.clear();
-      
-      // Force a deep copy and update of the tree data to trigger recalculation
-      const deepCopyTree = (nodes) => {
-        return nodes.map(node => ({
-          ...node,
-          children: node.children ? deepCopyTree(node.children) : undefined
-        }));
-      };
-      
+
+      // Force a re-render by updating tree data
       if (treeData.length > 0) {
-        // Create a deep copy of the tree data
-        const newTreeData = deepCopyTree(treeData);
-        
-        // Update the tree data to trigger a re-render
-        setTreeData(newTreeData);
+        // Create a shallow copy to trigger re-render without expensive deep copy
+        setTreeData([...treeData]);
       }
-      
+
       // Update the reference to the current accurate counts
-      lastAccurateCountsRef.current = {...accurateTokenCounts};
+      lastAccurateCountsRef.current = { ...accurateTokenCounts };
     }
   }, [accurateTokenCounts, setTreeData, treeData]);
-  
+
   // Listen for accurate token counts update events
   useEffect(() => {
     const handleAccurateTokenCountsUpdated = (event) => {
@@ -568,21 +785,21 @@ export const MUIFileExplorer = () => {
       // Clear the token calculation cache
       tokenCalculationCache.current.clear();
       // Force a re-render of the tree
-      setTreeData(prevData => JSON.parse(JSON.stringify(prevData)));
+      setTreeData(prevData => [...prevData]); // Shallow copy for performance
     };
-    
+
     window.addEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
     return () => window.removeEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
   }, [setTreeData]);
   // Show loading state while scanning and no data
   if (isScanning && (!muiTreeData || muiTreeData.length === 0)) {
     return (
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
-        <Box sx={{ 
-          display: 'flex', 
-          flexDirection: 'column', 
-          alignItems: 'center', 
-          justifyContent: 'center', 
+      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
+        <Box sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
           height: '200px',
           gap: 2
         }}>
@@ -602,7 +819,7 @@ export const MUIFileExplorer = () => {
   // Show error state if scan failed and no cached data
   if (scanError && (!muiTreeData || muiTreeData.length === 0)) {
     return (
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
+      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
         <Box sx={{ textAlign: 'center', py: 4 }}>
           <Typography variant="h6" color="error" gutterBottom>
             Failed to load folder structure
@@ -627,7 +844,7 @@ export const MUIFileExplorer = () => {
   // Show empty state if no folders loaded and not scanning
   if (!isScanning && (!muiTreeData || muiTreeData.length === 0)) {
     return (
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
+      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
         <Box sx={{ textAlign: 'center', py: 4 }}>
           <Typography variant="body1" color="text.secondary" gutterBottom>
             No files found
@@ -651,7 +868,7 @@ export const MUIFileExplorer = () => {
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
-      <Box sx={{ mb: 1 }}>
+      <Box sx={{ mb: 1, flexShrink: 0 }}>
         <TextField
           fullWidth
           placeholder="Search folders"
@@ -676,7 +893,7 @@ export const MUIFileExplorer = () => {
         />
       </Box>
 
-      <Box sx={{ mb: 1 }}>
+      <Box sx={{ mb: 1, flexShrink: 0 }}>
         <Button
           variant="outlined"
           startIcon={<RefreshIcon />}
@@ -689,12 +906,12 @@ export const MUIFileExplorer = () => {
         </Button>
       </Box>
 
-      <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
+      <Box sx={{ flexGrow: 1, overflow: 'auto', minHeight: 0 }}>
         {/* Show overlay when scanning with existing data */}
         {isScanning && muiTreeData && muiTreeData.length > 0 && (
           <LinearProgress sx={{ mb: 1 }} />
         )}
-        
+
         {isLoading ? (
           <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
             <LinearProgress sx={{ width: '80%', mb: 2 }} />
@@ -719,9 +936,12 @@ export const MUIFileExplorer = () => {
                 Warning: {scanError} (showing cached data)
               </Typography>
             )}
-            {(searchValue ? filteredTreeData : muiTreeData).map(node => (
-              <TreeNode key={node.key} node={node} level={0} />
-            ))}
+            {/* Only render visible nodes */}
+            {(searchValue ? filteredTreeData : muiTreeData)
+              .slice(0, isInitialLoad ? 0 : undefined)
+              .map(node => (
+                <TreeNode key={node.key} node={node} level={0} />
+              ))}
           </Box>
         )}
       </Box>
