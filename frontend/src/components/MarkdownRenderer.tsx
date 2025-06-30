@@ -3584,6 +3584,63 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
     }
 };
 
+/**
+ * Detects and normalizes indented diff blocks that Gemini sometimes produces
+ * @param content The markdown content to process
+ * @returns Normalized content with indented diffs fixed
+ */
+const normalizeIndentedDiffs = (content: string): string => {
+    const lines = content.split('\n');
+    const result: string[] = [];
+    let i = 0;
+    
+    while (i < lines.length) {
+        const line = lines[i];
+        
+        // Look for indented diff headers (common patterns from Gemini)
+        const indentedDiffMatch = line.match(/^(\s{4,})```diff$/);
+        if (indentedDiffMatch) {
+            const indentLevel = indentedDiffMatch[1].length;
+            console.log(`Found indented diff block with ${indentLevel} spaces of indentation`);
+            
+            // Add the diff header without indentation
+            result.push('```diff');
+            i++;
+            
+            // Process the diff content, removing the same amount of indentation
+            while (i < lines.length) {
+                const diffLine = lines[i];
+                
+                // Check for end of diff block
+                if (diffLine.match(/^\s*```\s*$/)) {
+                    result.push('```');
+                    i++;
+                    break;
+                }
+                
+                // Remove the indentation from diff content lines
+                if (diffLine.startsWith(' '.repeat(indentLevel))) {
+                    // Remove exactly the same amount of indentation as the opening ```diff
+                    const normalizedLine = diffLine.substring(indentLevel);
+                    result.push(normalizedLine);
+                } else if (diffLine.trim() === '') {
+                    // Preserve empty lines
+                    result.push('');
+                } else {
+                    // Line has less indentation than expected - might be end of block or malformed
+                    result.push(diffLine);
+                }
+                i++;
+            }
+        } else {
+            result.push(line);
+            i++;
+        }
+    }
+    
+    return result.join('\n');
+};
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
@@ -3609,6 +3666,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // During streaming, if we already have a diff being rendered, keep it stable
             let processedMarkdown = markdown;
 
+            // Pre-process indented diff blocks before any other processing
+            processedMarkdown = normalizeIndentedDiffs(processedMarkdown);
+            
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
                 return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
