@@ -134,6 +134,189 @@ def is_whitespace_only_change(old_lines: List[str], new_lines: List[str]) -> boo
     
     return True
 
+def apply_diff_with_difflib_hybrid_forced_hunks(
+    file_path: str, hunks: List[Dict[str, Any]], original_lines_with_endings: List[str],
+    skip_hunks: List[int] = None
+) -> List[str]:
+    """
+    Apply a diff using difflib with pre-parsed hunks (including merged hunks).
+    This version accepts parsed hunks directly instead of parsing diff content.
+
+    Args:
+        file_path: Path to the file to modify
+        hunks: List of parsed hunks (potentially including merged hunks)
+        original_lines_with_endings: The original file content as a list of lines,
+          preserving original line endings.
+        skip_hunks: Optional list of hunk IDs to skip (already applied)
+
+    Returns:
+        The modified file content as a list of lines, preserving original line endings.
+    """    
+
+    logger.info(f"Applying diff to {file_path} using hybrid difflib with pre-parsed hunks")
+    
+    # Initialize skip_hunks if not provided
+    if skip_hunks is None:
+        skip_hunks = []
+    
+    if skip_hunks:
+        logger.info(f"Skipping already applied hunks: {skip_hunks}")
+
+    # --- Line Ending and Final Newline Detection ---
+    has_final_newline = original_lines_with_endings[-1].endswith('\n') if original_lines_with_endings else True
+    
+    # Use the provided hunks directly (no parsing needed)
+    if not hunks:
+         logger.warning("No hunks provided to apply.")
+         return original_lines_with_endings
+    logger.debug(f"Using {len(hunks)} pre-parsed hunks for difflib")
+    
+    hunk_failures = []
+    final_lines_with_endings = original_lines_with_endings.copy()
+    offset = 0
+
+    # Sort hunks by old_start
+    # This ensures we process hunks in order of their appearance in the original file
+    hunks.sort(key=lambda h: h['old_start'])
+
+    for hunk_idx, hunk in enumerate(hunks, 1):
+        hunk_number = hunk.get('number', hunk_idx)
+        
+        # Skip hunks that are in the skip list
+        if hunk_number in skip_hunks:
+            logger.info(f"Skipping hunk #{hunk_number} as requested")
+            continue
+            
+        logger.debug(f"Processing hunk #{hunk_number}: old_start={hunk['old_start']}, old_count={hunk['old_count']}")
+        
+        # Get hunk data
+        old_start = hunk['old_start']
+        old_count = hunk['old_count']
+        new_lines = hunk.get('new_lines', [])
+        old_block = hunk.get('old_block', [])
+        
+        # Calculate the position in the current file (accounting for offset)
+        target_start = old_start - 1 + offset  # Convert to 0-based indexing
+        
+        logger.debug(f"Hunk #{hunk_number}: original position {old_start}, offset {offset}, target position {target_start}")
+        
+        # Verify that the old content matches what we expect
+        if target_start + old_count <= len(final_lines_with_endings):
+            current_slice = final_lines_with_endings[target_start:target_start + old_count]
+            
+            logger.debug(f"Hunk #{hunk_number}: comparing {len(current_slice)} current lines with {len(old_block)} expected lines")
+            if len(current_slice) > 0 and len(old_block) > 0:
+                logger.debug(f"Hunk #{hunk_number}: first current line: {repr(current_slice[0].rstrip())}")
+                logger.debug(f"Hunk #{hunk_number}: first expected line: {repr(old_block[0].rstrip())}")
+            
+            # Check if the old_block matches the current file content
+            if len(current_slice) == len(old_block):
+                match = True
+                for i, (current_line, expected_line) in enumerate(zip(current_slice, old_block)):
+                    # Remove line endings for comparison
+                    current_clean = current_line.rstrip('\n\r')
+                    expected_clean = expected_line.rstrip('\n\r')
+                    if current_clean != expected_clean:
+                        match = False
+                        logger.debug(f"Hunk #{hunk_number} line {i} mismatch: got {repr(current_clean)}, expected {repr(expected_clean)}")
+                        break
+                
+                if match:
+                    logger.info(f"Hunk #{hunk_number}: Exact match found, applying changes")
+                    
+                    # Apply the hunk by replacing the old content with new content
+                    # Preserve original line endings
+                    new_lines_with_endings = []
+                    for line in new_lines:
+                        if line.endswith('\n'):
+                            new_lines_with_endings.append(line)
+                        else:
+                            # Add line ending if the original file had them
+                            if has_final_newline or len(new_lines_with_endings) < len(new_lines) - 1:
+                                new_lines_with_endings.append(line + '\n')
+                            else:
+                                new_lines_with_endings.append(line)
+                    
+                    # Replace the old content with new content
+                    final_lines_with_endings[target_start:target_start + old_count] = new_lines_with_endings
+                    
+                    # Update offset for subsequent hunks
+                    offset += len(new_lines_with_endings) - old_count
+                    
+                    logger.info(f"Hunk #{hunk_number}: Successfully applied")
+                    continue
+                else:
+                    logger.warning(f"Hunk #{hunk_number}: Content mismatch at calculated position {target_start}")
+            else:
+                logger.warning(f"Hunk #{hunk_number}: Size mismatch at calculated position {target_start} - expected {len(old_block)} lines, got {len(current_slice)}")
+        else:
+            logger.warning(f"Hunk #{hunk_number}: Target position {target_start}+{old_count} exceeds file length {len(final_lines_with_endings)}")
+        
+        # If exact position doesn't work, try to find the content nearby
+        logger.info(f"Hunk #{hunk_number}: Searching for content in nearby positions")
+        found_position = None
+        
+        # Search in a reasonable range around the target position
+        search_start = max(0, target_start - 5)
+        search_end = min(len(final_lines_with_endings), target_start + 10)
+        
+        for search_pos in range(search_start, search_end):
+            if search_pos + old_count <= len(final_lines_with_endings):
+                search_slice = final_lines_with_endings[search_pos:search_pos + old_count]
+                
+                if len(search_slice) == len(old_block):
+                    search_match = True
+                    for i, (current_line, expected_line) in enumerate(zip(search_slice, old_block)):
+                        current_clean = current_line.rstrip('\n\r')
+                        expected_clean = expected_line.rstrip('\n\r')
+                        if current_clean != expected_clean:
+                            search_match = False
+                            break
+                    
+                    if search_match:
+                        found_position = search_pos
+                        logger.info(f"Hunk #{hunk_number}: Found matching content at position {found_position}")
+                        break
+        
+        if found_position is not None:
+            # Apply the hunk at the found position
+            new_lines_with_endings = []
+            for line in new_lines:
+                if line.endswith('\n'):
+                    new_lines_with_endings.append(line)
+                else:
+                    if has_final_newline or len(new_lines_with_endings) < len(new_lines) - 1:
+                        new_lines_with_endings.append(line + '\n')
+                    else:
+                        new_lines_with_endings.append(line)
+            
+            # Replace the old content with new content
+            final_lines_with_endings[found_position:found_position + old_count] = new_lines_with_endings
+            
+            # Update offset for subsequent hunks (adjust based on actual position used)
+            position_adjustment = found_position - target_start
+            offset += len(new_lines_with_endings) - old_count + position_adjustment
+            
+            logger.info(f"Hunk #{hunk_number}: Successfully applied at position {found_position}")
+            continue
+        
+        # If we get here, the hunk couldn't be applied exactly
+        hunk_failures.append({
+            "hunk": hunk_number,
+            "error": "Could not apply hunk exactly",
+            "details": f"Position {target_start}, old_count {old_count}"
+        })
+        logger.error(f"Hunk #{hunk_number}: Failed to apply")
+
+    if hunk_failures:
+        logger.error(f"Failed to apply {len(hunk_failures)} hunks: {[f['hunk'] for f in hunk_failures]}")
+        # For now, return the partial result
+        # In a more robust implementation, we might want to raise an exception
+    
+    logger.info(f"Applied {len(hunks) - len(hunk_failures)}/{len(hunks)} hunks successfully")
+    return final_lines_with_endings
+
+
 def apply_diff_with_difflib_hybrid_forced(
     file_path: str, diff_content: str, original_lines_with_endings: List[str],
     skip_hunks: List[int] = None
@@ -198,6 +381,7 @@ def apply_diff_with_difflib_hybrid_forced(
          logger.warning("No hunks parsed from diff content.")
          return original_lines_with_endings
     logger.debug(f"Parsed {len(hunks)} hunks for difflib")
+    
     hunk_failures = []
     final_lines_with_endings = original_lines_with_endings.copy()
     offset = 0
