@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useFolderContext } from '../context/FolderContext';
 import { useTheme } from '../context/ThemeContext';
 import { Folders } from '../utils/types';
@@ -36,6 +36,22 @@ interface TreeNodeData {
 interface TreeNodeProps {
   node: TreeNodeData;
   level?: number;
+}
+
+function formatNumber(num: number): string {
+  if (num === undefined || num === null) return '0';
+  const numStr = String(num);
+  if (num < 1000) return numStr;
+  let result = '';
+  let count = 0;
+  for (let i = numStr.length - 1; i >= 0; i--) {
+    result = numStr[i] + result;
+    count++;
+    if (count % 3 === 0 && i > 0) {
+      result = ',' + result;
+    }
+  }
+  return result;
 }
 
 export const MUIFileExplorer = () => {
@@ -99,10 +115,18 @@ export const MUIFileExplorer = () => {
   }, []);
 
   // Optimized TreeNode with minimal re-renders
-  const TreeNode = memo(({ node, level = 0 }: TreeNodeProps) => {
+  const TreeNode = ({ node, level = 0 }: TreeNodeProps) => {
     const hasChildren = nodeHasChildren(node);
     const isExpanded = expandedKeys.includes(String(node.key));
     const isChecked = checkedKeys.includes(String(node.key));
+
+    // Get accurate token count if available
+    const accurateData = accurateTokenCounts[String(node.key)];
+
+    // Extract clean label and token count from title
+    const titleMatch = String(node.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
+    const cleanLabel = titleMatch ? titleMatch[1] : String(node.title);
+    const titleTokenCount = titleMatch ? parseInt(titleMatch[2].replace(/,/g, '')) : 0;
 
     // Helper function to check if any descendants are selected
     const hasSelectedDescendants = useCallback((node: any): boolean => {
@@ -140,90 +164,11 @@ export const MUIFileExplorer = () => {
       });
     }, []);
 
-    // Helper function to calculate included tokens for a directory's children
-    const calculateChildrenIncluded = useCallback((node: any): number => {
-      if (!node.children) return 0;
-      if (!folders) return 0;
 
-      let included = 0;
-      for (const child of node.children) {
-        const childKey = String(child.key);
-        const isChildDirectlySelected = checkedKeys.includes(childKey);
-
-        if (isChildDirectlySelected) {
-          const childTokens = getFolderTokenCount(childKey, folders);
-          const childAccurate = accurateTokenCounts[childKey];
-          const childTotal = (childAccurate && !nodeHasChildren(child)) ? childAccurate.count : childTokens;
-          included += childTotal;
-        } else if (nodeHasChildren(child)) {
-          // Only include partial selections from subdirectories
-          included += calculateChildrenIncluded(child);
-        }
-      }
-      return included;
-    }, [checkedKeys, folders, accurateTokenCounts]);
-
-    // Always calculate tokens for display, but cache for performance
-    const shouldCalculateTokens = true;
-
+    // These will be populated by the display logic below
     let nodeTokens = 0;
     let total = 0;
     let included = 0;
-
-    if (shouldCalculateTokens && folders) {
-      // Use cached calculation if available
-      const cacheKey = `${node.key}_${isChecked}`;
-      if (tokenCalculationCache.current.has(cacheKey)) {
-        const cached = tokenCalculationCache.current.get(cacheKey);
-        total = cached.total;
-        included = cached.included;
-      } else {
-        // Calculate only when needed
-        if (hasChildren) {
-          // For directories, calculate from children
-          let directoryTotal = 0;
-          let directoryIncluded = 0;
-
-          if (node.children) {
-            for (const child of node.children) {
-              const childTokens = getFolderTokenCount(String(child.key), folders);
-              const childAccurate = accurateTokenCounts[String(child.key)];
-              const childTotal = (childAccurate && !nodeHasChildren(child)) ? childAccurate.count : childTokens;
-
-              directoryTotal += childTotal;
-
-              const childKey = String(child.key);
-              const isChildDirectlySelected = checkedKeys.includes(childKey);
-
-              if (isChildDirectlySelected) {
-                // Child is directly selected - include its full token count
-                directoryIncluded += childTotal;
-              } else if (nodeHasChildren(child)) {
-                // Child is a directory but not directly selected - only include selected descendants
-                const descendantIncluded = calculateChildrenIncluded(child);
-                directoryIncluded += descendantIncluded;
-              }
-            }
-          }
-
-          total = directoryTotal;
-          included = directoryIncluded;
-        } else {
-          // For files, use accurate count if available
-          const accurateData = accurateTokenCounts[String(node.key)];
-          if (accurateData) {
-            nodeTokens = accurateData.count;
-          } else {
-            nodeTokens = getFolderTokenCount(String(node.key), folders);
-          }
-          total = nodeTokens;
-          included = isChecked ? nodeTokens : 0;
-        }
-
-        // Cache the result
-        tokenCalculationCache.current.set(cacheKey, { total, included });
-      }
-    }
 
     // Check if this node is indeterminate (some but not all children selected)
     const isIndeterminate = useMemo(() => {
@@ -238,9 +183,6 @@ export const MUIFileExplorer = () => {
     }, [hasChildren, isChecked, node, hasSelectedDescendants, areAllChildrenSelected]);
 
     // Extract clean label and token count
-    const titleMatch = String(node.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
-    const cleanLabel = titleMatch ? titleMatch[1] : String(node.title);
-
     const handleToggle = useCallback(() => {
       if (hasChildren) {
         setExpandedKeys(prev =>
@@ -256,7 +198,10 @@ export const MUIFileExplorer = () => {
 
       // Use the proper hierarchy checkbox logic
       handleCheckboxClick(String(node.key), !isChecked);
-    }, [isChecked, node.key]);
+
+      // Force a re-render of this node to update token counts
+      tokenCalculationCache.current.clear();
+    }, [isChecked, node.key, handleCheckboxClick]);
 
     return (
       <Box key={node.key}>
@@ -294,6 +239,8 @@ export const MUIFileExplorer = () => {
             onClick={handleCheck}
             size="small"
             sx={{ p: 0.25, mr: 0.5, ml: 0 }}
+            id={`checkbox-${node.key}`}
+            name={`checkbox-${node.key}`}
           />
 
           {/* Icon */}
@@ -316,7 +263,24 @@ export const MUIFileExplorer = () => {
           {/* Token count - only show if calculated */}
           {!hasChildren && (
             (() => {
-              const isAccurate = accurateTokenCounts[String(node.key)];
+              // Get token count from folder context
+              const estimatedTokens = getFolderTokenCount(String(node.key), folders || {});
+
+              // Use accurate count if available, otherwise use estimated count or title token count
+              if (accurateData) {
+                nodeTokens = accurateData.count;
+                total = nodeTokens;
+                included = isChecked ? nodeTokens : 0;
+              } else if (estimatedTokens > 0) {
+                nodeTokens = estimatedTokens;
+                total = estimatedTokens;
+                included = isChecked ? estimatedTokens : 0;
+              } else if (titleTokenCount > 0) {
+                nodeTokens = titleTokenCount;
+                total = titleTokenCount;
+                included = isChecked ? titleTokenCount : 0;
+              }
+
               return (
                 <Typography
                   variant="caption"
@@ -329,34 +293,62 @@ export const MUIFileExplorer = () => {
                     ...(isChecked && total > 0 && { color: isDarkMode ? '#ffffff' : '#000000' })
                   }}
                 >
-                  {total > 0 ? `(${total.toLocaleString()}${isAccurate ? '✓' : '~'})` : '(0~)'}
+                  {total > 0 ? `(${formatNumber(total)}${accurateData ? '✓' : ''})` : '(0)'}
                 </Typography>
               );
             })()
           )}
 
           {/* Token display for folders showing included/total */}
-          {hasChildren && total > 0 && (
-            <Typography
-              variant="caption"
-              sx={{
-                ml: 1,
-                fontSize: '0.7rem',
-                fontFamily: 'monospace',
-                color: isDarkMode ? '#aaa' : 'text.secondary'
-              }}
-            >
-              (<Typography
-                component="span"
-                sx={{
-                  fontWeight: included > 0 ? 'bold' : 'normal',
-                  fontSize: 'inherit',
-                  color: included > 0 ? (isDarkMode ? '#ffffff' : '#000000') : 'inherit'
-                }}
-              >
-                {included.toLocaleString()}
-              </Typography>/{total.toLocaleString()})
-            </Typography>
+          {hasChildren && (
+            (() => {
+              // For directories, ensure we're getting the correct token count
+              const dirPath = String(node.key);
+
+              total = getFolderTokenCount(dirPath, folders || {});
+
+              // If this folder is directly selected, include all tokens
+              if (isChecked) {
+                included = total;
+              } else {
+                included = calculateChildrenIncluded(node);
+              }
+
+              return total > 0 ? (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    ml: 1,
+                    fontSize: '0.7rem',
+                    fontFamily: 'monospace',
+                    color: isDarkMode ? '#aaa' : 'text.secondary'
+                  }}
+                >
+                  (<Typography
+                    component="span"
+                    sx={{
+                      fontWeight: included > 0 ? 'bold' : 'normal',
+                      fontSize: 'inherit',
+                      color: included > 0 ? (isDarkMode ? '#ffffff' : '#000000') : 'inherit'
+                    }}
+                  >
+                    {formatNumber(included)}
+                  </Typography>/{formatNumber(total)})
+                </Typography>
+              ) : (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    ml: 1,
+                    fontSize: '0.7rem',
+                    fontFamily: 'monospace',
+                    color: isDarkMode ? '#aaa' : 'text.secondary'
+                  }}
+                >
+                  (0/0)
+                </Typography>
+              );
+            })()
           )}
         </Box>
 
@@ -372,12 +364,7 @@ export const MUIFileExplorer = () => {
         )}
       </Box>
     );
-  }, (prevProps, nextProps) => {
-    // Only re-render if key props actually changed
-    return prevProps.node.key === nextProps.node.key &&
-      prevProps.level === nextProps.level &&
-      prevProps.node.title === nextProps.node.title;
-  });
+  };
 
   // Effect to load folders on component mount
   useEffect(() => {
@@ -394,6 +381,19 @@ export const MUIFileExplorer = () => {
         const sortedData = sortTreeData(convertToTreeData(data));
         setTreeData(sortedData);
 
+        // Also load accurate token counts, but don't block the UI
+        setTimeout(async () => {
+          try {
+            const tokenResponse = await fetch('/api/accurate-token-counts');
+            if (tokenResponse.ok) {
+              const tokenData = await tokenResponse.json();
+              console.log('Loaded accurate token counts:', Object.keys(tokenData).length);
+            }
+          } catch (error) {
+            console.error('Failed to load accurate token counts:', error);
+          }
+        }, 100);
+
         // Don't auto-expand anything - start collapsed
         // setExpandedKeys([]) is already the default, so no need to set it
       } catch (err) {
@@ -406,13 +406,35 @@ export const MUIFileExplorer = () => {
 
     // Only load folders if we don't already have them
     // Also check if we're not already loading to prevent race conditions
-    if ((!folders || Object.keys(folders).length === 0) && !isInitialLoad) {
-      setIsLoading(true);
-      loadFolders();
+    if ((!treeData || treeData.length === 0) && !isInitialLoad) {
+      // Use a small timeout to ensure the initial UI renders first
+      setTimeout(() => {
+        setIsLoading(true);
+        loadFolders();
+      }, 0);
     } else {
-      if (folders && Object.keys(folders).length > 0) setIsLoading(false);
+      if (treeData && treeData.length > 0) setIsLoading(false);
     }
-  }, [folders, setTreeData]);
+  }, [isInitialLoad, isLoading, treeData]);
+
+  // Update tree data when folders change
+  useEffect(() => {
+    if (folders && Object.keys(folders).length > 0) {
+      // Don't use requestAnimationFrame to avoid race conditions
+      console.log('MUI Folders updated, converting to tree data');
+      // Cast folders to any to avoid TypeScript error
+      const sortedData = sortTreeData(convertToTreeData(folders as any));
+
+      // Ensure we have all expected top-level directories
+      const expectedDirs = ['miditrim', 'miditrim.xcodeproj', 'miditrimTests', 'miditrimUITests'];
+      const foundDirs = sortedData.map(node => String(node.key));
+      console.log('Found top-level directories:', foundDirs);
+
+      // Set tree data in a stable way
+      setTreeData(sortedData);
+      setIsLoading(false);
+    }
+  }, [folders]);
 
   // Debounced search function
   const debouncedSearch = useCallback(
@@ -513,6 +535,23 @@ export const MUIFileExplorer = () => {
       const sortedData = sortTreeData(convertToTreeData(data));
       setTreeData(sortedData);
 
+      // Also refresh accurate token counts asynchronously
+      setTimeout(async () => {
+        try {
+          const tokenResponse = await fetch('/api/accurate-token-counts');
+          if (tokenResponse.ok) {
+            const tokenData = await tokenResponse.json();
+            console.log('Refreshed accurate token counts:', Object.keys(tokenData).length);
+
+            window.dispatchEvent(new CustomEvent('accurateTokenCountsUpdated', {
+              detail: { updatedTokens: tokenData }
+            }));
+          }
+        } catch (error) {
+          console.error('Failed to refresh token counts:', error);
+        }
+      }, 100);
+
       // Keep folders collapsed on refresh too
       message.success('Folder structure refreshed');
     } catch (err) {
@@ -593,7 +632,7 @@ export const MUIFileExplorer = () => {
       const checkedSet = new Set(currentCheckedKeys);
       return node.children.every(child => {
         const childKey = String(child.key);
-        
+
         // If the child is directly selected, it's considered selected
         if (checkedSet.has(childKey)) {
           // But if it's a directory, we also need to verify all its children are selected
@@ -602,13 +641,13 @@ export const MUIFileExplorer = () => {
           }
           return true; // File is selected
         }
-        
+
         // If child is not directly selected but is a directory, 
         // check if all its children are selected (making it implicitly selected)
         if (nodeHasChildren(child)) {
           return areAllChildrenSelected(child, currentCheckedKeys);
         }
-        
+
         // File is not selected
         return false;
       });
@@ -660,11 +699,16 @@ export const MUIFileExplorer = () => {
         if (checked) {
           const ancestorKeys = getAllAncestorKeys(String(nodeId), muiTreeData);
           ancestorKeys.forEach(ancestorKey => {
+            // Skip processing ancestors that are already correctly selected
+            if (newCheckedKeys.includes(ancestorKey)) {
+              return;
+            }
+
             const ancestorNode = findNodeInTree(muiTreeData, ancestorKey);
             if (ancestorNode) {
               // Only add parent if ALL children are selected - this is the key fix
               const allChildrenSelected = areAllChildrenSelected(ancestorNode, newCheckedKeys);
-              if (allChildrenSelected && !newCheckedKeys.includes(ancestorKey)) {
+              if (allChildrenSelected) {
                 newCheckedKeys.push(ancestorKey);
               }
             }
@@ -681,13 +725,12 @@ export const MUIFileExplorer = () => {
                 // Not all children selected - remove ancestor from selection
                 newCheckedKeys = newCheckedKeys.filter(key => key !== ancestorKey);
               }
-              // Note: We don't add ancestors here based on partial selection
-              // Ancestors should only be selected when ALL their children are selected
-              // The indeterminate state will be handled by the UI rendering logic,
-              // not by adding the ancestor to the checkedKeys array
             }
           });
         }
+
+        // Clear the token calculation cache when selections change
+        tokenCalculationCache.current.clear();
 
         return Array.from(new Set(newCheckedKeys));
       });
@@ -697,61 +740,104 @@ export const MUIFileExplorer = () => {
     tokenCalculationCache.current.clear();
   };
 
-  // Calculate token counts for a node
-  const calculateTokens = useCallback((node, folders, overrideTokens?: number) => {
-    const nodePath = node.key;
-    const cacheKey = `${nodePath}_${overrideTokens ?? 0}`;
+  // Helper function to calculate included tokens for a directory's children
+  const calculateChildrenIncluded = useCallback((node: any): number => {
+    if (!node.children) return 0;
+    if (!folders && !node.children.length) return 0;
 
-    if (tokenCalculationCache.current.has(cacheKey)) {
-      const cached = tokenCalculationCache.current.get(cacheKey);
-      return cached;
-    }
+    let included = 0;
+    for (const child of node.children) {
+      const childKey = String(child.key);
+      const isChildDirectlySelected = checkedKeys.includes(childKey);
 
-    if (!node.children || node.children.length === 0) { // It's a file
-      let fileTotalTokens;
-      if (overrideTokens !== undefined) {
-        fileTotalTokens = overrideTokens;
+      if (isChildDirectlySelected) {
+        // If child is directly selected, include its full token count
+        const childTokens = getFolderTokenCount(childKey, folders || {});
+
+        // Extract token count from title if available
+        const titleMatch = String(child.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
+        const titleTokenCount = titleMatch ? parseInt(titleMatch[2].replace(/,/g, '')) : 0;
+
+        // Debug token values
+        console.log('DEBUG TOKEN VALUES:', childKey, {
+          accurateCount: accurateTokenCounts[childKey]?.count,
+          folderCount: childTokens,
+          nodeTitle: child.title
+        });
+
+        const childAccurate = accurateTokenCounts[childKey];
+
+        const childTotal = (childAccurate && !nodeHasChildren(child)) ? childAccurate.count : (childTokens || titleTokenCount || 0);
+
+        included += childTotal;
+        console.log('Including selected child:', childKey, childTotal, 'Running total:', included);
+      } else if (nodeHasChildren(child)) {
+        // Only include partial selections from subdirectories
+        const childIncluded = calculateChildrenIncluded(child);
+        included += childIncluded;
+        console.log('Including partial child:', childKey, 'Running total:', included);
       } else {
-        // First try to get accurate count
-        const accurateData = accurateTokenCounts[String(nodePath)];
-        if (accurateData) {
-          fileTotalTokens = accurateData.count;
-        } else {
-          // Fall back to estimated count
-          fileTotalTokens = folders ? getFolderTokenCount(String(nodePath), folders) : 0;
-        }
+        // Unselected file - don't include in total
+        console.log('Skipping unselected file:', childKey);
       }
-      const fileIncludedTokens = checkedKeys.includes(nodePath) ? fileTotalTokens : 0;
-      const result = { included: fileIncludedTokens, total: fileTotalTokens };
-      tokenCalculationCache.current.set(cacheKey, result);
+
+      // Important: Log the running total after processing each child
+      console.log('After child:', childKey,
+        'isSelected:', isChildDirectlySelected,
+        'hasChildren:', nodeHasChildren(child),
+        'included:', included
+      );
+    }
+    return included;
+  }, [checkedKeys, folders, accurateTokenCounts]);
+
+  // Helper function to calculate total tokens for a directory's children
+  const calculateChildrenTotal = useCallback((node: any): number => {
+    if (!node.children) return 0;
+    if (!folders) return 0;
+
+    let total = 0;
+    for (const child of node.children) {
+      const childKey = String(child.key);
+      if (nodeHasChildren(child)) {
+        // For directories, recursively calculate
+        total += calculateChildrenTotal(child);
+      } else {
+        // For files, use accurate count if available
+        const childAccurate = accurateTokenCounts[childKey];
+        total += (childAccurate ? childAccurate.count : getFolderTokenCount(childKey, folders || {})) || 0;
+      }
+    }
+    return total;
+  }, [folders, accurateTokenCounts, getFolderTokenCount]);
+
+
+  const getTokenCount = useCallback((key: string) => {
+    return accurateTokenCounts[String(key)]?.count ?? getFolderTokenCount(key, folders || {});
+  }, [accurateTokenCounts, getFolderTokenCount]);
+
+  // Calculate token counts for a node
+  const calculateTokens = useCallback((node, overrideTokens?: number): { included: number; total: number } => {
+    const nodePath = node.key;
+    // For leaf nodes (files)
+    //
+    if (!nodeHasChildren(node)) {
+      // Get token count directly from accurateTokenCounts
+      const tokenCount = accurateTokenCounts[nodePath]?.count || getFolderTokenCount(nodePath, folders || {}) || 0;
+      const result = {
+        included: checkedKeys.includes(nodePath) ? tokenCount : 0,
+        total: tokenCount
+      }
       return result;
     }
-    // It's a directory - handle folder token calculation
-    let directoryTotalTokens = 0;
-    let directoryIncludedTokens = 0;
 
-    if (node.children?.length) {
-      for (const child of node.children) {
-        const childResult = calculateTokens(child, folders);
-        directoryTotalTokens += childResult.total;
+    // For directories, use the existing functions that work for individual files
+    const total = calculateChildrenTotal(node);
+    const included = checkedKeys.includes(nodePath) ? total : calculateChildrenIncluded(node);
 
-        // Only include child tokens if the child itself is selected OR the directory is fully selected
-        if (checkedKeys.includes(String(nodePath))) {
-          // Directory is fully selected - include all children
-          directoryIncludedTokens += childResult.total;
-        } else {
-          // Directory is not fully selected - only include selected children
-          directoryIncludedTokens += childResult.included;
-        }
-      }
-    }
+    return { included, total };
 
-    // Cache result for 5 minutes
-    tokenCalculationCache.current.set(cacheKey, { included: directoryIncludedTokens, total: directoryTotalTokens });
-
-    const result = { included: directoryIncludedTokens, total: directoryTotalTokens };
-    return result;
-  }, [checkedKeys, getFolderTokenCount, accurateTokenCounts]);
+  }, [checkedKeys, accurateTokenCounts, getFolderTokenCount, calculateChildrenIncluded, calculateChildrenTotal, nodeHasChildren]);
 
   // Clear token calculation cache when accurate counts change
   useLayoutEffect(() => {
@@ -874,6 +960,8 @@ export const MUIFileExplorer = () => {
           placeholder="Search folders"
           value={searchValue}
           onChange={handleSearchChange}
+          id="folder-search"
+          name="folder-search"
           InputProps={{
             startAdornment: (
               <InputAdornment position="start">

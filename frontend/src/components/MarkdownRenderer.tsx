@@ -895,15 +895,30 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     useEffect(() => {
         const parseAndSetFiles = () => {
             try {
-                let parsedFiles = parseDiff(normalizeGitDiff(diff));
+                console.log('🔍 DiffView - Parsing diff content:', diff.substring(0, 200) + '...');
+                const normalizedDiff = normalizeGitDiff(diff);
+                console.log('🔧 DiffView - Normalized diff:', normalizedDiff.substring(0, 200) + '...');
+                
+                let parsedFiles = parseDiff(normalizedDiff);
+                console.log('📊 DiffView - ParseDiff result:', {
+                    filesCount: parsedFiles?.length || 0,
+                    firstFileHunks: parsedFiles?.[0]?.hunks?.length || 0,
+                    firstFile: parsedFiles?.[0] ? {
+                        oldPath: parsedFiles[0].oldPath,
+                        newPath: parsedFiles[0].newPath,
+                        type: parsedFiles[0].type
+                    } : null
+                });
 
                 // After all parsing attempts, check if we have valid, renderable files/hunks
                 if (!parsedFiles || parsedFiles.length === 0 ||
                     !parsedFiles[0].hunks || parsedFiles[0].hunks.length === 0) {
                     // If not, it's effectively a parse error for rich rendering purposes
+                    console.warn('❌ DiffView - Parse failed: No valid files/hunks found');
                     setParseError(true);
                     parsedFilesRef.current = []; // Ensure ref is also empty
                 } else {
+                    console.log('✅ DiffView - Parse successful');
                     parsedFilesRef.current = parsedFiles;
                     setParseError(false);
                 }
@@ -978,6 +993,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     parsedFilesRef.current = [];
                 }
             } catch (error) {
+                console.error('❌ DiffView - ParseDiff threw error:', error);
+                console.error('❌ DiffView - Failed diff content:', diff.substring(0, 500));
                 setErrorMessage(error instanceof Error ? error.message : String(error));
                 console.error('Error parsing diff:', error);
 
@@ -1184,15 +1201,33 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
     // Handle parse error case
     if (parseError) {
+        console.log('🚨 DiffView - Rendering fallback due to parse error');
         return (
-            <pre data-testid="diff-parse-error" style={{
-                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                color: isDarkMode ? '#e6e6e6' : 'inherit',
-                padding: '10px',
-                borderRadius: '4px'
-            }}>
-                <code>{diff}</code>
-            </pre>
+            <div>
+                <div style={{ 
+                    backgroundColor: isDarkMode ? '#2d2d2d' : '#f8f8f8',
+                    padding: '8px 12px',
+                    borderRadius: '4px 4px 0 0',
+                    fontSize: '12px',
+                    color: isDarkMode ? '#888' : '#666',
+                    borderBottom: '1px solid ' + (isDarkMode ? '#404040' : '#e1e4e8')
+                }}>
+                    📄 Diff (fallback rendering - parsing failed)
+                </div>
+                <pre data-testid="diff-parse-error" style={{
+                    backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                    color: isDarkMode ? '#e6e6e6' : 'inherit',
+                    padding: '16px',
+                    borderRadius: '0 0 4px 4px',
+                    margin: 0,
+                    overflow: 'auto',
+                    fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace',
+                    fontSize: '13px',
+                    lineHeight: '1.45'
+                }}>
+                    <code>{diff}</code>
+                </pre>
+            </div>
         );
     }
 
@@ -2316,6 +2351,15 @@ interface DiffTokenProps {
 }
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
+    console.log('🎯 DiffToken - Component rendering with token:', {
+        hasText: !!token.text,
+        textLength: token.text?.length,
+        lang: token.lang,
+        index,
+        enableCodeApply,
+        textPreview: token.text?.substring(0, 100) + '...'
+    });
+    
     const { isStreaming } = useChatContext();
     // Generate a unique ID once when the component mounts
     const [diffId] = useState(() =>
@@ -2779,12 +2823,24 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
+    
+    // DEBUG: Log token analysis
+    console.log('🔍 MarkdownRenderer - Analyzing token:', {
+        type: tokenType,
+        lang: 'lang' in token ? token.lang : undefined,
+        textPreview: 'text' in token && token.text ? token.text.substring(0, 100) + '...' : 'no text'
+    });
 
     // 1. Prioritize content-based detection for diffs, regardless of lang tag
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
+        // DEBUG: Log diff content analysis
+        console.log('📝 MarkdownRenderer - Code block detected, analyzing content...');
+        
         // Check first few lines for diff markers
         const linesToCheck = text.split('\n').slice(0, 5);
+        console.log('🔍 MarkdownRenderer - First 5 lines:', linesToCheck);
+        
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
         const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
@@ -2797,7 +2853,19 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // More lenient check for diff --git, allowing it not to be the very first thing
         const containsDiffGit = text.includes('diff --git');
 
+        // DEBUG: Log diff marker analysis
+        console.log('🎯 MarkdownRenderer - Diff markers found:', {
+            hasGitHeader,
+            hasMinusHeader,
+            hasPlusHeader,
+            hasHunkHeader,
+            diffMarkersFound,
+            containsDiffGit,
+            shouldBeDiff: containsDiffGit || diffMarkersFound >= 2
+        });
+
         if (containsDiffGit || diffMarkersFound >= 2) {
+            console.log('✅ MarkdownRenderer - DETECTED AS DIFF (content-based)');
             return 'diff';
         }
     }
@@ -2845,7 +2913,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         }
 
         if (lang === 'mermaid') return 'mermaid';  // Check mermaid FIRST
-        if (lang === 'diff') return 'diff';
+        if (lang === 'diff') {
+            console.log('✅ MarkdownRenderer - DETECTED AS DIFF (lang tag)');
+            return 'diff';
+        }
         if (lang === 'graphviz' || lang === 'dot') return 'graphviz';
         if (lang === 'vega-lite' || lang === 'vegalite') return 'vega-lite';
         if (lang === 'vega-lite') return 'vega-lite';
@@ -2990,7 +3061,13 @@ const decodeHtmlEntities = (text: string): string => {
 };
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
+    console.log('🚀 MarkdownRenderer - renderTokens called with', tokens.length, 'tokens');
     return tokens.map((token, index) => {
+        console.log('🔍 MarkdownRenderer - Processing token', index, ':', {
+            type: token.type,
+            lang: 'lang' in token ? token.lang : undefined,
+            textPreview: 'text' in token ? (token.text?.substring(0, 50) + '...') : 'no text'
+        });
         const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
@@ -3028,20 +3105,29 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         try {
             switch (determinedType) {
                 case 'diff':
+                    console.log('🎨 MarkdownRenderer - Rendering DIFF token');
                     const rawDiffText = decodeHtmlEntities(tokenWithText.text || '');
                     // Apply cleaning specific to diff content AFTER decoding
                     const cleanedDiff = cleanDiffContent(rawDiffText);
                     // Ensure lang is set to 'diff' for the component
                     const diffToken = { ...tokenWithText, text: cleanedDiff, lang: 'diff' };
+                    console.log('🎨 MarkdownRenderer - Created diffToken:', {
+                        hasText: !!diffToken.text,
+                        textLength: diffToken.text?.length,
+                        lang: diffToken.lang,
+                        textPreview: diffToken.text?.substring(0, 100) + '...'
+                    });
 
                     // Check if this is a multi-file diff and not already a sub-render
                     if (!isSubRender) {
                         const fileDiffs = splitMultiFileDiffs(cleanedDiff);
                         if (fileDiffs.length > 1) {
+                            console.log('🎨 MarkdownRenderer - Rendering multi-file diff');
                             return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode);
                         }
                     }
 
+                    console.log('🎨 MarkdownRenderer - Rendering single DiffToken component');
                     return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
 
                 case 'file-operation':
