@@ -439,11 +439,23 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                     ) : msg.role === 'human' && msg.content ? (
                                         <div className="message-content">
                                             <Suspense fallback={<div>Loading content...</div>}>
-                                                <MarkdownRenderer
-                                                    markdown={msg.content}
-                                                    enableCodeApply={enableCodeApply}
-                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                                />
+                                                {(() => {
+                                                    console.log('🔥 CONVERSATION.TSX - Rendering MarkdownRenderer for HUMAN message:', {
+                                                        messageId: msg.id,
+                                                        contentLength: msg.content?.length,
+                                                        contentPreview: msg.content?.substring(0, 100),
+                                                        enableCodeApply,
+                                                        isStreaming: isStreaming || streamingConversations.has(currentConversationId),
+                                                        conversationId: currentConversationId
+                                                    });
+                                                    return (
+                                                        <MarkdownRenderer
+                                                            markdown={msg.content}
+                                                            enableCodeApply={enableCodeApply}
+                                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                        />
+                                                    );
+                                                })()}
                                             </Suspense>
                                         </div>
                                     ) : msg.role === 'assistant' && msg.content && (
@@ -465,11 +477,24 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                     {msg.role === 'assistant' && msg.content && (
                                         <div className="message-content">
                                             <Suspense fallback={<div>Loading content...</div>}>
-                                                <MarkdownRenderer
-                                                    markdown={msg.content}
-                                                    enableCodeApply={enableCodeApply}
-                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                                />
+                                                {(() => {
+                                                    console.log('🔥 CONVERSATION.TSX - Rendering MarkdownRenderer for ASSISTANT message:', {
+                                                        messageId: msg.id,
+                                                        contentLength: msg.content?.length,
+                                                        contentPreview: msg.content?.substring(0, 100),
+                                                        enableCodeApply,
+                                                        isStreaming: isStreaming || streamingConversations.has(currentConversationId),
+                                                        conversationId: currentConversationId,
+                                                        hasDiffContent: msg.content?.includes('```diff') || msg.content?.includes('@@') || msg.content?.includes('---') || msg.content?.includes('+++')
+                                                    });
+                                                    return (
+                                                        <MarkdownRenderer
+                                                            markdown={msg.content}
+                                                            enableCodeApply={enableCodeApply}
+                                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                        />
+                                                    );
+                                                })()}
                                             </Suspense>
                                         </div>
                                     )}
