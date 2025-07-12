@@ -2088,3 +2088,109 @@ body:not(.dark) .token.attr-name {
 .message.human .ant-btn[title*="Resubmit"]:hover {
   transform: translateY(-1px);
 }
+/* VegaLite Error Display */
+.vega-lite-error {
+  padding: 16px;
+  margin: 16px 0;
+  border-radius: 6px;
+  background-color: #fff2f0;
+  border: 1px solid #ffa39e;
+  color: #cf1322;
+}
+
+.dark .vega-lite-error {
+  background-color: #2a1f1f;
+  border-color: #a61d24;
+  color: #ff7875;
+}
+
+.vega-lite-error p {
+  margin-bottom: 8px;
+}
+
+.vega-lite-error details {
+  margin-top: 12px;
+}
+
+.vega-lite-error summary {
+  cursor: pointer;
+  font-weight: bold;
+  color: inherit;
+}
+
+.vega-lite-error pre {
+  background-color: rgba(0,0,0,0.05);
+  padding: 8px;
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: auto;
+  max-height: 300px;
+}
+
+.dark .vega-lite-error pre {
+  background-color: rgba(255,255,255,0.1);
+}
+
+.vega-lite-source-button,
+.vega-lite-retry-button {
+  background-color: #4361ee;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  margin: 10px 5px;
+  cursor: pointer;
+  display: inline-block;
+}
+
+.dark .vega-lite-source-button,
+.dark .vega-lite-retry-button {
+  background-color: #177ddc;
+}
+
+.vega-lite-source-button:hover,
+.vega-lite-retry-button:hover {
+  opacity: 0.9;
+}
+/* Mermaid Error Display */
+.mermaid-error {
+  padding: 16px;
+  margin: 16px 0;
+  border-radius: 6px;
+  background-color: #fff2f0;
+  border: 1px solid #ffa39e;
+  color: #cf1322;
+}
+
+.dark .mermaid-error {
+  background-color: #2a1f1f;
+  border-color: #a61d24;
+  color: #ff7875;
+}
+
+.mermaid-error p {
+  margin-bottom: 8px;
+}
+
+.mermaid-error details {
+  margin-top: 12px;
+}
+
+.mermaid-error summary {
+  cursor: pointer;
+  font-weight: bold;
+  color: inherit;
+}
+
+.mermaid-error pre {
+  background-color: rgba(0,0,0,0.05);
+  padding: 8px;
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: auto;
+  max-height: 300px;
+}
+
+.dark .mermaid-error pre {
+  background-color: rgba(255,255,255,0.1);
+}

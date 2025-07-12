@@ -2366,16 +2366,23 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         `diff-${Math.random().toString(36).substring(2, 9)}-${Date.now()}`);
     const contentRef = useRef<string | null>(null);
 
+    // Clean up any MATH_INLINE expansions that might have slipped through
+    const cleanedText = useMemo(() => {
+        if (!token.text) return '';
+        // Replace any MATH_INLINE expansions with their original form
+        return token.text.replace(/⟨MATH_INLINE:(\d+)⟩/g, '$$1');
+    }, [token.text]);
+
     // Store the content in a ref to avoid re-renders
     useEffect(() => {
-        if (!contentRef.current || contentRef.current !== token.text) {
-            contentRef.current = token.text;
+        if (!contentRef.current || contentRef.current !== cleanedText) {
+            contentRef.current = cleanedText;
         }
-    }, [token.text]);
+    }, [cleanedText]);
 
     return (
         <DiffViewWrapper
-            token={token}
+            token={{...token, text: cleanedText}}
             index={index}
             elementId={diffId}
             enableCodeApply={enableCodeApply}
@@ -3770,22 +3777,61 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 '```tool:$1'
             );
 
-            // Pre-process math expressions
-            // Handle display math $$...$$
-            processedMarkdown = processedMarkdown.replace(
-                /\$\$([\s\S]+?)\$\$/g,
-                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
-            );
-            // Handle inline math $...$
-            processedMarkdown = processedMarkdown.replace(
-                /\$([^⟩]+?)\$/g,
-                (match, p1) => {
-                    // Only treat as math if it contains LaTeX commands or mathematical symbols
-                    const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
-                    const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
-                    return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
-                }
-            );
+            // First check if this is a diff or code block that shouldn't have math processing
+            const isDiff = processedMarkdown.includes('diff --git') || 
+                          (processedMarkdown.includes('```diff') && processedMarkdown.includes('+++')) ||
+                          (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m));
+                          
+            const hasCodeBlocks = processedMarkdown.includes('```');
+            
+            // Only process math expressions if this doesn't look like a diff
+            if (!isDiff) {
+                // Split the markdown into code blocks and non-code blocks
+                const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
+                
+                // Process each segment separately
+                processedMarkdown = segments.map((segment, index) => {
+                    // Skip math processing for code blocks (odd indices in the split)
+                    if (index % 2 === 1 && segment.startsWith('```')) {
+                        return segment;
+                    }
+                    
+                    // Process math only in non-code segments
+                    let processed = segment;
+                    
+                    // Handle display math $$...$$
+                    processed = processed.replace(
+                        /\$\$([\s\S]+?)\$\$/g,
+                        '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
+                    );
+                    
+                    // Handle inline math $...$
+                    processed = processed.replace(
+                        /\$([^⟩]+?)\$/g,
+                        (match, p1) => {
+                            // Skip processing if this looks like a regex replacement ($1, $2, etc.)
+                            if (/^\d+$/.test(p1.trim())) {
+                                return match; // Keep $1, $2, etc. as is
+                            }
+                            
+                            // Skip processing if this is inside code-like contexts
+                            const surroundingText = match.substring(0, 50) + match.substring(match.length - 50);
+                            if (surroundingText.includes('replace(') || 
+                                surroundingText.includes('processedDef') ||
+                                surroundingText.includes('regex')) {
+                                return match; // Keep as is in code contexts
+                            }
+                            
+                            // Only treat as math if it contains LaTeX commands or mathematical symbols
+                            const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
+                            const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
+                            return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                        }
+                    );
+                    
+                    return processed;
+                }).join('');
+            }
 
             // Pre-process MathML blocks to prevent fragmentation
             const mathMLRegex = /<math[^>]*>[\s\S]*?<\/math>/gi;
@@ -3853,6 +3899,13 @@ const cleanDiffContent = (content: string): string => {
             line.startsWith('+++ ') ||
             line.startsWith('@@ ')) {
             return line;
+        }
+        
+        // Fix any MATH_INLINE expansions that might have slipped through
+        // This handles cases like $1 in regex replacements being converted to ⟨MATH_INLINE:1⟩
+        if (line.includes('⟨MATH_INLINE:')) {
+            // Replace ⟨MATH_INLINE:1⟩ with $1, ⟨MATH_INLINE:2⟩ with $2, etc.
+            line = line.replace(/⟨MATH_INLINE:(\d+)⟩/g, '$$1');
         }
         
         // Handle offset diff format lines
