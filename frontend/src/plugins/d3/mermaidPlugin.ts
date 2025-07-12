@@ -1103,15 +1103,48 @@ ${svgData}`;
                 container.innerHTML = '';
             }
 
+            // Extract the first line to check for diagram type
+            const lines = spec.definition.trim().split('\n');
+            const firstLine = lines[0]?.trim() || '';
+            const diagramType = firstLine.split(' ')[0];
+            
+            // Check if this might be an unsupported diagram type
+            const standardTypes = ['graph', 'flowchart', 'sequenceDiagram', 'classDiagram', 'stateDiagram', 
+                                  'gantt', 'pie', 'er', 'journey', 'gitGraph', 'mindmap'];
+            const isKnownType = standardTypes.some(type => 
+                diagramType.toLowerCase() === type.toLowerCase() || 
+                diagramType.toLowerCase().startsWith(type.toLowerCase() + ' '));
+            
+            // Create appropriate error message based on the error type
+            let errorTitle = 'Mermaid Error';
+            let errorMessage = 'There was an error rendering the diagram. This is often due to syntax issues in the Mermaid definition.';
+            
+            // Check for specific error patterns
+            if (!isKnownType) {
+                errorTitle = 'Unsupported Diagram Type';
+                errorMessage = `The diagram type <code>${diagramType}</code> is not recognized by the current Mermaid version. This might be an experimental or beta feature that requires a newer version of Mermaid.`;
+            } else if (error.message && error.message.includes('Parse error')) {
+                errorTitle = 'Syntax Error';
+                errorMessage = 'There was a syntax error in your Mermaid diagram definition.';
+            } else if (error.message && error.message.includes('Lexical error')) {
+                errorTitle = 'Lexical Error';
+                errorMessage = 'There was a lexical error in your Mermaid diagram definition. This often happens with invalid characters or tokens.';
+            }
+
             if (!spec.isStreaming || spec.forceRender) container.innerHTML = `
                 <div class="mermaid-error">
-                    <strong>Mermaid Error:</strong>
-                    <p>There was an error rendering the diagram. This is often due to syntax issues in the Mermaid definition.</p>
+                    <strong>${errorTitle}:</strong>
+                    <p>${errorMessage}</p>
                     <pre>${error.message || 'Unknown error'}</pre>
                     <details>
                         <summary>Show Definition</summary>
                         <pre><code>${spec.definition}</code></pre>
                     </details>
+                    ${!isKnownType ? `
+                    <div style="margin-top: 12px; padding: 8px; background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; border-radius: 4px;">
+                        <p>Supported diagram types include: <code>graph</code>, <code>flowchart</code>, <code>sequenceDiagram</code>, <code>classDiagram</code>, etc.</p>
+                    </div>
+                    ` : ''}
                 </div>
             `;
 
