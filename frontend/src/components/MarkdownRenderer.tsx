@@ -18,6 +18,7 @@ import { useTheme } from '../context/ThemeContext';
 import type * as PrismType from 'prismjs';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
+import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 
 // Define the status interface
 import 'katex/dist/katex.min.css';
@@ -2827,26 +2828,19 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'br' | 'list_item' |
     'unknown';
 
+// Track last log timestamp to prevent excessive logging
+let lastLogTimestamp = 0;
+
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
     
-    // DEBUG: Log token analysis
-    console.log('🔍 MarkdownRenderer - Analyzing token:', {
-        type: tokenType,
-        lang: 'lang' in token ? token.lang : undefined,
-        textPreview: 'text' in token && token.text ? token.text.substring(0, 100) + '...' : 'no text'
-    });
-
     // 1. Prioritize content-based detection for diffs, regardless of lang tag
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
-        // DEBUG: Log diff content analysis
-        console.log('📝 MarkdownRenderer - Code block detected, analyzing content...');
         
         // Check first few lines for diff markers
         const linesToCheck = text.split('\n').slice(0, 5);
-        console.log('🔍 MarkdownRenderer - First 5 lines:', linesToCheck);
         
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
@@ -2860,19 +2854,23 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // More lenient check for diff --git, allowing it not to be the very first thing
         const containsDiffGit = text.includes('diff --git');
 
-        // DEBUG: Log diff marker analysis
-        console.log('🎯 MarkdownRenderer - Diff markers found:', {
-            hasGitHeader,
-            hasMinusHeader,
-            hasPlusHeader,
-            hasHunkHeader,
-            diffMarkersFound,
-            containsDiffGit,
-            shouldBeDiff: containsDiffGit || diffMarkersFound >= 2
-        });
+        // Only log when debug logging is enabled
+        if (isDebugLoggingEnabled() && false) {
+            debugLog('Diff markers analysis:', {
+                hasGitHeader,
+                hasMinusHeader,
+                hasPlusHeader,
+                hasHunkHeader,
+                diffMarkersFound,
+                containsDiffGit,
+                shouldBeDiff: containsDiffGit || diffMarkersFound >= 2
+            });
+        }
 
         if (containsDiffGit || diffMarkersFound >= 2) {
-            console.log('✅ MarkdownRenderer - DETECTED AS DIFF (content-based)');
+            if (isDebugLoggingEnabled()) {
+                debugLog('DETECTED AS DIFF (content-based)');
+            }
             return 'diff';
         }
     }
@@ -2881,24 +2879,30 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
 
-        console.log('Processing code block with lang:', lang);
-        // Debug logging for ALL code blocks
-        console.log('determineTokenType - Code block with lang:', lang, 'tokenType:', tokenType);
-
-        // Debug logging for tool detection
-        console.log('Code block detected with lang:', lang, 'content preview:', (token as TokenWithText).text?.substring(0, 50));
+        // Only log when debug logging is enabled and only for debugging specific issues
+        if (isDebugLoggingEnabled() && false) {
+            debugLog('Processing code block with lang:', lang);
+            debugLog('determineTokenType - Code block with lang:', lang, 'tokenType:', tokenType);
+            debugLog('Code block detected with lang:', lang, 'content preview:', (token as TokenWithText).text?.substring(0, 50));
+        }
 
         // Check for MCP tool blocks first
         if (lang.startsWith('tool:mcp_')) {
             const toolName = lang.substring(5); // Remove 'tool:' prefix to get 'mcp_...'
             (token as TokenWithText).toolName = toolName;
-            console.log('MCP tool block detected:', toolName);
+            // Only log when debug logging is enabled
+            if (isDebugLoggingEnabled()) {
+                debugLog('MCP tool block detected:', toolName);
+            }
             return 'tool';
         }
         if (lang.startsWith('tool:')) {
             const toolName = lang.substring(5); // Remove 'tool:' prefix
             (token as TokenWithText).toolName = toolName;
-            console.log('Tool block detected:', toolName);
+            // Only log when debug logging is enabled
+            if (isDebugLoggingEnabled()) {
+                debugLog('Tool block detected:', toolName);
+            }
             return 'tool';
         }
 
@@ -3068,25 +3072,26 @@ const decodeHtmlEntities = (text: string): string => {
 };
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
-    console.log('🚀 MarkdownRenderer - renderTokens called with', tokens.length, 'tokens');
+    // Only log when debug logging is enabled and not too frequently
+    const shouldLog = isDebugLoggingEnabled() && 
+                     (Date.now() - lastLogTimestamp > 10000);
+    
+    if (shouldLog && tokens.length > 0) {
+        lastLogTimestamp = Date.now();
+        debugLog(`Processing ${tokens.length} tokens`);
+    }
+    
     return tokens.map((token, index) => {
-        console.log('🔍 MarkdownRenderer - Processing token', index, ':', {
-            type: token.type,
-            lang: 'lang' in token ? token.lang : undefined,
-            textPreview: 'text' in token ? (token.text?.substring(0, 50) + '...') : 'no text'
-        });
         const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
         const tokenWithText = token as TokenWithText; // Helper cast
 
-        if ((token as any).lang?.startsWith('tool:')) {
-            console.log(`Tool token processing - originalType: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, lang: ${(token as any).lang}`);
-        }
-
-        // Debug math tokens
-        if (tokenWithText.text && (tokenWithText.text.includes('MATH_INLINE:') || tokenWithText.text.includes('MATH_DISPLAY:'))) {
-            console.log(`Math token detected - type: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, content: ${tokenWithText.text.substring(0, 100)}`);
+        // Only log tool tokens when debug logging is enabled
+        if (isDebugLoggingEnabled() && 
+            index === 0 && 
+            (token as any).lang?.startsWith('tool:')) {
+            debugLog(`Tool token detected: ${(token as any).lang}`);
         }
 
         // Override code detection if this token follows a tool token
@@ -3112,18 +3117,24 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         try {
             switch (determinedType) {
                 case 'diff':
-                    console.log('🎨 MarkdownRenderer - Rendering DIFF token');
+                    // Only log when debug logging is enabled and only for debugging
+                    if (isDebugLoggingEnabled() && false) {
+                        debugLog('Rendering DIFF token');
+                    }
                     const rawDiffText = decodeHtmlEntities(tokenWithText.text || '');
                     // Apply cleaning specific to diff content AFTER decoding
                     const cleanedDiff = cleanDiffContent(rawDiffText);
                     // Ensure lang is set to 'diff' for the component
                     const diffToken = { ...tokenWithText, text: cleanedDiff, lang: 'diff' };
-                    console.log('🎨 MarkdownRenderer - Created diffToken:', {
-                        hasText: !!diffToken.text,
-                        textLength: diffToken.text?.length,
-                        lang: diffToken.lang,
-                        textPreview: diffToken.text?.substring(0, 100) + '...'
-                    });
+                    // Only log when debug logging is enabled and only for debugging
+                    if (isDebugLoggingEnabled() && false) {
+                        debugLog('Created diffToken:', {
+                            hasText: !!diffToken.text,
+                            textLength: diffToken.text?.length,
+                            lang: diffToken.lang,
+                            textPreview: diffToken.text?.substring(0, 100) + '...'
+                        });
+                    }
 
                     // Check if this is a multi-file diff and not already a sub-render
                     if (!isSubRender) {
@@ -3134,7 +3145,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         }
                     }
 
-                    console.log('🎨 MarkdownRenderer - Rendering single DiffToken component');
+                    // Only log when debug logging is enabled and only for debugging
+                    if (isDebugLoggingEnabled() && false) {
+                        debugLog('Rendering single DiffToken component');
+                    }
                     return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
 
                 case 'file-operation':
@@ -3170,7 +3184,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     );
                 case 'mermaid':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
-                    console.log(`🎯 CREATING MERMAID SPEC:`, { text: tokenWithText.text.substring(0, 100) });
+                    // Only log when debug logging is enabled and only for debugging
+                    if (isDebugLoggingEnabled() && false) {
+                        debugLog(`CREATING MERMAID SPEC:`, { text: tokenWithText.text.substring(0, 100) });
+                    }
                     // Pass the definition directly to D3Renderer, which will use the mermaidPlugin
                     // We need a spec object that the mermaidPlugin can handle with streaming flag
                     const mermaidSpec = {
@@ -3244,7 +3261,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         );
                     }
 
-                    console.log('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
+                    // Only log successful tool rendering when debug logging is enabled
+                    if (isDebugLoggingEnabled()) {
+                        debugLog('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
+                    }
                     return (
                         <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
                     );

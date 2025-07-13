@@ -116,14 +116,14 @@ export const App: React.FC = () => {
 
     // Check MCP status on mount
     useEffect(() => {
-        // Convert viewport width to pixels immediately to prevent CSS variable thrashing
-        const initialWidth = Math.min(window.innerWidth * 0.25, 400);
+        // Set initial panel width to 33% of viewport width
+        const initialWidth = Math.round(window.innerWidth * 0.33);
         document.documentElement.style.setProperty('--folder-panel-width', `${initialWidth}px`);
         document.documentElement.style.setProperty('--model-display-height', '35px');
 
         // Force initial positioning of all elements after a short delay
         setTimeout(() => {
-            handlePanelResize(panelWidth);
+            handlePanelResize(initialWidth);
         }, 300);
     }, []); // Add empty dependency array to run only once
 
