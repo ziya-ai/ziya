@@ -1650,6 +1650,50 @@ async def get_default_included_folders():
     """Get the default included folders."""
     return []
 
+@app.get('/api/folders-cached')
+async def get_folders_cached():
+    """Get folder structure from cache only - returns instantly without scanning."""
+    try:
+        # Get the user's codebase directory
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        if not user_codebase_dir:
+            user_codebase_dir = os.getcwd()
+            
+        # Get max depth from environment or use default
+        try:
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        except ValueError:
+            max_depth = 15
+            
+        # Get ignored patterns
+        ignored_patterns = get_ignored_patterns(user_codebase_dir)
+        
+        # Import here to avoid circular imports
+        from app.utils.directory_util import _folder_cache, _token_cache, _cache_lock
+        
+        # First check if we have any cached data at all
+        with _cache_lock:
+            cache_key = f"{user_codebase_dir}:{max_depth}:{hash(str(ignored_patterns))}"
+            
+            # Check for token cache first (most complete)
+            if cache_key in _token_cache:
+                logger.info("🚀 Returning cached folder structure with tokens (instant)")
+                result = _token_cache[cache_key]
+                if "_accurate_tokens" in result:
+                    result["_accurate_token_counts"] = result["_accurate_tokens"]
+                return result
+                
+            # Fall back to folder cache if available
+            if _folder_cache['data'] is not None:
+                logger.info("🚀 Returning basic folder cache (instant)")
+                return _folder_cache['data']
+                
+        # No cache available
+        return {"error": "No cached data available"}
+    except Exception as e:
+        logger.error(f"Error in get_folders_cached: {e}")
+        return {"error": f"Cache error: {str(e)}"}
+
 @app.get('/api/folders-with-accurate-tokens')
 async def get_folders_with_accurate_tokens():
     """Get folder structure with pre-calculated accurate token counts."""

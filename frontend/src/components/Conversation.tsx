@@ -8,6 +8,7 @@ import { useFolderContext } from "../context/FolderContext";
 import ModelChangeNotification from './ModelChangeNotification';
 import { convertKeysToStrings } from "../utils/types";
 import { useQuestionContext } from '../context/QuestionContext';
+import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 
 // Lazy load the MarkdownRenderer
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
@@ -64,16 +65,17 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
 
 
     useEffect(() => {
-        console.debug('Conversation messages updated:', {
-            messageCount: currentMessages.length,
-            previousCount: renderedCountRef.current,
-            isVisible: visibilityRef.current,
-            displayOrder: isTopToBottom ? 'top-down' : 'bottom-up'
-        });
-
-        if (currentMessages.length !== renderedCountRef.current) {
+        // Only log when message count changes significantly, not on every render
+        if (Math.abs(currentMessages.length - renderedCountRef.current) > 2) {
+            if (isDebugLoggingEnabled()) {
+                debugLog('Conversation messages updated:', {
+                    messageCount: currentMessages.length,
+                    previousCount: renderedCountRef.current,
+                    isVisible: visibilityRef.current,
+                    displayOrder: isTopToBottom ? 'top-down' : 'bottom-up'
+                });
+            }
             renderedCountRef.current = currentMessages.length;
-            console.log(`Rendered ${currentMessages.length} messages`);
         }
 
         // Set up visibility observer
@@ -81,10 +83,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
             (entries) => {
                 entries.forEach(entry => {
                     visibilityRef.current = entry.isIntersecting;
-                    console.debug('Conversation visibility changed:', {
-                        isVisible: entry.isIntersecting,
-                        messageCount: currentMessages.length
-                    });
                 });
             },
             { threshold: 0.1 }
@@ -97,7 +95,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     useEffect(() => {
         // Create the handler function
         const handleModelChange = (event: CustomEvent) => {
-            console.log('Conversation received model change event:', event.detail);
             const { previousModel, newModel } = event.detail;
 
             // Create a unique key for this model change to prevent duplicates
@@ -105,7 +102,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
 
             // Skip if we've already processed this exact change
             if (processedModelChangesRef.current.has(changeKey)) {
-                console.log('Skipping duplicate model change:', changeKey);
                 return;
             }
             processedModelChangesRef.current.add(changeKey);
@@ -235,7 +231,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         height: '32px'
                     }}
                     onClick={() => {
-                        console.log(`Toggling mute for message ${index}, current state:`, message.muted);
                         toggleMessageMute(currentConversationId, index);
                     }}
                 />
@@ -383,17 +378,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         `${msg.modelChange.from}->${msg.modelChange.to}` :
                         msg.content;
 
-                    // Only log system messages once
-                    if (msg.role === 'system' && !renderedSystemMessagesRef.current.has(systemMessageKey)) {
+                    // Only log system messages once and only in development mode
+                    if (process.env.NODE_ENV === 'development' && 
+                        msg.role === 'system' && 
+                        !renderedSystemMessagesRef.current.has(systemMessageKey)) {
                         renderedSystemMessagesRef.current.add(systemMessageKey);
-                        console.log('Rendering system message:', {
-                            content: msg.content,
-                            hasModelChange: Boolean(msg.modelChange),
-                            modelChangeFrom: msg.modelChange?.from,
-                            modelChangeTo: msg.modelChange?.to,
-                            messageIndex: index,
-                            totalMessages: displayMessages?.length || 0
-                        });
                     }
 
                     return <div
@@ -439,23 +428,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                     ) : msg.role === 'human' && msg.content ? (
                                         <div className="message-content">
                                             <Suspense fallback={<div>Loading content...</div>}>
-                                                {(() => {
-                                                    console.log('🔥 CONVERSATION.TSX - Rendering MarkdownRenderer for HUMAN message:', {
-                                                        messageId: msg.id,
-                                                        contentLength: msg.content?.length,
-                                                        contentPreview: msg.content?.substring(0, 100),
-                                                        enableCodeApply,
-                                                        isStreaming: isStreaming || streamingConversations.has(currentConversationId),
-                                                        conversationId: currentConversationId
-                                                    });
-                                                    return (
-                                                        <MarkdownRenderer
-                                                            markdown={msg.content}
-                                                            enableCodeApply={enableCodeApply}
-                                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                                        />
-                                                    );
-                                                })()}
+                                                <MarkdownRenderer
+                                                    markdown={msg.content}
+                                                    enableCodeApply={enableCodeApply}
+                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                />
                                             </Suspense>
                                         </div>
                                     ) : msg.role === 'assistant' && msg.content && (
@@ -477,24 +454,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                     {msg.role === 'assistant' && msg.content && (
                                         <div className="message-content">
                                             <Suspense fallback={<div>Loading content...</div>}>
-                                                {(() => {
-                                                    console.log('🔥 CONVERSATION.TSX - Rendering MarkdownRenderer for ASSISTANT message:', {
-                                                        messageId: msg.id,
-                                                        contentLength: msg.content?.length,
-                                                        contentPreview: msg.content?.substring(0, 100),
-                                                        enableCodeApply,
-                                                        isStreaming: isStreaming || streamingConversations.has(currentConversationId),
-                                                        conversationId: currentConversationId,
-                                                        hasDiffContent: msg.content?.includes('```diff') || msg.content?.includes('@@') || msg.content?.includes('---') || msg.content?.includes('+++')
-                                                    });
-                                                    return (
-                                                        <MarkdownRenderer
-                                                            markdown={msg.content}
-                                                            enableCodeApply={enableCodeApply}
-                                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                                        />
-                                                    );
-                                                })()}
+                                                <MarkdownRenderer
+                                                    markdown={msg.content}
+                                                    enableCodeApply={enableCodeApply}
+                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                />
                                             </Suspense>
                                         </div>
                                     )}

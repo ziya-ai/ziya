@@ -115,7 +115,7 @@ export const MUIFileExplorer = () => {
   }, []);
 
   // Optimized TreeNode with minimal re-renders
-  const TreeNode = ({ node, level = 0 }: TreeNodeProps) => {
+  const TreeNode = React.memo(({ node, level = 0 }: TreeNodeProps) => {
     const hasChildren = nodeHasChildren(node);
     const isExpanded = expandedKeys.includes(String(node.key));
     const isChecked = checkedKeys.includes(String(node.key));
@@ -304,15 +304,22 @@ export const MUIFileExplorer = () => {
             (() => {
               // For directories, ensure we're getting the correct token count
               const dirPath = String(node.key);
-
-              total = getFolderTokenCount(dirPath, folders || {});
-
-              // If this folder is directly selected, include all tokens
-              if (isChecked) {
-                included = total;
-              } else {
-                included = calculateChildrenIncluded(node);
+              
+              // Use memoized calculation with caching to prevent excessive recalculations
+              // This is critical for performance when scrolling
+              const cacheKey = `display:${dirPath}:${checkedKeys.join(',')}`;
+              let folderTokens = tokenCalculationCache.current.get(cacheKey);
+              
+              if (!folderTokens) {
+                const totalTokens = getFolderTokenCount(dirPath, folders || {});
+                // If this folder is directly selected, include all tokens
+                const includedTokens = isChecked ? totalTokens : calculateChildrenIncluded(node);
+                
+                folderTokens = { total: totalTokens, included: includedTokens };
+                tokenCalculationCache.current.set(cacheKey, folderTokens);
               }
+              
+              const { total, included } = folderTokens;
 
               return total > 0 ? (
                 <Typography
@@ -364,25 +371,91 @@ export const MUIFileExplorer = () => {
         )}
       </Box>
     );
-  };
+  }, (prevProps, nextProps) => {
+    // Only re-render if these specific props changed
+    const prevNode = prevProps.node;
+    const nextNode = nextProps.node;
+    const prevLevel = prevProps.level;
+    const nextLevel = nextProps.level;
+    
+    // Check if node key is the same
+    if (prevNode.key !== nextNode.key) return false;
+    
+    // Check if level changed
+    if (prevLevel !== nextLevel) return false;
+    
+    // Check if expanded state changed for this node
+    const prevExpanded = expandedKeys.includes(String(prevNode.key));
+    const nextExpanded = expandedKeys.includes(String(nextNode.key));
+    if (prevExpanded !== nextExpanded) return false;
+    
+    // Check if checked state changed for this node
+    const prevChecked = checkedKeys.includes(String(prevNode.key));
+    const nextChecked = checkedKeys.includes(String(nextNode.key));
+    if (prevChecked !== nextChecked) return false;
+    
+    // If nothing important changed, prevent re-render
+    return true;
+  });
 
-  // Effect to load folders on component mount
+  // Effect to load folders on component mount - with improved caching
   useEffect(() => {
+    // Track if component is still mounted
+    let isMounted = true;
+    
     const loadFolders = async () => {
       if (isLoading) return; // Prevent multiple simultaneous loads
+      
+      // First try to load from cache immediately
       try {
-        const response = await fetch('/api/folders-with-accurate-tokens');
+        // Use a new endpoint that will return cached data instantly
+        const cachedResponse = await fetch('/api/folders-cached');
+        if (cachedResponse.ok) {
+          const cachedData: Folders = await cachedResponse.json();
+          if (isMounted && cachedData && Object.keys(cachedData).length > 0) {
+            console.log('Using cached folder structure');
+            // Convert and sort data
+            const sortedData = sortTreeData(convertToTreeData(cachedData));
+            setTreeData(sortedData);
+            setIsLoading(false);
+            
+            // Dispatch event to notify that we have initial data
+            window.dispatchEvent(new CustomEvent('initialFolderDataLoaded'));
+          }
+        }
+      } catch (error) {
+        console.debug('No cached folder data available:', error);
+        // Continue to fetch fresh data
+      }
+      
+      // Then fetch fresh data in the background
+      try {
+        // Use a non-blocking fetch with cache validation
+        const response = await fetch('/api/folders-with-accurate-tokens', {
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        });
+        
         if (!response.ok) {
           throw new Error(`Failed to load folders: ${response.status}`);
         }
+        
         const data: Folders = await response.json();
-
-        // Convert and sort data
-        const sortedData = sortTreeData(convertToTreeData(data));
-        setTreeData(sortedData);
-
+        
+        if (isMounted) {
+          // Convert and sort data
+          const sortedData = sortTreeData(convertToTreeData(data));
+          setTreeData(sortedData);
+          
+          // Dispatch event to notify that we have fresh data
+          window.dispatchEvent(new CustomEvent('freshFolderDataLoaded'));
+        }
+        
         // Also load accurate token counts, but don't block the UI
         setTimeout(async () => {
+          if (!isMounted) return;
           try {
             const tokenResponse = await fetch('/api/accurate-token-counts');
             if (tokenResponse.ok) {
@@ -393,14 +466,15 @@ export const MUIFileExplorer = () => {
             console.error('Failed to load accurate token counts:', error);
           }
         }, 100);
-
-        // Don't auto-expand anything - start collapsed
-        // setExpandedKeys([]) is already the default, so no need to set it
       } catch (err) {
         console.error('Failed to load folders:', err);
-        message.error('Failed to load folder structure');
+        if (isMounted) {
+          message.error('Failed to load folder structure');
+        }
       } finally {
-        setIsLoading(false);
+        if (isMounted) {
+          setIsLoading(false);
+        }
       }
     };
 
@@ -409,12 +483,19 @@ export const MUIFileExplorer = () => {
     if ((!treeData || treeData.length === 0) && !isInitialLoad) {
       // Use a small timeout to ensure the initial UI renders first
       setTimeout(() => {
-        setIsLoading(true);
-        loadFolders();
+        if (isMounted) {
+          setIsLoading(true);
+          loadFolders();
+        }
       }, 0);
     } else {
-      if (treeData && treeData.length > 0) setIsLoading(false);
+      if (treeData && treeData.length > 0 && isMounted) setIsLoading(false);
     }
+    
+    // Cleanup function to prevent state updates after unmount
+    return () => {
+      isMounted = false;
+    };
   }, [isInitialLoad, isLoading, treeData]);
 
   // Update tree data when folders change
@@ -745,6 +826,13 @@ export const MUIFileExplorer = () => {
     if (!node.children) return 0;
     if (!folders && !node.children.length) return 0;
 
+    // Use cached result if available
+    const nodePath = String(node.key);
+    const cacheKey = `${nodePath}:${checkedKeys.join(',')}`;
+    if (tokenCalculationCache.current.has(cacheKey)) {
+      return tokenCalculationCache.current.get(cacheKey);
+    }
+
     let included = 0;
     for (const child of node.children) {
       const childKey = String(child.key);
@@ -758,43 +846,36 @@ export const MUIFileExplorer = () => {
         const titleMatch = String(child.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
         const titleTokenCount = titleMatch ? parseInt(titleMatch[2].replace(/,/g, '')) : 0;
 
-        // Debug token values
-        console.log('DEBUG TOKEN VALUES:', childKey, {
-          accurateCount: accurateTokenCounts[childKey]?.count,
-          folderCount: childTokens,
-          nodeTitle: child.title
-        });
-
         const childAccurate = accurateTokenCounts[childKey];
-
         const childTotal = (childAccurate && !nodeHasChildren(child)) ? childAccurate.count : (childTokens || titleTokenCount || 0);
 
         included += childTotal;
-        console.log('Including selected child:', childKey, childTotal, 'Running total:', included);
+        // Debug logging removed to improve performance
       } else if (nodeHasChildren(child)) {
         // Only include partial selections from subdirectories
         const childIncluded = calculateChildrenIncluded(child);
         included += childIncluded;
-        console.log('Including partial child:', childKey, 'Running total:', included);
-      } else {
-        // Unselected file - don't include in total
-        console.log('Skipping unselected file:', childKey);
+        // Debug logging removed to improve performance
       }
-
-      // Important: Log the running total after processing each child
-      console.log('After child:', childKey,
-        'isSelected:', isChildDirectlySelected,
-        'hasChildren:', nodeHasChildren(child),
-        'included:', included
-      );
+      // Debug logging removed to improve performance
     }
+    
+    // Cache the result
+    tokenCalculationCache.current.set(cacheKey, included);
     return included;
-  }, [checkedKeys, folders, accurateTokenCounts]);
+  }, [checkedKeys, folders, accurateTokenCounts, getFolderTokenCount, nodeHasChildren]);
 
   // Helper function to calculate total tokens for a directory's children
   const calculateChildrenTotal = useCallback((node: any): number => {
     if (!node.children) return 0;
     if (!folders) return 0;
+
+    // Use cached result if available
+    const nodePath = String(node.key);
+    const cacheKey = `total:${nodePath}`;
+    if (tokenCalculationCache.current.has(cacheKey)) {
+      return tokenCalculationCache.current.get(cacheKey);
+    }
 
     let total = 0;
     for (const child of node.children) {
@@ -808,8 +889,11 @@ export const MUIFileExplorer = () => {
         total += (childAccurate ? childAccurate.count : getFolderTokenCount(childKey, folders || {})) || 0;
       }
     }
+    
+    // Cache the result
+    tokenCalculationCache.current.set(cacheKey, total);
     return total;
-  }, [folders, accurateTokenCounts, getFolderTokenCount]);
+  }, [folders, accurateTokenCounts, getFolderTokenCount, nodeHasChildren]);
 
 
   const getTokenCount = useCallback((key: string) => {

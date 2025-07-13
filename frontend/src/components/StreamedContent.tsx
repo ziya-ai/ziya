@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import StopStreamButton from './StopStreamButton';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
+import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC = () => {
@@ -557,52 +558,25 @@ export const StreamedContent: React.FC = () => {
                                                 style={{ marginBottom: '16px' }}
                                             />
                                         )}
-                                        {(() => {
-                                            console.log('🔥 STREAMEDCONTENT.TSX - Rendering MarkdownRenderer for STREAMING content:', {
-                                                conversationId: currentConversationId,
-                                                contentLength: streamedContent?.length,
-                                                contentPreview: streamedContent?.substring(0, 100),
-                                                forceRender: streamingConversations.has(currentConversationId),
-                                                isStreaming: streamingConversations.has(currentConversationId),
-                                                enableCodeApply,
-                                                hasDiffContent: streamedContent?.includes('```diff') || streamedContent?.includes('@@') || streamedContent?.includes('---') || streamedContent?.includes('+++')
-                                            });
-                                            return (
-                                                <MarkdownRenderer
-                                                    key={`stream-${currentConversationId}`}
-                                                    markdown={streamedContent}
-                                                    forceRender={streamingConversations.has(currentConversationId)}
-                                                    isStreaming={streamingConversations.has(currentConversationId)}
-                                                    enableCodeApply={enableCodeApply}
-                                                />
-                                            );
-                                        })()}
+                                        <MarkdownRenderer
+                                            key={`stream-${currentConversationId}`}
+                                            markdown={streamedContent}
+                                            forceRender={streamingConversations.has(currentConversationId)}
+                                            isStreaming={streamingConversations.has(currentConversationId)}
+                                            enableCodeApply={enableCodeApply}
+                                        />
                                     </div>
                                 )}
                                 {/* Show content even when there's an error */}
                                 {error && streamedContent && streamedContent.trim() && (
                                     <div className="message-content" style={{ opacity: 0.8 }}>
-                                        {(() => {
-                                            console.log('🔥 STREAMEDCONTENT.TSX - Rendering MarkdownRenderer for ERROR case:', {
-                                                conversationId: currentConversationId,
-                                                contentLength: streamedContent?.length,
-                                                contentPreview: streamedContent?.substring(0, 100),
-                                                forceRender: streamingConversations.has(currentConversationId),
-                                                isStreaming: streamingConversations.has(currentConversationId),
-                                                enableCodeApply,
-                                                error,
-                                                hasDiffContent: streamedContent?.includes('```diff') || streamedContent?.includes('@@') || streamedContent?.includes('---') || streamedContent?.includes('+++')
-                                            });
-                                            return (
-                                                <MarkdownRenderer
-                                                    key={`stream-${currentConversationId}-with-error`}
-                                                    markdown={streamedContent}
-                                                    forceRender={streamingConversations.has(currentConversationId)}
-                                                    isStreaming={streamingConversations.has(currentConversationId)}
-                                                    enableCodeApply={enableCodeApply}
-                                                />
-                                            );
-                                        })()}
+                                        <MarkdownRenderer
+                                            key={`stream-${currentConversationId}-with-error`}
+                                            markdown={streamedContent}
+                                            forceRender={streamingConversations.has(currentConversationId)}
+                                            isStreaming={streamingConversations.has(currentConversationId)}
+                                            enableCodeApply={enableCodeApply}
+                                        />
                                     </div>
                                 )}
 
