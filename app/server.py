@@ -947,11 +947,55 @@ async def stream_chunks(body):
                     else:
                         logger.debug(f"🔍 AGENT: Suppressed tool call content from frontend")
 
-                    # Check for complete tool call - must have both opening and closing tags
+                    # Check for complete tool call and execute in-stream
                     if TOOL_SENTINEL_OPEN in current_response and TOOL_SENTINEL_CLOSE in current_response:
-                        logger.info("🔍 AGENT: Complete tool call detected, stopping generation")
-                        tool_executed = True
-                        break
+                        logger.info("🔍 STREAM: Complete tool call detected, executing in-stream")
+                        
+                        # Execute tool immediately and stream result
+                        try:
+                            processed_response = await detect_and_execute_mcp_tools(current_response, processed_tool_calls)
+                            
+                            if processed_response != current_response:
+                                # Extract and stream tool result
+                                if "```tool:" in processed_response:
+                                    # Find the tool result including the leading newline
+                                    tool_start = processed_response.find("\n```tool:")
+                                    if tool_start >= 0:
+                                        tool_result = processed_response[tool_start:]  # Include the leading \n
+                                    else:
+                                        # Fallback if no leading newline found
+                                        tool_result = processed_response[processed_response.find("```tool:"):]
+                                    
+                                    # Stream the tool result immediately to frontend
+                                    ops = [{"op": "add", "path": "/streamed_output_str/-", "value": tool_result}]
+                                    yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                    logger.info(f"🔍 STREAM: Tool result streamed to frontend: {tool_result[:100]}...")
+                                
+                                # Update full_response and mark tool as executed
+                                full_response = processed_response
+                                tool_executed = True
+                                
+                                # Clear the tool call from current_response to prevent re-execution
+                                tool_start = current_response.find(TOOL_SENTINEL_OPEN)
+                                tool_end = current_response.find(TOOL_SENTINEL_CLOSE) + len(TOOL_SENTINEL_CLOSE)
+                                if tool_start >= 0 and tool_end > tool_start:
+                                    tool_call = current_response[tool_start:tool_end]
+                                    current_response = current_response.replace(tool_call, "")
+                                    logger.info("🔍 STREAM: Removed tool call from current_response to prevent re-execution")
+                                
+                                # Continue streaming - don't break, allow multiple sequential tools
+                                
+                            else:
+                                logger.warning("🔍 STREAM: Tool execution failed or no change")
+                                tool_executed = True
+                                
+                        except Exception as tool_error:
+                            logger.error(f"🔍 STREAM: Tool execution error: {tool_error}")
+                            # Stream error to frontend
+                            error_msg = f"**Tool Error:** {str(tool_error)}"
+                            ops = [{"op": "add", "path": "/streamed_output_str/-", "value": error_msg}]
+                            yield f"data: {json.dumps({'ops': ops})}\n\n"
+                            tool_executed = True
 
                 logger.info(f"🔍 AGENT: Finished streaming loop for iteration {iteration}")
 
@@ -973,9 +1017,9 @@ async def stream_chunks(body):
                     logger.info("🔍 AGENT: No tool call detected in iteration {iteration}, ending iterations")
                     break
                 
-                # Execute the tool
-                logger.info("🔍 AGENT: Executing tool call")
-                processed_response = await detect_and_execute_mcp_tools(current_response, processed_tool_calls)
+                # Skip additional tool execution since we handle tools in-stream
+                logger.info("🔍 STREAM: Tools executed in-stream, skipping post-processing")
+                break  # Exit the iteration loop
                 
                 if processed_response != current_response:
                     # The processed_response contains the formatted result, extract it properly
