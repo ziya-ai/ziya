@@ -2,6 +2,7 @@ import mermaid from 'mermaid';
 import { D3RenderPlugin } from '../../types/d3';
 import initMermaidSupport from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
+import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 
 // Add mermaid to window for TypeScript
 declare global {
@@ -136,11 +137,11 @@ export const mermaidPlugin: D3RenderPlugin = {
             // Initialize mermaid with graph-specific settings
 
             // Pre-process the definition to fix common syntax issues
-            let processedDefinition = spec.definition;
+            // CRITICAL: Extract actual content from YAML wrapper if present
+            let processedDefinition = extractDefinitionFromYAML(spec.definition, 'mermaid');
 
             console.log('Original definition (first 200 chars):', processedDefinition.substring(0, 200));
 
-            // FIRST: Remove HTML tags that cause parsing issues
             processedDefinition = processedDefinition.replace(/<br\s*\/?>/gi, '\n');
             processedDefinition = processedDefinition.replace(/<\/br>/gi, '');
             processedDefinition = processedDefinition.replace(/<[^>]+>/g, '');

@@ -1,6 +1,7 @@
 import * as Viz from '@viz-js/viz';
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
+import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 
 export interface GraphvizSpec {
     type: 'graphviz';
@@ -148,8 +149,11 @@ export const graphvizPlugin: D3RenderPlugin = {
 
             const vizInstance = await Viz.instance();
 
+            // Extract actual content from YAML wrapper if present
+            let processedDefinition = extractDefinitionFromYAML(spec.definition, 'graphviz');
+
             // Add theme attributes to dot with more styling options
-            let themedDot = spec.definition;
+            let themedDot = processedDefinition;
 
             // Only add theme attributes if the graph has a proper structure
             if (spec.definition.match(/^(\s*(?:di)?graph\s+[^{]*{)/)) {
