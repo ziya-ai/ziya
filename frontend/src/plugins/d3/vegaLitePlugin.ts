@@ -1,5 +1,6 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
+import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 
 // Import vega-embed dynamically to avoid bundle size issues
 let vegaEmbed: any = null;
@@ -176,12 +177,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Parse the specification
       let vegaSpec: any;
+      
       if (typeof spec === 'string') {
         console.log(">>> vegaLitePlugin: Parsing string spec");
-        vegaSpec = JSON.parse(spec);
+        const extractedContent = extractDefinitionFromYAML(spec, 'vega-lite');
+        vegaSpec = JSON.parse(extractedContent);
       } else if (spec.definition) {
         console.log(">>> vegaLitePlugin: Parsing definition property");
-        vegaSpec = JSON.parse(spec.definition);
+        const extractedContent = extractDefinitionFromYAML(spec.definition, 'vega-lite');
+        vegaSpec = JSON.parse(extractedContent);
       } else {
         console.log(">>> vegaLitePlugin: Using spec object directly");
         // Use the spec object directly, but remove our custom properties
