@@ -1077,32 +1077,55 @@ class RetryingChatBedrock(Runnable):
 
     def _is_tool_execution_content(self, content: str) -> bool:
         """Check if content indicates tool execution."""
+        # Check for tool sentinel markers
+        from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        
+        # Check for complete tool calls
+        if TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content:
+            return True
+        
+        # Check for hardcoded sentinel markers
+        if "<TOOL_SENTINEL>" in content and "</TOOL_SENTINEL>" in content:
+            return True
+            
+        # Check for other tool indicators
         tool_indicators = [
             "MCP Tool",
             "Tool:",
             "$ ",  # Shell command indicator
+            "```tool:",
             "```shell",
             "```bash",
             "Executing tool",
             "Running command",
         ]
-        # placeholder always returns false until logic is implemented
-        return False
-
-    def _is_tool_execution_content(self, content: str) -> bool:
-        """Check if content indicates tool execution."""
-        tool_indicators = [
-            "MCP Tool",
-            "Tool:",
-            "$ ",  # Shell command indicator
-            "```shell",
-            "```bash",
-            "Executing tool",
-            "Running command",
-            "SECURITY BLOCK",
-            "Tool execution"
-        ]
+        
         return any(indicator in content for indicator in tool_indicators)
+
+    async def _execute_tool_call(self, content: str) -> str:
+        """
+        Execute a tool call in the content and return the result.
+        
+        Args:
+            content: The content containing a tool call
+            
+        Returns:
+            The content with the tool call replaced by the result
+        """
+        try:
+            # Import the MCP tool execution function
+            from app.mcp.consolidated import execute_mcp_tools_with_status
+            
+            # Execute the tool call
+            logger.info(f"Executing tool call during streaming: {content[:100]}...")
+            result = await execute_mcp_tools_with_status(content)
+            logger.info(f"Tool execution result: {result[:100]}...")
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error executing tool call: {e}")
+            # Return error message
+            return f"\n\n```tool:error\n❌ **Tool Error:** {str(e)}\n```\n\n"
 
     async def _notify_tool_execution_state(self, content: str):
         """Notify about tool execution state changes."""
