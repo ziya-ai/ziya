@@ -99,6 +99,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const lastUsedPluginRef = useRef<D3RenderPlugin | null>(null);
     const lastValidSpecRef = useRef<any>(null);
     const [renderingStarted, setRenderingStarted] = useState<boolean>(false);
+    const initialThemeRef = useRef<boolean>(isDarkMode);
     const hasSuccessfulRenderRef = useRef<boolean>(false);
 
     // New state for size reservation and rendering control
@@ -610,9 +611,14 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
     // Separate effect for theme changes to avoid circular dependencies
     useEffect(() => {
-        if (lastSpecRef.current && hasSuccessfulRenderRef.current) {
+        // Only re-render for theme changes if we've already had a successful render
+        // and this isn't the initial theme setting  
+        if (lastSpecRef.current && hasSuccessfulRenderRef.current && renderingStarted &&
+            isDarkMode !== initialThemeRef.current) {
             console.log('Theme changed, re-rendering visualization');
-            initializeVisualization();
+            setTimeout(() => {
+                initializeVisualization();
+            }, 100);
         }
     }, [isDarkMode, initializeVisualization]);
 
