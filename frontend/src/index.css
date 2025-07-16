@@ -1776,12 +1776,12 @@ body:not(.dark) .token.attr-name {
 /* Diagram Action Buttons Styling */
 .diagram-actions {
     position: absolute;
-    top: 5px;
-    right: 5px;
+    top: 0;
+    right: 0;
     z-index: 10; /* Ensure it's above the SVG */
     display: flex;
     gap: 5px;
-    background: rgba(240, 240, 240, 0.8); /* Light background for visibility */
+    background: rgba(240, 240, 240, 0.7); /* Light background for visibility */
     padding: 3px;
     border-radius: 4px;
     opacity: 0; /* Hidden by default */
@@ -1794,9 +1794,10 @@ body:not(.dark) .token.attr-name {
 
 .diagram-action-button {
     padding: 3px 8px;
-    font-size: 11px;
+    font-size: 10px;
+    line-height: 16px;
     background-color: rgba(200, 200, 200, 0.7);
-    border: 1px solid rgba(150, 150, 150, 0.8);
+    border: none;
     border-radius: 4px;
     cursor: pointer;
     transition: opacity 0.2s ease-in-out;
@@ -2131,27 +2132,6 @@ body:not(.dark) .token.attr-name {
   background-color: rgba(255,255,255,0.1);
 }
 
-.vega-lite-source-button,
-.vega-lite-retry-button {
-  background-color: #4361ee;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  padding: 8px 16px;
-  margin: 10px 5px;
-  cursor: pointer;
-  display: inline-block;
-}
-
-.dark .vega-lite-source-button,
-.dark .vega-lite-retry-button {
-  background-color: #177ddc;
-}
-
-.vega-lite-source-button:hover,
-.vega-lite-retry-button:hover {
-  opacity: 0.9;
-}
 /* Mermaid Error Display */
 .mermaid-error {
   padding: 16px;

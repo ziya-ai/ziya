@@ -112,9 +112,23 @@ export const vegaLitePlugin: D3RenderPlugin = {
   render: async (container: HTMLElement, d3: any, spec: VegaLiteSpec, isDarkMode: boolean): Promise<void> => {
     console.log('Vega-Lite plugin render called with spec:', spec);
 
+    // Clean up any existing Vega view first
+    const existingView = (container as any)._vegaView;
+    if (existingView) {
+      existingView.finalize();
+      delete (container as any)._vegaView;
+    }
+
+    // Clear container
+    container.innerHTML = '';
+
+    // Remove any existing vega-embed instances
+    const existingEmbeds = container.querySelectorAll('.vega-embed');
+    existingEmbeds.forEach(embed => {
+      if (embed.parentNode) embed.parentNode.removeChild(embed);
+    });
+
     try {
-      // Clear container
-      container.innerHTML = '';
 
       // Show loading spinner
       const loadingSpinner = document.createElement('div');
@@ -177,7 +191,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Parse the specification
       let vegaSpec: any;
-      
+
       if (typeof spec === 'string') {
         console.log(">>> vegaLitePlugin: Parsing string spec");
         const extractedContent = extractDefinitionFromYAML(spec, 'vega-lite');
@@ -291,6 +305,38 @@ export const vegaLitePlugin: D3RenderPlugin = {
         };
       }
 
+      // Fix for layered charts with selections
+      if (vegaSpec.layer && vegaSpec.params) {
+        // Check if we have selection parameters
+        const selectionParams = vegaSpec.params.filter(param => param.select);
+        
+        if (selectionParams.length > 0) {
+          console.log("Found selection parameters in layered chart, applying fix");
+          
+          // Create a deep clone of the spec to avoid modifying the original
+          const modifiedSpec = JSON.parse(JSON.stringify(vegaSpec));
+          
+          // Remove the top-level params
+          delete modifiedSpec.params;
+          
+          // Add the params to the first layer
+          if (modifiedSpec.layer && modifiedSpec.layer.length > 0) {
+            if (!modifiedSpec.layer[0].params) {
+              modifiedSpec.layer[0].params = [];
+            }
+            modifiedSpec.layer[0].params = [
+              ...modifiedSpec.layer[0].params,
+              ...selectionParams
+            ];
+            
+            console.log("Moved selection parameters to first layer");
+            
+            // Use the modified spec
+            vegaSpec = modifiedSpec;
+          }
+        }
+      }
+
       // Apply theme
       const embedOptions = {
         actions: false,
@@ -314,11 +360,22 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Set explicit container dimensions for complex layouts
       if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {
         container.style.minHeight = `${availableHeight}px`;
-        container.style.width = '100%';
       }
 
       // Remove loading spinner
-      container.removeChild(loadingSpinner);
+      try {
+        if (loadingSpinner && loadingSpinner.parentNode) {
+          container.removeChild(loadingSpinner);
+        }
+      } catch (e) {
+        console.warn('Could not remove loading spinner (this is normal for multiple renders):', e instanceof Error ? e.message : String(e));
+      }
+
+      // Create a fresh container div to ensure no conflicts
+      const renderContainer = document.createElement('div');
+      renderContainer.style.width = '100%';
+      renderContainer.style.height = '100%';
+      container.appendChild(renderContainer);
 
       // Add debugging for complex layouts
       if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {
@@ -330,14 +387,21 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       // Render the visualization
-      const result = await embed(container, vegaSpec, embedOptions);
+      const result = await embed(renderContainer, vegaSpec, embedOptions);
+
+      // Store the view for cleanup
+      (container as any)._vegaView = result.view;
 
       // Store references to the vega view and container content
-      const vegaContainer = container.querySelector('.vega-embed') as HTMLElement;
+      const vegaContainer = renderContainer.querySelector('.vega-embed') as HTMLElement;
 
       // Add action buttons container
       const actionsContainer = document.createElement('div');
       actionsContainer.className = 'diagram-actions';
+      // The diagram-actions class from index.css will handle styling
+      
+      // Force container to have position: relative for absolute positioning
+      container.style.position = 'relative';
 
       // Add Open button
       const openButton = document.createElement('button');
@@ -713,11 +777,19 @@ ${svgData}`;
 
           // Re-add the actions container
           container.insertBefore(actionsContainer, container.firstChild);
-        }
       };
       actionsContainer.appendChild(sourceButton);
 
-      // Add actions container to the top of the container
+      // Force the container to have position: relative
+      container.style.position = 'relative';
+      
+      // Insert actions container at the beginning of the container
+      container.insertBefore(actionsContainer, container.firstChild);
+
+      // Ensure the actions container is visible on hover
+      container.addEventListener('mouseenter', () => actionsContainer.style.opacity = '1');
+      container.addEventListener('mouseleave', () => actionsContainer.style.opacity = '0');
+      // Insert actions container as the first child to match other plugins
       container.insertBefore(actionsContainer, container.firstChild);
 
       // Post-render fixes for sizing issues
@@ -918,6 +990,7 @@ ${svgData}`;
 
       console.log('Vega-Lite visualization rendered successfully');
 
+    }
     } catch (error) {
       console.error('Vega-Lite rendering error:', error);
 
@@ -930,9 +1003,13 @@ ${svgData}`;
       }
 
       // Remove loading spinner if it exists
-      const spinner = container.querySelector('.vega-lite-loading-spinner');
-      if (spinner) {
-        container.removeChild(spinner);
+      try {
+        const spinner = container.querySelector('.vega-lite-loading-spinner') as HTMLElement;
+        if (spinner && spinner.parentNode) {
+          container.removeChild(spinner);
+        }
+      } catch (e) {
+        console.warn('Could not remove loading spinner during error handling:', e instanceof Error ? e.message : String(e));
       }
 
       container.innerHTML = `
