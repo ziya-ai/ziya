@@ -26,6 +26,17 @@ const containerThemes = new WeakMap<HTMLElement, boolean>();
 export const graphvizPlugin: D3RenderPlugin = {
     name: 'graphviz-renderer',
     priority: 5,
+    sizingConfig: {
+        sizingStrategy: 'auto-expand',
+        needsDynamicHeight: true,
+        needsOverflowVisible: true,
+        observeResize: true,
+        containerStyles: {
+            width: '100%',
+            height: 'auto',
+            overflow: 'visible'
+        }
+    },
     canHandle: isGraphvizSpec,
 
     // Helper to check if a graphviz definition is complete
@@ -152,15 +163,29 @@ export const graphvizPlugin: D3RenderPlugin = {
             // Extract actual content from YAML wrapper if present
             let processedDefinition = extractDefinitionFromYAML(spec.definition, 'graphviz');
 
+            // This converts all standard string labels to the more robust HTML-like label format.
+            processedDefinition = processedDefinition.replace(/label\s*=\s*"((?:\\"|[^"])*)"/g, (match, content) => {
+                // First, unescape any `\"` that might be in the original content string.
+                const unescapedContent = content.replace(/\\"/g, '"');
+
+                // Now, escape for HTML-like label format.
+                const escapedForHtml = unescapedContent
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/\n/g, '<br/>');
+
+                return `label=<${escapedForHtml}>`;
+
+            });
+
             // Add theme attributes to dot with more styling options
             let themedDot = processedDefinition;
 
             // Only add theme attributes if the graph has a proper structure
-            if (spec.definition.match(/^(\s*(?:di)?graph\s+[^{]*{)/)) {
+            if (processedDefinition.match(/^(\s*(?:di)?graph\s+[^{]*{)/)) {
                 // Set default text color based on page mode
                 const defaultTextColor = isDarkMode ? '#ffffff' : '#000000';
 
-                themedDot = spec.definition.replace(
+                themedDot = processedDefinition.replace(
                     /^(\s*(?:di)?graph\s+[^{]*{)/,
                     `$1
                     bgcolor="transparent";

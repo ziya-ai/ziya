@@ -359,6 +359,17 @@ class ELKLayoutEngine {
 export const d2Plugin: D3RenderPlugin = {
     name: 'd2-renderer',
     priority: 6,
+    sizingConfig: {
+        sizingStrategy: 'auto-expand',
+        needsDynamicHeight: true,
+        needsOverflowVisible: true,
+        observeResize: true,
+        containerStyles: {
+            width: '100%',
+            height: 'auto',
+            overflow: 'visible'
+        }
+    },
     canHandle: isD2Spec,
 
     isDefinitionComplete: (definition: string): boolean => {

@@ -266,6 +266,32 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
     }
+    
+    // Set up more frequent polling for better progress updates
+    progressIntervalRef.current = setInterval(async () => {
+      try {
+        const response = await fetch('/folder-progress');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.active) {
+            setScanProgress({
+              directories: data.progress?.directories || 0,
+              files: data.progress?.files || 0,
+              elapsed: data.progress?.elapsed || 0
+            });
+          } else {
+            // Scanning completed or not active
+            if (progressIntervalRef.current) {
+              clearInterval(progressIntervalRef.current);
+              progressIntervalRef.current = null;
+            }
+            setScanProgress(null);
+          }
+        }
+      } catch (error) {
+        console.debug('Progress check error:', error);
+      }
+    }, 500); // Poll every 500ms for smoother updates
   }, []);
 
   const cancelScan = useCallback(async () => {
@@ -528,6 +554,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           });
         }
       }, 60000); // 60 second warning
+    } else {
+      // Clear the warning message when scanning completes
+      message.destroy('scan-timeout');
     }
 
     return () => {
