@@ -313,18 +313,18 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     // Detect diagram type
                     const firstLine = parsed.definition.trim().split('\n')[0].toLowerCase();
                     const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
- 
-                     // Apply diagram-specific fixes
-                     if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
-                         // PRIORITY FIX: Handle parentheses and special characters in node labels (supports multi-line)
-                         parsed.definition = parsed.definition.replace(/(\w+)\[([\s\S]*?)\]/g, (match, nodeId, content) => {
-                              // Quote content that contains special characters or newlines
-                              if (/[()\/\n<>]/.test(content) && !content.match(/^"[\s\S]*"$/)) {
-                                 // Use Mermaid's #quot; for escaping quotes inside labels and <br/> for newlines
-                                 const escapedContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
-                                 return `${nodeId}["${escapedContent}"]`;
-                              }
-                              return match;
+
+                    // Apply diagram-specific fixes
+                    if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
+                        // PRIORITY FIX: Handle parentheses and special characters in node labels (supports multi-line)
+                        parsed.definition = parsed.definition.replace(/(\w+)\[([\s\S]*?)\]/g, (match, nodeId, content) => {
+                            // Quote content that contains special characters or newlines
+                            if (/[()\/\n<>]/.test(content) && !content.match(/^"[\s\S]*"$/)) {
+                                // Use Mermaid's #quot; for escaping quotes inside labels and <br/> for newlines
+                                const escapedContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
+                                return `${nodeId}["${escapedContent}"]`;
+                            }
+                            return match;
                         });
 
                         // Fix subgraph class syntax
@@ -417,6 +417,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 const container = d3ContainerRef.current;
                 if (!container) return;
 
+                // Check if this is a Graphviz or Mermaid plugin
+                const plugin = findPlugin(parsed);
+                lastUsedPluginRef.current = plugin || null;
+
                 // Initialize sizing manager if we have a plugin with sizing config
                 if (plugin?.sizingConfig && !sizingManagerRef.current) {
                     sizingManagerRef.current = new ContainerSizingManager();
@@ -441,6 +445,16 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 container.style.height = `${height}px`;
                 container.style.position = 'relative';
                 container.style.overflow = 'hidden';
+
+                const isGraphvizOrMermaid = plugin?.name === 'graphviz-renderer' || plugin?.name === 'mermaid-renderer';
+
+                // For Graphviz or Mermaid, override the container style to be more flexible
+                if (isGraphvizOrMermaid) {
+                    container.style.width = '100%';
+                    container.style.height = 'auto';
+                    container.style.minHeight = 'unset';
+                    container.style.overflow = 'visible';
+                }
 
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');
@@ -614,7 +628,19 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const containerStyles = useMemo(() => {
         const plugin = currentPlugin;
         if (plugin?.sizingConfig?.containerStyles) {
-            return plugin.sizingConfig.containerStyles;
+            const baseStyles = plugin.sizingConfig.containerStyles;
+
+            // Apply sizing strategy overrides
+            if (plugin.sizingConfig.sizingStrategy === 'auto-expand') {
+                return {
+                    ...baseStyles,
+                    height: 'auto',
+                    minHeight: 'auto',
+                    overflow: plugin.sizingConfig.needsOverflowVisible ? 'visible' : (baseStyles.overflow || 'auto')
+                };
+            }
+
+            return baseStyles;
         }
         return {
             height: height || '400px',
@@ -859,13 +885,14 @@ ${svgData}`;
                     ref={d3ContainerRef}
                     className={`d3-container ${currentPlugin?.name ? `${currentPlugin.name}-container` : ''}`}
                     style={{
-                        ...containerStyles,
                         width: '100%',
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
                         position: 'relative',
-                        boxSizing: 'border-box'
+                        boxSizing: 'border-box',
+                        // Apply containerStyles last so they can override defaults
+                        ...containerStyles
                     }}
                 />
             ) : (
