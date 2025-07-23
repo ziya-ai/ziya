@@ -43,6 +43,17 @@ initMermaidSupport(mermaid);
 export const mermaidPlugin: D3RenderPlugin = {
     name: 'mermaid-renderer',
     priority: 5,
+    sizingConfig: {
+        sizingStrategy: 'auto-expand',
+        needsDynamicHeight: true,
+        needsOverflowVisible: true,
+        observeResize: true,
+        containerStyles: {
+            width: '100%',
+            height: 'auto',
+            overflow: 'visible'
+        }
+    },
 
     canHandle: (spec: any): boolean => {
         return isMermaidSpec(spec);
@@ -142,27 +153,21 @@ export const mermaidPlugin: D3RenderPlugin = {
 
             console.log('Original definition (first 200 chars):', processedDefinition.substring(0, 200));
 
-            processedDefinition = processedDefinition.replace(/<br\s*\/?>/gi, '\n');
-            processedDefinition = processedDefinition.replace(/<\/br>/gi, '');
-            processedDefinition = processedDefinition.replace(/<[^>]+>/g, '');
-
             // Detect diagram type
             const firstLine = processedDefinition.trim().split('\n')[0].toLowerCase();
             const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
 
-            console.log('After HTML removal (first 200 chars):', processedDefinition.substring(0, 200));
-
-            // Apply diagram-specific fixes
+                // Apply diagram-specific fixes
             if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
                 // CRITICAL: Fix parentheses and special characters in node labels
                 // This must happen before other processing to prevent parsing errors
-                processedDefinition = processedDefinition.replace(/(\w+)\[([^\]]*)\]/g, (match, nodeId, content) => {
+                    processedDefinition = processedDefinition.replace(/(\w+)\[([\s\S]*?)\]/g, (match, nodeId, content) => {
                     // If content contains parentheses, slashes, or line breaks and isn't quoted, quote it
-                    if (/[()\/\n<>]/.test(content) && !content.match(/^".*"$/)) {
+                        if (/[()\/\n<>]/.test(content) && !content.match(/^"[\s\S]*"$/)) {
                         // Don't double-escape already escaped quotes
-                        const cleanContent = content.replace(/\\"/g, '"').replace(/"/g, '\\"');
-                        return `${nodeId}["${cleanContent}"]`;
-                    }
+                                const cleanContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
+                                return `${nodeId}["${cleanContent}"]`;
+                            }
                     return match;
                 });
 

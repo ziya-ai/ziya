@@ -3121,7 +3121,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (isDebugLoggingEnabled() && false) {
                         debugLog('Rendering DIFF token');
                     }
-                    const rawDiffText = decodeHtmlEntities(tokenWithText.text || '');
+                    const rawDiffText = tokenWithText.text || '';
                     // Apply cleaning specific to diff content AFTER decoding
                     const cleanedDiff = cleanDiffContent(rawDiffText);
                     // Ensure lang is set to 'diff' for the component
