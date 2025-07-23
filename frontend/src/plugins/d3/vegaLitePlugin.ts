@@ -138,8 +138,8 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (embed.parentNode) embed.parentNode.removeChild(embed);
     });
 
-      // Declare vegaSpec outside try-catch so it's accessible in error handling
-      let vegaSpec: any;
+    // Declare vegaSpec outside try-catch so it's accessible in error handling
+    let vegaSpec: any;
 
     try {
 
@@ -214,6 +214,38 @@ export const vegaLitePlugin: D3RenderPlugin = {
         delete vegaSpec.isStreaming;
         delete vegaSpec.forceRender;
         delete vegaSpec.definition;
+      }
+
+      // CRITICAL FIX: Handle shape encoding that causes "Cannot read properties of null (reading 'slice')" error
+      // Apply this fix EARLY in the preprocessing pipeline
+      if (vegaSpec.encoding?.shape) {
+        const shapeEncoding = vegaSpec.encoding.shape;
+        console.log('EARLY SHAPE FIX: Detected shape encoding:', JSON.stringify(shapeEncoding, null, 2));
+        
+        // More aggressive fix: remove shape encoding if it has ordinal type with numeric data
+        if (shapeEncoding.type === 'ordinal' && shapeEncoding.field && vegaSpec.data?.values) {
+          // Check if the field contains numeric values
+          const fieldValues = vegaSpec.data.values.map(d => d[shapeEncoding.field]).filter(v => v !== undefined);
+          const isNumeric = fieldValues.every(v => typeof v === 'number');
+          
+          console.log('Shape field analysis:', {
+            field: shapeEncoding.field,
+            values: fieldValues.slice(0, 5), // Show first 5 values
+            isNumeric,
+            hasProblematicShapes: shapeEncoding.scale?.range?.some(s => typeof s === 'string' && s.includes('triangle'))
+          });
+          
+          // Remove shape encoding if it's ordinal with numeric data - this is the root cause
+          if (isNumeric) {
+            console.log('CRITICAL: Removing ordinal shape encoding with numeric data to prevent Vega-Lite slice error');
+            delete vegaSpec.encoding.shape;
+          }
+        } else if (shapeEncoding.scale?.range) {
+          // Fix invalid shape names
+          vegaSpec.encoding.shape.scale.range = shapeEncoding.scale.range.map(shape => 
+            shape === 'triangle-down' || shape === 'triangle-up' ? 'triangle' : shape
+          );
+        }
       }
 
       // Fix for invalid color names like "#green" which can be produced by LLMs
@@ -331,20 +363,20 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Fix common violin plot specification issues - correct field mappings for density transform
       if (vegaSpec.transform && vegaSpec.transform.some((t: any) => t.density)) {
         console.log('Processing violin plot specification');
-        
+
         // For violin plots with density transform, we need to fix the encoding
         // The density transform creates 'value' (x-axis) and 'density' (y-axis) fields
         if (vegaSpec.encoding) {
           // Check if this is incorrectly mapping original data fields instead of density output
-          const hasIncorrectMapping = vegaSpec.encoding.x && vegaSpec.encoding.y && 
+          const hasIncorrectMapping = vegaSpec.encoding.x && vegaSpec.encoding.y &&
             (vegaSpec.encoding.x.field !== 'value' || vegaSpec.encoding.y.field !== 'density');
-          
+
           if (hasIncorrectMapping) {
             console.log('Fixing violin plot field mappings for density transform');
-            
+
             // Store the grouping field for faceting/coloring
             const groupField = vegaSpec.transform.find((t: any) => t.density)?.groupby?.[0];
-            
+
             // Fix the encoding to use density transform output fields
             vegaSpec.encoding = {
               x: {
@@ -364,7 +396,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             };
           }
         }
-        
+
         // Ensure proper mark configuration for violin plots  
         if (!vegaSpec.mark || (typeof vegaSpec.mark === 'string' && vegaSpec.mark === 'area')) {
           vegaSpec.mark = { type: "area", opacity: 0.7 };
@@ -419,6 +451,31 @@ export const vegaLitePlugin: D3RenderPlugin = {
           // Use the modified spec
           vegaSpec = modifiedSpec;
         }
+      }
+
+      // Fix for top-level facet with transforms - transforms should be in spec
+      if (vegaSpec.facet && vegaSpec.transform && !vegaSpec.spec) {
+        console.log("Found top-level facet with transforms, moving transforms to spec");
+        console.log("Original spec:", JSON.stringify(vegaSpec, null, 2));
+
+        // Extract facet configuration and transforms
+        const { facet, transform, layer, mark, encoding, ...otherProps } = vegaSpec;
+
+        // Create the corrected spec structure
+        const correctedSpec = {
+          ...otherProps, // Preserve $schema, data, description, etc.
+          facet: facet,
+          spec: {
+            transform: transform,
+            ...(layer && { layer }),
+            ...(mark && { mark }),
+            ...(encoding && { encoding })
+          }
+        };
+
+        vegaSpec = correctedSpec;
+        console.log("Corrected facet specification structure:");
+        console.log("New spec:", JSON.stringify(vegaSpec, null, 2));
       }
 
       // Fix for facet encoding incorrectly placed inside encoding object (common LLM mistake)
@@ -478,7 +535,32 @@ export const vegaLitePlugin: D3RenderPlugin = {
             stroke: 'transparent' // Remove default border
           }
         }
-      };
+      }
+
+      // CRITICAL FIX: Handle shape encoding that causes "Cannot read properties of null (reading 'slice')" error
+      // This must happen right before vega-embed to catch all problematic shape configurations
+      if (vegaSpec.encoding?.shape) {
+        const shapeEncoding = vegaSpec.encoding.shape;
+        
+        // If we have ordinal shape encoding with numeric data and invalid shapes, fix it
+        if (shapeEncoding.type === 'ordinal' && shapeEncoding.scale?.range?.includes('triangle-down')) {
+          console.log('CRITICAL: Fixing problematic shape encoding that causes slice error');
+          
+          // Simply remove the shape encoding to prevent the error
+          // This is a safe fallback that maintains functionality
+          delete vegaSpec.encoding.shape;
+          
+          console.log('Removed problematic shape encoding to prevent Vega-Lite error');
+        } else if (shapeEncoding.scale?.range) {
+          // Fix invalid shape names without changing the scale type
+          const fixedRange = shapeEncoding.scale.range.map(shape => {
+            if (shape === 'triangle-down') return 'triangle';
+            if (shape === 'triangle-up') return 'triangle';
+            return shape;
+          });
+          vegaSpec.encoding.shape.scale.range = fixedRange;
+        }
+      }
 
       // Set explicit container dimensions for complex layouts
       if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {
@@ -505,12 +587,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Deep clone and sanitize the spec one last time to be safe by serializing and parsing.
       // This removes any non-plain-object properties that might be causing issues.
       const finalSpec = JSON.parse(JSON.stringify(sanitizedSpec));
-      
+
       // Log final spec before rendering for violin plots
       if (finalSpec.transform && finalSpec.transform.some((t: any) => t.density)) {
         console.log('Final spec being sent to vega-embed for violin plot:', JSON.stringify(finalSpec, null, 2));
       }
-      
+
 
       // Additional validation before calling vega-embed
       try {
@@ -679,6 +761,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Add action buttons container
       const actionsContainer = document.createElement('div');
       actionsContainer.className = 'diagram-actions';
+      // Move the button bar up by 60px from its default position
+      actionsContainer.style.cssText = `
+        position: absolute;
+        top: -30px;
+        right: 10px;
+        z-index: 1000;
+      `;
       // The diagram-actions class from index.css will handle styling
 
       // Force container to have position: relative for absolute positioning
@@ -1008,7 +1097,7 @@ ${svgData}`;
 
       // Add Source button
       let showingSource = false;
-      let originalVegaContainer = vegaContainer;
+      const originalVegaContainer = vegaContainer;
       const sourceButton = document.createElement('button');
       sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
       sourceButton.className = 'diagram-action-button vega-lite-source-button';
@@ -1018,7 +1107,7 @@ ${svgData}`;
 
         if (showingSource) {
           // Hide the vega container and show source
-          if (originalVegaContainer && originalVegaContainer.parentNode === container) {
+          if (originalVegaContainer) {
             vegaContainer.style.display = 'none';
           }
 
@@ -1055,241 +1144,241 @@ ${svgData}`;
             // Re-render the visualization if the container was lost
             vegaEmbed(container, vegaSpec, embedOptions);
           }
-
           // Re-add the actions container
           container.insertBefore(actionsContainer, container.firstChild);
         };
-        actionsContainer.appendChild(sourceButton);
+      };
+      actionsContainer.appendChild(sourceButton);
 
-        // Force the container to have position: relative
-        container.style.position = 'relative';
+      // Force the container to have position: relative
+      container.style.position = 'relative';
 
-        // Insert actions container at the beginning of the container
-        container.insertBefore(actionsContainer, container.firstChild);
+      // Insert actions container at the beginning of the container
+      container.insertBefore(actionsContainer, container.firstChild);
 
-        // Ensure the actions container is visible on hover
-        container.addEventListener('mouseenter', () => actionsContainer.style.opacity = '1');
-        container.addEventListener('mouseleave', () => actionsContainer.style.opacity = '0');
-        // Insert actions container as the first child to match other plugins
-        container.insertBefore(actionsContainer, container.firstChild);
+      // Ensure the actions container is visible on hover
+      container.addEventListener('mouseenter', () => actionsContainer.style.opacity = '1');
+      container.addEventListener('mouseleave', () => actionsContainer.style.opacity = '0');
 
-        // Post-render fixes for sizing issues
-        setTimeout(() => {
-          const svgElement = container.querySelector('svg');
-          const vegaEmbedDiv = container.classList.contains('vega-embed') ? container : container.querySelector('.vega-embed') as HTMLElement;
+      // Post-render fixes for sizing issues
+      setTimeout(() => {
+        const svgElement = container.querySelector('svg');
+        const vegaEmbedDiv = container.classList.contains('vega-embed') ? container : container.querySelector('.vega-embed') as HTMLElement;
 
-          if (svgElement) {
-            // Only apply responsive sizing if the chart doesn't have explicit dimensions
-            const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
-            const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
+        if (svgElement) {
+          // Only apply responsive sizing if the chart doesn't have explicit dimensions
+          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+          const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
 
-            if (!hasExplicitWidth) {
-              svgElement.style.width = '100%';
-              svgElement.style.maxWidth = '100%';
-            }
-
-            if (!hasExplicitHeight) {
-              svgElement.style.height = 'auto';
-            }
-
-            svgElement.style.display = 'block';
-
-            console.log(">>> vegaLitePlugin: SVG sizing applied:", {
-              svgWidth: svgElement.style.width,
-              containerWidth: container.getBoundingClientRect().width,
-              svgRect: svgElement.getBoundingClientRect()
-            });
+          if (!hasExplicitWidth) {
+            svgElement.style.width = '100%';
+            svgElement.style.maxWidth = '100%';
           }
 
+          if (!hasExplicitHeight) {
+            svgElement.style.height = 'auto';
+          }
+
+          svgElement.style.display = 'block';
+
+          console.log(">>> vegaLitePlugin: SVG sizing applied:", {
+            svgWidth: svgElement.style.width,
+            containerWidth: container.getBoundingClientRect().width,
+            svgRect: svgElement.getBoundingClientRect()
+          });
+        }
+
+        if (vegaEmbedDiv) {
+          // Only apply responsive width if not explicitly set
+          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+
+          if (!hasExplicitWidth) {
+            vegaEmbedDiv.style.width = '100%';
+            vegaEmbedDiv.style.maxWidth = '100%';
+          }
+        }
+
+        // Force parent containers to use full width
+        let parent = container.parentElement;
+        while (parent && parent.classList.contains('d3-container')) {
+          (parent as HTMLElement).style.width = '100%';
+          (parent as HTMLElement).style.maxWidth = '100%';
+          parent = parent.parentElement;
+        }
+
+        // Add global debugging functions to window
+        (window as any).debugVegaLite = {
+          container,
+          svgElement,
+          vegaEmbedDiv,
+          getSVGActualSize: () => {
+            if (!svgElement) return null;
+            const rect = svgElement.getBoundingClientRect();
+            const viewBox = svgElement.getAttribute('viewBox');
+            const [vbX, vbY, vbWidth, vbHeight] = viewBox ? viewBox.split(' ').map(Number) : [0, 0, 0, 0];
+            return {
+              actualWidth: rect.width,
+              actualHeight: rect.height,
+              viewBoxWidth: vbWidth,
+              viewBoxHeight: vbHeight,
+              scaleRatio: rect.width / vbWidth
+            };
+          },
+          inspect: () => {
+            console.log('=== Vega-Lite Debug Info ===');
+            console.log('Container:', container);
+            console.log('SVG Element:', svgElement);
+            console.log('Vega Embed Div:', vegaEmbedDiv);
+
+            if (svgElement) {
+              console.log('SVG getBoundingClientRect():', svgElement.getBoundingClientRect());
+              console.log('SVG viewBox:', svgElement.getAttribute('viewBox'));
+              console.log('SVG style:', svgElement.style.cssText);
+              console.log('SVG computed style:', window.getComputedStyle(svgElement));
+            }
+
+            if (vegaEmbedDiv) {
+              console.log('Embed div getBoundingClientRect():', vegaEmbedDiv.getBoundingClientRect());
+              console.log('Embed div style:', vegaEmbedDiv.style.cssText);
+              console.log('Embed div computed style:', window.getComputedStyle(vegaEmbedDiv));
+            }
+
+            console.log('Container getBoundingClientRect():', container.getBoundingClientRect());
+
+            // Check if SVG is being clipped
+            const svgRect = svgElement?.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+            if (svgRect && containerRect) {
+              console.log('SVG overflow check:', {
+                svgBottom: svgRect.bottom,
+                containerBottom: containerRect.bottom,
+                isOverflowing: svgRect.bottom > containerRect.bottom,
+                overflowAmount: svgRect.bottom - containerRect.bottom
+              });
+            }
+
+            // Check parent containers that might be constraining height
+            let parent = container.parentElement;
+            let level = 0;
+            while (parent && level < 3) {
+              const parentRect = parent.getBoundingClientRect();
+              console.log(`Parent level ${level}:`, {
+                element: parent,
+                className: parent.className,
+                rect: parentRect,
+                style: parent.style.cssText,
+                computedHeight: window.getComputedStyle(parent).height
+              });
+              parent = parent.parentElement;
+              level++;
+            }
+          }
+        };
+
+        console.log('Vega-Lite debugging available: window.debugVegaLite.inspect()');
+
+        if (svgElement) {
+          // Get the SVG viewBox dimensions (the actual content size)
+          const viewBox = svgElement.getAttribute('viewBox');
+          let svgWidth = 680;
+          let svgHeight = 774;
+
+          if (viewBox) {
+            const [, , width, height] = viewBox.split(' ').map(Number);
+            svgWidth = width;
+            svgHeight = height;
+          } else {
+            // Try to get dimensions from the SVG attributes
+            const width = svgElement.getAttribute('width');
+            const height = svgElement.getAttribute('height');
+            if (width && height) {
+              svgWidth = parseFloat(width);
+              svgHeight = parseFloat(height);
+            }
+          }
+
+          console.log('SVG content dimensions:', { svgWidth, svgHeight, viewBox });
+
+          // Only apply responsive sizing if chart doesn't have explicit dimensions
+          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+          const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
+
+          if (!hasExplicitWidth) {
+            svgElement.style.width = '100%';
+            svgElement.style.maxWidth = '100%';
+          }
+
+          if (!hasExplicitHeight) {
+            svgElement.style.height = 'auto';
+          }
+
+          svgElement.style.overflow = 'visible';
+
+          // Force the vega-embed container to accommodate the full SVG content
           if (vegaEmbedDiv) {
-            // Only apply responsive width if not explicitly set
-            const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+            // Only calculate responsive height if height isn't explicitly set
+            if (!hasExplicitHeight) {
+              const containerWidth = vegaEmbedDiv.getBoundingClientRect().width;
+              const aspectRatio = svgHeight / svgWidth;
+              const neededHeight = containerWidth * aspectRatio;
 
-            if (!hasExplicitWidth) {
-              vegaEmbedDiv.style.width = '100%';
-              vegaEmbedDiv.style.maxWidth = '100%';
+              vegaEmbedDiv.style.height = `${neededHeight}px`;
+              vegaEmbedDiv.style.minHeight = `${neededHeight}px`;
+
+              console.log('Container sizing:', { containerWidth, aspectRatio, neededHeight });
             }
+
+            vegaEmbedDiv.style.display = 'block';
+            vegaEmbedDiv.style.overflow = 'visible';
           }
 
-          // Force parent containers to use full width
-          let parent = container.parentElement;
-          while (parent && parent.classList.contains('d3-container')) {
-            (parent as HTMLElement).style.width = '100%';
-            (parent as HTMLElement).style.maxWidth = '100%';
-            parent = parent.parentElement;
-          }
-
-          // Add global debugging functions to window
-          (window as any).debugVegaLite = {
-            container,
-            svgElement,
-            vegaEmbedDiv,
-            getSVGActualSize: () => {
-              if (!svgElement) return null;
-              const rect = svgElement.getBoundingClientRect();
-              const viewBox = svgElement.getAttribute('viewBox');
-              const [vbX, vbY, vbWidth, vbHeight] = viewBox ? viewBox.split(' ').map(Number) : [0, 0, 0, 0];
-              return {
-                actualWidth: rect.width,
-                actualHeight: rect.height,
-                viewBoxWidth: vbWidth,
-                viewBoxHeight: vbHeight,
-                scaleRatio: rect.width / vbWidth
-              };
-            },
-            inspect: () => {
-              console.log('=== Vega-Lite Debug Info ===');
-              console.log('Container:', container);
-              console.log('SVG Element:', svgElement);
-              console.log('Vega Embed Div:', vegaEmbedDiv);
-
-              if (svgElement) {
-                console.log('SVG getBoundingClientRect():', svgElement.getBoundingClientRect());
-                console.log('SVG viewBox:', svgElement.getAttribute('viewBox'));
-                console.log('SVG style:', svgElement.style.cssText);
-                console.log('SVG computed style:', window.getComputedStyle(svgElement));
+          // Force container and all parents to accommodate the content
+          const forceContainerResize = () => {
+            const actualHeight = svgElement.getBoundingClientRect().height;
+            let parent = container.parentElement;
+            while (parent && parent.classList.contains('d3-container')) {
+              const parentElement = parent as HTMLElement;
+              if (parentElement.getBoundingClientRect().height < actualHeight + 40) {
+                parentElement.style.height = `${actualHeight + 40}px`;
+                parentElement.style.minHeight = `${actualHeight + 40}px`;
+                console.log(`Force resized parent ${parentElement.className} to ${actualHeight + 40}px`);
               }
-
-              if (vegaEmbedDiv) {
-                console.log('Embed div getBoundingClientRect():', vegaEmbedDiv.getBoundingClientRect());
-                console.log('Embed div style:', vegaEmbedDiv.style.cssText);
-                console.log('Embed div computed style:', window.getComputedStyle(vegaEmbedDiv));
-              }
-
-              console.log('Container getBoundingClientRect():', container.getBoundingClientRect());
-
-              // Check if SVG is being clipped
-              const svgRect = svgElement?.getBoundingClientRect();
-              const containerRect = container.getBoundingClientRect();
-              if (svgRect && containerRect) {
-                console.log('SVG overflow check:', {
-                  svgBottom: svgRect.bottom,
-                  containerBottom: containerRect.bottom,
-                  isOverflowing: svgRect.bottom > containerRect.bottom,
-                  overflowAmount: svgRect.bottom - containerRect.bottom
-                });
-              }
-
-              // Check parent containers that might be constraining height
-              let parent = container.parentElement;
-              let level = 0;
-              while (parent && level < 3) {
-                const parentRect = parent.getBoundingClientRect();
-                console.log(`Parent level ${level}:`, {
-                  element: parent,
-                  className: parent.className,
-                  rect: parentRect,
-                  style: parent.style.cssText,
-                  computedHeight: window.getComputedStyle(parent).height
-                });
-                parent = parent.parentElement;
-                level++;
-              }
+              parent = parent.parentElement;
             }
           };
 
-          console.log('Vega-Lite debugging available: window.debugVegaLite.inspect()');
+          setTimeout(forceContainerResize, 100);
+          setTimeout(forceContainerResize, 500);
 
-          if (svgElement) {
-            // Get the SVG viewBox dimensions (the actual content size)
-            const viewBox = svgElement.getAttribute('viewBox');
-            let svgWidth = 680;
-            let svgHeight = 774;
-
-            if (viewBox) {
-              const [, , width, height] = viewBox.split(' ').map(Number);
-              svgWidth = width;
-              svgHeight = height;
-            } else {
-              // Try to get dimensions from the SVG attributes
-              const width = svgElement.getAttribute('width');
-              const height = svgElement.getAttribute('height');
-              if (width && height) {
-                svgWidth = parseFloat(width);
-                svgHeight = parseFloat(height);
-              }
-            }
-
-            console.log('SVG content dimensions:', { svgWidth, svgHeight, viewBox });
-
-            // Only apply responsive sizing if chart doesn't have explicit dimensions
-            const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
-            const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
-
-            if (!hasExplicitWidth) {
-              svgElement.style.width = '100%';
-              svgElement.style.maxWidth = '100%';
-            }
-
-            if (!hasExplicitHeight) {
-              svgElement.style.height = 'auto';
-            }
-
-            svgElement.style.overflow = 'visible';
-
-            // Force the vega-embed container to accommodate the full SVG content
-            if (vegaEmbedDiv) {
-              // Only calculate responsive height if height isn't explicitly set
-              if (!hasExplicitHeight) {
-                const containerWidth = vegaEmbedDiv.getBoundingClientRect().width;
-                const aspectRatio = svgHeight / svgWidth;
-                const neededHeight = containerWidth * aspectRatio;
-
-                vegaEmbedDiv.style.height = `${neededHeight}px`;
-                vegaEmbedDiv.style.minHeight = `${neededHeight}px`;
-
-                console.log('Container sizing:', { containerWidth, aspectRatio, neededHeight });
-              }
-
-              vegaEmbedDiv.style.display = 'block';
-              vegaEmbedDiv.style.overflow = 'visible';
-            }
-
-            // Force container and all parents to accommodate the content
-            const forceContainerResize = () => {
-              const actualHeight = svgElement.getBoundingClientRect().height;
-              let parent = container.parentElement;
-              while (parent && parent.classList.contains('d3-container')) {
-                const parentElement = parent as HTMLElement;
-                if (parentElement.getBoundingClientRect().height < actualHeight + 40) {
-                  parentElement.style.height = `${actualHeight + 40}px`;
-                  parentElement.style.minHeight = `${actualHeight + 40}px`;
-                  console.log(`Force resized parent ${parentElement.className} to ${actualHeight + 40}px`);
-                }
-                parent = parent.parentElement;
-              }
-            };
-
-            setTimeout(forceContainerResize, 100);
-            setTimeout(forceContainerResize, 500);
-
-            // Only adjust parent containers if height isn't explicitly set
-            if (!hasExplicitHeight) {
-              let parent = container.parentElement;
-              while (parent && parent.classList.contains('d3-container')) {
+          // Only adjust parent containers if height isn't explicitly set
+          if (!hasExplicitHeight) {
+            let parent = container.parentElement;
+            while (parent) {
+              if (parent.classList.contains('vega-lite-renderer-container')) {
                 (parent as HTMLElement).style.height = 'auto';
                 (parent as HTMLElement).style.minHeight = `${svgHeight}px`;
                 (parent as HTMLElement).style.overflow = 'visible';
-                console.log('Updated parent container:', parent.className, 'to height: auto, minHeight:', svgHeight);
-                parent = parent.parentElement;
+                console.log('Updated Vega-Lite parent container:', parent.className, 'to height: auto, minHeight:', svgHeight);
+                break; // Only modify our own container
               }
-            }
-
-            // For complex layouts, ensure proper scaling
-            if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {
-              svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-
-              // Force a reflow to ensure proper sizing
-              container.style.display = 'none';
-              void container.offsetHeight; // Trigger reflow
-              container.style.display = '';
+              parent = parent.parentElement;
             }
           }
-        }, 100);
 
-        console.log('Vega-Lite visualization rendered successfully');
+          // For complex layouts, ensure proper scaling
+          if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {
+            svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
-      }
+            // Force a reflow to ensure proper sizing
+            container.style.display = 'none';
+            void container.offsetHeight; // Trigger reflow
+            container.style.display = '';
+          }
+        }
+      }, 100);
+
+      console.log('Vega-Lite visualization rendered successfully');
+
     } catch (error) {
       console.error('Vega-Lite rendering error:', error);
 
@@ -1321,6 +1410,7 @@ ${svgData}`;
         console.warn('Could not remove loading spinner during error handling:', e instanceof Error ? e.message : String(e));
       }
 
+      // Create error container with proper sizing
       container.innerHTML = `
         <div class="vega-lite-error" style="
           padding: 16px;
@@ -1338,6 +1428,36 @@ ${svgData}`;
           </details>
         </div>
       `;
+
+      // Apply the same container sizing logic used for successful renders
+      setTimeout(() => {
+        const errorDiv = container.querySelector('.vega-lite-error') as HTMLElement;
+        if (errorDiv) {
+          const errorRect = errorDiv.getBoundingClientRect();
+          console.log('Error container size:', errorRect);
+
+          // Force parent containers to accommodate the error content
+          let parent = container.parentElement;
+          while (parent && (parent.classList.contains('d3-container') || parent.classList.contains('vega-lite-renderer-container'))) {
+            const parentElement = parent as HTMLElement;
+            
+            // Only modify Vega-Lite containers, not all d3-containers
+            if (parentElement.classList.contains('vega-lite-renderer-container')) {
+              // Force auto height and visible overflow for error display
+              parentElement.style.height = 'auto';
+              parentElement.style.minHeight = `${errorRect.height + 40}px`;
+              parentElement.style.overflow = 'visible';
+              
+              // Also ensure the container can grow
+              if (parentElement.style.maxHeight) {
+                parentElement.style.maxHeight = 'none';
+              }
+              console.log(`Updated parent ${parentElement.className} height to ${errorRect.height + 40}px for error display`);
+            }
+            parent = parent.parentElement;
+          }
+        }
+      }, 100);
     }
   }
 };
