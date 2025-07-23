@@ -975,7 +975,9 @@ export const MUIFileExplorer = () => {
         }}>
           <LinearProgress sx={{ width: '80%' }} />
           <Typography variant="body2" color="text.secondary" align="center">
-            Loading folder structure...
+            {scanProgress ? 
+              `Scanning: ${scanProgress.files} files, ${scanProgress.directories} directories (${scanProgress.elapsed.toFixed(1)}s)` : 
+              'Loading folder structure...'}
             <br />
             <Typography variant="caption" color="text.secondary">
               This may take a moment for large repositories
@@ -1081,7 +1083,14 @@ export const MUIFileExplorer = () => {
       <Box sx={{ flexGrow: 1, overflow: 'auto', minHeight: 0 }}>
         {/* Show overlay when scanning with existing data */}
         {isScanning && muiTreeData && muiTreeData.length > 0 && (
-          <LinearProgress sx={{ mb: 1 }} />
+          <Box sx={{ mb: 1 }}>
+            <LinearProgress sx={{ mb: 0.5 }} />
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'center' }}>
+              {scanProgress ? 
+                `Scanning: ${scanProgress.files} files, ${scanProgress.directories} directories (${scanProgress.elapsed.toFixed(1)}s)` : 
+                'Scanning folder structure...'}
+            </Typography>
+          </Box>
         )}
 
         {isLoading ? (
