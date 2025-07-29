@@ -27,6 +27,50 @@ _visited_directories = set()
 
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", directory)
+    
+    # Check if we're using include-only mode
+    include_only_dirs = os.environ.get("ZIYA_INCLUDE_ONLY_DIRS", "")
+    if include_only_dirs:
+        logger.info(f"Using include-only mode with patterns: {include_only_dirs}")
+        # In include-only mode, we ignore everything except the specified directories/patterns
+        # First, create a pattern that matches everything
+        ignored_patterns: List[Tuple[str, str]] = [
+            ("*", user_codebase_dir)  # Ignore everything by default
+        ]
+        
+        # Then, for each specified directory or pattern, add a negation pattern
+        for include_pattern in include_only_dirs.split(','):
+            include_pattern = include_pattern.strip()
+            if not include_pattern:
+                continue
+                
+            # Check if this is a wildcard pattern (e.g., *.py)
+            is_wildcard = '*' in include_pattern or '?' in include_pattern
+            
+            if is_wildcard:
+                # For wildcard patterns, we need to handle them differently
+                # The gitignore parser already supports wildcards with negation
+                logger.info(f"Including files matching pattern: {include_pattern}")
+                
+                # Add negation pattern for the wildcard
+                # In gitignore syntax, !*.py means "don't ignore Python files"
+                ignored_patterns.append(("!" + include_pattern, user_codebase_dir))
+                
+                # If it's a file extension pattern like *.py, also include it in all subdirectories
+                if include_pattern.startswith('*.'):
+                    ignored_patterns.append(("!**/" + include_pattern, user_codebase_dir))
+                    logger.info(f"Also including pattern in all subdirectories: **/{include_pattern}")
+            else:
+                # For directory/file paths, include the path and all its subdirectories
+                logger.info(f"Including only: {include_pattern} and its subdirectories")
+                ignored_patterns.append(("!" + include_pattern, user_codebase_dir))
+                # Also explicitly include all subdirectories and files
+                ignored_patterns.append(("!" + include_pattern + "/**", user_codebase_dir))
+        
+        # Return early - in include-only mode we don't use the standard exclusion patterns
+        return ignored_patterns
+    
+    # Standard exclusion patterns (used when not in include-only mode)
     ignored_patterns: List[Tuple[str, str]] = [
         ("poetry.lock", user_codebase_dir),
         ("package-lock.json", user_codebase_dir),
@@ -339,6 +383,48 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     
     # Process the root directory
     root_result = process_dir(directory, 1)
+    
+    # Check if we need to include external paths
+    include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")
+    if include_dirs:
+        logger.info(f"Processing external paths: {include_dirs}")
+        external_paths = include_dirs.split(',')
+        
+        # Process each external path
+        for ext_path in external_paths:
+            ext_path = ext_path.strip()
+            if not ext_path:
+                continue
+                
+            # Skip if path doesn't exist
+            if not os.path.exists(ext_path):
+                logger.warning(f"External path does not exist: {ext_path}")
+                continue
+                
+            # Skip if not a directory
+            if not os.path.isdir(ext_path):
+                logger.warning(f"External path is not a directory: {ext_path}")
+                continue
+                
+            logger.info(f"Including external path: {ext_path}")
+            
+            # Process the external directory
+            ext_result = process_dir(ext_path, 1)
+            
+            # Add the external directory to the root result
+            if ext_result['token_count'] > 0 or ext_result.get('children'):
+                # Use the basename as the key
+                basename = os.path.basename(ext_path)
+                # If the basename already exists, use the full path
+                if basename in root_result.get('children', {}):
+                    basename = ext_path.replace('/', '_').replace('\\', '_')
+                
+                # Add to root result
+                if 'children' not in root_result:
+                    root_result['children'] = {}
+                root_result['children'][basename] = ext_result
+                root_result['token_count'] += ext_result['token_count']
+                logger.info(f"Added external path {ext_path} as {basename} with {ext_result['token_count']} tokens")
     
     # Mark scanning as complete
     _scan_progress["active"] = False

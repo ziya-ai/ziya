@@ -89,7 +89,7 @@ const PANEL_COLLAPSED_KEY = 'ZIYA_PANEL_COLLAPSED';
 const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
 
 export const App: React.FC = () => {
-    const { streamedContentMap, currentMessages, startNewChat, setStreamedContentMap } = useChatContext();
+    const { streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap } = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(() => {
         const saved = localStorage.getItem(PANEL_COLLAPSED_KEY);
@@ -126,8 +126,6 @@ export const App: React.FC = () => {
             handlePanelResize(initialWidth);
         }, 300);
     }, []); // Add empty dependency array to run only once
-
-    const { isDarkMode, toggleTheme, themeAlgorithm, isTopToBottom, toggleTopToBottom } = useTheme();
 
     // Check MCP status on mount
     useEffect(() => {
@@ -288,7 +286,7 @@ export const App: React.FC = () => {
         const chatContainer = document.querySelector('.chat-container');
         const currentScrollTop = chatContainer?.scrollTop || 0;
 
-        toggleTopToBottom();
+        setIsTopToBottom(prev => !prev);
 
         // Restore scroll position after a brief delay
         setTimeout(() => {
@@ -326,6 +324,8 @@ export const App: React.FC = () => {
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
+
+    const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
 
     const chatContainerContent = isTopToBottom ? (
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>

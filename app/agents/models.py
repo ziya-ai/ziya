@@ -611,7 +611,8 @@ class ModelManager:
             logger.error(f"AWS credentials check failed: {error_msg}")
             cls._state['last_auth_error'] = error_msg
             from app.utils.custom_exceptions import KnownCredentialException
-            raise KnownCredentialException(error_msg)
+            # Pass is_server_startup=False to indicate this is during runtime
+            raise KnownCredentialException(error_msg, is_server_startup=False)
         
         # Create fresh boto3 session and client
         try:
@@ -715,21 +716,39 @@ class ModelManager:
         
         # Initialize the model based on the endpoint - only authenticate with the specific endpoint
         logger.info(f"Starting authentication flow for endpoint: {endpoint}")
-        if endpoint == "bedrock":
-            logger.info("Using Bedrock authentication flow only")
-            model = cls._initialize_bedrock_model(model_config, settings_override=settings_override)
-        elif endpoint == "google":
-            logger.info("Using Google authentication flow only")
-            model = cls._initialize_google_model(model_config)
-        else:
-            raise ValueError(f"Unsupported endpoint: {endpoint}")
+        try:
+            if endpoint == "bedrock":
+                logger.info("Using Bedrock authentication flow only")
+                model = cls._initialize_bedrock_model(model_config, settings_override=settings_override)
+            elif endpoint == "google":
+                logger.info("Using Google authentication flow only")
+                model = cls._initialize_google_model(model_config)
+            else:
+                raise ValueError(f"Unsupported endpoint: {endpoint}")
+                
+            # Update state for successful initialization
+            cls._state['model'] = model
+            cls._state['current_model_id'] = model_id
+            cls._state['process_id'] = current_pid
+            cls._state['auth_checked'] = True
+            cls._state['auth_success'] = True
+        except KnownCredentialException as e:
+            # Handle credential exception without terminating the server
+            logger.warning(f"Authentication failed but continuing server operation: {str(e)}")
             
-        # Update state
-        cls._state['model'] = model
-        cls._state['current_model_id'] = model_id
-        cls._state['process_id'] = current_pid
-        cls._state['auth_checked'] = True
-        cls._state['auth_success'] = True
+            # Update state to indicate authentication failure
+            cls._state['model'] = None
+            cls._state['auth_checked'] = True
+            cls._state['auth_success'] = False
+            cls._state['last_auth_error'] = str(e)
+            
+            # Set environment variable to indicate auth was attempted but failed
+            os.environ["ZIYA_AUTH_CHECKED"] = "true"
+            os.environ["ZIYA_AUTH_FAILED"] = "true"
+            
+            # Return None - the server will continue running but model operations will fail
+            # with appropriate error messages
+            return None
         
         # Add region to state if available
         if "region" in model_config:

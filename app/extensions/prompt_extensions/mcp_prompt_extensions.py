@@ -61,7 +61,8 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
 2. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
 3. **Time queries**: Always use tool rather than guessing current time
 4. **Error handling**: Show actual errors and try alternatives
-5. **Verification**: Use tools to verify system state rather than making assumptions    
+5. **Verification**: Use tools to verify system state rather than making assumptions
+6. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
 """
 
     logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}") # ADD THIS

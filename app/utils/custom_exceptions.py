@@ -50,18 +50,20 @@ class ValidationError(Exception):
     """Exception raised when input validation fails."""
     pass
         
-class KnownCredentialException(SystemExit):
+class KnownCredentialException(Exception):
     """
     Exception raised for known credential issues that should be displayed without traceback.
     This exception is used to provide clean error messages for expected authentication failures.
     
-    This inherits from SystemExit to prevent traceback from being printed when uncaught.
+    During initial server startup, this will cause the server to exit.
+    During runtime, this will be caught and handled gracefully.
     """
     # Reset the class variable on module import
     _error_displayed = False
     
-    def __init__(self, message):
+    def __init__(self, message, is_server_startup=False):
         self.message = message
+        self.is_server_startup = is_server_startup
         
         # Always print the message - we need to see credential errors
         print("\n" + "=" * 80)
@@ -71,7 +73,12 @@ class KnownCredentialException(SystemExit):
         # Mark that we've displayed the error
         KnownCredentialException._error_displayed = True
             
-        super().__init__(1)  # Exit code 1
+        # If this is during server startup, exit the process
+        if is_server_startup:
+            import sys
+            sys.exit(1)
+        
+        super().__init__(self.message)
         
     def __str__(self):
         return self.message
