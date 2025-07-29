@@ -27,8 +27,15 @@ def get_available_models(endpoint=None):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Run with custom options")
+    
+    # File inclusion/exclusion options
+    parser.add_argument("--include", default=[], type=lambda x: x.split(','),
+                        help="Include paths outside of the current working directory. Supports comma-separated lists. (e.g., --include '/path/to/external/lib,/another/external/path')")
     parser.add_argument("--exclude", default=[], type=lambda x: x.split(','),
-                        help="List of files or directories to exclude (e.g., --exclude 'tst,build,*.py')")
+                        help="Exclude specified files, directories, or file patterns from the codebase. Supports comma-separated lists. (e.g., --exclude 'node_modules,dist,*.pyc')")
+    parser.add_argument("--include-only", default=[], type=lambda x: x.split(','),
+                        help="Only include specified directories, files, or file patterns, excluding everything else. Supports comma-separated lists and wildcard patterns. (e.g., --include-only 'src,lib' or --include-only '*.py,*.tsx')")
+    
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
     parser.add_argument("--region", type=str, default=None,
@@ -110,8 +117,21 @@ def setup_environment(args):
     import os
     os.environ["ZIYA_USER_CODEBASE_DIR"] = os.getcwd()
 
+    # Handle file inclusion/exclusion options
     additional_excluded_dirs = ','.join(args.exclude)
     os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] = additional_excluded_dirs
+    
+    # Handle include-only option (takes precedence over exclude)
+    if args.include_only:
+        include_only_dirs = ','.join(args.include_only)
+        os.environ["ZIYA_INCLUDE_ONLY_DIRS"] = include_only_dirs
+        logger.info(f"Only including specified directories/files: {include_only_dirs}")
+    
+    # Handle include option for external paths
+    if args.include:
+        include_dirs = ','.join(args.include)
+        os.environ["ZIYA_INCLUDE_DIRS"] = include_dirs
+        logger.info(f"Including external paths: {include_dirs}")
 
     # Check for conflicting arguments before setting AWS profile
     if args.endpoint == "google" and args.profile:
@@ -313,7 +333,8 @@ def start_server(args):
                     from app.agents.models import ModelManager
                     ModelManager._state['last_auth_error'] = message
                     # Raise KnownCredentialException which will handle printing the message only once
-                    raise KnownCredentialException(message)
+                    # Pass is_server_startup=True to indicate this is during initial startup
+                    raise KnownCredentialException(message, is_server_startup=True)
             
             # Set an environment variable to indicate we've already checked auth
             # This will be used by ModelManager to avoid duplicate initialization
