@@ -200,6 +200,7 @@ class MCPManager:
                 # Pass the environment to the client
                 enhanced_config = server_config.copy()
                 enhanced_config["env"] = server_env
+                enhanced_config["name"] = server_name  # Add server name to config
                 client = MCPClient(enhanced_config)
                 self.clients[server_name] = client
                 connection_tasks.append(self._connect_server(server_name, client))
