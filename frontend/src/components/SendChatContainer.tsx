@@ -149,8 +149,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
         // Include the new message in messages for the API
         const baseMessages = isRetry ? currentMessages : [...currentMessages, newHumanMessage!];
-        // Filter out muted messages before sending to API - this is the definitive filter
-        const messagesToSend = baseMessages.filter(msg => msg.muted !== true);
+        // Filter out muted messages before sending to API - explicitly exclude muted messages
+        const messagesToSend = baseMessages.filter(msg => !msg.muted);
 
         addStreamingConversation(currentConversationId);
         const targetConversationId = currentConversationId;
