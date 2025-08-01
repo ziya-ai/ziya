@@ -536,6 +536,67 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
     }
 };
 
+// Helper function to fix Haiku-style diffs that are missing unified diff headers
+const fixHaikuStyleDiff = (diff: string): string => {
+    const lines = diff.split('\n');
+    const result: string[] = [];
+
+    // Extract file path from git header
+    const gitHeaderMatch = lines[0].match(/diff --git a\/(.*?) b\/(.*?)$/);
+    if (!gitHeaderMatch) {
+        return diff; // Can't fix without git header
+    }
+
+    const filePath = gitHeaderMatch[2] || gitHeaderMatch[1];
+
+    // Add git header
+    result.push(lines[0]);
+
+    // Add missing unified diff headers
+    result.push(`--- a/${filePath}`);
+    result.push(`+++ b/${filePath}`);
+
+    // Process the rest of the lines
+    let i = 1;
+    while (i < lines.length) {
+        const line = lines[i];
+
+        // Skip any existing headers that might be malformed
+        if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('index ')) {
+            i++;
+            continue;
+        }
+
+        // Handle hunk headers - fix incomplete ones
+        if (line.startsWith('@@')) {
+            // Check if this is a Haiku-style incomplete hunk header
+            const hunkMatch = line.match(/^@@\s+-(\d+),(\d+)\s+\+(\d+),(\d+)\s+@@(.*)$/);
+            if (hunkMatch) {
+                result.push(line);
+            } else {
+                // Try to fix malformed hunk headers
+                const partialMatch = line.match(/^@@\s+-(\d+),?\s*(\d*)\s+\+?(\d+),?\s*(\d*)\s*@@?(.*)$/);
+                if (partialMatch) {
+                    const [, oldStart, oldCount, newStart, newCount, context] = partialMatch;
+                    const fixedLine = `@@ -${oldStart},${oldCount || '1'} +${newStart},${newCount || '1'} @@${context || ''}`;
+                    result.push(fixedLine);
+                } else {
+                    result.push(line);
+                }
+            }
+        } else {
+            // Regular content line - preserve as is
+            result.push(line);
+        }
+
+        i++;
+    }
+
+    const fixedDiff = result.join('\n');
+    console.log('🔧 Fixed Haiku-style diff:', fixedDiff.substring(0, 200) + '...');
+    return fixedDiff;
+};
+
 // Helper function to check if this is a deletion diff
 const isDeletionDiff = (content: string) => {
     return content.includes('diff --git') &&
@@ -565,7 +626,15 @@ const normalizeGitDiff = (diff: string): string => {
             /^@@\s+-\d+,\d+\s+@@/.test(line)
         );
 
-        if (hasDiffHeaders && hasHunkHeader) {
+        // Check for Haiku-style diffs that have git headers but missing unified diff headers
+        const hasGitHeader = lines.some(line => line.startsWith('diff --git'));
+        const hasHunkHeaders = lines.some(line => line.startsWith('@@'));
+
+        if ((hasDiffHeaders && hasHunkHeader) || (hasGitHeader && hasHunkHeaders && !hasDiffHeaders)) {
+            // Handle Haiku-style diffs that are missing unified diff headers
+            if (hasGitHeader && hasHunkHeaders && !hasDiffHeaders) {
+                return fixHaikuStyleDiff(diff);
+            }
             return diff;  // Return original diff if it's properly formatted
         }
 
@@ -899,7 +968,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 console.log('🔍 DiffView - Parsing diff content:', diff.substring(0, 200) + '...');
                 const normalizedDiff = normalizeGitDiff(diff);
                 console.log('🔧 DiffView - Normalized diff:', normalizedDiff.substring(0, 200) + '...');
-                
+
                 let parsedFiles = parseDiff(normalizedDiff);
                 console.log('📊 DiffView - ParseDiff result:', {
                     filesCount: parsedFiles?.length || 0,
@@ -1205,7 +1274,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         console.log('🚨 DiffView - Rendering fallback due to parse error');
         return (
             <div>
-                <div style={{ 
+                <div style={{
                     backgroundColor: isDarkMode ? '#2d2d2d' : '#f8f8f8',
                     padding: '8px 12px',
                     borderRadius: '4px 4px 0 0',
@@ -2360,7 +2429,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         enableCodeApply,
         textPreview: token.text?.substring(0, 100) + '...'
     });
-    
+
     const { isStreaming } = useChatContext();
     // Generate a unique ID once when the component mounts
     const [diffId] = useState(() =>
@@ -2383,7 +2452,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
 
     return (
         <DiffViewWrapper
-            token={{...token, text: cleanedText}}
+            token={{ ...token, text: cleanedText }}
             index={index}
             elementId={diffId}
             enableCodeApply={enableCodeApply}
@@ -2834,14 +2903,14 @@ let lastLogTimestamp = 0;
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
-    
+
     // 1. Prioritize content-based detection for diffs, regardless of lang tag
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
-        
+
         // Check first few lines for diff markers
         const linesToCheck = text.split('\n').slice(0, 5);
-        
+
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
         const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
@@ -3073,14 +3142,14 @@ const decodeHtmlEntities = (text: string): string => {
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
     // Only log when debug logging is enabled and not too frequently
-    const shouldLog = isDebugLoggingEnabled() && 
-                     (Date.now() - lastLogTimestamp > 10000);
-    
+    const shouldLog = isDebugLoggingEnabled() &&
+        (Date.now() - lastLogTimestamp > 10000);
+
     if (shouldLog && tokens.length > 0) {
         lastLogTimestamp = Date.now();
         debugLog(`Processing ${tokens.length} tokens`);
     }
-    
+
     return tokens.map((token, index) => {
         const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
@@ -3088,8 +3157,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         const tokenWithText = token as TokenWithText; // Helper cast
 
         // Only log tool tokens when debug logging is enabled
-        if (isDebugLoggingEnabled() && 
-            index === 0 && 
+        if (isDebugLoggingEnabled() &&
+            index === 0 &&
             (token as any).lang?.startsWith('tool:')) {
             debugLog(`Tool token detected: ${(token as any).lang}`);
         }
@@ -3706,31 +3775,31 @@ const normalizeIndentedDiffs = (content: string): string => {
     const lines = content.split('\n');
     const result: string[] = [];
     let i = 0;
-    
+
     while (i < lines.length) {
         const line = lines[i];
-        
+
         // Look for indented diff headers (common patterns from Gemini)
         const indentedDiffMatch = line.match(/^(\s{4,})```diff$/);
         if (indentedDiffMatch) {
             const indentLevel = indentedDiffMatch[1].length;
             console.log(`Found indented diff block with ${indentLevel} spaces of indentation`);
-            
+
             // Add the diff header without indentation
             result.push('```diff');
             i++;
-            
+
             // Process the diff content, removing the same amount of indentation
             while (i < lines.length) {
                 const diffLine = lines[i];
-                
+
                 // Check for end of diff block
                 if (diffLine.match(/^\s*```\s*$/)) {
                     result.push('```');
                     i++;
                     break;
                 }
-                
+
                 // Remove the indentation from diff content lines
                 if (diffLine.startsWith(' '.repeat(indentLevel))) {
                     // Remove exactly the same amount of indentation as the opening ```diff
@@ -3750,7 +3819,7 @@ const normalizeIndentedDiffs = (content: string): string => {
             i++;
         }
     }
-    
+
     return result.join('\n');
 };
 
@@ -3781,7 +3850,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Pre-process indented diff blocks before any other processing
             processedMarkdown = normalizeIndentedDiffs(processedMarkdown);
-            
+
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
                 return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
@@ -3798,33 +3867,33 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             );
 
             // First check if this is a diff or code block that shouldn't have math processing
-            const isDiff = processedMarkdown.includes('diff --git') || 
-                          (processedMarkdown.includes('```diff') && processedMarkdown.includes('+++')) ||
-                          (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m));
-                          
+            const isDiff = processedMarkdown.includes('diff --git') ||
+                (processedMarkdown.includes('```diff') && processedMarkdown.includes('+++')) ||
+                (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m));
+
             const hasCodeBlocks = processedMarkdown.includes('```');
-            
+
             // Only process math expressions if this doesn't look like a diff
             if (!isDiff) {
                 // Split the markdown into code blocks and non-code blocks
                 const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
-                
+
                 // Process each segment separately
                 processedMarkdown = segments.map((segment, index) => {
                     // Skip math processing for code blocks (odd indices in the split)
                     if (index % 2 === 1 && segment.startsWith('```')) {
                         return segment;
                     }
-                    
+
                     // Process math only in non-code segments
                     let processed = segment;
-                    
+
                     // Handle display math $$...$$
                     processed = processed.replace(
                         /\$\$([\s\S]+?)\$\$/g,
                         '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
                     );
-                    
+
                     // Handle inline math $...$
                     processed = processed.replace(
                         /\$([^⟩]+?)\$/g,
@@ -3833,22 +3902,22 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                             if (/^\d+$/.test(p1.trim())) {
                                 return match; // Keep $1, $2, etc. as is
                             }
-                            
+
                             // Skip processing if this is inside code-like contexts
                             const surroundingText = match.substring(0, 50) + match.substring(match.length - 50);
-                            if (surroundingText.includes('replace(') || 
+                            if (surroundingText.includes('replace(') ||
                                 surroundingText.includes('processedDef') ||
                                 surroundingText.includes('regex')) {
                                 return match; // Keep as is in code contexts
                             }
-                            
+
                             // Only treat as math if it contains LaTeX commands or mathematical symbols
                             const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
                             const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
                             return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
                         }
                     );
-                    
+
                     return processed;
                 }).join('');
             }
@@ -3920,21 +3989,21 @@ const cleanDiffContent = (content: string): string => {
             line.startsWith('@@ ')) {
             return line;
         }
-        
+
         // Fix any MATH_INLINE expansions that might have slipped through
         // This handles cases like $1 in regex replacements being converted to ⟨MATH_INLINE:1⟩
         if (line.includes('⟨MATH_INLINE:')) {
             // Replace ⟨MATH_INLINE:1⟩ with $1, ⟨MATH_INLINE:2⟩ with $2, etc.
             line = line.replace(/⟨MATH_INLINE:(\d+)⟩/g, '$$1');
         }
-        
+
         // Handle offset diff format lines
         // Pattern: optional leading spaces + optional +/- + [number + optional modifier] + space + content
         // Examples: [001 ], [002+], [003*], [004,+], +[005 ], -[006 ]
         const offsetMatch = line.match(/^(\s*)([+-]?)?\[(\d+)([+*,\s]*)\]\s(.*)⟩/);
         if (offsetMatch) {
             const [_, leadingSpace, diffMarker, lineNum, modifier, content] = offsetMatch;
-            
+
             // Determine the actual diff marker based on the modifier or explicit marker
             let actualMarker = '';
             if (diffMarker) {
@@ -3950,17 +4019,17 @@ const cleanDiffContent = (content: string): string => {
                 // [NNN ] format - context line
                 actualMarker = ' ';
             }
-            
+
             return `${actualMarker}${content}`;
         }
-        
+
         // Handle lines that might have been partially processed or malformed
         const simpleOffsetMatch = line.match(/^\s*\[(\d+)[+*\s]*\]\s*(.*)$/);
         if (simpleOffsetMatch) {
             const [_, lineNum, content] = simpleOffsetMatch;
             return ` ${content}`;
         }
-        
+
         // Return line unchanged if no offset format detected
         return line;
     });

@@ -185,6 +185,45 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['flowchart', 'graph']
   });
 
+  // Add a preprocessor to fix node IDs containing colons, which are invalid
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'flowchart' && !def.trim().startsWith('flowchart') && !def.trim().startsWith('graph')) {
+      return def;
+    }
+
+    const idsToQuote = new Set<string>();
+    // Find node definitions with unquoted IDs that contain a colon.
+    // e.g., `My Node: with details[Label text]`
+    const nodeDefRegex = /([a-zA-Z0-9][^\[\(\n]*:[^\[\(\n]*?)(\[|\()/g;
+    let match;
+    while ((match = nodeDefRegex.exec(def)) !== null) {
+      const id = match[1].trim();
+      // Only add if it's not already quoted
+      if (!id.startsWith('"') && !id.endsWith('"')) {
+        idsToQuote.add(id);
+      }
+    }
+
+    if (idsToQuote.size === 0) {
+      return def;
+    }
+
+    let newDef = def;
+    idsToQuote.forEach(id => {
+      // Escape special characters in ID for use in regex
+      const escapedId = id.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      // Regex to find the unquoted ID as a whole "word".
+      const findIdRegex = new RegExp(`(?<=^|\\s)(${escapedId})(?=[\\s;\\[\\(]|$)`, 'g');
+      newDef = newDef.replace(findIdRegex, `"${id}"`);
+    });
+
+    return newDef;
+  }, {
+    name: 'colon-in-node-id-fix',
+    priority: 155, // High priority to fix structural errors first
+    diagramTypes: ['flowchart', 'graph']
+  });
+
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
       if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
@@ -192,22 +231,65 @@ export function initMermaidEnhancer(): void {
         return definition;
       }
 
-      // Regex to find link labels
-      return definition.replace(/(-\.->|--[xo]>|---)\s*\|(.*)\|/g, (match, arrow, label) => {
-        const trimmedLabel = label.trim();
-        // If the label is already quoted, do nothing.
-        if (trimmedLabel.startsWith('"') && trimmedLabel.endsWith('"')) {
+      // This regex finds link labels and is non-greedy to handle multiple links on one line.
+      return definition.replace(/(-->|-\.->|--[xo]>|---)\s*\|([^|]*?)\|/g, (match, arrow, label) => {
+        let processedLabel = label.trim();
+
+        // If the label is already properly quoted, do nothing.
+        if (processedLabel.startsWith('"') && processedLabel.endsWith('"')) {
           return match;
         }
-        // If the label contains an arrow, it's likely malformed.
-        // Let's try to clean it by removing the arrow and any subsequent text.
-        const cleanLabel = trimmedLabel.split(/(-->|---|--x|--o|-\.->)/)[0].trim();
 
-        const newLabel = cleanLabel.replace(/"/g, '#quot;'); // escape quotes
+        // If the label (cleaned or original) is empty after processing, just return the arrow without a label.
+        if (!processedLabel) {
+          return arrow;
+        }
+
+        // Always quote the label to prevent parsing errors with special characters (like "1. ...").
+        let newLabel = processedLabel.replace(/"/g, '#quot;');
+        // Also, replace brackets with parentheses to avoid parsing errors with node-like syntax in labels.
+        newLabel = newLabel.replace(/\[/g, '(').replace(/\]/g, ')');
         return `${arrow}|"${newLabel}"|`;
       });
     }, {
+    name: 'link-label-sanitizer',
     priority: 260, // High priority to run before other fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to fix links where the target is a node definition
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'flowchart' && !def.trim().startsWith('flowchart') && !def.trim().startsWith('graph')) {
+      return def;
+    }
+
+    // Preserve the original diagram type declaration
+    const lines = def.split('\n');
+    let diagramTypeLine = '';
+    if (lines[0].trim().startsWith('graph') || lines[0].trim().startsWith('flowchart')) {
+      diagramTypeLine = lines[0] + '\n';
+      lines.shift(); // Remove the diagram type line from processing
+    }
+
+    // Enhanced regex to handle links with labels containing brackets
+    const linkWithTargetDefRegex = /^(\s*)(\w+)\s*(--+>?)\s*(\|.*?\|)?\s*(\w+)(\[[^\]]*\])(\s*)$/gm;
+    
+    // Process remaining lines
+    const processedLines = lines.join('\n').replace(linkWithTargetDefRegex, (match, indent, source, link, label, targetId, targetLabel) => {
+      // Extract optional label
+      const linkLabel = label ? ` ${label}` : '';
+      
+      return [
+        `${indent}${targetId}${targetLabel}`, // Node definition
+        `${indent}${source} ${link}${linkLabel} ${targetId}` // Link statement with label
+      ].join('\n'); 
+    });
+
+    // Combine diagram type with processed content
+    return diagramTypeLine + processedLines;
+  }, {
+    name: 'link-target-definition-fix',
+    priority: 255, // High priority to run before other link/node fixes
     diagramTypes: ['flowchart', 'graph']
   });
 
@@ -262,6 +344,19 @@ export function initMermaidEnhancer(): void {
     name: 'class-diagram-inheritance-fix',
     priority: 190,
     diagramTypes: ['classDiagram']
+  });
+
+  // Add a preprocessor to fix single-quoted link labels that cause SQS errors
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'flowchart' && !def.trim().startsWith('flowchart') && !def.trim().startsWith('graph')) {
+      return def;
+    }
+    // Replaces single-quoted labels with double-quoted ones, e.g., -->|'text'| becomes -->|"text"|
+    return def.replace(/\|'([^']*)'\|/g, '|"$1"|');
+  }, {
+    name: 'link-label-single-quote-fix',
+    priority: 145,
+    diagramTypes: ['flowchart', 'graph']
   });
 
   // Add a preprocessor to fix class diagram syntax issues
@@ -324,7 +419,7 @@ export function initMermaidEnhancer(): void {
           continue;
         }
 
-            const nodeDefRegex = /^(\s*)(\w+)\s*(\[|\()(["']?)([\s\S]*?)(\4)(\]|\))(\s*.*)$/;
+        const nodeDefRegex = /^(\s*)(\w+)\s*(\[|\()(["']?)([\s\S]*?)(\4)(\]|\))(\s*.*)$/;
         const nodeDefMatch = currentLine.match(nodeDefRegex);
 
         if (nodeDefMatch) {
@@ -436,7 +531,7 @@ export function initMermaidEnhancer(): void {
       let processedDef = definition;
 
       // Fix nodes that have incomplete label definitions - ensure proper closing
-          // processedDef = processedDef.replace(/(\w+)\[(?!")([^\]]*)\n/g, '$1["$2"]');
+      // processedDef = processedDef.replace(/(\w+)\[(?!")([^\]]*)\n/g, '$1["$2"]');
 
       // Ensure proper spacing around arrows
       processedDef = processedDef.replace(/(\w+)-->/g, '$1 -->');
@@ -543,34 +638,24 @@ export function initMermaidEnhancer(): void {
     let finalDef = def;
 
     console.log('Mixed node shapes - processing:', finalDef.substring(0, 200));
-    finalDef = finalDef.replace(/(\w+)\[([\s\S]*?)\]/g, (match, nodeId, content) => {
+    finalDef = finalDef.replace(/(\w+)(\[|\()([\s\S]*?)(\]|\))/g, (match, nodeId, open, content, close) => {
+      // Ensure open and close brackets match
+      if ((open === '[' && close !== ']') || (open === '(' && close !== ')')) {
+        return match; // Malformed, skip
+      }
+
       // Skip if already properly quoted
-      if (content.match(/^"[^"]*"$/) || content.match(/^'[^']*'$/)) {
+      if (content.match(/^"[\s\S]*"$/)) {
         return match;
       }
 
-      // Only quote if content has special characters and isn't already quoted
-      if (/[()\/\n\-]/.test(content) && !content.includes('<br>')) {
-
-        // Escape any existing quotes and wrap in quotes
-        const escapedContent = content.replace(/"/g, '\\"');
-        return `${nodeId}["${escapedContent}"]`;
+      // Quote if content has special characters, newlines, or <br>
+      if (/[()\/\n<>&:\.,']/.test(content) || content.includes('<br>')) {
+        const escapedContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
+        return `${nodeId}${open}"${escapedContent}"${close}`;
       }
       return match;
     });
-    finalDef = finalDef.replace(/(\w+)\(([\s\S]*?)\)/g, (match, nodeId, content) => {
-      // Skip if already properly quoted
-      if (content.match(/^"[^"]*"$/) || content.match(/^'[^']*'$/)) {
-        return match;
-      }
-
-      if (/[()\/\n\-]/.test(content) && !content.includes('<br>')) {
-        const escapedContent = content.replace(/"/g, '\\"');
-        return `${nodeId}("${escapedContent}")`;
-      }
-      return match;
-    });
-
 
     console.log('Mixed node shapes - result:', finalDef.substring(0, 200));
     console.log('Final processed definition length:', finalDef.length);
@@ -826,110 +911,179 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['gantt']
   });
 
-  // Fix for sequence diagram activation/deactivation issues
-  registerPreprocessor((def: string, type: string) => {
-    if (type !== 'sequenceDiagram' && !def.trim().startsWith('sequenceDiagram')) return def;
+  // Add a preprocessor specifically for sequence diagram note formatting
+  registerPreprocessor(
+    (definition: string, diagramType: string) => {
+      if (diagramType.toLowerCase() !== 'sequencediagram' && !definition.trim().startsWith('sequenceDiagram')) return definition;
 
-    // Track activation state more carefully to prevent deactivating inactive participants
-    const lines = def.split('\n');
-    const activationState: Record<string, boolean> = {};
-    const result: string[] = [];
+      console.log('Running sequence diagram note formatter');
 
-    for (let line of lines) {
-      line = line.trim();
+      const lines = definition.split('\n');
+      const fixedLines: string[] = [];
+      let i = 0;
 
-      // Skip empty lines and comments
-      if (!line || line.startsWith('%%')) {
-        result.push(line);
-        continue;
-      }
+      while (i < lines.length) {
+        const line = lines[i];
+        const trimmedLine = line.trim();
 
-      // Skip lines that are just whitespace or comments
-      if (!line || line.startsWith('%%') || line.startsWith('Note')) {
-        result.push(line);
-        continue;
-      }
+        // Check if this is a note line
+        if (trimmedLine.startsWith('Note over ') || trimmedLine.startsWith('Note left of ') || trimmedLine.startsWith('Note right of ')) {
+          // Extract the note declaration and content
+          const noteMatch = trimmedLine.match(/^(Note (?:over|left of|right of) [^:]+):\s*(.*)$/);
 
-      // Track activations
-      if (line.includes('activate ')) {
-        const activateMatch = line.match(/activate\s+(\w+)/);
-        const participant = activateMatch ? activateMatch[1] : null;
-        if (!participant) continue;
+          if (noteMatch) {
+            const [, noteDeclaration, firstLineContent] = noteMatch;
+            let noteContent = firstLineContent;
+            let j = i + 1;
 
-        if (participant) {
-          activationState[participant] = true;
-        }
-        result.push(line);
-      }
-      // Check deactivations
-      else if (line.includes('deactivate ')) {
-        const deactivateMatch = line.match(/deactivate\s+(\w+)/);
-        const participant = deactivateMatch?.[1];
+            // Collect all subsequent lines that are part of this note (indented or continuation)
+            while (j < lines.length) {
+              const nextLine = lines[j];
+              const nextTrimmed = nextLine.trim();
 
-        if (participant && activationState[participant]) {
-          // Only add deactivate line if participant is actually active
-          if (activationState[participant]) {
-            activationState[participant] = false;
-            result.push(line);
+              // Stop if we hit another Mermaid command or empty line followed by command
+              if (nextTrimmed.match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|alt|opt|par|and|else|end)/) ||
+                nextTrimmed === '' && j + 1 < lines.length && lines[j + 1].trim().match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|alt|opt|par|and|else|end)/)) {
+                break;
+              }
+
+              // If it's not empty, add it to note content
+              if (nextTrimmed !== '') {
+                noteContent += '<br/>' + nextTrimmed;
+              }
+              j++;
+            }
+
+            // Clean up the note content
+            if (noteContent) {
+              noteContent = noteContent
+                // First, normalize line breaks and clean up whitespace
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n')
+                // Split into lines, preserve all lines (including empty ones for spacing)
+                .split('\n')
+                .map(line => {
+                  const trimmed = line.trim();
+                  // Keep empty lines for spacing, but convert to a single space
+                  return trimmed.length === 0 ? ' ' : trimmed;
+                })
+                .join('<br/>')
+                // Remove problematic HTML tags but keep <br/> for line breaks
+                .replace(/<(?!br\/?>)[^>]*>/g, '')
+                // Escape only the most problematic characters, keep others readable
+                .replace(/"/g, "'")
+                .replace(/\{/g, '(')
+                .replace(/\}/g, ')')
+                // Handle numbered lists
+                .replace(/(\d+)\.\s*/g, '$1. ')
+                // Handle bullet points
+                .replace(/-\s*/g, '• ')
+                .trim();
+            }
+
+            // Reconstruct the note with proper formatting
+            fixedLines.push(`    ${noteDeclaration}: ${noteContent}`);
+            i = j;
           } else {
-            console.warn(`Skipping deactivation for inactive participant: ${participant}`);
-            result.push(`%% ⟨MATH_INLINE:{line} (participant not active)`);
+            // Malformed note, just add as-is
+            fixedLines.push(line);
+            i++;
           }
+        } else {
+          // Not a note line, add as-is
+          fixedLines.push(line);
+          i++;
         }
-      }
-      // Handle activation via message arrows
-      else if (line.includes('->>+') || line.includes('-->>+')) {
-        const activationMatch = line.match(/.*?->>?\+\s*(\w+)/);
-        if (activationMatch && activationMatch[1]) {
-          activationState[activationMatch[1]] = true;
-        }
-        result.push(line);
-      }
-      // Handle deactivation via message arrows, only if active
-      else if (line.includes('->>-') || line.includes('-->>-')) {
-        const deactivationMatch = line.match(/.*?->>?-\s*(\w+)/);
-        const participant = deactivationMatch?.[1];
-        if (participant) {
-          if (activationState[participant]) {
-            activationState[participant] = false;
-            result.push(line);
-          } else {
-            console.warn(`Skipping arrow deactivation for inactive participant: ${participant}`);
-            result.push(line.replace(/->>?-/, '->>'));
-          }
-        }
-        result.push(line);
       }
 
-      // Handle lines with "deactivate" at the end but no explicit participant
-      else if (line.endsWith('deactivate')) {
-        // Extract participant from the message line
-        const messageMatch = line.match(/.*?->>.*?(\w+).*deactivate⟩/);
-        const targetParticipant = messageMatch?.[1];
-        if (targetParticipant) {
-          if (targetParticipant && !activationState[targetParticipant]) {
-            // Remove the deactivate keyword since the participant isn't active
-            const cleanLine = line.replace(/\s*deactivate\s*$/, '');
-            result.push(cleanLine);
-            console.warn(`Removed deactivation for inactive participant: ${targetParticipant}`);
-            continue;
-          } else if (targetParticipant) {
-            activationState[targetParticipant] = false;
-          }
-        }
-        result.push(line);
-      }
-      else {
-        result.push(line);
-      }
+      return fixedLines.join('\n');
+    },
+    {
+      name: 'sequence-diagram-note-formatter',
+      priority: 300, // Higher priority to run before other fixes
+      diagramTypes: ['sequencediagram']
     }
+  );
 
-    return result.join('\n');
-  }, {
-    name: 'sequence-activation-fix',
-    priority: 100,
-    diagramTypes: ['sequenceDiagram']
-  });
+  // Add a preprocessor for state diagram notes to fix markdown list errors
+  registerPreprocessor(
+    (definition: string, diagramType: string) => {
+      if (!diagramType.toLowerCase().startsWith('statediagram') && !definition.trim().startsWith('stateDiagram')) {
+        return definition;
+      }
+
+      const lines = definition.split('\n');
+      const fixedLines: string[] = [];
+      let inNote = false;
+
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+
+        if (trimmedLine.match(/^note\s+(right of|left of|over)\s+\w+/)) {
+          inNote = true;
+          fixedLines.push(line);
+          continue;
+        }
+
+        if (trimmedLine === 'end note') {
+          inNote = false;
+          fixedLines.push(line);
+          continue;
+        }
+
+        if (inNote) {
+          // Replace leading hyphens with a bullet to avoid markdown list parsing issues
+          const processedLine = line.replace(/^(\s*)-\s+/, '$1• ');
+          fixedLines.push(processedLine);
+        } else {
+          fixedLines.push(line);
+        }
+      }
+
+      return fixedLines.join('\n');
+    },
+    {
+      name: 'state-diagram-note-fixer',
+      priority: 295, // High priority to run before other general fixers
+      diagramTypes: ['statediagram', 'statediagram-v2']
+    }
+  );
+
+  // Add a preprocessor to handle participant names with special characters
+  registerPreprocessor(
+    (definition: string, diagramType: string) => {
+      if (diagramType.toLowerCase() !== 'sequencediagram' && !definition.trim().startsWith('sequenceDiagram')) return definition;
+
+      console.log('Running sequence diagram participant name fixer');
+
+      const lines = definition.split('\n');
+      const fixedLines: string[] = [];
+
+      for (const line of lines) {
+        let fixedLine = line;
+        const trimmedLine = line.trim();
+
+        // Fix participant declarations with special characters
+        if (trimmedLine.startsWith('participant ')) {
+          const participantMatch = trimmedLine.match(/^participant\s+(.+)$/);
+          if (participantMatch) {
+            const participantName = participantMatch[1];
+            // If participant name contains spaces or special chars, don't quote it
+            // Mermaid handles this automatically in most cases
+            fixedLine = `    participant ${participantName}`;
+          }
+        }
+
+        fixedLines.push(fixedLine);
+      }
+
+      return fixedLines.join('\n');
+    },
+    {
+      name: 'sequence-diagram-participant-fixer',
+      priority: 290,
+      diagramTypes: ['sequencediagram']
+    });
 
   // Add preprocessor for beta diagram types
   registerPreprocessor((def: string, type: string) => {
@@ -1387,138 +1541,86 @@ export default function initMermaidSupport(mermaidInstance?: any): void {
     }, 100);
 
     // Stop checking after 10 seconds
-    setTimeout(() => clearInterval(checkInterval), 10000);
   }
+
+  // Add a preprocessor for class diagram relationship syntax issues
+  registerPreprocessor(
+    (definition: string, diagramType: string) => {
+      if (diagramType.toLowerCase() !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) return definition;
+
+      console.log('Running class diagram relationship fixer');
+
+      const lines = definition.split('\n');
+      const fixedLines: string[] = [];
+      let inClassDefinition = false;
+
+      for (const line of lines) {
+        let fixedLine = line;
+        const trimmedLine = line.trim();
+
+        // Check if we're entering or exiting a class definition block
+        if (trimmedLine.match(/class\s+\w+\s*{/)) {
+          inClassDefinition = true;
+        } else if (inClassDefinition && trimmedLine === '}') {
+          inClassDefinition = false;
+        }
+
+        // Only process relationship lines outside of class definitions
+        if (!inClassDefinition) {
+          // Fix incorrect relationship syntax (e.g., "User > OrderStatus" should be "User --> OrderStatus")
+          const incorrectRelationMatch = trimmedLine.match(/^(\w+)\s+([<>])\s+(\w+)$/);
+          if (incorrectRelationMatch) {
+            const [, class1, relation, class2] = incorrectRelationMatch;
+            const fixedRelation = relation === '>' ? '-->' : '<--';
+            fixedLine = `${class1} ${fixedRelation} ${class2}`;
+            console.log(`Fixed relationship syntax: "${trimmedLine}" -> "${fixedLine}"`);
+          }
+
+          // Fix missing relationship type (e.g., "User -- Order" should be "User --> Order")
+          const missingArrowMatch = trimmedLine.match(/^(\w+)\s+--\s+(\w+)$/);
+          if (missingArrowMatch) {
+            const [, class1, class2] = missingArrowMatch;
+            fixedLine = `${class1} --> ${class2}`;
+            console.log(`Fixed missing arrow: "${trimmedLine}" -> "${fixedLine}"`);
+          }
+        }
+
+        fixedLines.push(fixedLine);
+      }
+
+      return fixedLines.join('\n');
+    },
+    {
+      name: 'classDiagramRelationshipFixer',
+      priority: 85,
+      diagramTypes: ['classdiagram']
+    }
+  );
+  // Add a simple preprocessor for sequence diagram activation/deactivation issues
+  registerPreprocessor((definition: string, diagramType: string) => {
+    if (diagramType.toLowerCase() !== 'sequencediagram' && !definition.trim().startsWith('sequenceDiagram')) {
+      return definition;
+    }
+
+    // This is a targeted fix for participant names that are also Mermaid keywords (e.g., 'opt', 'loop').
+    // It finds message lines where a keyword is used as a participant and quotes it.
+    const keywords = ['opt', 'alt', 'loop', 'par', 'and', 'else', 'end'];
+    let processedDef = definition;
+
+    keywords.forEach(keyword => {
+      // Regex for keyword as target: e.g., A->>opt: message
+      const targetRegex = new RegExp(`(->>|-->>|->>\\+|-->>\\+|->>-|-->>-)(\\s*)${keyword}\\b`, 'gi');
+      processedDef = processedDef.replace(targetRegex, (match, arrow, space) => `${arrow}${space}"${keyword}"`);
+
+      // Regex for keyword as source: e.g., opt->>A: message
+      const sourceRegex = new RegExp(`^(\\s*)${keyword}\\b(\\s*)(->>|-->>|->>\\+|-->>\\+|->>-|-->>-)`, 'gim');
+      processedDef = processedDef.replace(sourceRegex, (match, pre, post, arrow) => `${pre}"${keyword}"${post}${arrow}`);
+    });
+
+    return processedDef;
+  }, {
+    name: 'sequence-diagram-keyword-participant-fix',
+    priority: 285, // Run after participant declarations are clear but before main parsing
+    diagramTypes: ['sequencediagram']
+  });
 }
-// Add a preprocessor for sequence diagram activation/deactivation issues
-registerPreprocessor(
-  (definition: string, diagramType: string) => {
-    if (diagramType.toLowerCase() !== 'sequencediagram') return definition;
-
-    console.log('Running sequence diagram activation fixer');
-
-    // Track participant activation state
-    const participants = new Set();
-    const activeParticipants = new Set();
-    const lines = definition.split('\n');
-    const fixedLines: string[] = [];
-
-    // First pass: collect all participants
-    for (const line of lines) {
-      const trimmedLine = line.trim();
-      if (trimmedLine.startsWith('participant ')) {
-        const participantMatch = trimmedLine.match(/participant\s+(\w+)/);
-        if (participantMatch && participantMatch[1]) {
-          participants.add(participantMatch[1]);
-        }
-      }
-    }
-
-    // Second pass: fix activation/deactivation
-    for (const line of lines) {
-      let fixedLine = line;
-      const trimmedLine = line.trim();
-
-      // Check for activation (lines ending with +)
-      const activationMatch = trimmedLine.match(/(\w+)->>(\+?)(\w+)(\+?)/);
-      if (activationMatch) {
-        const [, fromParticipant, fromActivation, toParticipant, toActivation] = activationMatch;
-
-        if (toActivation === '+') {
-          activeParticipants.add(toParticipant);
-        }
-      }
-
-      // Check for deactivation (lines starting with -)
-      const deactivationMatch = trimmedLine.match(/(\w+)(--)>>(-?)(\w+)(-?)/);
-      if (deactivationMatch) {
-        const [, fromParticipant, , fromDeactivation, toParticipant, toDeactivation] = deactivationMatch;
-
-        if (toDeactivation === '-' && !activeParticipants.has(toParticipant)) {
-          // Fix: Remove deactivation for inactive participant
-          fixedLine = fixedLine.replace(`${toParticipant}-`, toParticipant);
-          console.log(`Fixed deactivation for inactive participant: ${toParticipant}`);
-        } else if (toDeactivation === '-') {
-          activeParticipants.delete(toParticipant);
-        }
-      }
-
-      fixedLines.push(fixedLine);
-    }
-
-    return fixedLines.join('\n');
-  },
-  {
-    name: 'sequenceDiagramActivationFixer',
-    priority: 80,
-    diagramTypes: ['sequencediagram']
-  }
-);
-// Add a preprocessor for class diagram relationship syntax issues
-registerPreprocessor(
-  (definition: string, diagramType: string) => {
-    if (diagramType.toLowerCase() !== 'classdiagram') return definition;
-
-    console.log('Running class diagram relationship fixer');
-
-    const lines = definition.split('\n');
-    const fixedLines: string[] = [];
-    let inClassDefinition = false;
-
-    for (const line of lines) {
-      let fixedLine = line;
-      const trimmedLine = line.trim();
-
-      // Check if we're entering or exiting a class definition block
-      if (trimmedLine.match(/class\s+\w+\s*{/)) {
-        inClassDefinition = true;
-      } else if (inClassDefinition && trimmedLine === '}') {
-        inClassDefinition = false;
-      }
-
-      // Only process relationship lines outside of class definitions
-      if (!inClassDefinition) {
-        // Fix incorrect relationship syntax (e.g., "User > OrderStatus" should be "User --> OrderStatus")
-        const incorrectRelationMatch = trimmedLine.match(/^(\w+)\s+([<>])\s+(\w+)$/);
-        if (incorrectRelationMatch) {
-          const [, class1, relation, class2] = incorrectRelationMatch;
-          const fixedRelation = relation === '>' ? '-->' : '<--';
-          fixedLine = `${class1} ${fixedRelation} ${class2}`;
-          console.log(`Fixed relationship syntax: "${trimmedLine}" -> "${fixedLine}"`);
-        }
-
-        // Fix missing relationship type (e.g., "User -- Order" should be "User --> Order")
-        const missingArrowMatch = trimmedLine.match(/^(\w+)\s+--\s+(\w+)$/);
-        if (missingArrowMatch) {
-          const [, class1, class2] = missingArrowMatch;
-          fixedLine = `${class1} --> ${class2}`;
-          console.log(`Fixed missing arrow: "${trimmedLine}" -> "${fixedLine}"`);
-        }
-      }
-
-      fixedLines.push(fixedLine);
-    }
-
-    return fixedLines.join('\n');
-  },
-  {
-    name: 'classDiagramRelationshipFixer',
-    priority: 85,
-    diagramTypes: ['classdiagram']
-  }
-);
-// Add a simple preprocessor for sequence diagram activation/deactivation issues
-registerPreprocessor(
-  (definition: string, diagramType: string) => {
-    if (diagramType.toLowerCase() !== 'sequencediagram') return definition;
-
-    // Simple fix for the "inactive participant" error
-    // Remove all deactivation markers (-) to prevent the error
-    return definition.replace(/(\w+)(-->>)-(\w+)/g, '$1$2$3');
-  },
-  {
-    name: 'sequenceDiagramSimpleFixer',
-    priority: 80,
-    diagramTypes: ['sequencediagram']
-  }
-);

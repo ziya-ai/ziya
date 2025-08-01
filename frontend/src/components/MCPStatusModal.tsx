@@ -84,7 +84,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
 
         const getPathDescription = (path: string, index: number) => {
             if (path.includes('/.ziya/')) return '(user\'s home)';
-            if (path === (`${process.cwd()}/mcp_config.json` || path.endsWith('/mcp_config.json')) && !path.includes('/.ziya/')) {
+            if (path.endsWith('/mcp_config.json') && !path.includes('/.ziya/')) {
                 // Check if it's likely the project root vs current working directory
                 if (path.includes('/mcp_config.json') && path.split('/').length > 2) {
                     return '(project root)';

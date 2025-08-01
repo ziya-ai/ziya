@@ -178,8 +178,10 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         const message = currentMessages[index];
                         addStreamingConversation(currentConversationId);
                         try {
+                            // Filter out muted messages before retrying - explicitly exclude muted messages
+                            const messagesToSend = currentMessages.filter(msg => !msg.muted);
                             await sendPayload(
-                                currentMessages,
+                                messagesToSend,
                                 message.content,
                                 convertKeysToStrings(checkedKeys || []),
                                 currentConversationId,
@@ -276,6 +278,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         // Create truncated message array up to and including this message
                         const truncatedMessages = currentMessages.slice(0, index + 1);
 
+                        // Filter out muted messages from truncated messages - explicitly exclude muted messages
+                        const messagesToSend = truncatedMessages.filter(msg => !msg.muted);
                         // Set conversation to just the truncated messages
                         setConversations(prev => prev.map(conv =>
                             conv.id === currentConversationId
@@ -289,8 +293,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         // Send the payload
                         (async () => {
                             try {
+                                // messagesToSend is already filtered above
                                 await sendPayload(
-                                    truncatedMessages,
+                                    messagesToSend, // Already filtered for muted messages
                                     message.content,
                                     convertKeysToStrings(checkedKeys || []),
                                     currentConversationId,
