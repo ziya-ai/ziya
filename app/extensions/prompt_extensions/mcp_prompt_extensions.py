@@ -39,7 +39,9 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     # Check if MCP tools are available in the context
     # This would be passed from the agent system when MCP is initialized
     mcp_tools_available = context.get("mcp_tools_available", False)
-    available_tools = context.get("available_mcp_tools", [])
+    from app.mcp.tools import create_mcp_tools
+    all_mcp_tools = create_mcp_tools()
+    available_tools = [tool.name for tool in all_mcp_tools]
     
     if not mcp_tools_available or not available_tools:
         logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.") # ADD THIS
