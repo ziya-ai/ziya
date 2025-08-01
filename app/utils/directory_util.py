@@ -2,7 +2,6 @@ import glob
 import os
 import time
 import threading
-import concurrent.futures
 import signal
 from typing import List, Tuple, Dict, Any, Optional
 from app.utils.logging_utils import logger
@@ -22,6 +21,10 @@ _folder_cache = {
 # Global progress tracking
 _scan_progress = {"active": False, "progress": {}, "cancelled": False}
 
+# Add new globals for background scanning
+_scan_thread: Optional[threading.Thread] = None
+_scan_lock = threading.Lock()
+    
 # Track visited directories to prevent infinite loops
 _visited_directories = set()
 
@@ -687,71 +690,74 @@ def get_scan_progress():
 def cancel_scan():
     """Cancel current scan operation."""
     global _scan_progress
-    if not isinstance(_scan_progress, dict):
-        # Initialize if not properly set
-        _scan_progress = {"active": False, "progress": {}, "cancelled": False}
     _scan_progress["cancelled"] = True
     return _scan_progress["active"]
 
-def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
-    """
-    Get folder structure with caching and timeout protection.
+    def start_background_scan(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
+        """Starts the folder scan in a background thread if not already running."""
+        global _scan_thread, _folder_cache
     
-    This function will:
-    1. Return cached results if they're fresh (less than 10 seconds old)
-    2. Return an error message if scanning is taking too long
-    3. Cache results for future requests
+        def scan_task():
+            logger.info(f"Background folder scan started for {directory}.")
+            # get_folder_structure updates _scan_progress globally
+            result = get_folder_structure(directory, ignored_patterns, max_depth)
+            
+            # Cache the result
+            with _scan_lock:
+                _folder_cache['data'] = result
+                _folder_cache['timestamp'] = time.time()
+                try:
+                    _folder_cache['directory_mtime'] = os.path.getmtime(directory)
+                except OSError:
+                    _folder_cache['directory_mtime'] = time.time()
+            logger.info("Background folder scan finished and result cached.")
     
-    Args:
-        directory: The directory to scan
-        ignored_patterns: Patterns to ignore
-        max_depth: Maximum depth to traverse
+        with _scan_lock:
+            if _scan_thread and _scan_thread.is_alive():
+                logger.info("Folder scan is already in progress.")
+                return
+    
+            _scan_thread = threading.Thread(target=scan_task, daemon=True, name="FolderScanThread")
+            _scan_thread.start()
+            logger.info("Started background folder scan thread.")
+    
+    
+    def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
+        """
+        Get folder structure. Returns cached data if available and fresh.
+        If cache is stale, it starts a background scan and returns stale data or a scanning indicator.
+        """
+        global _folder_cache, _scan_thread
+    
+        current_time = time.time()
+        cache_age = current_time - _folder_cache['timestamp']
         
-    Returns:
-        Dict with folder structure or error message
-    """
-    global _folder_cache
-    
-    # Check if we already have a fresh cache (less than 10 seconds old)
-    current_time = time.time()
-    cache_age = current_time - _folder_cache['timestamp']
-    logger.info(f"Folder cache age: {cache_age:.2f}s, directory: {directory}")
-    
-    # Check if directory has been modified since last cache
-    try:
-        current_dir_mtime = os.path.getmtime(directory)
-        directory_changed = current_dir_mtime > _folder_cache['directory_mtime']
-    except OSError:
-        # If we can't get mtime, assume directory changed
-        directory_changed = True
-        logger.warning(f"Could not get mtime for directory: {directory}")
-        current_dir_mtime = current_time
-    
-    # Return cached results if they're fresh AND directory hasn't been modified
-    if (_folder_cache['data'] is not None and 
-        cache_age < 10 and 
-        not directory_changed):
-        logger.debug(f"Returning cached folder structure (age: {cache_age:.1f}s)")
-        logger.info(f"Returning cached folder structure with {len(_folder_cache['data'])} top-level entries")
-        return _folder_cache['data']
-    
-    if directory_changed:
-        logger.info(f"Directory modification detected, invalidating cache")
-        logger.info(f"Current mtime: {current_dir_mtime}, cached mtime: {_folder_cache['directory_mtime']}")
-    
-    try:
-        # Perform the actual scan with timeout protection
-        logger.info(f"Starting folder scan for {directory}")
-        result = get_folder_structure(directory, ignored_patterns, max_depth)
+        try:
+            current_dir_mtime = os.path.getmtime(directory)
+            directory_changed = current_dir_mtime > _folder_cache['directory_mtime']
+        except OSError:
+            directory_changed = True
+            current_dir_mtime = 0
+
+            # Return fresh cache immediately
+            if _folder_cache['data'] is not None and cache_age < 10 and not directory_changed:
+                logger.info(f"Returning fresh folder structure cache (age: {cache_age:.1f}s)")
+            return _folder_cache['data']
         
-        # Cache the successful result
-        _folder_cache['data'] = result
-        _folder_cache['timestamp'] = time.time()
-        logger.info(f"Updated folder cache with {len(result)} top-level entries")
-        _folder_cache['directory_mtime'] = current_dir_mtime
+            # If cache is stale or doesn't exist, manage background scan
+            with _scan_lock:
+                is_scanning = _scan_thread and _scan_thread.is_alive()
+                
+                if not is_scanning:
+                    logger.info("Cache is stale or missing. Starting new background scan.")
+                    start_background_scan(directory, ignored_patterns, max_depth)
+                else:
+                    logger.info("Folder scan is already in progress.")
         
-        return result
-    except Exception as e:
-        logger.error(f"Error during folder scan: {str(e)}")
-        # Return error but don't cache it
-        return {"error": f"Scan failed: {str(e)}"}
+            # Return current state (stale cache or empty dict) and indicate scanning
+            if _folder_cache['data']:
+                logger.info("Returning stale cache while scan runs in background.")
+                return {**_folder_cache['data'], "_stale_and_scanning": True}
+            else:
+                logger.info("No cache available. Indicating scan is in progress.")
+                return {"_scanning": True}
