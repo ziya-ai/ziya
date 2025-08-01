@@ -217,13 +217,7 @@ async def _track_timeout(tool_name: str) -> bool:
 async def _reset_timeout_counter(tool_name: str):
     """Reset timeout counter for a tool after successful execution."""
     async with _timeout_lock:
-        if tool_name in _consecutive_timeouts:
-            _consecutive_timeouts[tool_name] = 0
-
-class MCPToolInput(BaseModel):
-    """Input schema for MCP tools."""
-    arguments: Dict[str, Any] = Field(description="Arguments to pass to the MCP tool")
-
+        _consecutive_timeouts.pop(tool_name, None)
 
 class MCPTool(BaseTool):
     """
@@ -235,15 +229,14 @@ class MCPTool(BaseTool):
     name: str
     description: str
     mcp_tool_name: str
-    args_schema: Type[BaseModel] = MCPToolInput
     
     def _run(
         self,
-        arguments: Dict[str, Any],
         run_manager: Optional[CallbackManagerForToolRun] = None,
+        **kwargs: Any,
     ) -> str:
         """Run the MCP tool synchronously."""
-        logger.info(f"MCPTool._run called for {self.mcp_tool_name} with args: {arguments}")
+        logger.info(f"MCPTool._run called for {self.mcp_tool_name} with args: {kwargs}")
         # Run the async version in a new event loop
         try:
             loop = asyncio.get_event_loop()
@@ -251,14 +244,15 @@ class MCPTool(BaseTool):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        return loop.run_until_complete(self._arun(arguments, None))
+        return loop.run_until_complete(self._arun(run_manager=run_manager, **kwargs))
     
     async def _arun(
         self,
-        arguments: Dict[str, Any],
         run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+        **kwargs: Any,
     ) -> str:
         """Run the MCP tool asynchronously."""
+        arguments = kwargs
         logger.info(f"MCPTool._arun called for {self.mcp_tool_name} with args: {arguments}")
         logger.info(f"🔍 MCPTool._arun: About to execute MCP tool {self.mcp_tool_name}")
         logger.info(f"🔍 MCPTool._arun: MCP manager initialized: {mcp_manager.is_initialized if 'mcp_manager' in globals() else 'No manager'}")
