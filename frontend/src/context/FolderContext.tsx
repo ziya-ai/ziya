@@ -262,66 +262,6 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   // Remove chat context dependency that was causing render loops
 
-  const startProgressPolling = useCallback(() => {
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-    }
-    
-    // Set up more frequent polling for better progress updates
-    progressIntervalRef.current = setInterval(async () => {
-      try {
-        const response = await fetch('/folder-progress');
-        if (response.ok) {
-          const data = await response.json();
-          if (data.active) {
-            setScanProgress({
-              directories: data.progress?.directories || 0,
-              files: data.progress?.files || 0,
-              elapsed: data.progress?.elapsed || 0
-            });
-          } else {
-            // Scanning completed or not active
-            if (progressIntervalRef.current) {
-              clearInterval(progressIntervalRef.current);
-              progressIntervalRef.current = null;
-            }
-            setScanProgress(null);
-          }
-        }
-      } catch (error) {
-        console.debug('Progress check error:', error);
-      }
-    }, 500); // Poll every 500ms for smoother updates
-  }, []);
-
-  const cancelScan = useCallback(async () => {
-    try {
-      const response = await fetch('/folder-cancel', { method: 'POST' });
-      if (response.ok) {
-        const data = await response.json();
-        if (data.status === 'cancellation_requested') {
-          message.info('Folder scan cancellation requested');
-          setIsScanning(false);
-          setScanProgress(null);
-          setScanError(null);
-
-          // Clear intervals
-          if (progressIntervalRef.current) {
-            clearInterval(progressIntervalRef.current);
-            progressIntervalRef.current = null;
-          }
-          if (scanTimeoutRef.current) {
-            clearTimeout(scanTimeoutRef.current);
-            scanTimeoutRef.current = null;
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error cancelling scan:', error);
-      message.error('Failed to cancel scan');
-    }
-  }, []);
-
   // Cleanup intervals on unmount
   useEffect(() => {
     return () => {
@@ -359,169 +299,104 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     // Only check progress if scanning is active
     if (isScanning) {
       checkFolderProgress();
-    }
+    };
   }, [isScanning]);
 
-  useEffect(() => {
-    // Make folder loading independent and non-blocking
-    const fetchFoldersAsync = async () => {
+  const cancelScan = useCallback(async () => {
+    try {
+      const response = await fetch('/api/cancel-scan', { method: 'POST' });
+      if (response.ok) {
+        message.info('Folder scan cancellation requested.');
+      }
+    } catch (error) {
+      console.error('Error cancelling scan:', error);
+    }
+  }, []);
+
+  const startProgressPolling = useCallback(() => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+
+    progressIntervalRef.current = setInterval(async () => {
       try {
+        const response = await fetch('/folder-progress');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.active) {
+            setScanProgress({
+              directories: data.progress?.directories || 0,
+              files: data.progress?.files || 0,
+              elapsed: data.progress?.elapsed || 0
+            });
+          } else {
+            if (progressIntervalRef.current) {
+              clearInterval(progressIntervalRef.current);
+              progressIntervalRef.current = null;
+            }
+            setScanProgress(null);
+            setIsScanning(false);
+            if (fetchFoldersRef.current) {
+              fetchFoldersRef.current();
+            }
+          }
+        }
+      } catch (error) {
+        console.debug('Progress check error:', error);
+      }
+    }, 1000); // Poll every second
+  }, []);
+
+  const fetchFoldersRef = useRef<() => Promise<void>>();
+
+  const fetchFolders = useCallback(async () => {
+    try {
+      const response = await fetch('/api/folders');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch folders: ${response.status}`);
+      }
+      const data = await response.json();
+
+      if (data.error) {
+        setScanError(data.error);
+        setIsScanning(false);
+        return;
+      }
+
+      if (data._scanning || data._stale_and_scanning) {
         setIsScanning(true);
         setScanError(null);
-        setScanProgress({ directories: 0, files: 0, elapsed: 0 });
-
-        // Start progress polling
         startProgressPolling();
-
-        // Try the fast endpoint first
-        let response = await fetch('/api/folders-with-accurate-tokens');
-        if (!response.ok) {
-          // Fall back to regular endpoint
-          response = await fetch('/api/folders');
+        if (data._stale_and_scanning) {
+          const { _stale_and_scanning, ...folderData } = data;
+          setFolders(folderData);
+          const treeNodes = convertToTreeData(folderData);
+          setTreeData(treeNodes);
         }
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch folders: ${response.status}`);
-        }
-        const data = await response.json();
-
-        // Handle timeout or error responses
-        if (data.error) {
-          setScanError(data.error);
-          if (data.timeout) {
-            message.warning({
-              content: `Folder scan timed out after ${data.timeout_seconds || 45}s. ${data.suggestion || 'Try reducing the scope or increasing timeout.'}`,
-              duration: 10
-            });
-          }
-          return;
-        }
-
-        // Log the raw folder structure
-        console.debug('Raw folder structure loaded');
-        console.debug('Raw folder structure:', {
-          componentsPath: data?.frontend?.src?.components,
-          d3Files: Object.keys(data?.frontend?.src?.components?.children || {})
-            .filter(f => f.includes('D3') || f === 'Debug.tsx')
-        });
-
-        // Store the complete folder structure
-        setFolders(data);
-
-        // Check if we got accurate tokens and update state
-        if (data._has_accurate_tokens) {
-          console.log('Received folder structure with pre-calculated accurate tokens');
-          // No need to fetch accurate tokens separately
-        }
-
-        // Move heavy computation to async to avoid blocking UI
-        // Use requestIdleCallback if available, otherwise setTimeout
-        const scheduleWork = (callback: () => void) => {
-          if ('requestIdleCallback' in window) {
-            requestIdleCallback(callback, { timeout: 1000 });
-          } else {
-            setTimeout(callback, 0);
-          }
-        };
-
-        scheduleWork(async () => {
-          try {
-            // Get all available file paths recursively (optimized)
-            const getAllPaths = (obj: any, prefix: string = ''): string[] => {
-              const paths: string[] = [];
-              const stack: Array<{ obj: any, prefix: string }> = [{ obj, prefix }];
-
-              while (stack.length > 0) {
-                const { obj: currentObj, prefix: currentPrefix } = stack.pop()!;
-
-                for (const [key, value] of Object.entries(currentObj)) {
-                  const path = currentPrefix ? `${currentPrefix}/${key}` : key;
-                  paths.push(path);
-
-                  if (value && typeof value === 'object' && 'children' in value && value.children) {
-                    stack.push({ obj: value.children, prefix: path });
-                  }
-                }
-              }
-
-              return paths;
-            };
-
-            const availablePaths = getAllPaths(data);
-            console.debug('Available paths:', {
-              total: availablePaths.length,
-              d3Files: availablePaths.filter(p => p.includes('D3') || p.includes('Debug.tsx')),
-              componentFiles: availablePaths.filter(p => p.includes('components/'))
-            });
-
-            // Convert to tree data and set expanded keys for top-level folders
-            const treeNodes = convertToTreeData(data);
-            setTreeData(treeNodes);
-            // Don't auto-expand top-level folders - keep them collapsed
-            // setExpandedKeys(prev => [...prev, ...treeNodes.map(node => node.key)]);
-
-            // Update checked keys to include all available files and maintain selections
-            setCheckedKeys(prev => {
-              const currentChecked = new Set(prev as string[]);
-
-              // Get the parent directory of any checked directory
-              const getParentDir = (path: string) => {
-                const parts = path.split('/');
-                return parts.slice(0, -1).join('/');
-              };
-
-              // If a directory is checked, include all its files
-              const newChecked = new Set<string>();
-              for (const path of availablePaths) {
-                const parentDir = getParentDir(path);
-                if (currentChecked.has(path) || currentChecked.has(parentDir)) {
-                  newChecked.add(path);
-                }
-              }
-
-              console.log('Syncing checked keys:', {
-                before: currentChecked.size,
-                after: newChecked.size,
-                added: [...newChecked].filter(k => !currentChecked.has(k)),
-                removed: [...currentChecked].filter(k => !newChecked.has(k))
-              });
-
-              // Debug log for D3 files
-              const d3Files = [...newChecked].filter(k => k.includes('D3') || k.includes('Debug.tsx'));
-              if (d3Files.length > 0) {
-                console.log('D3 files in checked keys:', d3Files);
-              }
-
-              // Return the updated set of checked keys
-              return [...newChecked];
-            });
-          } catch (error) {
-            console.error('Error processing folder paths:', error);
-          }
-        });
-      } catch (error) {
-        setScanError(error instanceof Error ? error.message : 'Unknown error occurred');
-        console.error('Error fetching folders:', error);
-        message.error({
-          content: `Failed to load folder structure: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          duration: 8
-        });
-      } finally {
+      } else {
         setIsScanning(false);
-        setScanProgress(null);
-
-        // Clear progress polling
+        setScanError(null);
         if (progressIntervalRef.current) {
           clearInterval(progressIntervalRef.current);
           progressIntervalRef.current = null;
         }
+        setFolders(data);
+        const treeNodes = convertToTreeData(data);
+        setTreeData(treeNodes);
       }
-    };
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : 'Unknown error');
+      setIsScanning(false);
+    }
+  }, [startProgressPolling]);
 
-    // Start folder loading immediately but don't await it
-    // This prevents blocking other initialization processes
-    fetchFoldersAsync();
-  }, []);
+  useEffect(() => {
+    fetchFoldersRef.current = fetchFolders;
+  }, [fetchFolders]);
+
+  useEffect(() => {
+    fetchFolders();
+  }, [fetchFolders]);
 
   // Add timeout handling with user notification
   useEffect(() => {
@@ -580,7 +455,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     isScanning,
     scanProgress,
     scanError,
-    accurateTokenCounts
+    accurateTokenCounts,
     // Remove forceRefreshCounter from dependencies to prevent unnecessary re-renders
   }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning,
     scanProgress, scanError, accurateTokenCounts, forceRefreshCounter]);

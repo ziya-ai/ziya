@@ -154,83 +154,12 @@ export const mermaidPlugin: D3RenderPlugin = {
             console.log('Original definition (first 200 chars):', processedDefinition.substring(0, 200));
 
             // Detect diagram type
-            const firstLine = processedDefinition.trim().split('\n')[0].toLowerCase();
-            const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
+        const firstLine = processedDefinition.trim().split('\n')[0].toLowerCase();
+        const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
 
-                // Apply diagram-specific fixes
-            if (diagramType === 'flowchart' || diagramType === 'graph' || firstLine.startsWith('flowchart ') || firstLine.startsWith('graph ')) {
-                // CRITICAL: Fix parentheses and special characters in node labels
-                // This must happen before other processing to prevent parsing errors
-                    processedDefinition = processedDefinition.replace(/(\w+)\[([\s\S]*?)\]/g, (match, nodeId, content) => {
-                    // If content contains parentheses, slashes, or line breaks and isn't quoted, quote it
-                        if (/[()\/\n<>]/.test(content) && !content.match(/^"[\s\S]*"$/)) {
-                        // Don't double-escape already escaped quotes
-                                const cleanContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
-                                return `${nodeId}["${cleanContent}"]`;
-                            }
-                    return match;
-                });
-
-                console.log('After parentheses fix (first 200 chars):', processedDefinition.substring(0, 200));
-
-                // Fix subgraph class syntax
-                processedDefinition = processedDefinition.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 style_$2');
-                processedDefinition = processedDefinition.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
-
-                // Fix "Send DONE Marker" nodes
-                processedDefinition = processedDefinition.replace(/\[Send\s+"DONE"\s+Marker\]/g, '[Send DONE Marker]');
-                processedDefinition = processedDefinition.replace(/\[Send\s+\[DONE\]\s+Marker\]/g, '[Send DONE Marker]');
-
-                // Fix SendDone nodes
-                processedDefinition = processedDefinition.replace(/SendDone\[([^\]]+)\]/g, 'sendDoneNode["$1"]');
-
-                // Fix end nodes that cause parsing errors - replace all 'end' node references
-                processedDefinition = processedDefinition.replace(/\bend\b\s*\[/g, 'endNode[');
-                processedDefinition = processedDefinition.replace(/-->\s*\bend\b/g, '--> endNode');
-                processedDefinition = processedDefinition.replace(/\bend\b\s*-->/g, 'endNode -->');
-
-                // Fix quoted text in node labels
-                processedDefinition = processedDefinition.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
-                    return `[${before}${quoted}${after}]`;
-                });
-            }
-            else if (diagramType === 'requirement') {
-                // Fix requirement diagram syntax
-                const lines = processedDefinition.split('\n');
-                const result: string[] = [];
-
-                for (let i = 0; i < lines.length; i++) {
-                    let line = lines[i].trim();
-
-                    // Fix ID format
-                    if (line.match(/^\s*id:/i)) {
-                        line = line.replace(/id:\s*([^,]+)/, 'id: "$1"');
-                    }
-                    console.log(`Rendering Mermaid diagram with ${spec.definition.length} chars`);
-
-                    // Fix text format
-                    if (line.match(/^\s*text:/i)) {
-                        line = line.replace(/text:\s*([^,]+)/, 'text: "$1"');
-                    }
-
-                    result.push(line);
-                }
-
-                processedDefinition = result.join('\n');
-            }
-            else if (diagramType === 'xychart') {
-                // Fix xychart array syntax
-                processedDefinition = processedDefinition.replace(/\[(.*?)\]/g, '"[$1]"');
-            }
-
-            // Fix quoted text in node labels for all diagram types
-            processedDefinition = processedDefinition.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
-                return `[${before}${quoted}${after}]`;
-            });
-
-            mermaid.initialize({
-                startOnLoad: false,
-                theme: isDarkMode ? 'dark' : 'default',
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: isDarkMode ? 'dark' : 'default',
                 securityLevel: 'loose',
                 fontFamily: '"Arial", sans-serif',
                 fontSize: 14,
