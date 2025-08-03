@@ -15,6 +15,7 @@ declare global {
 export interface MermaidSpec {
     type: 'mermaid';
     isStreaming?: boolean;
+    isMarkdownBlockClosed?: boolean;
     forceRender?: boolean;
     definition: string;
     theme?: 'default' | 'dark' | 'neutral' | 'forest'; // Optional theme override
@@ -125,7 +126,7 @@ export const mermaidPlugin: D3RenderPlugin = {
             container.appendChild(loadingSpinner);
 
             // If we're streaming and the definition is incomplete, show a waiting message
-            if (spec.isStreaming && !spec.forceRender) {
+            if (spec.isStreaming && !spec.isMarkdownBlockClosed && !spec.forceRender) {
                 const isComplete = isDiagramDefinitionComplete(spec.definition, 'mermaid');
                 const timestamp = Date.now();
                 console.log(`[${timestamp}] Mermaid streaming check:`, {
