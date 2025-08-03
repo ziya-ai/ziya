@@ -217,8 +217,8 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             let specLines: string[];
 
             // Determine if we should attempt to render or show waiting message
-            let attemptRender = true;
-            let localShouldShowWaitingPlaceholder = false;
+            let attemptRender = !isStreaming || isMarkdownBlockClosed || forceRender;
+            let localShouldShowWaitingPlaceholder = isStreaming && !isMarkdownBlockClosed && !forceRender;
 
             try {
                 if (typeof spec === 'string') {
@@ -246,8 +246,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // During streaming, this could be an incomplete JSON
                 if (isStreaming && !isMarkdownBlockClosed) {
                     streamingContentRef.current = typeof spec === 'string' ? spec : null;
-                    localShouldShowWaitingPlaceholder = true;
-                    attemptRender = false;
                     if (isLoading && !hasSuccessfulRenderRef.current) setIsLoading(false);
                     setDisplayWaitingMessage(true);
                     return;
@@ -272,7 +270,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         console.debug(`Checking if ${plugin.name} definition is complete:`, isComplete);
 
                         if (!isComplete) {
-                            localShouldShowWaitingPlaceholder = true;
                             attemptRender = false;
                         }
                     } else if (specType === 'mermaid' || specType === 'graphviz') {
@@ -283,7 +280,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         );
 
                         if (!isComplete) {
-                            localShouldShowWaitingPlaceholder = true;
                             attemptRender = false;
                         }
                     }
@@ -295,7 +291,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 }
             }
 
-            // Update the waiting message state
+            // Update the waiting message state based on streaming and render attempt
             setDisplayWaitingMessage(localShouldShowWaitingPlaceholder);
 
             // If we're not attempting to render, exit early
@@ -399,8 +395,9 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                                 ...sanitizedParsed,
                                 width: width || 600,
                                 height: height || 400,
-                                isStreaming: isStreaming && !isMarkdownBlockClosed,
-                                forceRender: attemptRender
+                                isStreaming: isStreaming,
+                                isMarkdownBlockClosed: isMarkdownBlockClosed,
+                                forceRender: forceRender,
                             }, isDarkMode);
                             renderSuccessful = true;
                         }
@@ -421,18 +418,16 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         console.debug('Using plugin:', plugin.name);
                         plugin.render(tempContainer, d3, {
                             ...sanitizedParsed,
-                            isStreaming: isStreaming && !isMarkdownBlockClosed,
-                            forceRender: attemptRender
+                            isStreaming: isStreaming,
+                            isMarkdownBlockClosed: isMarkdownBlockClosed,
+                            forceRender: forceRender,
                         }, isDarkMode);
                         renderSuccessful = true;
                         if (mounted.current) setRenderError(null);
                     }
 
-                    // Only replace main container content if render was successful
-                    if (renderSuccessful) {
-                        container.innerHTML = '';
-                        container.appendChild(tempContainer);
-                    }
+
+
                 } catch (renderError) {
                     console.error('D3 render error:', renderError);
                     if (mounted.current) {
@@ -440,6 +435,13 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         setErrorDetails([renderError instanceof Error ? renderError.message : 'Unknown error']);
                     }
                 }
+
+                // Only replace main container content if render was successful
+                if (renderSuccessful) {
+                    container.innerHTML = '';
+                    container.appendChild(tempContainer);
+                }
+
 
                 if (!renderSuccessful) {
                     throw new Error('Render did not complete successfully');
@@ -492,9 +494,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     useEffect(() => {
         if (!mounted.current) return;
 
-        // Only re-render if content has actually changed or we're forcing a render
+        // Re-render when:
+        // 1. We haven't had a successful render yet
+        // 2. Markdown block just closed (streaming completed)
+        // 3. We're forcing a render
         const shouldRender = !hasSuccessfulRenderRef.current ||
-            !isMarkdownBlockClosed ||
+            (!isStreaming && isMarkdownBlockClosed) ||
             forceRender;
 
         if (shouldRender) {
@@ -502,8 +507,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             console.debug(`Starting render #${currentRender}`);
             initializeVisualization(forceRender);
         }
-    }, [spec, isMarkdownBlockClosed, forceRender, initializeVisualization]);
-
+    }, [spec, isStreaming, isMarkdownBlockClosed, forceRender, initializeVisualization]);
     // Separate effect for theme changes to avoid circular dependencies
     useEffect(() => {
         // Only re-render for theme changes if we've already had a successful render
