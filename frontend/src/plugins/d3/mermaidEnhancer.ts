@@ -163,11 +163,212 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
   return handled;
 }
 
-/**
+/*
  * Initialize the Mermaid enhancer with default preprocessors and error handlers
  */
+
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
+
+  // Add a preprocessor to fix naming conflicts between subgraphs and nodes
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 NAMING-CONFLICT-FIX: Checking for subgraph/node naming conflicts');
+
+      // Extract subgraph names
+      const subgraphNames = new Set<string>();
+      const subgraphMatches = definition.matchAll(/subgraph\s+"([^"]+)"/g);
+      for (const match of subgraphMatches) {
+        subgraphNames.add(match[1]);
+      }
+
+      // Extract node IDs
+      const nodeIds = new Set<string>();
+      const nodeMatches = definition.matchAll(/(\w+)\[/g);
+      for (const match of nodeMatches) {
+        nodeIds.add(match[1]);
+      }
+
+      console.log('🔍 NAMING-CONFLICT-FIX: Found subgraphs:', Array.from(subgraphNames));
+      console.log('🔍 NAMING-CONFLICT-FIX: Found node IDs:', Array.from(nodeIds));
+
+      // Check for conflicts and fix them
+      let result = definition;
+      for (const subgraphName of subgraphNames) {
+        // Check if there's a node with the same ID as the subgraph name
+        if (nodeIds.has(subgraphName)) {
+          console.log(`🔍 NAMING-CONFLICT-FIX: Found conflict - subgraph "${subgraphName}" has node with same ID`);
+          
+          // Create a unique new node ID
+          const newNodeId = `${subgraphName}Node`;
+          
+          // Replace node definition: TRI[...] -> TRINode[...]
+          const nodeDefRegex = new RegExp(`\\b${subgraphName}\\[`, 'g');
+          result = result.replace(nodeDefRegex, `${newNodeId}[`);
+          
+          // Replace all references to this node in connections, but NOT in subgraph declarations
+          // This regex matches the node ID when it's used in connections but not in subgraph declarations
+          const nodeRefRegex = new RegExp(`\\b${subgraphName}\\b(?!\\s*\\[|"\\s*$)`, 'g');
+          result = result.replace(nodeRefRegex, (match, offset) => {
+            // Don't replace if this is part of a subgraph declaration
+            const beforeMatch = result.substring(Math.max(0, offset - 20), offset);
+            return beforeMatch.includes('subgraph') ? match : newNodeId;
+          });
+          
+          console.log(`🔍 NAMING-CONFLICT-FIX: Renamed conflicting node from "${subgraphName}" to "${newNodeId}"`);
+        }
+      }
+
+      console.log('🔍 NAMING-CONFLICT-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'naming-conflict-fix',
+    priority: 480, // Very high priority to run before other fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to fix numbered list syntax in node labels
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 NODE-LABEL-FIX: Processing node labels with numbered lists');
+
+      // Fix node labels that contain numbered list syntax
+      // This regex matches node definitions like: NodeId[1. Some text...]
+      const result = definition.replace(/(\w+)\[([^\]]*?)\]/gs, (match, nodeId, content) => {
+        // Check if content starts with numbered list syntax
+        if (content.match(/^\s*\d+\.\s/)) {
+          console.log('🔍 NODE-LABEL-FIX: Fixing numbered list in node:', nodeId);
+
+          // Process the content to escape numbered list syntax
+          const fixedContent = content
+            .split('\n')
+            .map(line => {
+              // Escape numbered list syntax at the beginning of lines
+              return line.replace(/^(\s*)(\d+)\.\s*(.*)$/, '$1$2\\. $3');
+            })
+            .join('<br/>'); // Also convert newlines to <br/>
+
+          return `${nodeId}[${fixedContent}]`;
+        }
+        return match;
+      });
+
+      console.log('🔍 NODE-LABEL-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'node-label-numbered-list-fix',
+    priority: 470, // Higher priority to run before other fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to fix multi-line node labels
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 MULTILINE-NODE-FIX: Processing multi-line node labels');
+
+      // Fix multi-line node labels by replacing newlines with <br/>
+      // This regex matches node definitions like: NodeId[text with
+      // newlines
+      // more text]
+      const result = definition.replace(/(\w+)\[([^\]]*?)\]/gs, (match, nodeId, content) => {
+        // Check if content contains actual newlines (not <br/> tags)
+        if (content.includes('\n') && !content.includes('<br/>')) {
+          console.log('🔍 MULTILINE-NODE-FIX: Fixing node:', nodeId);
+          // Replace newlines with <br/> tags, preserving leading whitespace as single spaces
+          const fixedContent = content
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0)
+            .join('<br/>');
+          return `${nodeId}[${fixedContent}]`;
+        }
+        return match;
+      });
+
+      console.log('🔍 MULTILINE-NODE-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'multiline-node-fix',
+    priority: 460, // High priority to run before linkstyle-fix
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to fix invalid linkStyle references
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 LINKSTYLE-FIX: Checking for invalid linkStyle references');
+
+      // Count the actual number of links in the definition
+      const linkPatterns = [
+        /-->/g,           // solid arrows
+        /---/g,           // solid lines  
+        /-\.->/g,         // dashed arrows
+        /--[xo]>/g,       // arrows with markers
+        /->>|-->>|<--|<<-/g  // other arrow types
+      ];
+
+      // More comprehensive approach: find all arrow-like patterns
+      const allArrowPattern = /(-->|---|-.->|--[xo]>|->>|-->>|<--|<<-)/g;
+      const arrowMatches = definition.match(allArrowPattern);
+      const totalLinks = arrowMatches ? arrowMatches.length : 0;
+
+      console.log('🔍 LINKSTYLE-FIX: Found', totalLinks, 'links in definition');
+      if (arrowMatches) {
+        console.log('🔍 LINKSTYLE-FIX: Arrow types found:', arrowMatches);
+      }
+
+      // Process linkStyle commands and remove invalid ones
+      const lines = definition.split('\n');
+      const processedLines = lines.map(line => {
+        const linkStyleMatch = line.match(/^\s*linkStyle\s+(\d+(?:,\d+)*)/);
+        if (linkStyleMatch) {
+          const linkNumbers = linkStyleMatch[1].split(',').map(n => parseInt(n.trim()));
+          const validLinks = linkNumbers.filter(n => n < totalLinks);
+
+          if (validLinks.length !== linkNumbers.length) {
+            console.log('🔍 LINKSTYLE-FIX: Removing invalid link references:',
+              linkNumbers.filter(n => n >= totalLinks));
+          }
+
+          if (validLinks.length === 0) {
+            console.log('🔍 LINKSTYLE-FIX: Removing entire linkStyle line (no valid links)');
+            return ''; // Remove the entire line
+          }
+
+          const newLinkStyle = `linkStyle ${validLinks.join(',')}`;
+          return line.replace(/linkStyle\s+\d+(?:,\d+)*/, newLinkStyle);
+        }
+        return line;
+      });
+
+      const result = processedLines.filter(line => line !== '').join('\n');
+      console.log('🔍 LINKSTYLE-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'linkstyle-fix',
+    priority: 450, // High priority to run early
+    diagramTypes: ['flowchart', 'graph']
+  });
 
   // Add a preprocessor to fix pipe syntax in flowcharts - higher priority
   registerPreprocessor(
@@ -228,32 +429,53 @@ export function initMermaidEnhancer(): void {
     (definition: string, diagramType: string): string => {
       if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
         !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        console.log('🔍 LINK-LABEL-SANITIZER: Skipping non-flowchart diagram type:', diagramType);
         return definition;
       }
 
+      console.log('🔍 LINK-LABEL-SANITIZER: Processing flowchart/graph');
+      console.log('🔍 LINK-LABEL-SANITIZER: Input definition (first 500 chars):', definition.substring(0, 500));
+
       // This regex finds link labels and is non-greedy to handle multiple links on one line.
-      return definition.replace(/(-->|-\.->|--[xo]>|---)\s*\|([^|]*?)\|/g, (match, arrow, label) => {
+      const result = definition.replace(/(-->|-\.->|--[xo]>|---|->>|-->>)\s*\|([^|]*?)\|/g, (match, arrow, label) => {
+        console.log('🔍 LINK-LABEL-SANITIZER: Found match:', { match, arrow, label });
         let processedLabel = label.trim();
 
         // If the label is already properly quoted, do nothing.
         if (processedLabel.startsWith('"') && processedLabel.endsWith('"')) {
+          console.log('🔍 LINK-LABEL-SANITIZER: Label already quoted, skipping:', processedLabel);
           return match;
         }
 
         // If the label (cleaned or original) is empty after processing, just return the arrow without a label.
         if (!processedLabel) {
+          console.log('🔍 LINK-LABEL-SANITIZER: Empty label, returning arrow only');
           return arrow;
         }
 
         // Always quote the label to prevent parsing errors with special characters (like "1. ...").
-        let newLabel = processedLabel.replace(/"/g, '#quot;');
+        let newLabel = processedLabel
+          .replace(/"/g, '#quot;')
+          // CRITICAL: Escape numbered list syntax to prevent Mermaid markdown interpretation
+          .replace(/^(\d+)\.\s*(.*)$/, '$1\\. $2')  // Escape the period with backslash
+          // Alternative: Replace period with HTML entity
+          // .replace(/^(\d+)\.\s*(.*)$/, '$1&#46; $2')
+          // Handle bullet points by escaping them too
+          .replace(/^[-*]\s*(.*)$/, '\\$1 $2');  // Escape the bullet character
+
         // Also, replace brackets with parentheses to avoid parsing errors with node-like syntax in labels.
         newLabel = newLabel.replace(/\[/g, '(').replace(/\]/g, ')');
-        return `${arrow}|"${newLabel}"|`;
+        const finalResult = `${arrow}|"${newLabel}"|`;
+        console.log('🔍 LINK-LABEL-SANITIZER: Transformed:', { original: match, result: finalResult });
+        return finalResult;
       });
+
+      console.log('🔍 LINK-LABEL-SANITIZER: Processing complete');
+      console.log('🔍 LINK-LABEL-SANITIZER: Final result (first 500 chars):', result.substring(0, 500));
+      return result;
     }, {
     name: 'link-label-sanitizer',
-    priority: 260, // High priority to run before other fixes
+    priority: 350, // Very high priority to run before other fixes
     diagramTypes: ['flowchart', 'graph']
   });
 
@@ -273,16 +495,16 @@ export function initMermaidEnhancer(): void {
 
     // Enhanced regex to handle links with labels containing brackets
     const linkWithTargetDefRegex = /^(\s*)(\w+)\s*(--+>?)\s*(\|.*?\|)?\s*(\w+)(\[[^\]]*\])(\s*)$/gm;
-    
+
     // Process remaining lines
     const processedLines = lines.join('\n').replace(linkWithTargetDefRegex, (match, indent, source, link, label, targetId, targetLabel) => {
       // Extract optional label
       const linkLabel = label ? ` ${label}` : '';
-      
+
       return [
         `${indent}${targetId}${targetLabel}`, // Node definition
         `${indent}${source} ${link}${linkLabel} ${targetId}` // Link statement with label
-      ].join('\n'); 
+      ].join('\n');
     });
 
     // Combine diagram type with processed content

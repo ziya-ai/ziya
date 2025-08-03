@@ -6,6 +6,7 @@ import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 export interface GraphvizSpec {
     type: 'graphviz';
     isStreaming?: boolean;
+    isMarkdownBlockClosed?: boolean;
     forceRender?: boolean;
     definition: string;
 }
@@ -89,7 +90,7 @@ export const graphvizPlugin: D3RenderPlugin = {
             `;
 
             // If we're streaming and the definition is incomplete, show a waiting message
-            if (spec.isStreaming && !spec.forceRender) {
+            if (spec.isStreaming && !spec.isMarkdownBlockClosed && !spec.forceRender) {
                 const isComplete = isDiagramDefinitionComplete(spec.definition, 'graphviz');
                 const timestamp = Date.now();
                 console.log(`[${timestamp}] Graphviz streaming check:`, {
