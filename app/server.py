@@ -975,16 +975,31 @@ async def stream_chunks(body):
                                 full_response = processed_response
                                 tool_executed = True
                                 
-                                # Clear the tool call from current_response to prevent re-execution
+                                # Add tool call and result to conversation context for model
+                                from langchain_core.messages import AIMessage, ToolMessage
+                                
+                                # Extract tool call details
                                 tool_start = current_response.find(TOOL_SENTINEL_OPEN)
                                 tool_end = current_response.find(TOOL_SENTINEL_CLOSE) + len(TOOL_SENTINEL_CLOSE)
                                 if tool_start >= 0 and tool_end > tool_start:
                                     tool_call = current_response[tool_start:tool_end]
+                                    
+                                    # Add the tool call as an AI message
+                                    messages.append(AIMessage(content=tool_call))
+                                    
+                                    # Add the tool result as a tool message or AI message
+                                    if "```tool:" in tool_result:
+                                        # Clean tool result for model context
+                                        clean_result = tool_result.replace("```tool:", "").replace("```", "").strip()
+                                        messages.append(AIMessage(content=f"Tool result: {clean_result}"))
+                                    
+                                    # Clear the tool call from current_response
                                     current_response = current_response.replace(tool_call, "")
-                                    logger.info("🔍 STREAM: Removed tool call from current_response to prevent re-execution")
+                                    logger.info("🔍 STREAM: Added tool call and result to conversation context")
                                 
-                                # Continue streaming - don't break, allow multiple sequential tools
-                                
+                                # Don't break - let the model continue with the tool result
+                                # The model will see the tool result in the next iteration
+                                continue
                             else:
                                 logger.warning("🔍 STREAM: Tool execution failed or no change")
                                 tool_executed = True
