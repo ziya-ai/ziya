@@ -67,6 +67,12 @@ class ConnectionPool:
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
         
+        # Import secure execution registry
+        from app.mcp.enhanced_tools import get_execution_registry
+        registry = get_execution_registry()
+        
+        # Create execution token for verification
+        
         if not mcp_manager.is_initialized:
             logger.error("🔌 CONNECTION_POOL: MCP manager not initialized")
             print("🔌 CONNECTION_POOL: MCP manager not initialized")
