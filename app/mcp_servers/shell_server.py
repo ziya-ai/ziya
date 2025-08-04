@@ -34,6 +34,8 @@ class ShellServer:
             'ls': r'^ls(\s+.*)?$',
             'cat': r'^cat(\s+.*)?$',
             'pwd': r'^pwd(\s+.*)?$',
+            'cd': r'^cd(\s+.*)?$',  # Allow directory navigation
+            'tree': r'^tree(\s+.*)?$',  # Allow directory tree visualization
             'find': r'^find(\s+.*)?$',
             'grep': r'^grep(\s+.*)?$',
             'wc': r'^wc(\s+.*)?$',

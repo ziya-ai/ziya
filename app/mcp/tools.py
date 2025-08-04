@@ -49,8 +49,8 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     """
     Parse tool calls from content, supporting multiple formats.
     
-    Supports both:
-    - {TOOL_SENTINEL_OPEN}<name>tool_name</name><arguments>...</arguments>{TOOL_SENTINEL_CLOSE}
+    Supports:
+    - {TOOL_SENTINEL_OPEN}<n>tool_name</n><arguments>...</arguments>{TOOL_SENTINEL_CLOSE}
     - {TOOL_SENTINEL_OPEN}<invoke name="tool_name"><parameter name="param">value</parameter></invoke>{TOOL_SENTINEL_CLOSE}
     
     Returns:
@@ -58,136 +58,127 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     """
     import json
     
-    # Format 1: <name> format (PRIMARY - from system prompt)
-    name_format_pattern = r'<TOOL_SENTINEL>\s*<name>([^<]+)</name>\s*<arguments>\s*(\{.*?\})\s*</arguments>\s*</TOOL_SENTINEL>'
-    match = re.search(name_format_pattern, content, re.DOTALL)
-    if match:
-        tool_name = match.group(1).strip()
-        try:
-            arguments = json.loads(match.group(2))
-            logger.debug(f"🔍 PARSE: Successfully parsed <name> format - tool: {tool_name}, args: {arguments}")
-            return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
-            return None
-
-    # Format 2: <name> format without closing tag (partial)
-    name_format_partial_pattern = r'<TOOL_SENTINEL>\s*<name>([^<]+)</name>\s*<arguments>\s*(\{.*?\})\s*</arguments>'
-    match = re.search(name_format_partial_pattern, content, re.DOTALL)
-    if match:
-        tool_name = match.group(1).strip()
-        try:
-            arguments = json.loads(match.group(2))
-            logger.debug(f"🔍 PARSE: Successfully parsed <name> partial format - tool: {tool_name}, args: {arguments}")
-            return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
-            return None
-
-    # Format 3: <n> format (LEGACY)
-    import json
+    logger.debug(f"🔍 PARSE: Parsing tool call from content: {content[:200]}...")
     
-    # Format 1: New <name> format (from recent logs)
-    name_pattern = r'<TOOL_SENTINEL>\s*<name>([^<]+)</name>\s*<arguments>\s*(\{.*?\})\s*</arguments>\s*</TOOL_SENTINEL>'
-    match = re.search(name_pattern, content, re.DOTALL)
+    # Use the actual sentinel values from config
+    sentinel_open_escaped = re.escape(TOOL_SENTINEL_OPEN)
+    sentinel_close_escaped = re.escape(TOOL_SENTINEL_CLOSE)
+    
+    # Format 1: <n> format with complete closing tag
+    # Pattern: <TOOL_SENTINEL><n>tool_name</n><arguments>{...}</arguments></TOOL_SENTINEL>
+    complete_pattern = f'{sentinel_open_escaped}\\s*<n>([^<]+)</n>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>\\s*{sentinel_close_escaped}'
+    match = re.search(complete_pattern, content, re.DOTALL)
     if match:
         tool_name = match.group(1).strip()
         try:
             arguments = json.loads(match.group(2))
-            logger.debug(f"🔍 PARSE: Successfully parsed <name> format - tool: {tool_name}, args: {arguments}")
+            logger.debug(f"🔍 PARSE: Successfully parsed complete <n> format - tool: {tool_name}, args: {arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
             return None
 
-    # Format 2: New <name> format without closing tag (partial)
-    name_partial_pattern = r'<TOOL_SENTINEL>\s*<name>([^<]+)</name>\s*<arguments>\s*(\{.*?\})\s*</arguments>'
-    match = re.search(name_partial_pattern, content, re.DOTALL)
+    # Format 1b: <name> format with complete closing tag (alternative format)
+    # Pattern: <TOOL_SENTINEL><name>tool_name</name><arguments>{...}</arguments></TOOL_SENTINEL>
+    complete_name_pattern = f'{sentinel_open_escaped}\\s*<name>([^<]+)</name>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>\\s*{sentinel_close_escaped}'
+    match = re.search(complete_name_pattern, content, re.DOTALL)
     if match:
         tool_name = match.group(1).strip()
         try:
             arguments = json.loads(match.group(2))
-            logger.debug(f"🔍 PARSE: Successfully parsed <name> partial format - tool: {tool_name}, args: {arguments}")
+            logger.debug(f"🔍 PARSE: Successfully parsed complete <name> format - tool: {tool_name}, args: {arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
             return None
 
-    # Format 3: Standard <TOOL_SENTINEL> format with <n> (legacy)
-    standard_pattern = r'<TOOL_SENTINEL>\s*<n>([^<]+)</n>\s*<arguments>\s*(\{.*?\})\s*</arguments>\s*</TOOL_SENTINEL>'
-    match = re.search(standard_pattern, content, re.DOTALL)
-    if match:
-        tool_name = match.group(1).strip()
-        try:
-            arguments = json.loads(match.group(2))
-            logger.debug(f"🔍 PARSE: Successfully parsed <n> format - tool: {tool_name}, args: {arguments}")
-            return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
-            return None
-
-    # Format 4: Standard format without closing tag (partial)
-    partial_pattern = r'<TOOL_SENTINEL>\s*<n>([^<]+)</n>\s*<arguments>\s*(\{.*?\})\s*</arguments>'
+    # Format 2: <n> format without closing tag (partial/streaming)
+    # Pattern: <TOOL_SENTINEL><n>tool_name</n><arguments>{...}</arguments>
+    partial_pattern = f'{sentinel_open_escaped}\\s*<n>([^<]+)</n>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>'
     match = re.search(partial_pattern, content, re.DOTALL)
     if match:
         tool_name = match.group(1).strip()
         try:
             arguments = json.loads(match.group(2))
-            logger.debug(f"🔍 PARSE: Successfully parsed <n> partial format - tool: {tool_name}, args: {arguments}")
+            logger.debug(f"🔍 PARSE: Successfully parsed partial <n> format - tool: {tool_name}, args: {arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
             return None
 
-    # Log the content being parsed for debugging
-    if TOOL_SENTINEL_OPEN in content:
-        logger.debug(f"🔍 PARSE: Attempting to parse tool call from content: {content[:200]}...")
-
-    # Format 1: <name> and <arguments>
-    name_args_pattern = re.escape(TOOL_SENTINEL_OPEN) + r'\s*<name>([^<]+)</name>\s*<arguments>\s*(\{.*?\})\s*</arguments>\s*' + re.escape(TOOL_SENTINEL_CLOSE)
-
-    match = re.search(name_args_pattern, content, re.DOTALL)
+    # Format 2b: <name> format without closing tag (partial/streaming)
+    # Pattern: <TOOL_SENTINEL><name>tool_name</name><arguments>{...}</arguments>
+    partial_name_pattern = f'{sentinel_open_escaped}\\s*<name>([^<]+)</name>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>'
+    match = re.search(partial_name_pattern, content, re.DOTALL)
     if match:
         tool_name = match.group(1).strip()
         try:
-            import json
             arguments = json.loads(match.group(2))
-            logger.debug(f"🔍 PARSE: Successfully parsed format 1 - tool: {tool_name}, args: {arguments}")
+            logger.debug(f"🔍 PARSE: Successfully parsed partial <name> format - tool: {tool_name}, args: {arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse arguments for tool {tool_name}: {match.group(2)}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
             return None
 
-    # Format 2: <invoke> and <parameter>
-    invoke_pattern = rf'{re.escape(TOOL_SENTINEL_OPEN)}\s*<invoke\s+name="([^"]+)">\s*(.*?)\s*</invoke>\s*{re.escape(TOOL_SENTINEL_CLOSE)}'
+    # Format 3: <invoke> format (alternative format)
+    # Pattern: <TOOL_SENTINEL><invoke name="tool_name"><parameter name="param">value</parameter></invoke></TOOL_SENTINEL>
+    invoke_pattern = f'{sentinel_open_escaped}\\s*<invoke\\s+name="([^"]+)"[^>]*>(.*?)</invoke>\\s*{sentinel_close_escaped}'
     match = re.search(invoke_pattern, content, re.DOTALL)
     if match:
         tool_name = match.group(1).strip()
-        params_content = match.group(2)
+        invoke_content = match.group(2)
         
-        # Parse parameters
-        param_pattern = r'<parameter\s+name="([^"]+)">([^<]*)</parameter>'
-        params = {}
-        for param_match in re.finditer(param_pattern, params_content):
-            param_name = param_match.group(1)
-            param_value = param_match.group(2).strip()
-            params[param_name] = param_value
+        # Parse parameters from invoke content
+        arguments = {}
+        param_pattern = r'<parameter\s+name="([^"]+)"[^>]*>(.*?)</parameter>'
+        param_matches = re.findall(param_pattern, invoke_content, re.DOTALL)
         
-        return {"tool_name": tool_name, "arguments": params}
+        for param_name, param_value in param_matches:
+            # Try to parse as JSON, otherwise use as string
+            try:
+                arguments[param_name] = json.loads(param_value.strip())
+            except json.JSONDecodeError:
+                arguments[param_name] = param_value.strip()
+        
+        logger.debug(f"🔍 PARSE: Successfully parsed invoke format - tool: {tool_name}, args: {arguments}")
+        return {"tool_name": tool_name, "arguments": arguments}
 
-    # Format 3: Simple extraction for <name> format
-    simple_name_pattern = r'<name>([^<]+)</name>'
-    match = re.search(simple_name_pattern, content)
-    if match:
-        tool_name = match.group(1).strip()
+    # Format 4: Simple <n> extraction (fallback)
+    # Look for just the tool name and try to find arguments separately
+    simple_name_pattern = r'<n>([^<]+)</n>'
+    name_match = re.search(simple_name_pattern, content)
+    if name_match:
+        tool_name = name_match.group(1).strip()
+        
         # Try to extract arguments
         args_pattern = r'<arguments>\s*(\{.*?\})\s*</arguments>'
         args_match = re.search(args_pattern, content, re.DOTALL)
         if args_match:
             try:
-                import json
                 arguments = json.loads(args_match.group(1))
-                logger.debug(f"🔍 PARSE: Successfully parsed <name> format - tool: {tool_name}, args: {arguments}")
+                logger.debug(f"🔍 PARSE: Successfully parsed simple <n> format - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except json.JSONDecodeError:
+                pass
+        
+        # Return with empty arguments if no valid JSON found
+        logger.debug(f"🔍 PARSE: Parsed tool name only from <n> - tool: {tool_name}")
+        return {"tool_name": tool_name, "arguments": {}}
+
+    # Format 4b: Simple <name> extraction (fallback)
+    # Look for just the tool name and try to find arguments separately
+    simple_name_pattern_alt = r'<name>([^<]+)</name>'
+    name_match = re.search(simple_name_pattern_alt, content)
+    if name_match:
+        tool_name = name_match.group(1).strip()
+        
+        # Try to extract arguments
+        args_pattern = r'<arguments>\s*(\{.*?\})\s*</arguments>'
+        args_match = re.search(args_pattern, content, re.DOTALL)
+        if args_match:
+            try:
+                arguments = json.loads(args_match.group(1))
+                logger.debug(f"🔍 PARSE: Successfully parsed simple <name> format - tool: {tool_name}, args: {arguments}")
                 return {"tool_name": tool_name, "arguments": arguments}
             except json.JSONDecodeError:
                 pass
@@ -195,10 +186,11 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
         # Return with empty arguments if no valid JSON found
         logger.debug(f"🔍 PARSE: Parsed tool name only from <name> - tool: {tool_name}")
         return {"tool_name": tool_name, "arguments": {}}
+        return {"tool_name": tool_name, "arguments": {}}
 
-    # Log if no tool call pattern was found
+    # If we get here, no valid tool call was found
     if TOOL_SENTINEL_OPEN in content:
-        logger.warning(f"Found {TOOL_SENTINEL_OPEN} tag but couldn't parse it. Content: {content[:200]}...")
+        logger.warning(f"🔍 PARSE: Tool sentinel found but could not parse tool call from: {content[:300]}...")
     
     return None
 
@@ -217,6 +209,7 @@ async def _track_timeout(tool_name: str) -> bool:
 async def _reset_timeout_counter(tool_name: str):
     """Reset timeout counter for a tool after successful execution."""
     async with _timeout_lock:
+        _consecutive_timeouts.pop(tool_name, None)
         _consecutive_timeouts.pop(tool_name, None)
 
 class MCPTool(BaseTool):

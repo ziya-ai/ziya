@@ -31,7 +31,11 @@ async def execute_mcp_tools_with_status(full_response: str) -> str:
     
     # Import improved functions
     from app.mcp_fixes import clean_sentinels
+    from app.mcp.enhanced_tools import process_enhanced_triggers
     from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+    
+    # First process any enhanced triggers (secure execution)
+    processed_response = await process_enhanced_triggers(full_response, "default")
     
     # Check if response contains standard sentinel tool calls
     has_standard_tool_calls = (

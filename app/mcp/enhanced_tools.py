@@ -136,27 +136,8 @@ class ToolExecutionRegistry:
             if execution_id in self._results:
                 del self._results[execution_id]
 
-class ConnectionPool:
-    """Pool for managing connections to MCP servers."""
-    
-    def __init__(self):
-        """Initialize the connection pool."""
-        self.server_configs = {}
-    
-    def set_server_configs(self, configs: Dict[str, Any]):
-        """Set server configurations."""
-        self.server_configs = configs
-    
-    async def call_tool(self, conversation_id: str, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Any:
-        """Call a tool via the appropriate MCP server."""
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        
-        if not mcp_manager.is_initialized:
-            raise Exception("MCP manager not initialized")
-        
-        # Call the tool via MCP manager
-        return await mcp_manager.call_tool(tool_name, arguments, server_name)
+# Use the existing connection pool from connection_pool.py
+from app.mcp.connection_pool import get_connection_pool
 
 # Global instances
 _registry = None
@@ -168,13 +149,6 @@ def get_execution_registry() -> ToolExecutionRegistry:
     if _registry is None:
         _registry = ToolExecutionRegistry()
     return _registry
-
-def get_connection_pool() -> ConnectionPool:
-    """Get the global connection pool."""
-    global _connection_pool
-    if _connection_pool is None:
-        _connection_pool = ConnectionPool()
-    return _connection_pool
 
 def create_secure_result_marker(tool_name: str, execution_time: float) -> str:
     """Create a secure result marker for tool output."""
@@ -230,7 +204,7 @@ class SecureMCPTool(BaseTool):
         
         # Get registry and connection pool
         registry = get_execution_registry()
-        pool = get_connection_pool()
+        pool = get_connection_pool()  # This now uses the existing connection pool
         
         # Create secure token
         token = ToolExecutionToken(
@@ -286,6 +260,7 @@ class SecureMCPTool(BaseTool):
             
             # Create secure result marker
             marker = create_secure_result_marker(mcp_tool_name, execution_time)
+            logger.info(f"🔐 SECURE_TOOL: Executed {mcp_tool_name} with secure verification")
             
             # Return formatted result with marker
             return f"{marker}{formatted_result}"
@@ -600,6 +575,13 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     """
     secure_tools = []
     
+    # Check if secure mode is enabled
+    secure_mode_enabled = os.environ.get("ZIYA_SECURE_MCP", "true").lower() in ("true", "1", "yes")
+    if not secure_mode_enabled:
+        logger.info("Secure MCP mode disabled, falling back to basic MCP tools")
+        from app.mcp.tools import create_mcp_tools
+        return create_mcp_tools()
+    
     try:
         # Import MCP manager
         from app.mcp.manager import get_mcp_manager
@@ -632,9 +614,9 @@ def create_secure_mcp_tools() -> List[BaseTool]:
             )
             
             secure_tools.append(secure_tool)
-            logger.info(f"Created secure MCP tool: {secure_name}")
+            logger.info(f"🔐 Created secure MCP tool: {secure_name}")
         
-        logger.info(f"Created {len(secure_tools)} secure MCP tools")
+        logger.info(f"🔐 Created {len(secure_tools)} secure MCP tools")
         
     except Exception as e:
         logger.error(f"Error creating secure MCP tools: {e}")
