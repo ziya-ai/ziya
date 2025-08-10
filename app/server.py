@@ -542,6 +542,8 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
         tool_name = parsed_call["tool_name"]
         arguments = parsed_call["arguments"]
         
+        logger.info(f"🔍 MCP TOOL CALL: tool_name='{tool_name}', arguments={arguments}")
+        print(f"🔍 MCP TOOL CALL: tool_name='{tool_name}', arguments={arguments}")
         logger.debug(f"🔍 MCP: Executing tool {tool_name} with args: {arguments}")
         
         try:
@@ -554,6 +556,8 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
             # Execute the tool (remove mcp_ prefix if present for internal lookup)
             internal_tool_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
             result = await mcp_manager.call_tool(internal_tool_name, arguments)
+            
+            logger.info(f"🔍 MCP TOOL RESULT: tool_name='{internal_tool_name}', result_type={type(result)}, result={result}")
             
             if result is None:
                 logger.error(f"🔍 MCP: Tool {internal_tool_name} returned None")
@@ -590,6 +594,7 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
     
     # Final cleanup to ensure no fragments remain
     return clean_internal_sentinels(modified_response)
+
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
     logger.error("🔍 EXECUTION_TRACE: stream_chunks() called - ENTRY POINT")
@@ -614,6 +619,7 @@ async def stream_chunks(body):
     if not conversation_id:
         conversation_id = config_data.get("conversation_id")
     if not conversation_id:
+        import uuid
         conversation_id = f"stream_{uuid.uuid4().hex[:8]}"
         
     logger.info(f"🔍 STREAM_CHUNKS: Using conversation_id: {conversation_id}")
@@ -894,16 +900,16 @@ async def stream_chunks(body):
                     # Log the actual messages being sent to model on first iteration
                     if iteration == 1 and not hasattr(stream_chunks, '_logged_model_input'):
                         stream_chunks._logged_model_input = True
-                        logger.info("🔥" * 50)
-                        logger.info("FINAL MODEL INPUT - ACTUAL MESSAGES SENT TO MODEL")
-                        logger.info("🔥" * 50)
+                        logger.debug("🔥" * 50)
+                        logger.debug("FINAL MODEL INPUT - ACTUAL MESSAGES SENT TO MODEL")
+                        logger.debug("🔥" * 50)
                         for idx, msg in enumerate(messages):
-                            logger.info(f"FINAL MESSAGE {idx+1}: {type(msg).__name__}")
-                            logger.info(f"CONTENT: {msg.content}")
+                            logger.debug(f"FINAL MESSAGE {idx+1}: {type(msg).__name__}")
+                            logger.debug(f"CONTENT: {msg.content}")
                             if hasattr(msg, 'additional_kwargs') and msg.additional_kwargs:
-                                logger.info(f"ADDITIONAL_KWARGS: {msg.additional_kwargs}")
-                            logger.info("-" * 30)
-                        logger.info("🔥" * 50)
+                                logger.debug(f"ADDITIONAL_KWARGS: {msg.additional_kwargs}")
+                            logger.debug("-" * 30)
+                        logger.debug("🔥" * 50)
 
                     # Check connection status
                     if not connection_active:
@@ -931,6 +937,8 @@ async def stream_chunks(body):
                         if TOOL_SENTINEL_OPEN in content_str:
                             inside_tool_call = True
                             tool_call_buffer = ""
+                            # Don't stream the opening sentinel
+                            content_str = content_str[:content_str.find(TOOLOPEN)]
                             logger.info("🔍 STREAM: Entering tool call - suppressing all output")
                         
                         # If we're inside a tool call, buffer the content instead of streaming
@@ -941,6 +949,8 @@ async def stream_chunks(body):
                             if TOOL_SENTINEL_CLOSE in content_str:
                                 inside_tool_call = False
                                 logger.info(f"🔍 STREAM: Exiting tool call - buffered {len(tool_call_buffer)} chars")
+                                # Don't stream the closing sentinel either
+                                content_str = content_str[content_str.find(TOOLCLOSE) + len(_CLOSE):]
                             # Skip streaming this chunk - it's part of a tool call
                             current_response += content_str
                             continue
@@ -977,7 +987,18 @@ async def stream_chunks(body):
                                        TOOL_SENTINEL_CLOSE in current_response and 
                                        not tool_executed)
                     
+                    # Check if we're currently inside a diff code block
+                    # Count backticks to determine if we're in a code block
+                    backtick_count = current_response.count('```')
+                    in_code_block = (backtick_count % 2) == 1
+                    
+                    # Check if the current code block is a diff block
+                    is_in_diff_block = in_code_block and '```diff' in current_response
+                    
                     should_suppress = (
+                        # Only suppress if not in a diff block AND matches suppression patterns
+                        not is_in_diff_block and (
+                        inside_tool_call or
                         TOOL_SENTINEL_OPEN in content_str or 
                         TOOL_SENTINEL_CLOSE in content_str or
                         content_str.strip().startswith('<TOOL') or
@@ -988,16 +1009,19 @@ async def stream_chunks(body):
                         '<TOOL_SENTINEL' in content_str or
                         '</TOOL_SENTINEL' in content_str or
                         # Suppress partial tool sentinel fragments
+                        'SENTINEL>' in content_str or
+                        '<SENTINEL' in content_str or
+                        '_run_shell' in content_str or
                         '_SENTINEL' in content_str or
                         "mcp_" in content_str and ("\"command\"" in content_str or "\"format\"" in content_str or "\"timeout\"" in content_str) or
                         # Enhanced tool call detection
                         content_str.strip().startswith("mcp_") or
                         "mcp_run" in content_str or
                         "mcp_get" in content_str or
-                        # Catch argument patterns
-                        "\"command\":" in content_str or
-                        "\"format\":" in content_str or
-                        "\"timeout\":" in content_str or
+                        # Catch argument patterns (only suppress if inside tool call)
+                        ("\"command\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
+                        ("\"format\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
+                        ("\"timeout\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
                         # Catch partial tool fragments that leak through
                         content_str.strip().endswith(">mcp_") or
                         content_str.strip().endswith("1>") or
@@ -1021,7 +1045,7 @@ async def stream_chunks(body):
                         # CRITICAL: Suppress ALL content after tool calls but before execution
                         # This prevents hallucinated responses from leaking through
                         has_pending_tools
-                    )
+                    ))
                     if not should_suppress:
 
                         ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
@@ -1064,9 +1088,10 @@ async def stream_chunks(body):
                         
                         # Execute if we have 1+ tools AND model isnt generating more tools in this chunk
                         if complete_tool_calls >= 1 and chunk_has_no_tools:
-                            logger.info(f"🔍 STREAM: {complete_tool_calls} tool call(s) detected, BREAKING STREAM for immediate execution")
-                            # BREAK the streaming loop to force immediate tool execution
-                            break
+                            logger.info(f"🔍 STREAM: {complete_tool_calls} tool call(s) detected, executing inline")
+                            # Don't break! Execute inline and continue streaming
+                            # This keeps us in the same stream for efficiency
+                            # break  # REMOVED - we want to stay in the same stream
                             
                             # Execute ALL tools at once
                             try:
@@ -1115,6 +1140,10 @@ async def stream_chunks(body):
                                     
                                     logger.info("🔍 STREAM: Tool results added to context for continued exploration")
                                     
+                                    # CRITICAL: Don't add continuation prompts - let the model continue naturally
+                                    # This avoids breaking the flow and keeps everything in one stream
+                                    # messages.append(HumanMessage(content="Based on the tool results above, provide your final response."))
+                                    
                                     # Add continuation prompt
                                     messages.append(HumanMessage(content="Based on the tool results above, provide your final response."))
                                     
@@ -1125,7 +1154,8 @@ async def stream_chunks(body):
                                     
                                     # Set tool_executed to True to indicate tools were processed
                                     tool_executed = True
-                                    
+                                    # DON'T break or continue here - keep streaming!
+                                    # The model will continue generating after the tool results
                                     # Continue in main streaming loop - don't break here
                                     # The main loop will continue and can detect/execute more tool calls
                                     
@@ -1144,72 +1174,69 @@ async def stream_chunks(body):
                     
                     complete_tool_calls = current_response.count(TOOL_SENTINEL_CLOSE)
                     logger.info(f"🔍 STREAM: Executing {complete_tool_calls} tool call(s) after stream break")
-                    
+
                     try:
                         processed_response = await detect_and_execute_mcp_tools(current_response, processed_tool_calls)
+                        logger.info(f"🔍 STREAM: Post-stream tool execution result type: {type(processed_response)}, length: {len(processed_response) if isinstance(processed_response, str) else 'N/A'}")
+                    except Exception as tool_exec_error:
+                        logger.error(f"🔍 STREAM: Tool execution error: {tool_exec_error}")
+                        processed_response = current_response  # Fallback to original response
+                    
+                    # Process and stream tool results (this block was incorrectly indented)
+                    if processed_response != current_response:
+                        if "```tool:" in processed_response:
+                            tool_blocks = []
+                            start_pos = 0
+                            while True:
+                                tool_start = processed_response.find("```tool:", start_pos)
+                                if tool_start == -1:
+                                    break
+                                tool_end = processed_response.find("```", tool_start + 8)
+                                if tool_end == -1:
+                                    break
+                                tool_block = processed_response[tool_start:tool_end + 3]
+                                tool_blocks.append(tool_block)
+                                start_pos = tool_end + 3
+                            
+                            # Stream ALL tool results to frontend
+                            for tool_block in tool_blocks:
+                                tool_result = "\n" + tool_block + "\n"
+                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": tool_result}]
+                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                logger.info(f"🔍 STREAM: Tool result streamed: {tool_result[:50]}...")
                         
-                        if processed_response != current_response:
-                            # Extract and stream ALL tool results
-                            if "```tool:" in processed_response:
-                                tool_blocks = []
-                                start_pos = 0
-                                while True:
-                                    tool_start = processed_response.find("```tool:", start_pos)
-                                    if tool_start == -1:
-                                        break
-                                    tool_end = processed_response.find("```", tool_start + 8)
-                                    if tool_end == -1:
-                                        break
-                                    tool_block = processed_response[tool_start:tool_end + 3]
-                                    tool_blocks.append(tool_block)
-                                    start_pos = tool_end + 3
-                                
-                                # Stream ALL tool results to frontend
-                                for tool_block in tool_blocks:
-                                    tool_result = "\n" + tool_block + "\n"
-                                    ops = [{"op": "add", "path": "/streamed_output_str/-", "value": tool_result}]
-                                    yield f"data: {json.dumps({'ops': ops})}\n\n"
-                                    logger.info(f"🔍 STREAM: Tool result streamed: {tool_result[:50]}...")
+                        # Add ALL tool results to conversation context for model continuation
+                        from langchain_core.messages import AIMessage, HumanMessage
+                        
+                        # Add the original tool calls as one message
+                        messages.append(AIMessage(content=current_response))
+                        
+                        # Add all tool results in a way that emphasizes learning from failures
+                        if "```tool:" in processed_response:
+                            combined_results = "Tool execution results:\n\n"
+                            for i, tool_block in enumerate(tool_blocks, 1):
+                                clean_result = tool_block.split("```tool:")[1].split("```")[0].strip()
+                                combined_results += f"Result {i}:\n{clean_result}\n\n"
                             
-                            # Add ALL tool results to conversation context for model continuation
-                            from langchain_core.messages import AIMessage, HumanMessage
-                            
-                            # Add the original tool calls as one message
-                            messages.append(AIMessage(content=current_response))
-                            
-                            # Add all tool results in a way that emphasizes learning from failures
-                            if "```tool:" in processed_response:
-                                combined_results = "Tool execution results:\n\n"
-                                for i, tool_block in enumerate(tool_blocks, 1):
-                                    clean_result = tool_block.split("```tool:")[1].split("```")[0].strip()
-                                    combined_results += f"Result {i}:\n{clean_result}\n\n"
-                                
-                                messages.append(AIMessage(content=combined_results))
-                            
-                            # Add continuation prompt that encourages learning from actual results
-                            messages.append(HumanMessage(content="Based on the actual tool results above, continue your exploration. Pay attention to what exists vs what doesn't, and adapt your commands accordingly."))
-                            
-                            logger.info("🔍 STREAM: Tool results added to context for continued exploration")
-                            
-                            # Add continuation prompt
-                            messages.append(HumanMessage(content="Based on the tool results above, provide your final response."))
-                            
-                            logger.info("🔍 STREAM: Tool results added to context, continuing main stream...")
-                            
-                            # Reset current_response to prevent detecting old tool calls
-                            current_response = ""
-                            
-                            # Set tool_executed to True to indicate tools were processed
-                            tool_executed = True
-                            
-                    except Exception as tool_error:
-                        logger.error(f"🔍 STREAM: Tool execution error: {tool_error}")
-                        error_msg = f"**Tool Error:** {str(tool_error)}"
-                        ops = [{"op": "add", "path": "/streamed_output_str/-", "value": error_msg}]
-                        yield f"data: {json.dumps({'ops': ops})}\n\n"
+                            messages.append(AIMessage(content=combined_results))
+                        
+                        # Add a simple continuation prompt
+                        messages.append(HumanMessage(content="Please continue with your response based on the tool results above."))
+                        
+                        logger.info("🔍 STREAM: Tool results added to context, continuing in SAME iteration...")
+                        
+                        # Reset current_response to prevent detecting old tool calls
+                        current_response = ""
+                        
+                        # Set tool_executed to True to indicate tools were processed
                         tool_executed = True
+                        # CRITICAL: Don't break! Continue in the same iteration to let model respond
+                        # We want to stay in iteration 1 and let the model continue generating
+                        # This avoids creating a new stream and resending context
+                    else:
+                        logger.warning("🔍 STREAM: Tool execution returned no changes")
 
-                # If this is the first iteration and no tool was executed, 
+                # If this is the first iteration and no tool was executed,
                 logger.info(f"🔍 AGENT: Iteration {iteration} complete. current_response length: {len(current_response)}, tool_executed: {tool_executed}")
 
                 # Always update full_response with current_response content
@@ -1231,10 +1258,10 @@ async def stream_chunks(body):
                 logger.info("🔍 STREAM: Tools executed, continuing to next iteration for more tool calls...")
                 
                 # OLD SYSTEM DISABLED - Using new stream breaking system instead
-                if processed_response != current_response:
+                if len(current_response) > 0:
                     logger.info("🔍 AGENT: Old tool result system disabled - using stream breaking system")
                     # Just update the full_response to keep the processed content
-                    full_response = processed_response
+                    full_response = current_response
                 else:
                     logger.warning("🔍 AGENT: Tool execution failed or no change")
                     # Tool execution failed or no change - still update full_response
@@ -1246,6 +1273,7 @@ async def stream_chunks(body):
 
             except Exception as e:
                 logger.error(f"Error in agent iteration {iteration}: {str(e)}", exc_info=True)
+                processed_response = current_response  # Initialize before use
                 
                 # Preserve any accumulated response content before handling the error
                 if current_response and len(current_response.strip()) > 0:
@@ -1263,6 +1291,7 @@ async def stream_chunks(body):
                     full_response = current_response  # Ensure it's preserved in full_response
                 
                 # Handle ValidationError specifically by sending proper SSE error
+                from app.utils.custom_exceptions import ValidationError
                 if isinstance(e, ValidationError):
                     logger.info("🔍 AGENT: Handling ValidationError in streaming context, sending SSE error")
                     error_data = {
