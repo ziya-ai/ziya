@@ -6,6 +6,9 @@ It should be importable without triggering any side effects or initializations.
 """
 import os
 
+# Migration feature flag
+USE_DIRECT_STREAMING = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'false').lower() == 'true'
+
 # Server configuration
 DEFAULT_PORT = 6969
 
@@ -115,13 +118,23 @@ MODEL_FAMILIES = {
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 2.0, "default": 1.0},
             "topP": {"min": 0.0, "max": 1.0, "default": 0.95},
-            "maxOutputTokens": {"min": 1000, "max": 65535, "defailt": 20000},
+            "maxOutputTokens": {"min": 1000, "max": 65535, "default": 20000},
             "frequencyPenalty": {"min": -2, "max": 1.99, "default": 0},
             "presencePenalty": {"min": -2, "max": 1.99, "default": 0}
         }
     },
     "gemini-flash": {
         "supported_parameters": ["temperature", "top_k", "top_p"] 
+    },
+    "oss_openai_gpt": {
+        "supported_parameters": ["temperature", "top_k", "top_p"],
+        "token_limit": 128000,
+        "region": "us-east-1",
+        "inference_parameters": {
+            "temperature": 0.7,
+            "topP": 0.9,
+            "maxTokens": 1000
+        }
     }
 }
 
@@ -162,6 +175,19 @@ ENDPOINT_DEFAULTS = {
 # Model-specific configs that override endpoint defaults
 MODEL_CONFIGS = {
     "bedrock": {
+        "opus4.1": {
+            "model_id": {
+                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0"
+            },
+            "token_limit": 200000,  # Total context window size
+            "max_output_tokens": 64000,  # Maximum output tokens
+            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,  # Override global default
+            "family": "claude",
+            "supports_context_caching": True,
+            "region": "us-east-1"  # Model-specific region preference
+        },
         "sonnet4.0": {
             "model_id": {
                 "us": "us.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -173,7 +199,10 @@ MODEL_CONFIGS = {
             "supports_thinking": True,  # Override global default
             "family": "claude",
             "supports_context_caching": True,
-            "region": "us-east-1"  # Model-specific region preference
+            "region": "us-east-1",  # Model-specific region preference
+            "supports_extended_context": True,  # Supports 1M token context window
+            "extended_context_limit": 1000000,  # Extended context window size
+            "extended_context_header": "context-1m-2025-08-07"  # Beta header for extended context
         },
         "sonnet3.7": {
             "model_id": {
@@ -275,6 +304,24 @@ MODEL_CONFIGS = {
             "max_input_tokens": 128000,
             "context_window": 128000
         },
+        "openai-gpt-120b": {
+            "model_id": {
+                "us": "openai.gpt-oss-120b-1:0"
+            },
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "region": "us-east-1"  # OpenAI models only available in us-east-1
+        },
+        "openai-gpt-20b": {
+            "model_id": {
+                "us": "us.openai.gpt-oss-20b-1:0"
+            },
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "region": "us-east-1"  # OpenAI models only available in us-east-1
+        }
     },
     "google": {
         "gemini-pro": {

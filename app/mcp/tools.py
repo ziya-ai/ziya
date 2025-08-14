@@ -49,7 +49,7 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     """
     Parse tool calls from content, supporting multiple formats.
     
-    Supports:
+    Supports multiple formats:
     - {TOOL_SENTINEL_OPEN}<n>tool_name</n><arguments>...</arguments>{TOOL_SENTINEL_CLOSE}
     - {TOOL_SENTINEL_OPEN}<invoke name="tool_name"><parameter name="param">value</parameter></invoke>{TOOL_SENTINEL_CLOSE}
     
@@ -59,7 +59,7 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     import json
     
     logger.debug(f"🔍 PARSE: Parsing tool call from content: {content[:200]}...")
-    
+
     # Use the actual sentinel values from config
     sentinel_open_escaped = re.escape(TOOL_SENTINEL_OPEN)
     sentinel_close_escaped = re.escape(TOOL_SENTINEL_CLOSE)
@@ -72,9 +72,30 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
         tool_name = match.group(1).strip()
         try:
             arguments = json.loads(match.group(2))
+            logger.info(f"🔍 PARSE_DEBUG: Raw arguments string: '{match.group(2)}'")
+            logger.info(f"🔍 PARSE_DEBUG: Parsed arguments: {arguments}")
+            print(f"🔍 PARSE_DEBUG: Raw arguments string: '{match.group(2)}', Parsed: {arguments}")
             logger.debug(f"🔍 PARSE: Successfully parsed complete <n> format - tool: {tool_name}, args: {arguments}")
+            logger.info(f"🔍 PARSE SUCCESS: tool_name='{tool_name}', arguments={arguments}")
+            print(f"🔍 PARSE SUCCESS: tool_name='{tool_name}', arguments={arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
+            # Try to fix common JSON parsing issues with shell commands
+            try:
+                # Extract the raw arguments string and attempt to repair it
+                args_str = match.group(2)
+                logger.info(f"🔍 PARSE_DEBUG: JSON parsing failed, attempting repair on: '{args_str}'")
+                print(f"🔍 PARSE_DEBUG: JSON parsing failed, attempting repair on: '{args_str}'")
+                repaired_args = _repair_json_arguments(args_str)
+                logger.info(f"🔍 PARSE_DEBUG: Repaired arguments: '{repaired_args}'")
+                arguments = json.loads(repaired_args)
+                logger.info(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
+                print(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
+                logger.debug(f"🔍 PARSE: Successfully parsed repaired JSON - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except Exception as e:
+                logger.error(f"🔍 PARSE_DEBUG: Both original and repair parsing failed: {e}")
+                print(f"🔍 PARSE_DEBUG: Both original and repair parsing failed: {e}")
             logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
             return None
 
@@ -88,9 +109,18 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             arguments = json.loads(match.group(2))
             logger.debug(f"🔍 PARSE: Successfully parsed complete <name> format - tool: {tool_name}, args: {arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
-            return None
+        except json.JSONDecodeError:
+            # Try to fix common JSON parsing issues with shell commands
+            try:
+                # Extract the raw arguments string and attempt to repair it
+                args_str = match.group(2)
+                repaired_args = _repair_json_arguments(args_str)
+                arguments = json.loads(repaired_args)
+                logger.debug(f"🔍 PARSE: Successfully parsed repaired JSON - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except Exception as e:
+                logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
+                return None
 
     # Format 2: <n> format without closing tag (partial/streaming)
     # Pattern: <TOOL_SENTINEL><n>tool_name</n><arguments>{...}</arguments>
@@ -102,9 +132,18 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             arguments = json.loads(match.group(2))
             logger.debug(f"🔍 PARSE: Successfully parsed partial <n> format - tool: {tool_name}, args: {arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
-            return None
+        except json.JSONDecodeError:
+            # Try to fix common JSON parsing issues with shell commands
+            try:
+                # Extract the raw arguments string and attempt to repair it
+                args_str = match.group(2)
+                repaired_args = _repair_json_arguments(args_str)
+                arguments = json.loads(repaired_args)
+                logger.debug(f"🔍 PARSE: Successfully parsed repaired JSON - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except Exception as e:
+                logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
+                return None
 
     # Format 2b: <name> format without closing tag (partial/streaming)
     # Pattern: <TOOL_SENTINEL><name>tool_name</name><arguments>{...}</arguments>
@@ -114,13 +153,49 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
         tool_name = match.group(1).strip()
         try:
             arguments = json.loads(match.group(2))
-            logger.debug(f"🔍 PARSE: Successfully parsed partial <name> format - tool: {tool_name}, args: {arguments}")
+            logger.debug(f"🔍 PARSE: Successfully - tool: {tool_name}, args: {arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
-            return None
+        except json.JSONDecodeError:
+            # Try to fix common JSON parsing issues with shell commands
+            try:
+                # Extract the raw arguments string and attempt to repair it
+                args_str = match.group(2)
+                repaired_args = _repair_json_arguments(args_str)
+                arguments = json.loads(repaired_args)
+                logger.debug(f"🔍 PARSE: Successfully parsed repaired JSON - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except Exception as e:
+                logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
+                return None
 
-    # Format 3: <invoke> format (alternative format)
+    # Format 3: <name> format (alternative to <n>)
+    # Pattern: <TOOL_SENTINEL><name>tool_name</name><arguments>{...}</arguments></TOOL_SENTINEL>
+    name_pattern = f'{sentinel_open_escaped}\\s*<name>([^<]+)</name>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>\\s*{sentinel_close_escaped}'
+    match = re.search(name_pattern, content, re.DOTALL)
+    if match:
+        tool_name = match.group(1).strip()
+        try:
+            arguments = json.loads(match.group(2))
+            logger.debug(f"🔍 PARSE: Successfully parsed <name> format - tool: {tool_name}, args: {arguments}")
+            return {"tool_name": tool_name, "arguments": arguments}
+        except json.JSONDecodeError:
+            # Try to fix common JSON parsing issues with shell commands
+            try:
+                # Extract the raw arguments string and attempt to repair it
+                args_str = match.group(2)
+                logger.info(f"🔍 PARSE_DEBUG: JSON parsing failed for <name> format, attempting repair on: '{args_str}'")
+                repaired_args = _repair_json_arguments(args_str)
+                logger.info(f"🔍 PARSE_DEBUG: Repaired arguments for <name> format: '{repaired_args}'")
+                arguments = json.loads(repaired_args)
+                logger.info(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
+                logger.debug(f"🔍 PARSE: Successfully parsed repaired <name> format - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except Exception as e:
+                logger.error(f"🔍 PARSE_DEBUG: Both original and repair parsing failed for <name> format: {e}")
+                logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
+                return None
+
+    # Format 4: <invoke> format (alternative format)
     # Pattern: <TOOL_SENTINEL><invoke name="tool_name"><parameter name="param">value</parameter></invoke></TOOL_SENTINEL>
     invoke_pattern = f'{sentinel_open_escaped}\\s*<invoke\\s+name="([^"]+)"[^>]*>(.*?)</invoke>\\s*{sentinel_close_escaped}'
     match = re.search(invoke_pattern, content, re.DOTALL)
@@ -143,7 +218,70 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
         logger.debug(f"🔍 PARSE: Successfully parsed invoke format - tool: {tool_name}, args: {arguments}")
         return {"tool_name": tool_name, "arguments": arguments}
 
-    # Format 4: Simple <n> extraction (fallback)
+    # Format 4: <n> format with JSON directly after (no <arguments> tags)
+    # Pattern: <TOOL_SENTINEL><n>tool_name</n>{...}</TOOL_SENTINEL>
+    direct_json_pattern = f'{sentinel_open_escaped}\\s*<n>([^<]+)</n>\\s*(\\{{.*?\\}})\\s*{sentinel_close_escaped}'
+    match = re.search(direct_json_pattern, content, re.DOTALL)
+    if match:
+        tool_name = match.group(1).strip()
+        try:
+            arguments = json.loads(match.group(2))
+            logger.debug(f"🔍 PARSE: Successfully parsed direct JSON <n> format - tool: {tool_name}, args: {arguments}")
+            return {"tool_name": tool_name, "arguments": arguments}
+        except json.JSONDecodeError:
+            try:
+                args_str = match.group(2)
+                repaired_args = _repair_json_arguments(args_str)
+                arguments = json.loads(repaired_args)
+                logger.debug(f"🔍 PARSE: Successfully parsed repaired direct JSON - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except Exception as e:
+                logger.warning(f"Failed to parse direct JSON arguments for tool {tool_name}: {e}")
+                return None
+
+    # Format 4a: <name> format with <arguments> tags
+    # Pattern: <TOOL_SENTINEL><name>tool_name</name><arguments>{...}</arguments></TOOL_SENTINEL>
+    name_args_pattern = f'{sentinel_open_escaped}\\s*<name>([^<]+)</name>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>\\s*{sentinel_close_escaped}'
+    match = re.search(name_args_pattern, content, re.DOTALL)
+    if match:
+        tool_name = match.group(1).strip()
+        try:
+            arguments = json.loads(match.group(2))
+            logger.debug(f"🔍 PARSE: Successfully parsed <name> format - tool: {tool_name}, args: {arguments}")
+            return {"tool_name": tool_name, "arguments": arguments}
+        except json.JSONDecodeError:
+            try:
+                args_str = match.group(2)
+                repaired_args = _repair_json_arguments(args_str)
+                arguments = json.loads(repaired_args)
+                logger.debug(f"🔍 PARSE: Successfully parsed repaired <name> format - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except Exception as e:
+                logger.warning(f"Failed to parse <name> format arguments for tool {tool_name}: {e}")
+                return None
+
+    # Format 4b: <name> format with JSON directly after (no <arguments> tags)
+    # Pattern: <TOOL_SENTINEL><name>tool_name</name>{...}</TOOL_SENTINEL>
+    name_direct_pattern = f'{sentinel_open_escaped}\\s*<name>([^<]+)</name>\\s*(\\{{.*?\\}})\\s*{sentinel_close_escaped}'
+    match = re.search(name_direct_pattern, content, re.DOTALL)
+    if match:
+        tool_name = match.group(1).strip()
+        try:
+            arguments = json.loads(match.group(2))
+            logger.debug(f"🔍 PARSE: Successfully parsed direct JSON <name> format - tool: {tool_name}, args: {arguments}")
+            return {"tool_name": tool_name, "arguments": arguments}
+        except json.JSONDecodeError:
+            try:
+                args_str = match.group(2)
+                repaired_args = _repair_json_arguments(args_str)
+                arguments = json.loads(repaired_args)
+                logger.debug(f"🔍 PARSE: Successfully parsed repaired direct JSON <name> - tool: {tool_name}, args: {arguments}")
+                return {"tool_name": tool_name, "arguments": arguments}
+            except Exception as e:
+                logger.warning(f"Failed to parse direct JSON <name> arguments for tool {tool_name}: {e}")
+                return None
+
+    # Format 5: Simple <n> extraction (fallback)
     # Look for just the tool name and try to find arguments separately
     simple_name_pattern = r'<n>([^<]+)</n>'
     name_match = re.search(simple_name_pattern, content)
@@ -194,6 +332,88 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     
     return None
 
+def _repair_json_arguments(args_str: str) -> str:
+    """
+    Repair common JSON parsing issues, especially with shell commands containing quotes and backslashes.
+    
+    This function handles several common issues:
+    1. Unescaped quotes within string values (especially complex shell commands)
+    2. Unescaped backslashes
+    3. Missing quotes around property names
+    4. Trailing commas
+    5. Missing quotes around string values
+    
+    Args:
+        args_str: The raw JSON arguments string
+        
+    Returns:
+        Repaired JSON string
+    """
+    
+    # Step 1: Handle complex command field issues (like printf statements)
+    # This uses a more robust approach for complex shell commands
+    command_start_pattern = r'"command"\s*:\s*"'
+    match = re.search(command_start_pattern, args_str)
+    
+    if match:
+        start_pos = match.end()
+        
+        # Find the end of the command value by looking for patterns like:
+        # ", "timeout" or ", "other_field" or "}
+        end_patterns = [r'",\s*"timeout"', r'",\s*"[^"]*"', r'"\s*}']
+        
+        end_pos = None
+        for pattern in end_patterns:
+            end_match = re.search(pattern, args_str[start_pos:])
+            if end_match:
+                end_pos = start_pos + end_match.start()
+                break
+        
+        if end_pos is None:
+            # Fallback: assume the command goes to near the end
+            end_pos = len(args_str) - 2  # Before the closing }
+        
+        # Extract the command value
+        command_value = args_str[start_pos:end_pos]
+        
+        # Check if the command has complex issues (like unescaped quotes in printf/awk)
+        if '"' in command_value and ('printf' in command_value or 'awk' in command_value or len(command_value) > 100):
+            # Use aggressive escaping for complex shell commands
+            escaped_command = command_value.replace('\\', '\\\\').replace('"', '\\"')
+            args_str = args_str[:start_pos] + escaped_command + args_str[end_pos:]
+            logger.debug(f"🔧 REPAIR: Fixed complex shell command escaping: {command_value[:50]}...")
+    
+    # Step 2: Handle other JSON issues with original logic
+    
+    # Fix missing quotes around property names
+    args_str = re.sub(r'(\{|\,)\s*([a-zA-Z0-9_]+)\s*:', r'\1"\2":', args_str)
+    
+    # Fix trailing commas
+    args_str = re.sub(r',\s*}', '}', args_str)
+    
+    # Fix missing quotes around string values
+    def fix_unquoted_values(match):
+        key = match.group(1)
+        value = match.group(2).strip()
+        # Don't add quotes if it looks like a number or boolean
+        if re.match(r'^-?\d+(\.\d+)?$', value) or value in ('true', 'false', 'null'):
+            return f'"{key}": {value}'
+        else:
+            return f'"{key}": "{value}"'
+    
+    args_str = re.sub(r'"([^"]+)"\s*:\s*([^",{}\[\]]+)(?=,|})', fix_unquoted_values, args_str)
+    
+    # Handle special case where the entire JSON might be malformed
+    if not args_str.strip().startswith('{'):
+        # Try to extract a command value and create a proper JSON object
+        command_match = re.search(r'([^"{}]+)', args_str)
+        if command_match:
+            command_text = command_match.group(1).strip()
+            args_str = f'{{"command": "{command_text}"}}'
+            logger.debug(f"🔧 REPAIR: Created JSON object from raw text: {command_text[:50]}...")
+    
+    logger.debug(f"🔧 REPAIR: Final repaired JSON: {args_str}")
+    return args_str
 async def _track_timeout(tool_name: str) -> bool:
     """
     Track consecutive timeouts for a tool.
