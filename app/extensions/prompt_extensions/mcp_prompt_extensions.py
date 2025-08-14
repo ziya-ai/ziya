@@ -43,11 +43,34 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     all_mcp_tools = create_mcp_tools()
     available_tools = [tool.name for tool in all_mcp_tools]
     
-    if not mcp_tools_available or not available_tools:
-        logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.") # ADD THIS
+    if not available_tools:
+        logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.")
         return prompt
     
-    mcp_guidelines = """
+    # Check if we're in direct streaming mode (no XML format needed)
+    import os
+    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'false').lower() == 'true'
+    
+    if use_direct_streaming:
+        mcp_guidelines = """
+
+## MCP Tool Usage - CRITICAL INSTRUCTIONS
+**EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**
+
+**Available Tools:**
+""" + _get_tool_descriptions_from_mcp(available_tools) + """
+
+**Usage Rules:**
+0. **Prefer local context and AST over tools when either can provide similar information**
+1. **Always use actual tool results** - Never fabricate output
+2. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
+3. **Time queries**: Always use tool rather than guessing current time
+4. **Error handling**: Show actual errors and try alternatives
+5. **Verification**: Use tools to verify system state rather than making assumptions
+6. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
+"""
+    else:
+        mcp_guidelines = """
 
 ## MCP Tool Usage - CRITICAL INSTRUCTIONS
 **EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**

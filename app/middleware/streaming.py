@@ -148,6 +148,9 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 if self._should_flush_buffer(content_buffer):
                                     # If this contains a complete tool call, execute it and send the result
                                     if self._contains_complete_tool_call(content_buffer):
+                                        # First, send the complete tool call to the frontend as JSON
+                                        yield f"data: {json.dumps({'tool_call': content_buffer})}\n\n"
+                                        
                                         try:
                                             # Execute the tool call
                                             logger.info(f"Executing tool call in streaming middleware: {content_buffer[:100]}...")
@@ -166,7 +169,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                         # Clear buffer
                                         content_buffer = ""
                                     else:
-                                        # Send buffered content and clear buffer
+                                        # Send buffered content as JSON, not raw content
                                         yield f"data: {json.dumps({'content': content_buffer})}\n\n"
                                         content_buffer = ""
                                 elif self._contains_partial(content_buffer):
@@ -175,8 +178,8 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                     # Hold the content in buffer, don't send yet
                                     continue
                                 else:
-                                    # Safe to send immediately
-                                    yield f"data: {json.dumps({'content': content})}\n\n"
+                                    # Safe to send immediately as raw content
+                                    yield f"data: {content}\n\n"
                                     content_buffer = ""
                         
                         # Log chunk content preview
@@ -246,6 +249,9 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             if self._should_flush_buffer(content_buffer):
                                 # If this contains a complete tool call, execute it and send the result
                                 if self._contains_complete_tool_call(content_buffer):
+                                    # First, send the complete tool call to the frontend as JSON
+                                    yield f"data: {json.dumps({'tool_call': content_buffer})}\n\n"
+                                    
                                     try:
                                         # Execute the tool call
                                         logger.info(f"Executing tool call in streaming middleware: {content_buffer[:100]}...")
@@ -264,7 +270,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                     # Clear buffer
                                     content_buffer = ""
                                 else:
-                                    # Send buffered content and clear buffer
+                                    # Send buffered content as JSON, not raw content
                                     yield f"data: {json.dumps({'content': content_buffer})}\n\n"
                                     content_buffer = ""
                             elif self._contains_partial(content_buffer):
@@ -273,7 +279,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 # Hold the content in buffer, don't send yet
                                 continue
                             else:
-                                # Safe to send immediately
+                                # Safe to send immediately as raw content
                                 yield f"data: {content}\n\n"
                                 content_buffer = ""
                         
@@ -588,14 +594,16 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         
         # For TOOL_SENTINEL format, check if it has both name and arguments tags
         if TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content:
-            has_name = "<n>" in content and "</n>" in content
+            has_n_name = "<n>" in content and "</n>" in content
+            has_name_name = "<name>" in content and "</name>" in content
             has_args = "<arguments>" in content and "</arguments>" in content
-            return has_name and has_args
+            return (has_n_name or has_name_name) and has_args
         
         if "<TOOL_SENTINEL>" in content and "</TOOL_SENTINEL>" in content:
-            has_name = "<n>" in content and "</n>" in content
+            has_n_name = "<n>" in content and "</n>" in content
+            has_name_name = "<name>" in content and "</name>" in content
             has_args = "<arguments>" in content and "</arguments>" in content
-            return has_name and has_args
+            return (has_n_name or has_name_name) and has_args
         
         # Check for specific tool formats
         if "<get_current_time>" in content and "</get_current_time>" in content:
@@ -664,12 +672,16 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         hardcoded_start = hardcoded_sentinel[:min(len(content), len(hardcoded_sentinel))]
         hardcoded_match = content.endswith(hardcoded_start) or hardcoded_sentinel.startswith(content.strip())
         
+        # Check for tool name tags - both <n> and <name> formats
+        name_tag_patterns = ["<n>", "<name>"]
+        name_tag_match = any(pattern in content for pattern in name_tag_patterns)
+        
         # Check for common tool tag prefixes
-        common_prefixes = ["<get", "<run", "<inv", "<TOOL"]
+        common_prefixes = ["<get", "<run", "<inv", "<TOOL", "<name>", "<n>"]
         prefix_match = any(content.endswith(prefix) or content.strip().startswith(prefix) for prefix in common_prefixes)
         
         # Check for specific tool names we know about
-        known_tools = ["get_current_time", "run_shell_command"]
+        known_tools = ["get_current_time", "run_shell_command", "mcp_run_shell_command", "mcp_get_current_time"]
         for tool in known_tools:
             tool_start = f"<{tool}"[:min(len(content), len(tool) + 1)]
             if content.endswith(tool_start) or f"<{tool}".startswith(content.strip()):
@@ -678,7 +690,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         # Check for generic XML-style opening tag
         xml_match = "<" in content and content.rstrip().endswith(">")
         
-        return config_match or hardcoded_match or prefix_match or xml_match
+        return config_match or hardcoded_match or prefix_match or name_tag_match or xml_match
     
     def _looks_like_tool_output(self, content: str) -> bool:
         """Check if content looks like tool output."""
