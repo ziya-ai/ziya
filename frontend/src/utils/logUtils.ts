@@ -2,10 +2,8 @@
  * Logging utilities for Ziya
  */
 
-// Import the environment check function
-// Note: We need to use require instead of import for .js files in TypeScript
-// when the file doesn't have type definitions
-const envSetup = require('./envSetup');
+// Import the environment check function using ES6 syntax
+import { isDebugMode } from './envSetup';
 
 /**
  * Check if debug logging should be enabled
@@ -14,7 +12,7 @@ const envSetup = require('./envSetup');
  * 2. ZIYA_LOG_LEVEL is set to 'DEBUG'
  */
 export const isDebugLoggingEnabled = (): boolean => {
-  return envSetup.isDebugMode();
+  return isDebugMode();
 };
 
 /**
