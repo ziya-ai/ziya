@@ -452,6 +452,19 @@ export const sendPayload = async (
                                 next.set(conversationId, currentContent);
                                 return next;
                             });
+                        } else if (jsonData.type === 'tool_execution') {
+                            // Handle structured tool execution using existing ToolBlock syntax
+                            const signedIndicator = jsonData.signed ? ' 🔒' : '';
+                            
+                            // Format as tool block that the MarkdownRenderer will recognize and style properly
+                            const toolDisplay = `\n\`\`\`tool:${jsonData.tool_name}${signedIndicator}\n${jsonData.result}\n\`\`\`\n\n`;
+                            
+                            currentContent += toolDisplay;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
                         }
 
                         // Process operations if present

@@ -8,6 +8,7 @@ import { DiffLine } from './DiffLine';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
+import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
 import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
@@ -3854,6 +3855,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
                 return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
+            }
+
+            // Pre-process tool calls to handle both <n> and <name> formats
+            const toolCallMatch = parseToolCall(processedMarkdown);
+            if (toolCallMatch) {
+                // Replace the tool call with a formatted display version
+                const formattedToolCall = formatToolCallForDisplay(toolCallMatch);
+                processedMarkdown = processedMarkdown.replace(
+                    /<TOOL_SENTINEL>[\s\S]*?<\/TOOL_SENTINEL>/,
+                    formattedToolCall
+                );
             }
 
             // Pre-process tool blocks to clean up literal inclusions
