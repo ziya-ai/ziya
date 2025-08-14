@@ -241,8 +241,8 @@ class ZiyaASTEnhancer:
             if not ast_context:
                 ast_context = "# AST Analysis\n\nNo files processed for AST analysis."
             
-            # Calculate token count (rough estimate: 1 token ≈ 4 characters)
-            token_count = len(ast_context) // 4
+            # Calculate token count (rough estimate: 1 token ≈ 4.1 characters based on validation)
+            token_count = int(len(ast_context) / 4.1)
             
             elapsed_time = time.time() - start_time
             files_processed = len(self.ast_cache)
@@ -467,8 +467,8 @@ class ZiyaASTEnhancer:
             if not ast_context:
                 ast_context = "# AST Analysis\n\nNo files processed for AST analysis."
             
-            # Calculate token count (rough estimate: 1 token ≈ 4 characters)
-            token_count = len(ast_context) // 4
+            # Calculate token count (rough estimate: 1 token ≈ 4.1 characters based on validation)
+            token_count = int(len(ast_context) / 4.1)
             
             elapsed_time = time.time() - start_time
             files_processed = len(self.ast_cache)
@@ -683,8 +683,8 @@ class ZiyaASTEnhancer:
             if not ast_context:
                 ast_context = "# AST Analysis\n\nNo files processed for AST analysis."
             
-            # Calculate token count (rough estimate: 1 token ≈ 4 characters)
-            token_count = len(ast_context) // 4
+            # Calculate token count (rough estimate: 1 token ≈ 4.1 characters based on validation)
+            token_count = int(len(ast_context) / 4.1)
             
             elapsed_time = time.time() - start_time
             files_processed = len(self.ast_cache)

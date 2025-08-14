@@ -586,7 +586,7 @@ class ModelManager:
         return hashlib.md5(config_string.encode()).hexdigest()[:8]
     
     @classmethod
-    def _get_persistent_bedrock_client(cls, aws_profile: str, region: str, model_id: str):
+    def _get_persistent_bedrock_client(cls, aws_profile: str, region: str, model_id: str, model_config: Optional[Dict[str, Any]] = None):
         """
         Get or create a persistent Bedrock client for the given configuration.
         Reuses existing clients when configuration matches.
@@ -621,7 +621,7 @@ class ModelManager:
             logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
             
             # Wrap with CustomBedrockClient and ThrottleSafeBedrock
-            custom_client = CustomBedrockClient(bedrock_client)
+            custom_client = CustomBedrockClient(bedrock_client, model_config=model_config)
             throttle_safe_client = ThrottleSafeBedrock(custom_client)
             
             # Store in persistent cache
@@ -957,10 +957,14 @@ class ModelManager:
         KnownCredentialException._error_displayed = False
         
         # Get persistent Bedrock client (handles credential checking internally)
-        persistent_client = cls._get_persistent_bedrock_client(aws_profile, region, model_id)
+        persistent_client = cls._get_persistent_bedrock_client(aws_profile, region, model_id, model_config)
         
         # Check if this is a Nova model
         family = model_config.get("family")
+        # Also check for wrapper_class directly in config
+        wrapper_class = model_config.get("wrapper_class")
+        
+        logger.info(f"Model family: {family}, wrapper_class: {wrapper_class}")
         
         # --- Determine Effective Parameters RIGHT BEFORE Initialization ---
         # Get base config values again for clarity
@@ -1073,6 +1077,47 @@ class ModelManager:
                 logger.info(f"Temperature: {effective_temperature}")
             if hasattr(model, 'model_kwargs'):
                 logger.info(f"NovaBedrock model_kwargs: {model.model_kwargs}")
+        elif wrapper_class == "OpenAIBedrock":
+            # Handle OpenAI models on Bedrock
+            from app.agents.wrappers.openai_bedrock_wrapper import OpenAIBedrock
+            logger.info(f"Initializing OpenAI model on Bedrock: {model_id}")
+            
+            # OpenAI models require us-east-1 region
+            openai_region = "us-east-1"
+            if region != openai_region:
+                logger.warning(f"OpenAI models require us-east-1 region. Switching from {region} to {openai_region}")
+                region = openai_region
+                # Update environment variable
+                os.environ["AWS_REGION"] = openai_region
+                # Update state
+                cls._state['aws_region'] = openai_region
+            
+            # Create model_kwargs for OpenAI
+            openai_model_kwargs = {
+                "max_tokens": effective_max_tokens,
+                "temperature": effective_temperature
+            }
+            
+            # Add top_p if provided
+            if effective_top_p is not None:
+                openai_model_kwargs["top_p"] = effective_top_p
+            
+            # Filter out None values
+            openai_model_kwargs = {k: v for k, v in openai_model_kwargs.items() if v is not None}
+            logger.info(f"Creating OpenAIBedrock with model_kwargs: {openai_model_kwargs}")
+            
+            # Use the persistent client but ensure it's for the correct region
+            openai_client = cls._get_persistent_bedrock_client(aws_profile, openai_region, model_id, model_config)
+            
+            model = OpenAIBedrock(
+                model_id=model_id,
+                client=openai_client.client if hasattr(openai_client, 'client') else openai_client,
+                region_name=region,
+                model_kwargs=openai_model_kwargs,
+                streaming=True
+            )
+            
+            logger.info(f"OpenAIBedrock created with: model_id={model_id}, max_tokens={effective_max_tokens}")
         else:
             # Use ZiyaBedrock instead of standard ChatBedrock
             logger.info(f"Initializing ZiyaBedrock for model: {model_id}")

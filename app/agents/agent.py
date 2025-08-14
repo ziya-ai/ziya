@@ -613,9 +613,18 @@ class RetryingChatBedrock(Runnable):
                 logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
         
         # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
+        # But store it for CustomBedrockClient to access via module global
+        logger.info(f"🔍 CONVERSATION_ID: filtered_kwargs keys = {list(filtered_kwargs.keys())}")
         if "conversation_id" in filtered_kwargs:
+            conversation_id = filtered_kwargs["conversation_id"]
+            # Store in a global variable that CustomBedrockClient can access
+            import app.utils.custom_bedrock as custom_bedrock_module
+            custom_bedrock_module._current_conversation_id = conversation_id
+            logger.info(f"Stored conversation_id in module global: {conversation_id}")
             del filtered_kwargs["conversation_id"]
             logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
+        else:
+            logger.info("🔍 CONVERSATION_ID: No conversation_id found in filtered_kwargs")
         
         # Use filtered kwargs for the model call
         kwargs = filtered_kwargs
@@ -1321,6 +1330,9 @@ class LazyLoadedModel:
         elif self._model is None: # Only initialize if both state and self._model are None
             logger.warning("ModelManager state is empty, initializing model on first use")
             model_instance = ModelManager.initialize_model(force_reinit=True) # Initialize without override here
+            if model_instance is None:
+                logger.error("Model initialization failed - returning None")
+                return None
             self._model = RetryingChatBedrock(model_instance)
         return self._model
     def __call__(self):
@@ -1335,12 +1347,16 @@ class LazyLoadedModel:
         self._binding_logged = False
  
     def bind(self, **kwargs):
-        if self._model is None:
-            self._model_with_stop = self.get_model().bind(**kwargs)
-        return self.get_model().bind(**kwargs)
+        model = self.get_model()
+        if model is None:
+            logger.error("Cannot bind model - model initialization failed")
+            return None
+        return model.bind(**kwargs)
  
 model = LazyLoadedModel()
 llm_with_stop = model.bind(stop=["</tool_input>"])
+if llm_with_stop is None:
+    logger.warning("Model binding failed during initialization - will retry later")
 
 # Store the initial llm_with_stop in ModelManager
 from app.agents.models import ModelManager
@@ -1389,7 +1405,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
             if success:
                 # Log a preview of the content
                 preview = "\n".join(annotated_lines[:5]) if annotated_lines else "NO CONTENT"
-                logger.info(f"Content preview for {file_path}:\n{preview}\n...")
+                logger.debug(f"Content preview for {file_path}:\n{preview}\n...")
                 combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
@@ -1493,6 +1509,8 @@ def extract_codebase(x):
         logger.info("No files selected, returning placeholder codebase message")
         return "No files have been selected for context analysis."
     
+    logger.info(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
+    logger.info(f"🔍 EXTRACT_CODEBASE_DEBUG: First 5 files: {files[:5]}")
     print(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
     conversation_id = (
         x.get("conversation_id") or 
@@ -1577,11 +1595,11 @@ def extract_codebase(x):
 
     final_string = "\n".join(result)
     file_markers = [line for line in final_string.split('\n') if line.startswith('File: ')]
-    logger.info(f"Final string assembly:")
-    logger.info(f"Total length: {len(final_string)} chars")
-    logger.info(f"Number of File: markers: {len(file_markers)}")
-    logger.info(f"First 500 chars:\n{final_string[:500]}")
-    logger.info(f"Last 500 chars:\n{final_string[-500:]}")
+    logger.debug(f"Final string assembly:")
+    logger.debug(f"Total length: {len(final_string)} chars")
+    logger.debug(f"Number of File: markers: {len(file_markers)}")
+    logger.debug(f"First 500 chars:\n{final_string[:500]}")
+    logger.debug(f"Last 500 chars:\n{final_string[-500:]}")
 
     # Debug the content at each stage
     logger.info("Content flow tracking:")
@@ -1613,7 +1631,7 @@ def log_output(x):
 
 def log_codebase_wrapper(x):
     codebase = extract_codebase(x)
-    logger.info(f"Codebase before prompt: {len(codebase)} chars")
+    logger.debug(f"Codebase before prompt: {len(codebase)} chars")
     file_count = len([l for l in codebase.split('\n') if l.startswith('File: ')])
     logger.info(f"Number of files in codebase before prompt: {file_count}")
     file_lines = [l for l in codebase.split('\n') if l.startswith('File: ')]
@@ -1730,6 +1748,12 @@ def create_agent_chain(chat_model: BaseChatModel):
             logger.info(f"AGENT_CHAIN: Message {i} has no accessible template")
     
     logger.info(f"AGENT_CHAIN: Tools being passed to create_xml_agent: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
+    
+    # Check if model is available before creating agent
+    if llm_with_stop is None:
+        logger.error("Cannot create XML agent - model is not available (likely due to credential issues)")
+        return None
+        
     # Create the XML agent directly with input preprocessing
     # Use custom output parser for MCP tool detection
     agent = create_xml_agent(llm_with_stop, mcp_tools, prompt_template)
@@ -1766,6 +1790,8 @@ def create_agent_chain(chat_model: BaseChatModel):
  
 # Initialize the agent chain
 agent = create_agent_chain(model)
+if agent is None:
+    logger.warning("Agent creation failed - will retry when credentials are available")
 
 def reset_mcp_tool_counter():
     """Reset the MCP tool execution counter for a new request cycle."""
@@ -1844,6 +1870,12 @@ def create_agent_executor(agent_chain: Runnable):
         
     # Create the original executor
     logger.info(f"Creating AgentExecutor with agent type: {type(agent_chain)}")
+    
+    # Check if agent is available before creating executor
+    if agent_chain is None:
+        logger.error("Cannot create AgentExecutor - agent is not available")
+        return None
+        
     original_executor = AgentExecutor(
         verbose=True,  # Enable verbose logging
         agent=agent_chain,
@@ -2021,6 +2053,8 @@ def create_agent_executor(agent_chain: Runnable):
     return SafeAgentExecutor(original_executor)
 
 agent_executor = create_agent_executor(agent)
+if agent_executor is None:
+    logger.warning("Agent executor creation failed - will retry when credentials are available")
 
 def initialize_langserve(app, executor):
     """Initialize or reinitialize langserve routes with the given executor."""
@@ -2067,15 +2101,16 @@ def initialize_langserve(app, executor):
     for route in original_routes:
         new_app.routes.append(route)
  
-    # Add new routes with executor
+    # Add LangServe routes for non-Bedrock models (Gemini, Nova, etc.)
+    # The priority /api/chat endpoint will intercept Bedrock requests
     add_routes(
         new_app,
         executor,
-        disabled_endpoints=["playground", "stream", "invoke"],
+        disabled_endpoints=["playground"],  # Keep stream and invoke for non-Bedrock models
         path="/ziya"
     )
     
-    logger.info("Added new routes with updated executor")
+    logger.info("Added LangServe routes - priority /api/chat will handle Bedrock routing")
 
     # Clear all routes from original app
     while app.routes:

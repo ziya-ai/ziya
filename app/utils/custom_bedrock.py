@@ -7,7 +7,12 @@ import os
 import re
 import gc
 from app.utils.logging_utils import logger
-from typing import Dict, List
+from app.utils.extended_context_manager import get_extended_context_manager
+from app.utils.conversation_context import get_conversation_id
+from typing import Dict, List, Optional
+
+# Module global to store current conversation_id (workaround for thread boundary issues)
+_current_conversation_id: Optional[str] = None
 
 class CustomBedrockClient:
     """
@@ -28,7 +33,7 @@ class CustomBedrockClient:
     CLAUDE_CONTEXT_LIMIT = 204698  # Based on observed error messages
     CLAUDE_SAFETY_MARGIN = 1000    # Safety margin to avoid edge cases
     
-    def __init__(self, client, max_tokens=None):
+    def __init__(self, client, max_tokens=None, model_config=None):
         """Initialize the custom client."""
         # Force garbage collection to clean up any lingering references
         gc.collect()
@@ -41,6 +46,9 @@ class CustomBedrockClient:
         self.user_max_tokens = max_tokens
         self.default_max_tokens = 4000  # Default fallback if not specified
         self.last_error = None
+        self.last_extended_context_notification = None
+        self.model_config = model_config or {}
+        self.extended_context_manager = get_extended_context_manager()
         
         # Get the region from the client
         self.region = self.client.meta.region_name if hasattr(self.client, 'meta') else None
@@ -62,10 +70,129 @@ class CustomBedrockClient:
         if hasattr(self.client, 'invoke_model'):
             self.invoke_model = self._create_custom_invoke_non_streaming()
     
+    def _supports_extended_context(self) -> bool:
+        """Check if the current model supports extended context."""
+        supports = self.model_config.get("supports_extended_context", False)
+        logger.info(f"🔍 EXTENDED_CONTEXT: Model config supports_extended_context = {supports}")
+        logger.info(f"🔍 EXTENDED_CONTEXT: Model config keys = {list(self.model_config.keys())}")
+        return supports
+    
+    def _get_extended_context_header(self) -> Optional[str]:
+        """Get the extended context header for the current model."""
+        return self.model_config.get("extended_context_header")
+    
+    def _get_context_limits(self) -> tuple[int, int]:
+        """Get the standard and extended context limits."""
+        standard_limit = self.model_config.get("token_limit", self.CLAUDE_CONTEXT_LIMIT)
+        extended_limit = self.model_config.get("extended_context_limit", standard_limit)
+        return standard_limit, extended_limit
+    
+    def _extract_conversation_id_from_request(self, kwargs: Dict) -> Optional[str]:
+        """Extract conversation_id from the request context."""
+        # First try to get from module global (workaround for thread boundary issues)
+        global _current_conversation_id
+        if _current_conversation_id:
+            logger.info(f"🔍 EXTENDED_CONTEXT: Found conversation_id in module global: {_current_conversation_id}")
+            return _current_conversation_id
+        
+        # Try to get from thread-local context
+        conversation_id = get_conversation_id()
+        if conversation_id:
+            logger.info(f"🔍 EXTENDED_CONTEXT: Found conversation_id in thread-local: {conversation_id}")
+            return conversation_id
+        
+        logger.info("🔍 EXTENDED_CONTEXT: No conversation_id found")
+        return None
+    
+    def _should_use_extended_context(self, conversation_id: Optional[str] = None) -> bool:
+        """Determine if extended context should be used for this conversation."""
+        if not self._supports_extended_context():
+            return False
+        
+        # Check if extended context is globally enabled
+        if self.extended_context_manager._global_extended_context_enabled:
+            return True
+        
+        # Check conversation-specific state
+        if conversation_id:
+            return self.extended_context_manager.is_using_extended_context(conversation_id)
+        
+        return False
+    
+    def _add_extended_context_headers(self, kwargs: Dict, conversation_id: Optional[str] = None) -> Dict:
+        """Add extended context headers to the request if needed."""
+        if self._should_use_extended_context(conversation_id):
+            header_value = self._get_extended_context_header()
+            if header_value:
+                # For streaming API, we need to add the header to the request body
+                if 'body' in kwargs and isinstance(kwargs['body'], str):
+                    try:
+                        body_dict = json.loads(kwargs['body'])
+                        # Add anthropic_beta to the request body
+                        body_dict['anthropic_beta'] = [header_value]
+                        kwargs['body'] = json.dumps(body_dict)
+                        logger.debug(f"Added extended context header to body: anthropic_beta=[{header_value}]")
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Failed to add extended context header to body: {e}")
+                else:
+                    # For non-streaming API, use additionalModelRequestFields
+                    if 'additionalModelRequestFields' not in kwargs:
+                        kwargs['additionalModelRequestFields'] = {}
+                    kwargs['additionalModelRequestFields']['anthropic_beta'] = [header_value]
+                    logger.debug(f"Added extended context header: anthropic_beta=[{header_value}]")
+        
+        return kwargs
+    
+    def _retry_with_extended_context(self, kwargs: Dict, error_message: str, conversation_id: Optional[str] = None):
+        """Retry the request with extended context enabled."""
+        if not conversation_id or not self._supports_extended_context():
+            raise Exception(error_message)
+        
+        # Activate extended context for this conversation
+        standard_limit, extended_limit = self._get_context_limits()
+        model_name = self.model_config.get("model_id", {}).get("us", "unknown")
+        
+        notification_message = self.extended_context_manager.activate_extended_context(
+            conversation_id,
+            model_name,
+            standard_limit,
+            extended_limit
+        )
+        
+        # Add extended context headers
+        kwargs = self._add_extended_context_headers(kwargs, conversation_id)
+        
+        # Store the notification message for later retrieval
+        self.last_extended_context_notification = notification_message
+        
+        # Notify user about extended context activation
+        logger.info(
+            f"🚀 EXTENDED CONTEXT: Retrying with {extended_limit:,} token context window for {model_name} "
+            f"(conversation {conversation_id})"
+        )
+        
+        # Retry the request with extended context headers
+        logger.info(f"🚀 EXTENDED_CONTEXT: About to retry streaming call with extended context")
+        
+        try:
+            result = self.original_invoke(**kwargs)
+            logger.info(f"🚀 EXTENDED_CONTEXT: Streaming retry completed successfully")
+            return result
+        except Exception as retry_error:
+            logger.error(f"🚀 EXTENDED_CONTEXT: Retry failed with error: {retry_error}")
+            raise retry_error
+    
     def _create_custom_invoke_streaming(self):
         """Create a custom implementation of invoke_model_with_response_stream."""
         def custom_invoke(**kwargs):
             logger.debug(f"CustomBedrockClient.invoke_model_with_response_stream called with kwargs keys: {list(kwargs.keys())}")
+            
+            # Extract conversation_id from request context
+            conversation_id = self._extract_conversation_id_from_request(kwargs)
+            logger.info(f"🔍 EXTENDED_CONTEXT: Extracted conversation_id = {conversation_id}")
+            
+            # Add extended context headers if needed
+            kwargs = self._add_extended_context_headers(kwargs, conversation_id)
             
             # If body is in kwargs, modify it to include max_tokens
             if 'body' in kwargs and isinstance(kwargs['body'], str):
@@ -82,16 +209,28 @@ class CustomBedrockClient:
                         self.last_error = error_message
                         
                         # Check if it's a context limit error
-                        if "input length and `max_tokens` exceed context limit" in error_message:
+                        if ("input length and `max_tokens` exceed context limit" in error_message or
+                            "Input is too long" in error_message):
                             logger.warning(f"Context limit error detected: {error_message}")
                             
-                            # Extract context limit information
+                            # Try extended context if supported and not already using it
+                            if (self._supports_extended_context() and 
+                                conversation_id and 
+                                not self._should_use_extended_context(conversation_id)):
+                                
+                                return self._retry_with_extended_context(kwargs, error_message, conversation_id)
+                            
+                            # Otherwise, try standard context reduction
                             limit_info = self._extract_context_limit_info(error_message)
                             if limit_info:
                                 # Calculate a safe max_tokens value
+                                current_limit = (self.extended_context_manager.get_context_limit(
+                                    conversation_id, self.CLAUDE_CONTEXT_LIMIT) 
+                                    if conversation_id else self.CLAUDE_CONTEXT_LIMIT)
+                                
                                 safe_max_tokens = self._calculate_safe_max_tokens(
                                     limit_info["input_tokens"],
-                                    limit_info["context_limit"]
+                                    current_limit
                                 )
                                 
                                 # Adjust the request body with the safe max_tokens
@@ -105,23 +244,38 @@ class CustomBedrockClient:
                                 # Retry with adjusted parameters
                                 return self.original_invoke(**kwargs)
                         
-                        # Fall back to original method if our customization fails
-                        return self.original_invoke(**kwargs)
+                        # Re-raise the original exception if we can't handle it
+                        raise
                 except Exception as e:
                     # Log more details about the error
                     logger.error(f"Error in custom invoke: {e}")
                     if 'modelId' in kwargs:
                         logger.error(f"Model ID being used: {kwargs['modelId']}")
                     
-                    # Try to create a regular bedrock client to list models
-                    try:
-                        import boto3
-                        bedrock_client = boto3.client('bedrock', region_name=self.region)
-                        logger.info(f"Available models in region {self.region}: {[m['modelId'] for m in bedrock_client.list_foundation_models()['modelSummaries']]}")
-                    except Exception as list_error:
-                        logger.error(f"Error listing models: {list_error}")
+                    # For streaming calls, let StreamingToolExecutor handle extended context
+                    # to avoid breaking async context
+                    logger.info("🔍 EXTENDED_CONTEXT: Skipping CustomBedrockClient retry for streaming - letting StreamingToolExecutor handle it")
+                    raise
+                    error_message = str(e)
+                    logger.info(f"🔍 EXTENDED_CONTEXT: Checking error for extended context retry: {error_message[:100]}...")
+                    logger.info(f"🔍 EXTENDED_CONTEXT: conversation_id = {conversation_id}")
+                    logger.info(f"🔍 EXTENDED_CONTEXT: supports_extended_context = {self._supports_extended_context()}")
+                    logger.info(f"🔍 EXTENDED_CONTEXT: should_use_extended_context = {self._should_use_extended_context(conversation_id) if conversation_id else 'N/A'}")
+                    
+                    if (("Input is too long" in error_message or 
+                         "input length and `max_tokens` exceed context limit" in error_message) and
+                        self._supports_extended_context() and 
+                        conversation_id and 
+                        not self._should_use_extended_context(conversation_id)):
                         
-                    logger.error(f"Error in custom invoke: {e}")
+                        logger.info("🚀 EXTENDED_CONTEXT: Attempting retry with extended context")
+                        try:
+                            return self._retry_with_extended_context(kwargs, error_message, conversation_id)
+                        except Exception as retry_error:
+                            logger.error(f"Extended context retry failed: {retry_error}")
+                    else:
+                        logger.info("🔍 EXTENDED_CONTEXT: Extended context retry conditions not met")
+                    
                     # Fall back to original method if our customization fails
                     return self.original_invoke(**kwargs)
             else:
@@ -134,6 +288,12 @@ class CustomBedrockClient:
         """Create a custom implementation of invoke_model."""
         def custom_invoke_model(**kwargs):
             logger.debug(f"CustomBedrockClient.invoke_model called with kwargs keys: {list(kwargs.keys())}")
+            
+            # Extract conversation_id from request context
+            conversation_id = self._extract_conversation_id_from_request(kwargs)
+            
+            # Add extended context headers if needed
+            kwargs = self._add_extended_context_headers(kwargs, conversation_id)
             
             # If body is in kwargs, modify it to include max_tokens
             if 'body' in kwargs and isinstance(kwargs['body'], str):
@@ -150,16 +310,47 @@ class CustomBedrockClient:
                         self.last_error = error_message
                         
                         # Check if it's a context limit error
-                        if "input length and `max_tokens` exceed context limit" in error_message:
+                        if ("input length and `max_tokens` exceed context limit" in error_message or
+                            "Input is too long" in error_message):
                             logger.warning(f"Context limit error detected: {error_message}")
                             
-                            # Extract context limit information
+                            # Try extended context if supported and not already using it
+                            if (self._supports_extended_context() and 
+                                conversation_id and 
+                                not self._should_use_extended_context(conversation_id)):
+                                
+                                # Activate extended context and retry
+                                standard_limit, extended_limit = self._get_context_limits()
+                                model_name = self.model_config.get("model_id", {}).get("us", "unknown")
+                                
+                                self.extended_context_manager.activate_extended_context(
+                                    conversation_id,
+                                    model_name,
+                                    standard_limit,
+                                    extended_limit
+                                )
+                                
+                                # Add extended context headers
+                                kwargs = self._add_extended_context_headers(kwargs, conversation_id)
+                                
+                                logger.info(
+                                    f"🚀 EXTENDED CONTEXT: Retrying with {extended_limit:,} token context window for {model_name} "
+                                    f"(conversation {conversation_id})"
+                                )
+                                
+                                return self.original_invoke_model(**kwargs)
+                            
+                            # Otherwise, try standard context reduction
                             limit_info = self._extract_context_limit_info(error_message)
                             if limit_info:
                                 # Calculate a safe max_tokens value
+                                current_limit = (self.extended_context_manager.get_context_limit(
+                                    conversation_id, self.CLAUDE_CONTEXT_LIMIT) 
+                                    if conversation_id else self.CLAUDE_CONTEXT_LIMIT)
+                                
                                 safe_max_tokens = self._calculate_safe_max_tokens(
                                     limit_info["input_tokens"],
-                                    limit_info["context_limit"]
+                                    current_limit
                                 )
                                 
                                 # Adjust the request body with the safe max_tokens

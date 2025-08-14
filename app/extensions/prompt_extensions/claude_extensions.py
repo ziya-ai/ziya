@@ -37,6 +37,20 @@ CLAUDE FAMILY INSTRUCTIONS:
 2. For complex problems, consider edge cases and potential issues
 3. When suggesting optimizations, explain the performance benefits
 4. Use XML tags for structured outputs when appropriate
+
+TOOL EXECUTION AND CONTINUATION:
+When you need to use a tool:
+1. Introduce what you're about to do
+2. Execute the tool call
+3. **STOP IMMEDIATELY after </TOOL_SENTINEL>** - DO NOT CONTINUE YOUR RESPONSE
+4. **DO NOT** write any text after the tool call
+5. **DO NOT** guess what the tool output will be
+6. **DO NOT** write "Based on the result..." or similar text
+7. **WAIT** for the actual tool result to be provided
+ 
+After I provide the tool result, I will ask you to continue. Only then should you resume your response.
+ 
+Example: "I'll check the current directory." [TOOL CALL] [STOP AND WAIT] [TOOL RESULT PROVIDED] "Based on the result, the current directory is..."
 """
     
     # Find a good place to insert the instructions

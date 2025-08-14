@@ -15,7 +15,7 @@ from app.utils.logging_utils import logger
 DEFAULT_SHELL_CONFIG = {
     "enabled": True,
     "allowedCommands": 
-    ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date", "od", "df", "netstat", "lsof", "ps", "sed", "awk", "cut", "sort", "which", "hexdump", "xxd", "tail", "head", "echo"],
+    ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date", "od", "df", "netstat", "lsof", "ps", "sed", "awk", "cut", "sort", "which", "hexdump", "xxd", "tail", "head", "echo", "printf", "tr", "uniq", "column", "nl", "tee", "base64", "md5sum", "sha1sum", "sha256sum", "bc", "expr", "seq", "paste", "join", "fold", "expand"],
     "gitOperationsEnabled": True,
     "safeGitOperations": ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"],
     "timeout": 10
@@ -42,6 +42,9 @@ class ShellConfig(BaseModel):
     safeGitOperations: List[str] = DEFAULT_SHELL_CONFIG["safeGitOperations"]
     timeout: int = DEFAULT_SHELL_CONFIG["timeout"]
 
+class ServerToggleRequest(BaseModel):
+    server_name: str
+    enabled: bool
 
 @router.get("/status")
 async def get_mcp_status():
@@ -73,6 +76,7 @@ async def get_mcp_status():
         
         status = mcp_manager.get_server_status()
         config_info = mcp_manager.get_config_search_info()
+        server_configs = mcp_manager.server_configs
         
         return {
             "initialized": True,
@@ -81,7 +85,8 @@ async def get_mcp_status():
             "connected_servers": sum(1 for s in status.values() if s["connected"]),
             "config_path": config_info["config_path"],
             "config_exists": config_info["config_exists"],
-            "config_search_paths": config_info["search_paths"]
+            "config_search_paths": config_info["search_paths"],
+            "server_configs": {name: {"enabled": config.get("enabled", True)} for name, config in server_configs.items()}
         }
         
     except Exception as e:
@@ -286,32 +291,39 @@ async def get_shell_config():
         # Check if shell server is connected
         shell_client = mcp_manager.clients.get("shell")
         if shell_client and shell_client.is_connected:
-            # Try to get the current configuration from the server config
-            # For built-in servers, we can check the original config
-            current_config = None
-            if hasattr(shell_client, 'server_config'):
-                current_config = shell_client.server_config
+            # Get current server config directly from the MCP manager
+            server_config = mcp_manager.server_configs.get("shell", {})
+            server_env = server_config.get("env", {})
             
+            # Extract allowed commands from environment configuration
             allowed_commands = DEFAULT_SHELL_CONFIG["allowedCommands"].copy()
-            if current_config and "env" in current_config and "ALLOW_COMMANDS" in current_config["env"]:
-                allowed_commands = [cmd.strip() for cmd in current_config["env"]["ALLOW_COMMANDS"].split(",") if cmd.strip()]
+            if "ALLOW_COMMANDS" in server_env:
+                # If environment override exists, use it instead
+                env_commands = [cmd.strip() for cmd in server_env["ALLOW_COMMANDS"].split(",") if cmd.strip()]
+                if env_commands:
+                    allowed_commands = env_commands
+                    logger.info(f"Using environment override commands: {allowed_commands}")
             
-            # Extract git operations from environment or use defaults
+            # Extract git operations from environment or use defaults  
+            git_operations_enabled = server_env.get("GIT_OPERATIONS_ENABLED", "true").lower() in ("true", "1", "yes")
             git_operations = DEFAULT_SHELL_CONFIG["safeGitOperations"].copy()
-            if current_config and "env" in current_config and "SAFE_GIT_OPERATIONS" in current_config["env"]:
-                git_operations = [op.strip() for op in current_config["env"]["SAFE_GIT_OPERATIONS"].split(",") if op.strip()]
+            if "SAFE_GIT_OPERATIONS" in server_env:
+                git_operations = [op.strip() for op in server_env["SAFE_GIT_OPERATIONS"].split(",") if op.strip()]
             
-            config = get_default_shell_config()
-            config.update({
+            # Extract timeout from environment
+            timeout = int(server_env.get("COMMAND_TIMEOUT", DEFAULT_SHELL_CONFIG["timeout"]))
+            
+            return {
                 "enabled": True,
-                "allowedCommands": allowed_commands,
+                "gitOperationsEnabled": git_operations_enabled,
                 "safeGitOperations": git_operations
-            })
-            return config
+            }
         else:
-            config = get_default_shell_config()
-            config["enabled"] = False
-            return config
+            # Shell server not connected, return default config with enabled=False
+            return {
+                **get_default_shell_config(),
+                "enabled": False
+            }
         
     except Exception as e:
         logger.error(f"Error getting shell config: {e}")
@@ -331,9 +343,14 @@ async def update_shell_config(config: ShellConfig):
             }
             
         mcp_manager = get_mcp_manager()
-        
-        if not mcp_manager.is_initialized:
+        if not mcp_manager:
             return {"success": False, "message": "MCP manager not initialized"}
+        
+        # Update the server config to reflect the enabled state
+        # This is the critical missing piece that prevents reconnection!
+        if "shell" in mcp_manager.server_configs:
+            mcp_manager.server_configs["shell"]["enabled"] = config.enabled
+            logger.info(f"Updated shell server enabled state to: {config.enabled}")
         
         # Create new shell server configuration
         new_shell_config = {
@@ -364,11 +381,72 @@ async def update_shell_config(config: ShellConfig):
             if "shell" in mcp_manager.clients:
                 await mcp_manager.clients["shell"].disconnect()
                 del mcp_manager.clients["shell"]
-                logger.info("Shell server disabled")
+                logger.info("Shell server client disconnected")
+            
+            # Critical: Update the server config to prevent reconnection
+            if "shell" in mcp_manager.server_configs:
+                mcp_manager.server_configs["shell"]["enabled"] = False
+                logger.info("Shell server marked as disabled in server configs")
             
             return {"success": True, "message": "Shell server disabled instantly"}
         
     except Exception as e:
         logger.error(f"Error updating shell config: {e}")
         raise HTTPException(status_code=500, detail=f"Error updating shell config: {str(e)}")
+
+@router.post("/toggle-server")
+async def toggle_server(request: ServerToggleRequest):
+    """
+    Enable or disable a specific MCP server.
+    """
+    try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+            return {
+                "success": False,
+                "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
+            }
+            
+        mcp_manager = get_mcp_manager()
+
+        # Add debug logging
+        logger.info(f"Toggle server request: {request.server_name} -> {request.enabled}")
+        logger.info(f"MCP manager initialized: {mcp_manager.is_initialized}")
+        logger.info(f"Available server configs: {list(mcp_manager.server_configs.keys()) if mcp_manager.server_configs else 'None'}")
+        logger.info(f"Server config for {request.server_name}: {mcp_manager.server_configs.get(request.server_name) if mcp_manager.server_configs else 'None'}")
+        
+        if not mcp_manager.is_initialized:
+            return {"success": False, "message": "MCP manager not initialized"}
+        
+        # Update the server config
+        if request.server_name in mcp_manager.server_configs:
+            mcp_manager.server_configs[request.server_name]["enabled"] = request.enabled
+            logger.info(f"Updated {request.server_name} server enabled state to: {request.enabled}")
+
+        # Ensure shell server config exists
+        if request.server_name == "shell" and request.server_name not in mcp_manager.server_configs:
+            logger.warning("Shell server config missing, creating default config")
+            mcp_manager.server_configs["shell"] = mcp_manager.builtin_server_definitions.get("shell", {})
+        
+        if request.enabled:
+            # Restart the server with current configuration
+            server_config = mcp_manager.server_configs.get(request.server_name)
+            if server_config:
+                success = await mcp_manager.restart_server(request.server_name, server_config)
+                message = f"{request.server_name} server enabled and restarted" if success else f"Failed to restart {request.server_name} server"
+            else:
+                message = f"No configuration found for {request.server_name} server"
+        else:
+            # Disable server by disconnecting it
+            if request.server_name in mcp_manager.clients:
+                await mcp_manager.clients[request.server_name].disconnect()
+                del mcp_manager.clients[request.server_name]
+                logger.info(f"{request.server_name} server disabled")
+            message = f"{request.server_name} server disabled"
+        
+        return {"success": True, "message": message}
+        
+    except Exception as e:
+        logger.error(f"Error toggling server {request.server_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error toggling server: {str(e)}")
  

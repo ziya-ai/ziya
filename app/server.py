@@ -33,6 +33,10 @@ from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+# Direct streaming imports
+from app.config import USE_DIRECT_STREAMING
+from app.agents.direct_streaming import get_direct_streaming_agent, get_shell_tool_schema
+
 # Import configuration
 import app.config as config
 from app.agents.models import ModelManager
@@ -77,12 +81,6 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     This centralizes message construction to avoid duplication.
     """
     
-    # Prevent duplicate calls by checking if we're already processing this conversation
-    cache_key = f"building_{conversation_id}"
-    if hasattr(build_messages_for_streaming, cache_key):
-        logger.warning(f"Preventing duplicate message construction for {conversation_id}")
-        return getattr(build_messages_for_streaming, cache_key)
-
     from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
     from app.agents.agent import get_combined_docs_from_files, _format_chat_history
     
@@ -103,8 +101,9 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         logger.warning(f"Could not get MCP tools: {e}")
     
     # Get file context
-    # Don't load file context here - it will be loaded by the template's codebase parameter
-    file_context = ""
+    # Load file context using extract_codebase
+    from app.agents.agent import extract_codebase
+    file_context = extract_codebase({"config": {"files": files}, "conversation_id": conversation_id})
     
     # Apply post-instructions to the question once here
     from app.utils.post_instructions import PostInstructionManager
@@ -143,10 +142,6 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
         TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
     )
-    
-    # Cache the result to prevent duplicate calls
-    setattr(build_messages_for_streaming, cache_key, formatted_messages)
-    # Clean up cache after a short delay to prevent memory leaks
     
     return formatted_messages
     logger.info("CONTEXT CONSTRUCTION DETAILS:")
@@ -214,6 +209,101 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# PRIORITY ROUTE: /api/chat - MUST BE FIRST TO TAKE PRECEDENCE
+@app.post('/api/chat')
+async def chat_endpoint(request: Request):
+    """Handle chat requests from the frontend with model-specific routing."""
+    print("🔍 CHAT_ENDPOINT: /api/chat called - PRIORITY ROUTE")
+    logger.info("🔍 CHAT_ENDPOINT: /api/chat endpoint called - PRIORITY ROUTE")
+    
+    try:
+        body = await request.json()
+        
+        # Extract data from the request
+        messages = body.get('messages', [])
+        question = body.get('question', '')
+        files = body.get('files', [])
+        conversation_id = body.get('conversation_id')
+        
+        # Check current model to determine routing
+        from app.agents.models import ModelManager
+        current_model = ModelManager.get_model_alias()
+        is_bedrock_claude = current_model and ('claude' in current_model.lower() or 'sonnet' in current_model.lower())
+        
+        logger.info(f"🔍 CHAT_ENDPOINT: Current model = {current_model}, is_bedrock_claude = {is_bedrock_claude}")
+        
+        if is_bedrock_claude:
+            # Use direct streaming for Bedrock Claude models
+            logger.info("🔍 CHAT_ENDPOINT: Using DIRECT STREAMING for Bedrock Claude")
+            
+            # Format chat history
+            chat_history = []
+            for msg in messages[:-1] if messages else []:
+                if isinstance(msg, dict):
+                    role = msg.get('role', 'user')
+                    content = msg.get('content', '')
+                    if role and content:
+                        chat_history.append((role, content))
+            
+            # Format the data for stream_chunks
+            formatted_body = {
+                'question': question,
+                'conversation_id': conversation_id,
+                'chat_history': chat_history,
+                'config': {
+                    'conversation_id': conversation_id,
+                    'files': files
+                }
+            }
+            
+            logger.info("[CHAT_ENDPOINT] Calling stream_chunks directly for Bedrock Claude")
+            
+            return StreamingResponse(
+                stream_chunks(formatted_body),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type"
+                }
+            )
+        else:
+            # Use LangChain for other models (Gemini, Nova, etc.)
+            logger.info("🔍 CHAT_ENDPOINT: Using LANGCHAIN for non-Bedrock models")
+            
+            # Format chat history for LangChain
+            formatted_chat_history = []
+            for msg in messages[:-1] if messages else []:
+                if isinstance(msg, dict):
+                    role = msg.get('role', 'user')
+                    content = msg.get('content', '')
+                    if role and content:
+                        formatted_chat_history.append((role, content))
+            
+            # Format the data for LangChain endpoint
+            formatted_body = {
+                'question': question,
+                'conversation_id': conversation_id,
+                'chat_history': formatted_chat_history,
+                'config': {
+                    'conversation_id': conversation_id,
+                    'files': files
+                }
+            }
+            
+            # Forward to /ziya/stream endpoint for LangChain processing
+            stream_request = Request(scope=request.scope)
+            stream_request._body = json.dumps(formatted_body).encode()
+            
+            return await stream_endpoint(stream_request, formatted_body)
+            
+    except Exception as e:
+        logger.error(f"Error in chat_endpoint: {str(e)}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -245,6 +335,10 @@ app.include_router(ast_router)
 @app.middleware("http")
 async def connection_state_middleware(request: Request, call_next):
     """Track connection state to handle disconnections gracefully."""
+    # Log ALL requests to trace routing
+    print(f"🔍 MIDDLEWARE: Request {request.method} {request.url.path}")
+    logger.info(f"🔍 MIDDLEWARE: Request {request.method} {request.url.path}")
+    
     try:
         # Initialize connection state
         request.state.disconnected = False
@@ -364,8 +458,31 @@ async def shutdown_event():
     except Exception as e:
         logger.warning(f"MCP shutdown failed: {str(e)}")
 
-# Add a route for the frontend
-add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log", "stream", "invoke"], path="/ziya")
+# SELECTIVELY REMOVE ONLY CONFLICTING LANGSERVE ROUTES
+logger.info("=== REMOVING CONFLICTING LANGSERVE ROUTES ===")
+routes_to_remove = []
+for route in app.routes:
+    if hasattr(route, 'path'):
+        # Only remove routes that conflict with our custom streaming endpoints
+        if (route.path == '/ziya/stream' and hasattr(route, 'endpoint') and 
+            'langserve' in str(type(route.endpoint))):
+            routes_to_remove.append(route)
+            logger.info(f"Removing conflicting LangServe route: {route.path}")
+
+for route in routes_to_remove:
+    app.routes.remove(route)
+
+logger.info(f"Removed {len(routes_to_remove)} conflicting LangServe routes")
+
+# Log remaining /ziya routes
+logger.info("=== REMAINING /ziya ROUTES ===")
+for route in app.routes:
+    if hasattr(route, 'path') and route.path.startswith('/ziya'):
+        logger.info(f"Route: {route.methods if hasattr(route, 'methods') else 'N/A'} {route.path}")
+logger.info("=== END /ziya ROUTES ===")
+
+# DISABLED: LangServe routes bypass custom streaming and extended context handling
+# add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log", "stream", "invoke"], path="/ziya")
 
 # Add custom stream_log endpoint for compatibility
 @app.post("/ziya/stream_log")
@@ -519,6 +636,12 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
     if not tool_calls:
         return full_response
     
+    # CRITICAL: Only process the FIRST tool call to prevent multiple executions
+    # This prevents the model from executing multiple tool calls that may depend on each other
+    if len(tool_calls) > 1:
+        logger.info(f"🔍 MCP: Found {len(tool_calls)} tool calls, limiting to first one only")
+        tool_calls = tool_calls[:1]
+    
     modified_response = full_response
     
     for tool_call_block in tool_calls:
@@ -597,9 +720,94 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
 
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
+    print("🔍 STREAM_CHUNKS: FUNCTION CALLED - ENTRY POINT")
     logger.error("🔍 EXECUTION_TRACE: stream_chunks() called - ENTRY POINT")
     logger.info("🔍 STREAM_CHUNKS: Function called")
-    # Send heartbeat to keep connection alive (don't send processing message as it appears in the UI)
+    
+    # Dynamic check for direct streaming (not relying on import-time config)
+    import os
+    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'false').lower() == 'true'
+    
+    # FORCE DIRECT STREAMING - the env var check is failing somehow
+    use_direct_streaming = True
+    print(f"🔍 STREAM_CHUNKS: FORCED use_direct_streaming = {use_direct_streaming}")
+    
+    logger.info(f"🚀 DIRECT_STREAMING: Environment check = {use_direct_streaming}")
+    logger.info(f"🚀 DIRECT_STREAMING: Import-time config = {USE_DIRECT_STREAMING}")
+    logger.info(f"🚀 DIRECT_STREAMING: ZIYA_USE_DIRECT_STREAMING env var = '{os.getenv('ZIYA_USE_DIRECT_STREAMING', 'NOT_SET')}'")
+    
+    # Check if we should use direct streaming
+    if use_direct_streaming:
+        print("🔍 STREAM_CHUNKS: ENTERING DIRECT STREAMING SECTION")
+        logger.info("🚀 DIRECT_STREAMING: Using direct streaming mode")
+        print("🚀 DIRECT_STREAMING: About to enter direct streaming section")
+        logger.info("🚀 DIRECT_STREAMING: Using direct streaming mode")
+        yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
+        
+        # Extract variables from request body
+        question = body.get("question", "")
+        chat_history = body.get("chat_history", [])
+        config_data = body.get("config", {})
+        files = config_data.get("files", [])
+        
+        # Build messages using existing function
+        messages = build_messages_for_streaming(question, chat_history, files, 
+                                               body.get("conversation_id", f"direct_{int(time.time())}"))
+        
+        # Use StreamingToolExecutor for proper tool execution
+        try:
+            print("🔧 DEBUG: ENTERING StreamingToolExecutor section")
+            from app.streaming_tool_executor import StreamingToolExecutor
+            
+            # Create StreamingToolExecutor instance
+            executor = StreamingToolExecutor()
+            
+            logger.info("🚀 DIRECT_STREAMING: Using StreamingToolExecutor")
+            print("🔧 DEBUG: About to load MCP tools")
+            
+            # Get available tools including MCP tools
+            tools = []
+            try:
+                from app.mcp.manager import get_mcp_manager
+                mcp_manager = get_mcp_manager()
+                print(f"🔧 DEBUG: MCP manager initialized: {mcp_manager.is_initialized}")
+                if mcp_manager.is_initialized:
+                    # Convert MCP tools to Bedrock format
+                    mcp_tools = mcp_manager.get_all_tools()
+                    print(f"🔧 DEBUG: Found {len(mcp_tools)} MCP tools")
+                    for tool in mcp_tools:
+                        print(f"🔧 DEBUG: MCP tool: {tool.name}")
+                        tools.append({
+                            'name': tool.name,
+                            'description': tool.description,
+                            'input_schema': tool.input_schema
+                        })
+            except Exception as e:
+                print(f"🔧 DEBUG: MCP tool loading error: {e}")
+                logger.warning(f"Could not get MCP tools: {e}")
+            
+            # Add shell tool if no MCP tools available
+            if not tools:
+                print("🔧 DEBUG: No MCP tools found, using shell tool")
+                from app.agents.direct_streaming import get_shell_tool_schema
+                tools = [get_shell_tool_schema()]
+            else:
+                print(f"🔧 DEBUG: Using {len(tools)} tools: {[t['name'] for t in tools]}")
+            
+            # Stream with proper tool execution
+            async for chunk in executor.stream_with_tools(messages, tools):
+                yield f"data: {json.dumps(chunk)}\n\n"
+            
+            # Return after successful streaming
+            return
+                
+        except Exception as e:
+            logger.error(f"🚀 DIRECT_STREAMING: Error in StreamingToolExecutor: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            return
+    
+    # Fallback to LangChain for non-direct streaming
+    logger.info("🔍 STREAM_CHUNKS: Using LangChain mode")
     yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
     
     # Track if we've successfully sent any data
@@ -757,7 +965,11 @@ async def stream_chunks(body):
             # Add file context to the extended template
             # Use the existing codebase extraction logic
             from app.agents.agent import extract_codebase
+            logger.debug(f"DEBUG: files variable = {files}")
+            logger.debug(f"DEBUG: files type = {type(files)}")
+            logger.debug(f"DEBUG: files length = {len(files) if isinstance(files, list) else 'N/A'}")
             file_context = extract_codebase({"config": {"files": files}, "conversation_id": conversation_id})
+            logger.debug(f"DEBUG: file_context length = {len(file_context)}")
             complete_system_content = system_template.replace("{codebase}", file_context)
             
             messages.append(SystemMessage(content=complete_system_content))
@@ -865,9 +1077,12 @@ async def stream_chunks(body):
         
         processed_tool_calls = set()  # Track which tool calls we've already processed
         # Create a background task for cleanup when the stream ends
-        # Set up the model with multiple stop sequences to aggressively interrupt after each tool call
-        # This forces the model to pause after each tool so we can execute and show results
-        model_with_stop = model_instance.bind(stop=["</TOOL_SENTINEL>", "</TOOL_SENTINEL>\n", "\n\n<TOOL_SENTINEL>"])
+        # AGGRESSIVE STOP: Stop at the OPENING of a tool call to prevent hallucination
+        model_with_stop = model_instance.bind(stop=[
+            "<TOOL_SENTINEL>",  # Stop BEFORE the tool call
+            "TOOL_SENTINEL>",   # Catch partial
+            "_SENTINEL>"        # Catch even more partial
+        ])
 
         # Get MCP tools for the iteration
         mcp_tools = []
@@ -895,8 +1110,14 @@ async def stream_chunks(body):
                 # Track if we're currently inside a tool call across chunks
                 inside_tool_call = False
                 tool_call_buffer = ""
+                tool_call_detected = False  # Flag to suppress ALL output after tool detection
+                pending_tool_execution = False  # Flag to indicate we need to execute tools
+                buffered_content = ""  # Buffer ALL content after tool call detection
+                tool_execution_completed = False  # Track if we've executed and need model to continue
                 
-                async for chunk in model_to_use.astream(messages, config=config):
+                # Store stream reference for potential closure
+                stream_generator = model_to_use.astream(messages, config=config)
+                async for chunk in stream_generator:
                     # Log the actual messages being sent to model on first iteration
                     if iteration == 1 and not hasattr(stream_chunks, '_logged_model_input'):
                         stream_chunks._logged_model_input = True
@@ -931,14 +1152,48 @@ async def stream_chunks(body):
                         
                         content = chunk.content() if callable(chunk.content) else chunk.content
                         content_str = str(content) if content else ""
+
+                        # AGGRESSIVE: If we see ANY hint of a tool call starting, stop everything
+                        if any(marker in content_str for marker in ["<TOOL_SENTINEL>", "</TOOL_SENTINEL>", "<name>mcp_"]):
+                            tool_call_detected = True
+                            logger.info(f"🔍 STREAM: AGGRESSIVE STOP - detected tool marker in: {content_str[:50]}")
+                            # Add to current_response to capture the tool call
+                            current_response += content_str
+                            # CRITICAL: Break immediately to stop accumulating more chunks
+                            # This prevents the model from generating multiple tool calls
+                            logger.info("🔍 STREAM: BREAKING IMMEDIATELY after detecting tool marker")
+                            # Force close the stream to prevent hanging
+                            if hasattr(stream_generator, 'aclose'):
+                                try:
+                                    await stream_generator.aclose()
+                                except:
+                                    pass
+                            break  # Exit the streaming loop immediately
+                        
+                        # If we've just executed tools, the model should now be generating the response
+                        if tool_execution_completed:
+                            # Reset flag and allow normal streaming
+                            tool_execution_completed = False
+                        
+                        # Always accumulate content in current_response for tool detection
+                        current_response += content_str
+                        
+                        # If we've detected a tool call, buffer everything instead of streaming
+                        if tool_call_detected:
+                            buffered_content += content_str
                         
                         # STATEFUL TOOL CALL DETECTION - Track across chunks
                         # Check if we're entering a tool call
                         if TOOL_SENTINEL_OPEN in content_str:
                             inside_tool_call = True
                             tool_call_buffer = ""
-                            # Don't stream the opening sentinel
-                            content_str = content_str[:content_str.find(TOOLOPEN)]
+                            # Stream any content before the tool call, but not the sentinel itself
+                            before_tool = content_str[:content_str.find(TOOL_SENTINEL_OPEN)]
+                            if before_tool:
+                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": before_tool}]
+                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                            tool_call_detected = True  # Set flag to suppress all further output
+                            buffered_content = ""  # Start buffering from tool call
                             logger.info("🔍 STREAM: Entering tool call - suppressing all output")
                         
                         # If we're inside a tool call, buffer the content instead of streaming
@@ -949,15 +1204,13 @@ async def stream_chunks(body):
                             if TOOL_SENTINEL_CLOSE in content_str:
                                 inside_tool_call = False
                                 logger.info(f"🔍 STREAM: Exiting tool call - buffered {len(tool_call_buffer)} chars")
-                                # Don't stream the closing sentinel either
-                                content_str = content_str[content_str.find(TOOLCLOSE) + len(_CLOSE):]
+                                pending_tool_execution = True  # Mark that we need to execute tools
+                                # Don't stream anything after tool call closes
                             # Skip streaming this chunk - it's part of a tool call
-                            current_response += content_str
                             continue
+                        
                     else:
                         content_str = str(chunk)
-
-                    # Skip empty chunks
                     if not content_str: 
                         continue
 
@@ -972,9 +1225,15 @@ async def stream_chunks(body):
                         except (json.JSONDecodeError, ValueError):
                             logger.warning("Failed to parse error JSON, treating as regular content")
                             # Fall through to normal processing
-
-                    # Always accumulate content in current_response for tool detection
-                    current_response += content_str
+                    
+                    # If tool has been detected, don't stream anything
+                    if tool_call_detected:
+                        # Keep accumulating in current_response for tool detection
+                        # but don't stream anything to the user
+                        if content_str:
+                            buffered_content += content_str
+                        logger.debug(f"🔍 STREAM: Buffering post-tool content: {content_str[:50]}...")
+                        continue  # Skip all streaming after tool detection
  
                     # Check if we should suppress this content from streaming
                     # LAYER 1: Stateful detection above should catch most tool calls
@@ -1011,14 +1270,25 @@ async def stream_chunks(body):
                         # Suppress partial tool sentinel fragments
                         'SENTINEL>' in content_str or
                         '<SENTINEL' in content_str or
-                        '_run_shell' in content_str or
+                        '_run' in content_str or  # Catch _run fragments
+                        '_shell' in content_str or  # Catch _shell fragments
+                        '_comman' in content_str or  # Catch _command fragments
                         '_SENTINEL' in content_str or
+                        # Suppress JSON fragments that commonly leak
+                        ('"d": "' in content_str) or  # Catch "d": "pwd"
+                        ('": "' in content_str and current_response.count(TOOL_SENTINEL_OPEN) > 0) or  # Catch ": "1"
+                        ('"pwd"' in content_str and current_response.count(TOOL_SENTINEL_OPEN) > 0) or
                         "mcp_" in content_str and ("\"command\"" in content_str or "\"format\"" in content_str or "\"timeout\"" in content_str) or
                         # Enhanced tool call detection
                         content_str.strip().startswith("mcp_") or
                         "mcp_run" in content_str or
                         "mcp_get" in content_str or
                         # Catch argument patterns (only suppress if inside tool call)
+                        ("\"comman" in content_str) or  # Catch partial "command"
+                        ("d\": \"" in content_str and tool_call_detected) or  # Catch command value
+                        ("pwd\"" in content_str and tool_call_detected) or  # Catch pwd command
+                        ("timeout" in content_str and tool_call_detected) or  # Catch timeout
+                        (": \"" in content_str and tool_call_detected) or  # Catch JSON patterns
                         ("\"command\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
                         ("\"format\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
                         ("\"timeout\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
@@ -1045,26 +1315,32 @@ async def stream_chunks(body):
                         # CRITICAL: Suppress ALL content after tool calls but before execution
                         # This prevents hallucinated responses from leaking through
                         has_pending_tools
-                    ))
+                        )
+                    )
+                    
                     if not should_suppress:
-
                         ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
                         yield f"data: {json.dumps({'ops': ops})}\n\n"
                     else:
                         logger.debug(f"🔍 AGENT: Suppressed tool call content from frontend")
-
                     # Check for tool calls and execute when model has finished generating them
-                    # Wait for model to generate ALL tool calls before executing any
-                    if (TOOL_SENTINEL_OPEN in current_response and 
-                        TOOL_SENTINEL_CLOSE in current_response):
+                    if pending_tool_execution or (TOOL_SENTINEL_OPEN in current_response and 
+                                                  TOOL_SENTINEL_CLOSE in current_response) and not tool_executed:
                         
                         # Count complete tool calls
                         complete_tool_calls = current_response.count(TOOL_SENTINEL_CLOSE)
                         
-                        # Limit tool calls per round to encourage incremental exploration
-                        max_tools_per_round = 2
-                        if complete_tool_calls > max_tools_per_round:
-                            logger.info(f"🔍 STREAM: {complete_tool_calls} tool calls detected, but limiting to {max_tools_per_round} per round for better learning")
+                        # Only execute if we haven't already executed these tools
+                        if complete_tool_calls > 0 and not tool_executed:
+                            logger.info(f"🔍 STREAM: Executing {complete_tool_calls} tool call(s) inline")
+                            tool_executed = True  # Mark as executed to prevent re-execution
+                        
+                            # Limit tool calls per round if needed
+                            max_tools_per_round = 2
+                            if complete_tool_calls > max_tools_per_round:
+                                logger.info(f"🔍 STREAM: Limiting to {max_tools_per_round} tools per round")
+                                # Truncate to first N tool calls
+
                             # Find the position after the Nth tool call
                             tool_closes = []
                             start_pos = 0
@@ -1073,7 +1349,7 @@ async def stream_chunks(body):
                                 if pos != -1:
                                     tool_closes.append(pos + len(TOOL_SENTINEL_CLOSE))
                                     start_pos = pos + 1
-                            
+
                             if tool_closes:
                                 # Truncate current_response to only include first N tool calls
                                 truncated_response = current_response[:tool_closes[-1]]
@@ -1082,16 +1358,74 @@ async def stream_chunks(body):
                                 current_response = truncated_response
                                 complete_tool_calls = max_tools_per_round
                         
-                        # Simple approach: execute after every 2 tool calls to force responsive exploration
-                        # Check if current chunk contains tool markers (model still generating tools)
-                        chunk_has_no_tools = not any(marker in content_str for marker in [TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE, "<name>", "</name>", "<arguments>", "</arguments>"])
-                        
-                        # Execute if we have 1+ tools AND model isnt generating more tools in this chunk
-                        if complete_tool_calls >= 1 and chunk_has_no_tools:
-                            logger.info(f"🔍 STREAM: {complete_tool_calls} tool call(s) detected, executing inline")
-                            # Don't break! Execute inline and continue streaming
-                            # This keeps us in the same stream for efficiency
-                            # break  # REMOVED - we want to stay in the same stream
+                            # Execute tools immediately
+                            try:
+                                processed_response = await detect_and_execute_mcp_tools(current_response, processed_tool_calls)
+                                
+                                if processed_response != current_response:
+                                    # Extract and stream tool results
+                                    if "```tool:" in processed_response:
+                                        tool_blocks = []
+                                        start_pos = 0
+                                        while True:
+                                            tool_start = processed_response.find("```tool:", start_pos)
+                                            if tool_start == -1:
+                                                break
+                                            tool_end = processed_response.find("```", tool_start + 8)
+                                            if tool_end == -1:
+                                                break
+                                            tool_block = processed_response[tool_start:tool_end + 3]
+                                            tool_blocks.append(tool_block)
+                                            start_pos = tool_end + 3
+                                        
+                                        # Stream tool results to frontend
+                                        for tool_block in tool_blocks:
+                                            tool_result = "\n" + tool_block + "\n"
+                                            ops = [{"op": "add", "path": "/streamed_output_str/-", "value": tool_result}]
+                                            yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                            logger.info(f"🔍 STREAM: Tool result streamed")
+                                        
+                                        # Update messages with tool results
+                                        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+                                        
+                                        # Add tool results
+                                        tool_results_text = "\n".join([block.split("```tool:")[1].split("```")[0].strip() for block in tool_blocks])
+
+                                        # Add the tool call as an AI message
+                                        messages.append(AIMessage(content=current_response))
+                                        
+                                        # Add tool results as another AI message (NOT SystemMessage!)
+                                        tool_results_text = "\n".join([block.split("```tool:")[1].split("```")[0].strip() for block in tool_blocks])
+
+                                        messages.append(AIMessage(content=f"Tool execution results:\n{tool_results_text}"))
+                                        
+                                        # Add a continuation prompt
+                                        messages.append(HumanMessage(content="Continue your response based on the tool results above. Do not repeat what you've already said, just continue from where you stopped."))
+
+                                        
+                                        logger.info("🔍 STREAM: Tool executed, messages updated, continuing in SAME stream")
+
+                                        # Reset state for continued streaming
+                                        current_response = ""
+                                        tool_executed = True
+                                        tool_call_detected = False
+                                        pending_tool_execution = False
+                                        buffered_content = ""
+                                        tool_execution_completed = True  # Signal that we should stream the response
+                                        
+                                        # CRITICAL: Continue streaming for model to generate response
+                                        # Don't break here!
+                                
+                            except Exception as tool_error:
+                                logger.error(f"🔍 STREAM: Tool execution error: {tool_error}")
+                                error_msg = f"**Tool Error:** {str(tool_error)}"
+                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": error_msg}]
+                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                tool_executed = True
+                                tool_call_detected = False
+                                pending_tool_execution = False
+
+                            logger.info(f"🔍 AGENT: Finished streaming loop for iteration {iteration}")
                             
                             # Execute ALL tools at once
                             try:
@@ -1169,11 +1503,26 @@ async def stream_chunks(body):
                 logger.info(f"🔍 AGENT: Finished streaming loop for iteration {iteration}")
 
                 # Check if we have tool calls to execute after stream ended
+                # CRITICAL: Only process the FIRST tool call, discard others
+                if TOOL_SENTINEL_OPEN in current_response and TOOL_SENTINEL_CLOSE in current_response:
+                    # Extract only the first complete tool call
+                    first_close = current_response.find(TOOL_SENTINEL_CLOSE) + len(TOOL_SENTINEL_CLOSE)
+                    current_response = current_response[:first_close]
+                    logger.info(f"🔍 STREAM: Truncated to first tool call only, discarding subsequent calls")
+
                 if (TOOL_SENTINEL_OPEN in current_response and 
                     TOOL_SENTINEL_CLOSE in current_response and not tool_executed):
                     
                     complete_tool_calls = current_response.count(TOOL_SENTINEL_CLOSE)
-                    logger.info(f"🔍 STREAM: Executing {complete_tool_calls} tool call(s) after stream break")
+                    logger.info(f"🔍 STREAM: Post-stream check: {complete_tool_calls} tool calls, executed: {tool_executed}")
+                    
+                    # This should rarely happen now since we execute inline
+                    if complete_tool_calls > 0:
+                        logger.warning(f"🔍 STREAM: Found unexecuted tools after stream ended")
+                        # Only execut
+                        if complete_tool_calls > 1:
+                            logger.info(f"🔍 STREAM: Limiting to 1 tool call (found {complete_tool_calls})")
+                            complete_tool_calls = 1
 
                     try:
                         processed_response = await detect_and_execute_mcp_tools(current_response, processed_tool_calls)
@@ -1233,6 +1582,9 @@ async def stream_chunks(body):
                         # CRITICAL: Don't break! Continue in the same iteration to let model respond
                         # We want to stay in iteration 1 and let the model continue generating
                         # This avoids creating a new stream and resending context
+
+                        # Continue to next iteration to get model's response after tool execution
+                        continue
                     else:
                         logger.warning("🔍 STREAM: Tool execution returned no changes")
 
@@ -1244,9 +1596,19 @@ async def stream_chunks(body):
                     full_response = current_response
                     logger.info(f"🔍 AGENT: Updated full_response from current_response: {len(full_response)} chars")
 
-                # the model has completed its response normally
+                # CRITICAL FIX: Only do ONE iteration unless tools were executed
                 if iteration == 1 and not tool_executed:
-                    logger.info("🔍 AGENT: First iteration complete, no tool calls - normal response")
+                    logger.info("🔍 AGENT: First iteration complete with no tools - STOPPING HERE")
+                    break
+                
+                # If tools were executed, we need iteration 2 for the response
+                if iteration == 1 and tool_executed:
+                    logger.info("🔍 AGENT: Tools executed, continuing to iteration 2 for response")
+                    continue
+                
+                # After iteration 2, we're done
+                if iteration >= 2:
+                    logger.info(f"🔍 AGENT: Iteration {iteration} complete - STOPPING")
                     break
                 
                 # If no tool was executed in this iteration, we're done
@@ -1366,6 +1728,27 @@ async def stream_endpoint(request: Request, body: dict):
     """Stream endpoint with centralized error handling."""
     logger.info(f"🔍 STREAM_ENDPOINT: Direct /ziya/stream called - this should be using stream_chunks")
     logger.info(f"🔍 STREAM_ENDPOINT: Request body keys: {body.keys()}")
+    
+    # Check for direct streaming mode
+    import os
+    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'false').lower() == 'true'
+    logger.info(f"🚀 DIRECT_STREAMING: stream_endpoint check = {use_direct_streaming}")
+    
+    if use_direct_streaming:
+        logger.info("🚀 DIRECT_STREAMING: Using direct streaming in stream_endpoint")
+        return StreamingResponse(
+            stream_chunks(body),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
+        )
+    
     try:
         # Debug logging
         logger.info("[INSTRUMENTATION] /ziya/stream received request")
@@ -1959,20 +2342,7 @@ async def get_folders_with_accurate_tokens():
     except Exception as e:
         logger.error(f"Error in get_folders_with_accurate_tokens: {e}")
         return {"error": f"Unexpected error: {str(e)}"}
-
-@app.post('/api/chat')
-async def chat_endpoint(request: Request):
-    """Handle chat requests from the frontend.
-    
-    This is a thin wrapper around the /ziya/stream endpoint that formats
-    the request data appropriately and forwards it to the stream endpoint.
-    """
-    try:
-        body = await request.json()
-        
-        # Extract data from the request
-        messages = body.get('messages', [])
-        question = body.get('question', '')
+        return JSONResponse({"error": str(e)}, status_code=500)
         files = body.get('files', [])
         conversation_id = body.get('conversation_id')
         logger.info(f"Chat API received conversation_id: {conversation_id}")
@@ -2025,13 +2395,20 @@ async def chat_endpoint(request: Request):
         logger.info(f"[INSTRUMENTATION] /api/chat forwarding to /ziya/stream")
 
         
-        # Forward the request to the /ziya/stream endpoint
-        # This ensures all validation and normalization logic is applied
-        stream_request = Request(scope=request.scope)
-        stream_request._body = json.dumps(formatted_body).encode()
-        
-        # Call the stream endpoint directly
-        return await stream_endpoint(stream_request, formatted_body)
+        # Call stream_chunks directly to force direct streaming path
+        logger.info("[INSTRUMENTATION] /api/chat calling stream_chunks directly for direct streaming")
+        return StreamingResponse(
+            stream_chunks(formatted_body),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
+        )
     except Exception as e:
         logger.error(f"Error in chat_endpoint: {str(e)}")
         # Return error as streaming response
@@ -2071,8 +2448,13 @@ def get_current_model():
         if "max_output_tokens" not in model_settings:
             model_settings["max_output_tokens"] = model_config.get("max_output_tokens", 4096)
         
+        # Use extended context limit if supported, otherwise use standard token_limit
+        base_token_limit = model_config.get("token_limit", 4096)
+        if model_config.get("supports_extended_context"):
+            base_token_limit = model_config.get("extended_context_limit", base_token_limit)
+        
         if "max_input_tokens" not in model_settings:
-            model_settings["max_input_tokens"] = model_config.get("token_limit", 4096)
+            model_settings["max_input_tokens"] = base_token_limit
             
         # Ensure temperature and top_k have default values if not present
         model_settings["temperature"] = model_settings.get("temperature", 0.3)
@@ -2113,7 +2495,7 @@ def get_current_model():
             'endpoint': endpoint,
             'region': region,
             'settings': model_settings,
-            'token_limit': model_config.get("token_limit", 4096)
+            'token_limit': model_config.get("extended_context_limit" if model_config.get("supports_extended_context") else "token_limit", 4096)
         }
     except Exception as e:
         logger.error(f"Error getting current model: {str(e)}")
@@ -2568,13 +2950,21 @@ def get_model_capabilities(model: str = None):
             "supports_thinking": effective_settings.get("thinking_mode", base_model_config.get("supports_thinking", False)),
         }
 
+        # Get base token limit, using extended context if supported
+        base_token_limit = base_model_config.get("token_limit", 4096)
+        if base_model_config.get("supports_extended_context"):
+            base_token_limit = base_model_config.get("extended_context_limit", base_token_limit)
+            logger.debug(f"Using extended context limit: {base_token_limit}")
+        else:
+            logger.debug(f"Using standard token limit: {base_token_limit}")
+
         # Get CURRENT effective token limits
         effective_max_output_tokens = effective_settings.get("max_output_tokens", base_model_config.get("max_output_tokens", 4096))
-        # Use max_input_tokens from effective settings, fallback to token_limit from base config
-        max_input_tokens = effective_settings.get("max_input_tokens", base_model_config.get("token_limit", 4096))
+        # Use max_input_tokens from effective settings, fallback to extended token_limit from base config
+        max_input_tokens = effective_settings.get("max_input_tokens", base_token_limit)
 
         # Add token limits to capabilities
-        effective_max_input_tokens = effective_settings.get("max_input_tokens", base_model_config.get("token_limit", 4096))
+        effective_max_input_tokens = effective_settings.get("max_input_tokens", base_token_limit)
  
         # Get ABSOLUTE maximums from base config for ranges
         absolute_max_output_tokens = base_model_config.get("max_output_tokens", 4096)
@@ -2582,8 +2972,8 @@ def get_model_capabilities(model: str = None):
         logger.debug(f"absolute_max_output_tokens from base_model_config: {absolute_max_output_tokens}") # DEBUG
         logger.debug(f"effective_max_output_tokens from effective_settings: {effective_max_output_tokens}") # DEBUG
 
-        # Get absolute max input tokens from base config (usually under 'token_limit')
-        absolute_max_input_tokens = base_model_config.get("token_limit", 4096)
+        # Get absolute max input tokens from base config (using extended context if supported)
+        absolute_max_input_tokens = base_token_limit
         logger.debug(f"absolute_max_input_tokens from base_model_config: {absolute_max_input_tokens}") # DEBUG
 
  

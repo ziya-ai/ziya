@@ -24,45 +24,47 @@ class ShellServer:
     def __init__(self):
         self.request_id = 0
         
+        # Define the single source of truth for allowed commands
+        self.allowed_commands = [
+            # Basic file operations (read-only)
+            "ls", "cat", "pwd", "cd", "tree", "find", "grep", "wc",
+            # Text processing
+            "head", "tail", "sort", "cut", "sed", "awk", "less", "xargs",
+            "echo", "printf", "tr", "uniq", "column", "nl", "tee",
+            # System info
+            "date", "ps", "curl", "ping", "which", "du", "df", "file"
+        ]
+
         # Get configuration from environment
         self.git_operations_enabled = os.environ.get('GIT_OPERATIONS_ENABLED', 'true').lower() in ('true', '1', 'yes')
-        self.command_timeout = int(os.environ.get('COMMAND_TIMEOUT', '10'))
+        self.command_timeout = int(os.environ.get('COMMAND_TIMEOUT', '30'))  # Increased from 10 to 30 seconds
         
-        # Define safe command patterns with regex support
-        self.safe_command_patterns = {
-            # Basic file operations (read-only)
-            'ls': r'^ls(\s+.*)?$',
-            'cat': r'^cat(\s+.*)?$',
-            'pwd': r'^pwd(\s+.*)?$',
-            'cd': r'^cd(\s+.*)?$',  # Allow directory navigation
-            'tree': r'^tree(\s+.*)?$',  # Allow directory tree visualization
-            'find': r'^find(\s+.*)?$',
-            'grep': r'^grep(\s+.*)?$',
-            'wc': r'^wc(\s+.*)?$',
-            'head': r'^head(\s+.*)?$',
-            'tail': r'^tail(\s+.*)?$',
-            'sort': r'^sort(\s+.*)?$',
-            'cut': r'^cut(\s+.*)?$',
-            'date': r'^date(\s+.*)?$',
-            'ps': r'^ps(\s+.*)?$',
-            'curl': r'^curl(\s+.*)?$',
-            'ping': r'^ping(\s+.*)?$',
-            'sed': r'^sed(\s+.*)?$',
-            'awk': r'^awk(\s+.*)?$',
-            'less': r'^less(\s+.*)?$',
-            'xargs': r'^xargs(\s+.*)?$',
-            'which': r'^xargs(\s+.*)?$',
-            'du': r'^du(\s+.*)?$',
-            'df': r'^df(\s+.*)?$',
-            'file': r'^file(\s+.*)?$'
+        # Default pattern for commands: command name followed by optional arguments
+        self.default_command_pattern = r"^{cmd}(\s+.*)?$"
+        
+        # Command pattern overrides for commands that need special handling
+        self.command_pattern_overrides = {
+            # Add any special pattern overrides here if needed
         }
         
+        # Get additional allowed commands from environment (legacy support)
+        env_commands = os.environ.get('ALLOW_COMMANDS', '').split(',')
+        env_commands = [cmd.strip() for cmd in env_commands if cmd.strip()]
+        
+        # Add environment commands to allowed commands list
+        for cmd in env_commands:
+            if cmd and cmd not in self.allowed_commands:
+                self.allowed_commands.append(cmd)
+
+        # Build safe command patterns dynamically from allowed commands
+        self.safe_command_patterns = self._build_safe_command_patterns()
+
         # Add git operations if enabled
         if self.git_operations_enabled:
             safe_git_ops = os.environ.get('SAFE_GIT_OPERATIONS', 'status,log,show,diff,branch,remote,ls-files,blame').split(',')
             safe_git_ops = [op.strip() for op in safe_git_ops if op.strip()]
             
-            git_patterns = {
+            self.git_patterns = {
                 'status': r'^git\s+status(\s+.*)?$',
                 'log': r'^git\s+log(\s+.*)?$',
                 'show': r'^git\s+show(\s+.*)?$',
@@ -84,20 +86,15 @@ class ShellServer:
             
             # Only add enabled git operations
             for op in safe_git_ops:
-                if op in git_patterns:
-                    self.safe_command_patterns[f'git_{op.replace(" ", "_").replace("-", "_")}'] = git_patterns[op]
-        
-        # Get additional allowed commands from environment (legacy support)
-        env_commands = os.environ.get('ALLOW_COMMANDS', '').split(',')
-        env_commands = [cmd.strip() for cmd in env_commands if cmd.strip()]
-        
-        # Add environment commands as simple patterns
-        for cmd in env_commands:
-            if cmd not in self.safe_command_patterns:
-                self.safe_command_patterns[f'env_{cmd}'] = f'^{re.escape(cmd)}(\\s+.*)?$'
-        
+                if op in self.git_patterns:
+                    self.safe_command_patterns[f'git_{op.replace(" ", "_").replace("-", "_")}'] = self.git_patterns[op]
+                    # Also add to allowed commands list for display purposes
+                    if op not in self.allowed_commands and f'git {op}' not in self.allowed_commands:
+                        self.allowed_commands.append(f'git {op}')
+
         print(f"Shell server starting with {len(self.safe_command_patterns)} allowed command patterns", file=sys.stderr)
-        print(f"Available commands: {', '.join(sorted(set([p.split('_')[0] if '_' in p else p for p in self.safe_command_patterns.keys()])))}", file=sys.stderr)
+        available_commands = ', '.join(sorted(set([p.split('_')[0] if '_' in p else p for p in self.safe_command_patterns.keys()])))
+        print(f"Available commands: {available_commands}", file=sys.stderr)
         print(f"Git operations enabled: {self.git_operations_enabled}", file=sys.stderr)
         
     def is_command_allowed(self, command: str) -> bool:
@@ -119,7 +116,29 @@ class ShellServer:
         
         print(f"Command '{command}' did not match any allowed patterns", file=sys.stderr)
         return False
-    
+
+    def _build_safe_command_patterns(self) -> Dict[str, str]:
+        """Build safe command patterns from allowed commands list."""
+        patterns = {}
+        
+        # Apply default pattern to each allowed command
+        for cmd in self.allowed_commands:
+            # Skip git commands as they're handled separately
+            if cmd.startswith('git '):
+                continue
+            if cmd in self.command_pattern_overrides:
+                patterns[cmd] = self.command_pattern_overrides[cmd]
+            else:
+                patterns[cmd] = self.default_command_pattern.format(cmd=re.escape(cmd))
+        
+        # Add patterns for complex shell constructs that use allowed commands
+        patterns['piped_commands'] = r'^(' + '|'.join([re.escape(cmd) for cmd in self.allowed_commands if not cmd.startswith('git ')]) + r')(\s+[^|]*)?(\s*\|\s*(' + '|'.join([re.escape(cmd) for cmd in self.allowed_commands if not cmd.startswith('git ')]) + r')(\s+.*)?)*$'
+        
+        # Allow find with -exec using allowed commands
+        patterns['find_exec'] = r'^find\s+.*-exec\s+(' + '|'.join([re.escape(cmd) for cmd in self.allowed_commands if not cmd.startswith('git ')]) + r')\s+.*$'
+        
+        return patterns
+
     def get_allowed_commands_description(self) -> str:
         """Get a human-readable description of allowed commands."""
         base_commands = set()
@@ -259,48 +278,16 @@ class ShellServer:
                     }
                     
                 except subprocess.TimeoutExpired:
-                    # Track consecutive timeouts
-                    current_time = time.time()
-                    if command not in _consecutive_timeouts:
-                        _consecutive_timeouts[command] = 0
-                    
-                    # Only count as consecutive if within reasonable time window (5 minutes)
-                    if command in _last_command_times and (current_time - _last_command_times[command]) < 300:
-                        _consecutive_timeouts[command] += 1
-                    else:
-                        _consecutive_timeouts[command] = 1
-                    
-                    _last_command_times[command] = current_time
-                    
-                    # Only return timeout error if this is the 3rd consecutive timeout
-                    if _consecutive_timeouts[command] < 3:
-                        # Return empty success response to suppress timeout
-                        return {
-                            "jsonrpc": "2.0",
-                            "id": request_id,
-                            "result": {
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": ""
-                                    }
-                                ]
-                            }
-                        }
-                    
+                    # Always return timeout error instead of suppressing it
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,
                         "error": {
                             "code": -32603,
-                            "message": f"Command timed out after {timeout} seconds (3+ consecutive timeouts)"
+                            "message": f"Command timed out after {timeout} seconds"
                         }
                     }
                 except Exception as e:
-                    # Reset timeout counter on other errors
-                    if command in _consecutive_timeouts:
-                        _consecutive_timeouts[command] = 0
-                    
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,
