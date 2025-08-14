@@ -125,25 +125,23 @@ export const mermaidPlugin: D3RenderPlugin = {
 
             container.appendChild(loadingSpinner);
 
-            // If we're streaming and the definition is incomplete, show a waiting message
+            // This allows the content to display as highlighted code during streaming
             if (spec.isStreaming && !spec.isMarkdownBlockClosed && !spec.forceRender) {
-                const isComplete = isDiagramDefinitionComplete(spec.definition, 'mermaid');
-                const timestamp = Date.now();
-                console.log(`[${timestamp}] Mermaid streaming check:`, {
-                    isComplete,
-                    definitionLength: spec.definition.length,
-                    definitionPreview: spec.definition.substring(0, 50),
-                    definitionEnd: spec.definition.substring(spec.definition.length - 20)
-                });
-
-                if (!isComplete) {
-                    loadingSpinner.innerHTML = `
-                        <div style="text-align: center; padding: 20px; background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; border: 1px dashed #ccc; border-radius: 4px;">
-                            <p>Waiting for complete diagram definition...</p>
-                        </div>
-                    `;
-                    return; // Exit early and wait for complete definition
+                console.log('Mermaid: Markdown block still open, letting content display as code');
+                // Don't show a waiting message - let the markdown renderer show the code
+                // Just remove the loading spinner and return
+                try {
+                    container.innerHTML = '';
+                } catch (e) {
+                    console.warn('Could not remove loading spinner:', e);
                 }
+                return; // Exit early - let markdown renderer handle the streaming content
+            }
+
+            // Only proceed with rendering when we have a complete definition
+            if (!spec.definition || spec.definition.trim().length < 10) {
+                console.log('Mermaid: Definition too short, waiting for more content');
+                return; // Exit early and wait for complete definition
             }
 
             // Initialize mermaid with graph-specific settings
@@ -155,12 +153,12 @@ export const mermaidPlugin: D3RenderPlugin = {
             console.log('Original definition (first 200 chars):', processedDefinition.substring(0, 200));
 
             // Detect diagram type
-        const firstLine = processedDefinition.trim().split('\n')[0].toLowerCase();
-        const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
+            const firstLine = processedDefinition.trim().split('\n')[0].toLowerCase();
+            const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
 
-        mermaid.initialize({
-            startOnLoad: false,
-            theme: isDarkMode ? 'dark' : 'default',
+            mermaid.initialize({
+                startOnLoad: false,
+                theme: isDarkMode ? 'dark' : 'default',
                 securityLevel: 'loose',
                 fontFamily: '"Arial", sans-serif',
                 fontSize: 14,
@@ -1043,18 +1041,18 @@ ${svgData}`;
             const lines = spec.definition.trim().split('\n');
             const firstLine = lines[0]?.trim() || '';
             const diagramType = firstLine.split(' ')[0];
-            
+
             // Check if this might be an unsupported diagram type
-            const standardTypes = ['graph', 'flowchart', 'sequenceDiagram', 'classDiagram', 'stateDiagram', 
-                                  'gantt', 'pie', 'er', 'journey', 'gitGraph', 'mindmap'];
-            const isKnownType = standardTypes.some(type => 
-                diagramType.toLowerCase() === type.toLowerCase() || 
+            const standardTypes = ['graph', 'flowchart', 'sequenceDiagram', 'classDiagram', 'stateDiagram',
+                'gantt', 'pie', 'er', 'journey', 'gitGraph', 'mindmap'];
+            const isKnownType = standardTypes.some(type =>
+                diagramType.toLowerCase() === type.toLowerCase() ||
                 diagramType.toLowerCase().startsWith(type.toLowerCase() + ' '));
-            
+
             // Create appropriate error message based on the error type
             let errorTitle = 'Mermaid Error';
             let errorMessage = 'There was an error rendering the diagram. This is often due to syntax issues in the Mermaid definition.';
-            
+
             // Check for specific error patterns
             if (!isKnownType) {
                 errorTitle = 'Unsupported Diagram Type';

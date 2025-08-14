@@ -479,6 +479,43 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['flowchart', 'graph']
   });
 
+  // Add a preprocessor to clean arrow characters from edge labels
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 ARROW-LABEL-CLEANER: Processing edge labels with arrow characters');
+
+      // This regex finds edge labels and removes arrow characters from them
+      const result = definition.replace(/(==>|-->|-\.->|--[xo]>|---|->>|-->>)\s*\|([^|]*?)\|/g, (match, arrow, label) => {
+        console.log('🔍 ARROW-LABEL-CLEANER: Found match:', { match, arrow, label });
+        
+        // Clean arrow characters from the label
+        let cleanedLabel = label.trim()
+          .replace(/-->/g, '')     // Remove -->
+          .replace(/<--/g, '')     // Remove <--
+          .replace(/==>/g, '')     // Remove ==>
+          .replace(/<=/g, '')      // Remove <==
+          .replace(/-\.->/g, '')   // Remove -.->
+          .replace(/<-\.-/g, '')   // Remove <-.-
+          .trim();
+
+        const finalResult = `${arrow}|"${cleanedLabel}"|`;
+        console.log('🔍 ARROW-LABEL-CLEANER: Cleaned:', { original: match, result: finalResult });
+        return finalResult;
+      });
+
+      console.log('🔍 ARROW-LABEL-CLEANER: Processing complete');
+      return result;
+    }, {
+    name: 'arrow-label-cleaner',
+    priority: 360, // Higher priority to run before other label fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
   // Add a preprocessor to fix links where the target is a node definition
   registerPreprocessor((def: string, type: string) => {
     if (type !== 'flowchart' && !def.trim().startsWith('flowchart') && !def.trim().startsWith('graph')) {
