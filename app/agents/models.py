@@ -719,7 +719,7 @@ class ModelManager:
         try:
             if endpoint == "bedrock":
                 logger.info("Using Bedrock authentication flow only")
-                model = cls._initialize_bedrock_model(model_config, settings_override=settings_override)
+                model = cls._initialize_bedrock_model(model_config, model_name, settings_override=settings_override)
             elif endpoint == "google":
                 logger.info("Using Google authentication flow only")
                 model = cls._initialize_google_model(model_config)
@@ -759,7 +759,7 @@ class ModelManager:
         return model
     
     @classmethod
-    def _get_region_specific_model_id_with_region_update(cls, model_id, region, model_config=None):
+    def _get_region_specific_model_id_with_region_update(cls, model_id, region, model_config=None, model_name=None):
         """
         Get the appropriate model ID and updated region based on model availability.
         
@@ -792,24 +792,41 @@ class ModelManager:
                 logger.info(f"Using {region_prefix} specific model ID for region {region}")
                 return model_id[region_prefix], region
             else:
-                # Need to switch regions
-                if region_prefix == "eu" and "us" in model_id:
-                    # Current region is EU but model only available in US - switch to US region
-                    new_region = model_config.get("region", "us-west-2") if model_config else "us-west-2"
-                    logger.warning(f"Model only available in US regions. Switching from {region} to {new_region}")
-                    os.environ["AWS_REGION"] = new_region
-                    return model_id["us"], new_region
-                elif region_prefix == "us" and "eu" in model_id:
-                    # Switch to EU region
-                    new_region = model_config.get("region", "eu-west-1") if model_config else "eu-west-1"
-                    logger.warning(f"Model only available in EU regions. Switching from {region} to {new_region}")
-                    os.environ["AWS_REGION"] = new_region
-                    return model_id["eu"], new_region
+                # Model not available in current region
+                is_region_restricted = model_config.get("region_restricted", False) if model_config else False
+                available_regions = model_config.get("available_regions", []) if model_config else []
+                
+                if is_region_restricted:
+                    # Model is truly restricted to specific regions - must switch
+                    if region_prefix == "eu" and "us" in model_id:
+                        # Current region is EU but model only available in US - switch to US region
+                        preferred_region = model_config.get("preferred_region", "us-west-2") if model_config else "us-west-2"
+                        logger.warning(f"Model {model_name} is only available in US regions. Switching from {region} to {preferred_region}")
+                        os.environ["AWS_REGION"] = preferred_region
+                        return model_id["us"], preferred_region
+                    elif region_prefix == "us" and "eu" in model_id:
+                        # Switch to EU region
+                        preferred_region = model_config.get("preferred_region", "eu-west-1") if model_config else "eu-west-1"
+                        logger.warning(f"Model {model_name} is only available in EU regions. Switching from {region} to {preferred_region}")
+                        os.environ["AWS_REGION"] = preferred_region
+                        return model_id["eu"], preferred_region
                 else:
-                    # Use fallback
-                    fallback_id = next(iter(model_id.values()))
-                    logger.warning(f"No matching region found, using fallback: {fallback_id}")
-                    return fallback_id, region
+                    # Model has regional preferences but can work in other regions
+                    if region in available_regions:
+                        # Current region is actually supported, use appropriate model ID
+                        logger.info(f"Using model {model_name} in region {region}")
+                        if region_prefix == "eu" and "us" in model_id:
+                            return model_id["us"], region  # Use US model ID but stay in EU region
+                        elif region_prefix == "us" and "eu" in model_id:
+                            return model_id["eu"], region  # Use EU model ID but stay in US region
+                    else:
+                        # Region not supported, inform user but don't force switch
+                        logger.warning(f"Model {model_name} may not be available in region {region}. Consider using one of: {', '.join(available_regions[:5])}")
+                
+                # Use fallback
+                fallback_id = next(iter(model_id.values()))
+                logger.info(f"Using fallback model ID: {fallback_id}")
+                return fallback_id, region
                     
         # Fallback for unexpected cases
         logger.warning(f"Unexpected model_id format: {model_id}, returning as is")
@@ -846,49 +863,7 @@ class ModelManager:
             else:
                 # Fall back to the first available ID
                 fallback_id = next(iter(model_id.values()))
-                logger.warning(f"No matching region found for {region_prefix}, using fallback: {fallback_id}")
-                return fallback_id
-                
-                # If we're in US but only have EU model ID, or vice versa, we need to switch regions
-                if region_prefix == "eu" and "us" in model_id:
-                    # We're in EU but the model is only available in US - switch to US
-                    new_region = "us-west-2"  # Default US region
-                    # Check if model config specifies a preferred region
-                    if model_config and "region" in model_config:
-                        new_region = model_config["region"]
-                    logger.warning(f"Model only available in US regions. Switching from {region} to {new_region}")
-                    
-                    # Update the region in environment variables
-                    os.environ["AWS_REGION"] = new_region
-                    # Also update the region variable for this initialization
-                    region = new_region
-                    
-                    # Return the US model ID
-                    return model_id["us"]
-                elif region_prefix == "us" and "eu" in model_id:
-                    # We're in US but the model is only available in EU - switch to EU
-                    new_region = "eu-west-1"  # Default EU region  
-                    if model_config and "region" in model_config:
-                        new_region = model_config["region"]
-                    logger.warning(f"Model only available in EU regions. Switching from {region} to {new_region}")
-                    
-                    # Update the region in environment variables
-                    os.environ["AWS_REGION"] = new_region
-                    logger.info(f"Updated AWS_REGION environment variable to: {new_region}")
-                    region = new_region
-                    
-                    # Also update the region in the ModelManager state
-                    cls._state['aws_region'] = new_region
-                    logger.info(f"Updated ModelManager state with new region: {new_region}")
-                    
-                    # Return the EU model ID
-                    return model_id["eu"]
-                else:
-                    # No matching region available, use the first available
-                    fallback_id = next(iter(model_id.values()))
-                    logger.warning(f"No matching region found for {region_prefix}, using fallback: {fallback_id}")
-                    return fallback_id
-                    
+                logger.info(f"No matching region found for {region_prefix}, using fallback: {fallback_id}")
                 return fallback_id
                 
         # Fallback for unexpected cases
@@ -896,7 +871,7 @@ class ModelManager:
         return model_id
     
     @classmethod
-    def _initialize_bedrock_model(cls, model_config: Dict[str, Any], settings_override: Optional[Dict[str, Any]] = None) -> BaseChatModel: # Add settings_override parameter
+    def _initialize_bedrock_model(cls, model_config: Dict[str, Any], model_name: str = None, settings_override: Optional[Dict[str, Any]] = None) -> BaseChatModel: # Add settings_override parameter
 
         """
         Initialize a Bedrock model with the given configuration.
@@ -931,7 +906,7 @@ class ModelManager:
         cls._state['aws_region'] = region
         # Get model ID with region-specific handling - THIS IS WHERE THE REGION GETS UPDATED
         raw_model_id = model_config.get("model_id")
-        model_id, updated_region = cls._get_region_specific_model_id_with_region_update(raw_model_id, region, model_config)
+        model_id, updated_region = cls._get_region_specific_model_id_with_region_update(raw_model_id, region, model_config, model_name)
         
         # Update the environment variable with the new region
         if updated_region != region:

@@ -36,6 +36,19 @@ class StreamingToolExecutor:
             model_config=model_config
         )
         
+        # Store model information
+        try:
+            # Get current model info from ModelManager state
+            state = ModelManager.get_state()
+            self.model_id = state.get('current_model_id', {}).get('us', '')
+            if not self.model_id:
+                # Fallback: try to get from bedrock client config
+                self.model_id = getattr(bedrock_client, '_model_id', '')
+        except:
+            self.model_id = ''
+        
+        print(f"🔧 DEBUG: StreamingToolExecutor initialized with model_id: '{self.model_id}'")
+        
         # State management for tool execution
         self.active_tools: Dict[str, Dict[str, Any]] = {}
         self.completed_tools: set = set()
@@ -58,6 +71,7 @@ class StreamingToolExecutor:
         """
         print(f"🔧 DEBUG: StreamingToolExecutor.stream_with_tools called with {len(messages)} messages")
         print("🔧 DEBUG: *** MODIFIED VERSION WITH MCP SUPPORT ***")
+        print(f"🔧 DEBUG: Model ID: '{self.model_id}'")
         print(f"🔧 DEBUG: Tools parameter: {tools}")
         logger.info(f"🔧 STREAMING_TOOL_EXECUTOR: Starting stream_with_tools with {len(messages)} messages")
         
@@ -65,9 +79,18 @@ class StreamingToolExecutor:
         
         if tools is None:
             print("🔧 DEBUG: No tools provided, loading MCP tools")
-            tools = self._get_available_tools()
+            # Check if model supports tools before loading
+            if self.model_id and 'deepseek' in self.model_id.lower():
+                print(f"🔧 DEBUG: Deepseek model detected ({self.model_id}), skipping tool loading")
+                tools = []
+            else:
+                tools = self._get_available_tools()
         else:
             print(f"🔧 DEBUG: Using provided tools: {[t.get('name', 'unknown') for t in tools]}")
+            # Check if model supports tools and disable if needed
+            if self.model_id and 'deepseek' in self.model_id.lower():
+                print(f"🔧 DEBUG: Deepseek model detected ({self.model_id}), disabling provided tools")
+                tools = []
 
         current_messages = messages.copy()
         max_rounds = 100  # Support hundreds of tool calls
@@ -111,13 +134,25 @@ class StreamingToolExecutor:
                 # Clean up extra whitespace
                 system_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', system_content)
 
+            # Check if model supports tools
+            model_supports_tools = True
+            if self.model_id and 'deepseek' in self.model_id.lower():
+                print(f"🔧 DEBUG: Deepseek model detected, disabling tools")
+                model_supports_tools = False
+                tools = []  # Remove tools for Deepseek
+
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": self.max_tokens,
-                "messages": user_messages,
-                "tools": tools,
-                "tool_choice": {"type": "auto"}  # Force native tool calling
+                "messages": user_messages
             }
+            
+            # Only add tools if model supports them
+            if model_supports_tools and tools:
+                body.update({
+                    "tools": tools,
+                    "tool_choice": {"type": "auto"}  # Force native tool calling
+                })
             
             # Debug: Print tools being sent to Bedrock
             print(f"🔧 DEBUG: Sending {len(tools)} tools to Bedrock: {[t.get('name', 'unnamed') for t in tools]}")
@@ -139,6 +174,17 @@ class StreamingToolExecutor:
                     current_model_id = model_id_result
                 
                 print(f"🔄 DEBUG: Round {round_num + 1} - Calling Bedrock with model {current_model_id}")
+                
+                # Check if model supports tools and remove them if not
+                if current_model_id and 'deepseek' in current_model_id.lower():
+                    print(f"🔧 DEBUG: Deepseek model detected ({current_model_id}), using minimal request format")
+                    # Use minimal request body for Deepseek
+                    body = {
+                        "messages": body["messages"],
+                        "max_tokens": body.get("max_tokens", 4096),
+                        "temperature": body.get("temperature", 0.3)
+                    }
+                    print(f"🔧 DEBUG: Deepseek request body keys: {list(body.keys())}")
                 
                 try:
                     response = self.bedrock.invoke_model_with_response_stream(
@@ -189,19 +235,42 @@ class StreamingToolExecutor:
                         print(f"🔧 DEBUG: Processing chunk {chunk_count}")
                     chunk = json.loads(event['chunk']['bytes'])
                     
-                    if chunk['type'] == 'content_block_delta':
-                        delta = chunk.get('delta', {})
-                        if delta.get('type') == 'text_delta':
-                            text = delta.get('text', '')
-                            round_text += text
-                            yield {'type': 'text', 'content': text}
+                    # Debug: Print chunk structure for first few chunks
+                    if chunk_count <= 2:
+                        print(f"🔧 DEBUG: Chunk {chunk_count} structure: {chunk}")
                     
-                    # Handle tool execution during streaming
-                    async for tool_result in self._handle_tool_chunk(chunk):
-                        has_tool_calls = True
-                        if tool_result.get('type') == 'tool_execution':
-                            round_tool_results.append(tool_result)
-                        yield tool_result
+                    # Handle different response formats
+                    if current_model_id and 'deepseek' in current_model_id.lower():
+                        # Deepseek response format
+                        if 'choices' in chunk:
+                            for choice in chunk.get('choices', []):
+                                message = choice.get('message', {})
+                                # Handle content
+                                if message.get('content'):
+                                    text = message['content']
+                                    round_text += text
+                                    yield {'type': 'text', 'content': text}
+                                # Handle reasoning content (Deepseek R1 specific)
+                                elif message.get('reasoning_content'):
+                                    text = message['reasoning_content']
+                                    round_text += text
+                                    yield {'type': 'text', 'content': text}
+                    else:
+                        # Claude response format
+                        if chunk.get('type') == 'content_block_delta':
+                            delta = chunk.get('delta', {})
+                            if delta.get('type') == 'text_delta':
+                                text = delta.get('text', '')
+                                round_text += text
+                                yield {'type': 'text', 'content': text}
+                    
+                    # Handle tool execution during streaming (only for Claude)
+                    if not (current_model_id and 'deepseek' in current_model_id.lower()):
+                        async for tool_result in self._handle_tool_chunk(chunk):
+                            has_tool_calls = True
+                            if tool_result.get('type') == 'tool_execution':
+                                round_tool_results.append(tool_result)
+                            yield tool_result
                 
                 print(f"🔄 DEBUG: Round {round_num + 1} completed - text: {len(round_text)} chars, tools: {len(round_tool_results)}")
                 
@@ -520,10 +589,11 @@ class StreamingToolExecutor:
                 print(f"🔧 DEBUG: Found {len(mcp_tools)} MCP tools")
                 for tool in mcp_tools:
                     print(f"🔧 DEBUG: MCP tool: {tool.name}")
+                    # MCPTool objects use 'inputSchema' not 'input_schema'
                     tools.append({
                         'name': tool.name,
                         'description': tool.description,
-                        'input_schema': tool.input_schema
+                        'input_schema': getattr(tool, 'inputSchema', getattr(tool, 'input_schema', {}))
                     })
         except Exception as e:
             print(f"🔧 DEBUG: MCP tool loading error: {e}")
