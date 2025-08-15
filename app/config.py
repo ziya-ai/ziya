@@ -190,8 +190,16 @@ MODEL_CONFIGS = {
         },
         "sonnet4.0": {
             "model_id": {
-                "us": "us.anthropic.claude-sonnet-4-20250514-v1:0"
+                "us": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                "eu": "eu.anthropic.claude-sonnet-4-20250514-v1:0"  # Available in EU regions too
             },
+            "available_regions": [
+                "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-south-1", 
+                "ap-southeast-1", "ap-southeast-2", "eu-central-1", "eu-north-1", 
+                "eu-south-2", "eu-west-1", "eu-west-3", "us-east-1", "us-east-2", 
+                "us-west-1", "us-west-2"
+            ],
+            "preferred_region": "us-east-1",  # Default preference but not restricted
             "token_limit": 200000,  # Total context window size
             "max_output_tokens": 64000,  # Maximum output tokens
             "default_max_output_tokens": 10000,  # Default value for max_output_tokens
@@ -199,7 +207,6 @@ MODEL_CONFIGS = {
             "supports_thinking": True,  # Override global default
             "family": "claude",
             "supports_context_caching": True,
-            "region": "us-east-1",  # Model-specific region preference
             "supports_extended_context": True,  # Supports 1M token context window
             "extended_context_limit": 1000000,  # Extended context window size
             "extended_context_header": "context-1m-2025-08-07"  # Beta header for extended context
@@ -236,17 +243,36 @@ MODEL_CONFIGS = {
         },
         "opus3": {
             "model_id": {
-                "us": "us.anthropic.claude-3-opus-20240229-v1:0",
-                # Only available in US regions currently
+                "us": "us.anthropic.claude-3-opus-20240229-v1:0"
             },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "region_restricted": True,  # Only available in US regions
+            "preferred_region": "us-east-1",
             "family": "claude",
             "supports_context_caching": True,
         }, 
         "opus4": {
             "model_id": {
-                "us": "us.anthropic.claude-opus-4-20250514-v1:0",
-                # Only available in US regions currently
+                "us": "us.anthropic.claude-opus-4-20250514-v1:0"
             },
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "region_restricted": True,  # Only available in US regions
+            "preferred_region": "us-east-1",
+            "family": "claude",
+            "supports_context_caching": True,
+        },
+        "opus4.1": {
+            "model_id": {
+                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0"
+            },
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "region_restricted": True,  # Only available in US regions
+            "preferred_region": "us-east-1",
+            "token_limit": 200000,  # Total context window size
+            "max_output_tokens": 64000,  # Maximum output tokens
+            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,  # Override global default
             "family": "claude",
             "supports_context_caching": True,
         },
