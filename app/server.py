@@ -780,7 +780,7 @@ async def stream_chunks(body):
                         tools.append({
                             'name': tool.name,
                             'description': tool.description,
-                            'input_schema': tool.input_schema
+                            'input_schema': getattr(tool, 'inputSchema', getattr(tool, 'input_schema', {}))
                         })
             except Exception as e:
                 print(f"🔧 DEBUG: MCP tool loading error: {e}")
