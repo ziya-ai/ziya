@@ -28,14 +28,14 @@ class OpenAIBedrock(BaseChatModel):
         """Initialize the OpenAI Bedrock wrapper."""
         super().__init__(**kwargs)
         
-        # OpenAI models are only available in us-east-1
+        # OpenAI models are only available in us-west-2
         # Override any other region setting for OpenAI models
-        region = "us-east-1"
+        region = "us-west-2"
         
         # Log if we're overriding the region
         requested_region = kwargs.get("region_name") or os.environ.get("AWS_REGION")
-        if requested_region and requested_region != "us-east-1":
-            logger.warning(f"OpenAI models are only available in us-east-1. Overriding region from {requested_region} to us-east-1")
+        if requested_region and requested_region != "us-west-2":
+            logger.warning(f"OpenAI models are only available in us-west-2. Overriding region from {requested_region} to us-west-2")
         
         # Get AWS profile if set
         profile = os.environ.get("ZIYA_AWS_PROFILE")
@@ -104,12 +104,17 @@ class OpenAIBedrock(BaseChatModel):
     
     def _prepare_request_body(self, messages: List[BaseMessage]) -> str:
         """Prepare the request body for OpenAI models on Bedrock."""
+        logger.info(f"🔍 OPENAI_WRAPPER: Received {len(messages)} messages")
+        for i, msg in enumerate(messages):
+            logger.info(f"🔍 OPENAI_WRAPPER: Message {i}: {type(msg).__name__} - {str(msg.content)[:100]}...")
+        
         openai_messages = self._convert_messages_to_openai_format(messages)
+        logger.info(f"🔍 OPENAI_WRAPPER: Converted to {len(openai_messages)} OpenAI messages")
         
         # Build the request body
         body = {
             "messages": openai_messages,
-            "max_tokens": self.model_kwargs.get("max_tokens", 4096),
+            "max_completion_tokens": self.model_kwargs.get("max_tokens", 4096),
             "temperature": self.model_kwargs.get("temperature", 0.7),
         }
         
@@ -201,6 +206,14 @@ class OpenAIBedrock(BaseChatModel):
                 if "choices" in chunk and len(chunk["choices"]) > 0:
                     delta = chunk["choices"][0].get("delta", {})
                     content = delta.get("content", "")
+                    reasoning = delta.get("reasoning", "")
+                    
+                    if reasoning:
+                        # Create a special chunk for reasoning content
+                        reasoning_chunk = ChatGenerationChunk(
+                            message=AIMessageChunk(content="", additional_kwargs={"reasoning": reasoning})
+                        )
+                        yield reasoning_chunk
                     
                     if content:
                         yield ChatGenerationChunk(

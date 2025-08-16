@@ -85,6 +85,14 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def find_endpoint_for_model(model):
+    """Find which endpoint contains the specified model."""
+    for endpoint, models in config.MODEL_CONFIGS.items():
+        if model in models:
+            return endpoint
+    return None
+
+
 def validate_model_and_endpoint(endpoint, model):
     """
     Validate that the specified endpoint and model are valid.
@@ -94,12 +102,18 @@ def validate_model_and_endpoint(endpoint, model):
         model: The model name to validate
         
     Returns:
-        tuple: (is_valid, error_message)
+        tuple: (is_valid, error_message, corrected_endpoint)
     """
+    # If model is specified but endpoint doesn't contain it, try to auto-detect
+    if model and endpoint in config.MODEL_CONFIGS and model not in config.MODEL_CONFIGS[endpoint]:
+        correct_endpoint = find_endpoint_for_model(model)
+        if correct_endpoint:
+            return True, None, correct_endpoint
+    
     # Check if endpoint is valid
     if endpoint not in config.MODEL_CONFIGS:
         valid_endpoints = ", ".join(config.MODEL_CONFIGS.keys())
-        return False, f"Invalid endpoint: '{endpoint}'. Valid endpoints are: {valid_endpoints}"
+        return False, f"Invalid endpoint: '{endpoint}'. Valid endpoints are: {valid_endpoints}", None
     
     # If model is None, use the default model for the endpoint
     if model is None:
@@ -108,9 +122,9 @@ def validate_model_and_endpoint(endpoint, model):
     # Check if model is valid for the endpoint
     if model not in config.MODEL_CONFIGS[endpoint]:
         valid_models = ", ".join(config.MODEL_CONFIGS[endpoint].keys())
-        return False, f"Invalid model: '{model}' for endpoint '{endpoint}'. Valid models are: {valid_models}"
+        return False, f"Invalid model: '{model}' for endpoint '{endpoint}'. Valid models are: {valid_models}", None
     
-    return True, None
+    return True, None, endpoint
 
 
 def setup_environment(args):
@@ -163,10 +177,17 @@ def setup_environment(args):
     endpoint = args.endpoint
     model = args.model
     
-    is_valid, error_message = validate_model_and_endpoint(endpoint, model)
+    is_valid, error_message, corrected_endpoint = validate_model_and_endpoint(endpoint, model)
     if not is_valid:
         logger.error(error_message)
         sys.exit(1)
+    
+    # Use corrected endpoint if auto-detection occurred
+    if corrected_endpoint and corrected_endpoint != endpoint:
+        logger.info(f"Auto-detected endpoint '{corrected_endpoint}' for model '{model}'")
+        endpoint = corrected_endpoint
+        # Update args.endpoint so it's available throughout the application
+        args.endpoint = corrected_endpoint
     
     os.environ["ZIYA_ENDPOINT"] = endpoint
     if model:
@@ -319,11 +340,13 @@ def start_server(args):
         # Pre-initialize the model to catch any credential issues before starting the server
         logger.info("Performing initial authentication check...")
         try:
+            # Import KnownCredentialException at the top level to avoid UnboundLocalError
+            from app.utils.custom_exceptions import KnownCredentialException
+            
             # Only check AWS credentials if using Bedrock endpoint
             if args.endpoint == "bedrock":
                 # Check AWS credentials first - specify this is server startup
                 from app.utils.aws_utils import check_aws_credentials
-                from app.utils.custom_exceptions import KnownCredentialException
                 
                 # Pass the profile from command line args if provided
                 valid, message = check_aws_credentials(is_server_startup=True, profile_name=args.profile)
@@ -389,20 +412,36 @@ def check_auth(args):
     setup_environment(args)
     
     try:
-        # Import the check_aws_credentials function
-        from app.utils.aws_utils import check_aws_credentials
-        
-        # Check credentials and get status and message
-        valid, message = check_aws_credentials()
-        
-        if valid:
-            print("\n✅ AWS credentials are valid.")
-            return True
+        # Only check AWS credentials if using Bedrock endpoint
+        if args.endpoint == "bedrock":
+            # Import the check_aws_credentials function
+            from app.utils.aws_utils import check_aws_credentials
+            
+            # Check credentials and get status and message
+            valid, message = check_aws_credentials()
+            
+            if valid:
+                print("\n✅ AWS credentials are valid.")
+                return True
+            else:
+                print(f"\n{message}")
+                return False
+        elif args.endpoint == "google":
+            # Check Google API key
+            import os
+            google_api_key = os.environ.get("GOOGLE_API_KEY")
+            if google_api_key:
+                print("\n✅ Google API key is configured.")
+                return True
+            else:
+                print("\n⚠️ ERROR: GOOGLE_API_KEY environment variable is not set.")
+                print("Please set your Google API key: export GOOGLE_API_KEY=<your-key>")
+                return False
         else:
-            print(f"\n{message}")
+            print(f"\n⚠️ ERROR: Unknown endpoint '{args.endpoint}'")
             return False
     except ImportError:
-        print("\n⚠️ ERROR: Could not import AWS utilities to check authentication.")
+        print("\n⚠️ ERROR: Could not import required utilities to check authentication.")
         return False
     except Exception as e:
         print(f"\n⚠️ ERROR: Authentication check failed: {str(e)}")

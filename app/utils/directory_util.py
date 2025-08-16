@@ -488,7 +488,8 @@ def estimate_tokens_fast(file_path: str) -> int:
         _, ext = os.path.splitext(file_path.lower())
         if ext in {'.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
                   '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
-                  '.woff', '.woff2', '.ttf', '.eot', '.zip'}:
+                  '.woff', '.woff2', '.ttf', '.eot', '.zip', '.key', '.crt', '.p12', '.pfx',
+                  '.der', '.pem'}:  # Added certificate and key file extensions
             return 0
         
         # Estimate tokens based on file size and type

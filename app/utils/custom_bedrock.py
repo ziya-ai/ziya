@@ -72,10 +72,13 @@ class CustomBedrockClient:
     
     def _supports_extended_context(self) -> bool:
         """Check if the current model supports extended context."""
-        supports = self.model_config.get("supports_extended_context", False)
-        logger.info(f"🔍 EXTENDED_CONTEXT: Model config supports_extended_context = {supports}")
-        logger.info(f"🔍 EXTENDED_CONTEXT: Model config keys = {list(self.model_config.keys())}")
-        return supports
+        # Cache the result to avoid repeated logging
+        if not hasattr(self, '_cached_supports_extended_context'):
+            supports = self.model_config.get("supports_extended_context", False)
+            logger.info(f"🔍 EXTENDED_CONTEXT: Model config supports_extended_context = {supports}")
+            logger.info(f"🔍 EXTENDED_CONTEXT: Model config keys = {list(self.model_config.keys())}")
+            self._cached_supports_extended_context = supports
+        return self._cached_supports_extended_context
     
     def _get_extended_context_header(self) -> Optional[str]:
         """Get the extended context header for the current model."""
@@ -198,7 +201,7 @@ class CustomBedrockClient:
             if 'body' in kwargs and isinstance(kwargs['body'], str):
                 try:
                     # First attempt with user-configured max_tokens
-                    adjusted_body = self._prepare_request_body(kwargs['body'])
+                    adjusted_body = self._prepare_request_body(kwargs['body'], kwargs.get('modelId', ''))
                     kwargs['body'] = adjusted_body
                     
                     try:
@@ -299,7 +302,7 @@ class CustomBedrockClient:
             if 'body' in kwargs and isinstance(kwargs['body'], str):
                 try:
                     # First attempt with user-configured max_tokens
-                    adjusted_body = self._prepare_request_body(kwargs['body'])
+                    adjusted_body = self._prepare_request_body(kwargs['body'], kwargs.get('modelId', ''))
                     kwargs['body'] = adjusted_body
                     
                     try:
@@ -376,7 +379,7 @@ class CustomBedrockClient:
         
         return custom_invoke_model
     
-    def _prepare_request_body(self, body_str):
+    def _prepare_request_body(self, body_str, model_id=''):
         """Prepare the request body with the appropriate max_tokens value."""
         try:
             body_dict = json.loads(body_str)
@@ -385,9 +388,17 @@ class CustomBedrockClient:
             effective_max_tokens = self._get_effective_max_tokens()
             
             # Only set max_tokens if it's not already in the body
-            if 'max_tokens' not in body_dict and effective_max_tokens is not None:
-                body_dict['max_tokens'] = effective_max_tokens
-                logger.debug(f"Added max_tokens={effective_max_tokens} to request body")
+            if 'max_tokens' not in body_dict and 'maxTokens' not in body_dict and effective_max_tokens is not None:
+                # Check if this is a Nova Pro model (has different parameter requirements)
+                if 'nova-pro' in model_id.lower():
+                    # Nova Pro doesn't support token limit parameters, skip adding them
+                    logger.debug(f"Skipping token limit for Nova Pro model: {model_id}")
+                elif 'nova-micro' in model_id.lower():
+                    # Nova Micro models don't accept max_tokens parameter
+                    logger.debug(f"Skipping token limit for Nova Micro model: {model_id}")
+                else:
+                    body_dict['max_tokens'] = effective_max_tokens
+                    logger.debug(f"Added max_tokens={effective_max_tokens} to request body")
 
             # Handle context caching parameters
             if 'messages' in body_dict:

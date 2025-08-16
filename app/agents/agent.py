@@ -738,10 +738,19 @@ class RetryingChatBedrock(Runnable):
 
                 # Filter out empty messages
                 if isinstance(messages, list):
+                    logger.info(f"🔍 FILTERING: Before filtering - {len(messages)} messages")
+                    for i, msg in enumerate(messages):
+                        logger.info(f"🔍 FILTERING: Message {i}: {type(msg).__name__} - content: '{str(msg.content)[:100]}...' - empty: {not msg.content}")
+                    
                     messages = [
                         msg for msg in messages 
                         if isinstance(msg, BaseMessage) and msg.content
                     ]
+                    
+                    logger.info(f"🔍 FILTERING: After filtering - {len(messages)} messages")
+                    for i, msg in enumerate(messages):
+                        logger.info(f"🔍 FILTERING: Kept Message {i}: {type(msg).__name__} - content: '{str(msg.content)[:100]}...'")
+                    
                     if not messages:
                         raise ValueError("No valid messages with content")
                     logger.debug(f"Filtered to {len(messages)} non-empty messages")
@@ -1641,7 +1650,25 @@ def log_codebase_wrapper(x):
 def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
     from langchain.agents import create_xml_agent
+    import hashlib
     logger.error("🔍 EXECUTION_TRACE: create_agent_chain() called")
+    
+    # Create cache key based on model configuration
+    model_id = getattr(chat_model, 'model_id', 'unknown')
+    ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
+    mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP") != "false"
+    
+    cache_key = f"{model_id}_{ast_enabled}_{mcp_enabled}"
+    cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
+    
+    # Check ModelManager cache
+    from app.agents.models import ModelManager
+    cached_chain = ModelManager._state.get('agent_chain_cache', {}).get(cache_key_hash)
+    if cached_chain:
+        logger.info(f"Using cached agent chain for {cache_key_hash}")
+        return cached_chain
+    
+    logger.info(f"Creating new agent chain for {cache_key_hash}")
     
     # Bind the stop sequence to the model  
     llm_with_stop = chat_model.bind(stop=[TOOL_SENTINEL_CLOSE])
@@ -1785,7 +1812,14 @@ def create_agent_chain(chat_model: BaseChatModel):
     agent_chain = preprocessing_chain | agent
     
     logger.info(f"Created XML agent with {len(mcp_tools)} tools and input mapping")
-    logger.info(f"Input mapping keys: {list(input_mapping.keys())}") 
+    logger.info(f"Input mapping keys: {list(input_mapping.keys())}")
+    
+    # Cache the agent chain
+    if 'agent_chain_cache' not in ModelManager._state:
+        ModelManager._state['agent_chain_cache'] = {}
+    ModelManager._state['agent_chain_cache'][cache_key_hash] = agent_chain
+    logger.info(f"Cached agent chain for {cache_key_hash}")
+    
     return agent_chain
  
 # Initialize the agent chain
