@@ -80,16 +80,16 @@ class StreamingToolExecutor:
         if tools is None:
             print("🔧 DEBUG: No tools provided, loading MCP tools")
             # Check if model supports tools before loading
-            if self.model_id and 'deepseek' in self.model_id.lower():
-                print(f"🔧 DEBUG: Deepseek model detected ({self.model_id}), skipping tool loading")
+            if self.model_id and ('deepseek' in self.model_id.lower() or 'openai' in self.model_id.lower()):
+                print(f"🔧 DEBUG: Model {self.model_id} detected, skipping tool loading (uses LangChain path)")
                 tools = []
             else:
                 tools = self._get_available_tools()
         else:
             print(f"🔧 DEBUG: Using provided tools: {[t.get('name', 'unknown') for t in tools]}")
             # Check if model supports tools and disable if needed
-            if self.model_id and 'deepseek' in self.model_id.lower():
-                print(f"🔧 DEBUG: Deepseek model detected ({self.model_id}), disabling provided tools")
+            if self.model_id and ('deepseek' in self.model_id.lower() or 'openai' in self.model_id.lower()):
+                print(f"🔧 DEBUG: Model {self.model_id} detected, disabling provided tools (uses LangChain path)")
                 tools = []
 
         current_messages = messages.copy()
@@ -136,16 +136,19 @@ class StreamingToolExecutor:
 
             # Check if model supports tools
             model_supports_tools = True
-            if self.model_id and 'deepseek' in self.model_id.lower():
-                print(f"🔧 DEBUG: Deepseek model detected, disabling tools")
+            if self.model_id and ('deepseek' in self.model_id.lower() or 'openai' in self.model_id.lower()):
+                print(f"🔧 DEBUG: Model {self.model_id} detected, disabling tools (uses LangChain path)")
                 model_supports_tools = False
-                tools = []  # Remove tools for Deepseek
+                tools = []
 
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": self.max_tokens,
                 "messages": user_messages
             }
+            
+            # Add max_tokens only for models that support it
+            if not (self.model_id and 'nova-micro' in self.model_id.lower()):
+                body["max_tokens"] = self.max_tokens
             
             # Only add tools if model supports them
             if model_supports_tools and tools:
@@ -175,7 +178,7 @@ class StreamingToolExecutor:
                 
                 print(f"🔄 DEBUG: Round {round_num + 1} - Calling Bedrock with model {current_model_id}")
                 
-                # Check if model supports tools and remove them if not
+                # Check if model supports tools and adjust parameters
                 if current_model_id and 'deepseek' in current_model_id.lower():
                     print(f"🔧 DEBUG: Deepseek model detected ({current_model_id}), using minimal request format")
                     # Use minimal request body for Deepseek
@@ -185,6 +188,41 @@ class StreamingToolExecutor:
                         "temperature": body.get("temperature", 0.3)
                     }
                     print(f"🔧 DEBUG: Deepseek request body keys: {list(body.keys())}")
+                elif current_model_id and 'nova-pro' in current_model_id.lower():
+                    print(f"🔧 DEBUG: Nova Pro model detected ({current_model_id}), using Nova wrapper formatting")
+                    # Use Nova wrapper for Nova Pro specific formatting
+                    from app.agents.wrappers.nova_wrapper import NovaWrapper
+                    nova_wrapper = NovaWrapper(model_id=current_model_id)
+                    body = nova_wrapper.format_nova_pro_request(body)
+                    print(f"🔧 DEBUG: Nova Pro request body keys: {list(body.keys())}")
+                elif current_model_id and any(nova_model in current_model_id.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
+                    print(f"🔧 DEBUG: Nova model detected ({current_model_id}), removing incompatible parameters")
+                    # Nova models don't accept anthropic_version parameter
+                    body.pop("anthropic_version", None)
+                    
+                    # Nova-micro and Nova-lite don't accept max_tokens, maxTokens, tool_choice, or tools parameters
+                    if 'nova-micro' in current_model_id.lower() or 'nova-lite' in current_model_id.lower():
+                        body.pop("max_tokens", None)
+                        body.pop("maxTokens", None)
+                        body.pop("tool_choice", None)
+                        body.pop("tools", None)
+                    
+                    # Nova models expect system message as array format
+                    if "system" in body and isinstance(body["system"], str):
+                        body["system"] = [{"text": body["system"]}]
+                    
+                    # Nova models expect message content as array format
+                    if "messages" in body:
+                        for message in body["messages"]:
+                            if "content" in message and isinstance(message["content"], str):
+                                message["content"] = [{"text": message["content"]}]
+                    
+                    print(f"🔧 DEBUG: Nova request body keys: {list(body.keys())}")
+                elif current_model_id and 'openai' in current_model_id.lower():
+                    print(f"🔧 DEBUG: OpenAI model detected ({current_model_id}), should not reach here - using LangChain path")
+                    # This should not happen as OpenAI models are handled in server.py
+                    yield {'type': 'error', 'content': 'OpenAI model reached StreamingToolExecutor unexpectedly'}
+                    return
                 
                 try:
                     response = self.bedrock.invoke_model_with_response_stream(
@@ -255,6 +293,30 @@ class StreamingToolExecutor:
                                     text = message['reasoning_content']
                                     round_text += text
                                     yield {'type': 'text', 'content': text}
+                    elif current_model_id and 'nova-pro' in current_model_id.lower():
+                        # Nova Pro response format
+                        if 'contentBlockDelta' in chunk:
+                            delta = chunk.get('contentBlockDelta', {})
+                            if delta.get('delta', {}).get('text'):
+                                text = delta['delta']['text']
+                                round_text += text
+                                yield {'type': 'text', 'content': text}
+                        elif 'messageStart' in chunk:
+                            # Just log message start, no content to yield
+                            print(f"🔧 DEBUG: Nova Pro message started with role: {chunk['messageStart'].get('role')}")
+                        elif 'messageStop' in chunk:
+                            # Message completed - check for text-based tool calls
+                            print(f"🔧 DEBUG: Nova Pro message completed")
+                            # Parse text-based tool calls from Nova Pro using wrapper
+                            from app.agents.wrappers.nova_wrapper import NovaWrapper
+                            nova_wrapper = NovaWrapper(model_id=current_model_id)
+                            tool_results = await nova_wrapper.parse_text_based_tools(round_text)
+                            
+                            for tool_result in tool_results:
+                                has_tool_calls = True
+                                if tool_result.get('type') == 'tool_execution':
+                                    round_tool_results.append(tool_result)
+                                yield tool_result
                     else:
                         # Claude response format
                         if chunk.get('type') == 'content_block_delta':
@@ -264,8 +326,8 @@ class StreamingToolExecutor:
                                 round_text += text
                                 yield {'type': 'text', 'content': text}
                     
-                    # Handle tool execution during streaming (only for Claude)
-                    if not (current_model_id and 'deepseek' in current_model_id.lower()):
+                    # Handle tool execution during streaming (only for Claude, not for Deepseek or Nova Pro)
+                    if not (current_model_id and ('deepseek' in current_model_id.lower() or 'nova-pro' in current_model_id.lower())):
                         async for tool_result in self._handle_tool_chunk(chunk):
                             has_tool_calls = True
                             if tool_result.get('type') == 'tool_execution':
@@ -299,14 +361,29 @@ class StreamingToolExecutor:
                 print(f"🔄 DEBUG: Round {round_num + 1} error: {str(e)}")
                 import traceback
                 traceback.print_exc()
-                yield {'type': 'error', 'content': f"Streaming error: {str(e)}"}
-                break
+                
+                # Check if this is a validation error that should be retried or propagated
+                error_str = str(e)
+                if "ValidationException" in error_str or "Malformed input request" in error_str:
+                    # This is a parameter format error, propagate immediately
+                    yield {'type': 'error', 'content': f"Model parameter error: {error_str}"}
+                    return
+                else:
+                    # Other errors, continue with retry logic
+                    yield {'type': 'error', 'content': f"Streaming error: {str(e)}"}
+                    break
         
         print(f"🔄 DEBUG: Completed after {round_num + 1} rounds")
     
     async def _handle_tool_chunk(self, chunk: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Bedrock tool_use chunks and execute tools in real-time"""
-        
+
+        # Check if chunk has type field (Claude format) or handle Nova format
+        if 'type' not in chunk:
+            # Nova format - just yield as text
+            yield {'type': 'text', 'content': ''}
+            return
+
         if chunk['type'] == 'content_block_start':
             content_block = chunk.get('content_block', {})
             if content_block.get('type') == 'tool_use':
@@ -340,7 +417,7 @@ class StreamingToolExecutor:
                         
                         # Convert tool name to frontend format and detect special cases
                         display_name = tool_name
-                        if tool_name == 'execute_shell_command':
+                        if tool_name in ['execute_shell_command', 'run_shell_command']:
                             # Check if this is a time-related command
                             tool_args = json.loads(self.active_tools[tool_id]['partial_json'])
                             command = tool_args.get('command', '').strip().lower()
@@ -348,7 +425,9 @@ class StreamingToolExecutor:
                                 display_name = 'mcp_get_current_time'
                             else:
                                 display_name = 'mcp_run_shell_command'  # Frontend expects this for shell commands
-                        elif not tool_name.startswith('mcp_') and tool_name != 'execute_shell_command':
+                        elif tool_name == 'get_current_time':
+                            display_name = 'mcp_get_current_time'
+                        elif not tool_name.startswith('mcp_') and tool_name not in ['execute_shell_command', 'run_shell_command', 'get_current_time']:
                             display_name = f'mcp_{tool_name}'  # Add mcp_ prefix for other tools
                         
                         yield {
@@ -373,7 +452,7 @@ class StreamingToolExecutor:
                     
                     # Convert tool name to frontend format and detect special cases
                     display_name = tool_name
-                    if tool_name == 'execute_shell_command':
+                    if tool_name in ['execute_shell_command', 'run_shell_command']:
                         # Check if this is a time-related command
                         tool_args = json.loads(self.active_tools[tool_id]['partial_json'])
                         command = tool_args.get('command', '').strip().lower()
@@ -381,7 +460,9 @@ class StreamingToolExecutor:
                             display_name = 'mcp_get_current_time'
                         else:
                             display_name = 'mcp_run_shell_command'  # Frontend expects this for shell commands
-                    elif not tool_name.startswith('mcp_') and tool_name != 'execute_shell_command':
+                    elif tool_name == 'get_current_time':
+                        display_name = 'mcp_get_current_time'
+                    elif not tool_name.startswith('mcp_') and tool_name not in ['execute_shell_command', 'run_shell_command', 'get_current_time']:
                         display_name = f'mcp_{tool_name}'  # Add mcp_ prefix for other tools
                     
                     yield {
@@ -410,7 +491,7 @@ class StreamingToolExecutor:
             tool_name = self.active_tools[tool_id]['name']
             print(f"🔧 DEBUG: Executing tool '{tool_name}' with args: {args}")
             
-            if tool_name == 'execute_shell_command':
+            if tool_name in ['execute_shell_command', 'run_shell_command']:
                 command = args.get('command', '')
                 result = await self._execute_shell_command(command)
                 if result:

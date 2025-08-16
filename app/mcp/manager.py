@@ -6,6 +6,7 @@ import asyncio
 import os
 import sys
 import json
+import time
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
@@ -36,6 +37,11 @@ class MCPManager:
         self.config_search_paths: List[str] = []
         self.builtin_server_definitions = self._get_builtin_server_definitions()
         self.is_initialized = False
+        
+        # Tool caching to eliminate redundant get_all_tools calls
+        self._tools_cache: Optional[List[MCPTool]] = None
+        self._tools_cache_timestamp: float = 0
+        self._tools_cache_ttl: float = 300  # 5 minutes cache TTL
         
     def _get_builtin_server_definitions(self) -> Dict[str, Dict[str, Any]]:
         """Defines configurations for built-in MCP servers."""
@@ -120,7 +126,7 @@ class MCPManager:
             bool: True if initialization successful
         """
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             logger.info("MCP is disabled. Use --mcp flag to enable MCP integration.")
             self.is_initialized = False
             return False
@@ -208,6 +214,8 @@ class MCPManager:
             # Wait for all connections to complete
             if connection_tasks:
                 results = await asyncio.gather(*connection_tasks, return_exceptions=True)
+                # Invalidate cache after initial connections are established
+                self.invalidate_tools_cache()
             
             # Log connection results
             successful_connections = sum(1 for result in results if result is True)
@@ -243,6 +251,7 @@ class MCPManager:
             await asyncio.gather(*disconnect_tasks, return_exceptions=True)
         
         self.clients.clear()
+        self.invalidate_tools_cache()  # Invalidate cache when clients change
         self.is_initialized = False
         logger.info("MCP Manager shutdown complete")
     
@@ -279,6 +288,9 @@ class MCPManager:
                 self.clients[server_name] = client
                 success = await self._connect_server(server_name, client)
                 
+                # Invalidate cache when client configuration changes
+                self.invalidate_tools_cache()
+                
                 logger.info(f"Server {server_name} restart {'successful' if success else 'failed'}")
                 return success
             
@@ -314,7 +326,16 @@ class MCPManager:
         return resources
     
     def get_all_tools(self) -> List[MCPTool]:
-        """Get all tools from all connected MCP servers."""
+        """Get all tools from all connected MCP servers with caching."""
+        current_time = time.time()
+        
+        # Check if cache is valid
+        if (self._tools_cache is not None and 
+            current_time - self._tools_cache_timestamp < self._tools_cache_ttl):
+            logger.info(f"MCP_MANAGER.get_all_tools: Using cached tools ({len(self._tools_cache)} tools)")
+            return self._tools_cache
+        
+        # Cache miss or expired - fetch fresh tools
         tools = []
         logger.info(f"MCP_MANAGER.get_all_tools: Starting tool collection. {len(self.clients)} clients total.")
         for server_name, client in self.clients.items():
@@ -339,8 +360,21 @@ class MCPManager:
                 logger.info(f"MCP_MANAGER.get_all_tools: Server '{server_name}' is disabled, skipping tools")
             else:
                 logger.warning(f"MCP_MANAGER.get_all_tools: Server '{server_name}' is not connected. Skipping its tools.")
+        
         logger.info(f"MCP_MANAGER.get_all_tools: Total tools collected: {len(tools)} from {len([c for c in self.clients.values() if c.is_connected])} connected servers. Tool names: {[t.name for t in tools]}")
+        
+        # Update cache
+        self._tools_cache = tools
+        self._tools_cache_timestamp = current_time
+        logger.info(f"MCP_MANAGER.get_all_tools: Cached {len(tools)} tools for {self._tools_cache_ttl}s")
+        
         return tools
+    
+    def invalidate_tools_cache(self):
+        """Invalidate the tools cache to force refresh on next get_all_tools call."""
+        self._tools_cache = None
+        self._tools_cache_timestamp = 0
+        logger.info("MCP_MANAGER: Tools cache invalidated")
     def get_all_prompts(self) -> List[MCPPrompt]:
         """Get all prompts from all connected MCP servers."""
         prompts = []

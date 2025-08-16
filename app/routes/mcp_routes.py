@@ -56,7 +56,7 @@ async def get_mcp_status():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "initialized": False,
                 "disabled": True,
@@ -104,7 +104,7 @@ async def get_mcp_resources():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {"resources": [], "disabled": True}
             
         mcp_manager = get_mcp_manager()
@@ -142,7 +142,7 @@ async def get_mcp_tools():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {"tools": [], "disabled": True}
         
         # Add detailed status information for debugging
@@ -193,7 +193,7 @@ async def get_mcp_prompts():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {"prompts": [], "disabled": True}
             
         mcp_manager = get_mcp_manager()
@@ -230,7 +230,7 @@ async def initialize_mcp():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "success": False,
                 "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
@@ -273,7 +273,7 @@ async def get_shell_config():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "enabled": False,
                 "disabled": True,
@@ -336,7 +336,7 @@ async def update_shell_config(config: ShellConfig):
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "success": False,
                 "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
@@ -401,7 +401,7 @@ async def toggle_server(request: ServerToggleRequest):
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "success": False,
                 "message": "MCP is disabled. Use --mcp flag to enable MCP integration."

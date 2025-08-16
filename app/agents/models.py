@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Any, Union, List
 import os
 import json
+import hashlib
 import botocore
 import boto3
 import gc
@@ -99,7 +100,11 @@ class ModelManager:
         'llm_with_stop': None,
         'agent': None,
         'agent_executor': None,
-        'last_auth_error': None  # Add this to store the last authentication error
+        'last_auth_error': None,  # Add this to store the last authentication error
+        # Model kwargs caching to eliminate redundant filtering
+        'filtered_kwargs_cache': {},  # Cache by (model_config_hash, kwargs_hash)
+        # Agent chain caching to eliminate redundant agent creation
+        'agent_chain_cache': {},  # Cache by (model_id, ast_enabled, mcp_enabled)
     }
     
     @classmethod
@@ -115,20 +120,29 @@ class ModelManager:
         gc.collect()
         
         logger.info("Resetting ModelManager state")
+        
+        # Clear AWS region environment variable to ensure clean region selection
+        if 'AWS_REGION' in os.environ:
+            del os.environ['AWS_REGION']
+            logger.info("Cleared AWS_REGION environment variable")
+        
         cls._state = {
             'model': None,
             'current_model_id': None,
             'persistent_bedrock_clients': {},
             'client_config_hash': None,
-            'llm_with_stop': None,  # Add storage for llm_with_stop
             'auth_checked': False,
             'auth_success': False,
             'google_credentials': None,
             'aws_profile': None,
             'aws_region': None,
-            'process_id': None,
+            'process_id': os.getpid(),
+            'llm_with_stop': None,
             'agent': None,
-            'agent_executor': None
+            'agent_executor': None,
+            'last_auth_error': None,
+            'filtered_kwargs_cache': {},  # Reset cache on state reset
+            'agent_chain_cache': {},  # Reset agent chain cache on state reset
         }
         
         # Reset boto3 in a safer way
@@ -157,22 +171,34 @@ class ModelManager:
             
             # Create a new session
             boto3.DEFAULT_SESSION = None
-            boto3.setup_default_session()
-            logger.info("Reset boto3 default session with complete module reload")
             
+            logger.info("Successfully reset boto3 session")
         except Exception as e:
-            logger.warning(f"Failed to reset boto3 session: {e}")
-            
-        # Clear any LangChain caches that might exist
-        try:
-            from langchain.globals import clear_langchain_cache
-            clear_langchain_cache()
-            logger.info("Cleared LangChain cache")
-        except (ImportError, AttributeError) as e:
-            logger.warning(f"Could not clear LangChain cache: {e}")
+            logger.warning(f"Error resetting boto3 session: {e}")
+        
+        logger.info("ModelManager state reset complete")
+        
+    @classmethod
+    def invalidate_kwargs_cache(cls):
+        """Invalidate the model kwargs cache to force fresh filtering."""
+        cls._state['filtered_kwargs_cache'] = {}
+        logger.info("ModelManager: Filtered kwargs cache invalidated")
+    
+    @classmethod
+    def invalidate_agent_chain_cache(cls):
+        """Invalidate the agent chain cache to force fresh agent creation."""
+        cls._state['agent_chain_cache'] = {}
+        logger.info("ModelManager: Agent chain cache invalidated")
             
         # Force garbage collection again to clean up any lingering references
         gc.collect()
+        
+        # Invalidate prompt extension cache
+        try:
+            from app.agents.prompts_manager import invalidate_prompt_cache
+            invalidate_prompt_cache()
+        except ImportError:
+            logger.debug("Could not invalidate prompt cache - module not available")
         
         logger.info("Model state completely reset")
         # Force garbage collection again after resetting state
@@ -298,7 +324,7 @@ class ModelManager:
     @classmethod
     def filter_model_kwargs(cls, model_kwargs, model_config):
         """
-        Filter model kwargs to only include parameters supported by the model.
+        Filter model kwargs to only include parameters supported by the model with caching.
         
         Args:
             model_kwargs: Dict of model kwargs to filter
@@ -307,6 +333,20 @@ class ModelManager:
         Returns:
             Dict: Filtered model kwargs
         """
+        # Create cache keys
+        model_config_str = json.dumps(model_config, sort_keys=True)
+        model_config_hash = hashlib.md5(model_config_str.encode()).hexdigest()[:8]
+        
+        kwargs_str = json.dumps(model_kwargs, sort_keys=True)
+        kwargs_hash = hashlib.md5(kwargs_str.encode()).hexdigest()[:8]
+        
+        cache_key = f"{model_config_hash}_{kwargs_hash}"
+        
+        # Check cache
+        if cache_key in cls._state['filtered_kwargs_cache']:
+            logger.info(f"Using cached filtered kwargs for {cache_key}")
+            return cls._state['filtered_kwargs_cache'][cache_key]
+        
         logger.info(f"Filtering model kwargs: {model_kwargs}")
         
         # Get supported parameters from the model config
@@ -358,11 +398,15 @@ class ModelManager:
         # Filter the kwargs
         filtered_kwargs = {}
         for key, value in model_kwargs.items():
-            if key in supported_params:
+            if key in supported_params and value is not None:
                 filtered_kwargs[key] = value
             else:
                 logger.debug(f"Ignoring unsupported parameter '{key}' for model")
-                
+        
+        # Cache the result
+        cls._state['filtered_kwargs_cache'][cache_key] = filtered_kwargs
+        logger.info(f"Cached filtered kwargs for {cache_key}")
+        
         return filtered_kwargs
             
     @classmethod
@@ -605,18 +649,22 @@ class ModelManager:
         # Create new client
         logger.info(f"Creating new persistent Bedrock client for {aws_profile}/{region}/{model_id}")
         
-        # Check AWS credentials
-        creds_valid, error_msg = check_aws_credentials(profile_name=aws_profile)
-        if not creds_valid:
-            logger.error(f"AWS credentials check failed: {error_msg}")
-            cls._state['last_auth_error'] = error_msg
-            from app.utils.custom_exceptions import KnownCredentialException
-            # Pass is_server_startup=False to indicate this is during runtime
-            raise KnownCredentialException(error_msg, is_server_startup=False)
-        
         # Create fresh boto3 session and client
         try:
             session = create_fresh_boto3_session(profile_name=aws_profile)
+            
+            # Check AWS credentials using the same fresh session
+            try:
+                sts = session.client('sts', region_name=region)
+                identity = sts.get_caller_identity()
+                logger.debug(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
+            except Exception as cred_error:
+                error_msg = f"AWS credentials check failed: {cred_error}"
+                logger.error(error_msg)
+                cls._state['last_auth_error'] = error_msg
+                from app.utils.custom_exceptions import KnownCredentialException
+                raise KnownCredentialException(error_msg, is_server_startup=False)
+            
             bedrock_client = session.client('bedrock-runtime', region_name=region)
             logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
             
@@ -1011,7 +1059,7 @@ class ModelManager:
                 effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes")
 
         # Create the appropriate model based on family
-        if family == "nova":
+        if family in ["nova", "nova-pro", "nova-lite", "nova-premier"]:
             from app.agents.wrappers.nova_wrapper import NovaBedrock
             logger.info(f"Initializing Nova model: {model_id}")
             
@@ -1057,10 +1105,10 @@ class ModelManager:
             from app.agents.wrappers.openai_bedrock_wrapper import OpenAIBedrock
             logger.info(f"Initializing OpenAI model on Bedrock: {model_id}")
             
-            # OpenAI models require us-east-1 region
-            openai_region = "us-east-1"
+            # OpenAI models require us-west-2 region
+            openai_region = "us-west-2"
             if region != openai_region:
-                logger.warning(f"OpenAI models require us-east-1 region. Switching from {region} to {openai_region}")
+                logger.warning(f"OpenAI models require us-west-2 region. Switching from {region} to {openai_region}")
                 region = openai_region
                 # Update environment variable
                 os.environ["AWS_REGION"] = openai_region
