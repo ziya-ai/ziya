@@ -21,7 +21,6 @@ DEFAULT_MODELS = {
 
 # Default regions for specific models
 MODEL_DEFAULT_REGIONS = {
-    "sonnet3.7": "eu-west-1",  # Default to EU for sonnet3.7
     # Add more model-specific defaults as needed
     "sonnet4.0": "us-east-1",
 }
@@ -311,7 +310,10 @@ MODEL_CONFIGS = {
             },
             "family": "nova",  # Use nova family which doesn't include top_k
             "supports_multimodal": False,  # Override the family default
-            "context_window": 128000  # Override the family default
+            "context_window": 128000,  # Override the family default
+            "parameter_mappings": {
+                "max_tokens": "maxTokens"  # Nova uses maxTokens instead of max_tokens
+            }
         },
         "nova-premier": {
             "model_id": {
@@ -337,16 +339,17 @@ MODEL_CONFIGS = {
             "wrapper_class": "OpenAIBedrock",
             "max_input_tokens": 128000,
             "context_window": 128000,
-            "region": "us-east-1"  # OpenAI models only available in us-east-1
+            "region": "us-west-2"  # OpenAI models only available in us-west-2
         },
         "openai-gpt-20b": {
             "model_id": {
-                "us": "us.openai.gpt-oss-20b-1:0"
+                "us": "openai.gpt-oss-20b-1:0"
             },
             "wrapper_class": "OpenAIBedrock",
             "max_input_tokens": 128000,
             "context_window": 128000,
-            "region": "us-east-1"  # OpenAI models only available in us-east-1
+            "default_max_output_tokens": 4096,  # Match 120B model for consistency
+            "region": "us-west-2"  # OpenAI models only available in us-west-2
         }
     },
     "google": {
@@ -387,13 +390,6 @@ MODEL_CONFIGS = {
         },
         "gemini-1.5-flash": {
             "model_id": "gemini-1.5-flash",
-            "token_limit": 1048576,
-            "family": "gemini-flash",
-            "max_output_tokens": 8192,
-            "convert_system_message_to_human": False,
-        },
-        "gemini-1.5-flash-8b": {
-            "model_id": "gemini-1.5-flash-8b",
             "token_limit": 1048576,
             "family": "gemini-flash",
             "max_output_tokens": 8192,
