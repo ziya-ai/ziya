@@ -222,7 +222,8 @@ export const sendPayload = async (
     removeStreamingConversation: (id: string) => void,
     addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void,
     isStreamingToCurrentConversation: boolean = true,
-    setProcessingState?: (state: ProcessingState) => void
+    setProcessingState?: (state: ProcessingState) => void,
+    setReasoningContentMap?: Dispatch<SetStateAction<Map<string, string>>>
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
@@ -477,6 +478,20 @@ export const sendPayload = async (
                                     setProcessingState('processing_tools');
                                 }
                                 // Note: State will auto-reset to 'idle' when removeStreamingConversation is called
+                                continue;
+                            }
+                            if (op.op === 'add' && op.path.endsWith('/reasoning_content/-')) {
+                                // Handle reasoning content separately
+                                const reasoningContent = op.value || '';
+                                if (reasoningContent && setReasoningContentMap) {
+                                    console.log('ChatAPI: Adding reasoning content:', reasoningContent);
+                                    setReasoningContentMap((prev: Map<string, string>) => {
+                                        const next = new Map(prev);
+                                        const existing = next.get(conversationId) || '';
+                                        next.set(conversationId, existing + reasoningContent);
+                                        return next;
+                                    });
+                                }
                                 continue;
                             }
                             if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {

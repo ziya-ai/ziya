@@ -6,6 +6,7 @@ import StopStreamButton from './StopStreamButton';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
+import ReasoningDisplay from './ReasoningDisplay';
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC = () => {
@@ -544,6 +545,9 @@ export const StreamedContent: React.FC = () => {
                         </div>
                         <Suspense fallback={<div>Loading content...</div>}>
                             <>
+                                {/* Show reasoning content for OpenAI models */}
+                                <ReasoningDisplay conversationId={currentConversationId} />
+                                
                                 {/* Only render if we have actual content */}
                                 {error && <><ErrorDisplay message={error} /><br /></>}
                                 {!error && streamedContent && streamedContent.trim() && (

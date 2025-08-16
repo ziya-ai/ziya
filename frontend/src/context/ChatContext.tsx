@@ -16,9 +16,11 @@ interface ConversationProcessingState {
 
 interface ChatContext {
     streamedContentMap: Map<string, string>;
+    reasoningContentMap: Map<string, string>;
     dynamicTitleLength: number;
     setDynamicTitleLength: (length: number) => void;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
+    setReasoningContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     isStreaming: boolean;
     getProcessingState: (conversationId: string) => ProcessingState;
     updateProcessingState: (conversationId: string, state: ProcessingState) => void;
@@ -69,6 +71,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const renderCount = useRef(0);
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
+    const [reasoningContentMap, setReasoningContentMap] = useState(() => new Map<string, string>());
     const [isStreamingAny, setIsStreamingAny] = useState(false);
     const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -774,9 +777,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const value = useMemo(() => ({
         streamedContentMap,
+        reasoningContentMap,
         dynamicTitleLength,
         setDynamicTitleLength,
         setStreamedContentMap,
+        setReasoningContentMap,
         getProcessingState,
         updateProcessingState,
         isStreaming,
