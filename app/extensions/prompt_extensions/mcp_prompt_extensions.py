@@ -36,6 +36,26 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         logger.info("MCP_GUIDELINES: Extension disabled by config, returning original prompt")
         return prompt
     
+    # Skip MCP guidelines for gemini-2.5-pro to avoid prompt size limits
+    # Check multiple sources for model identification
+    model_id = context.get("model_id", "")
+    model_name = context.get("model_name", "")
+    
+    # If model_id is not in context, try to get it from ModelManager
+    if not model_id:
+        try:
+            from app.agents.models import ModelManager
+            model_id = ModelManager.get_model_id() or ""
+        except Exception:
+            pass
+    
+    # Check if this is gemini-2.5-pro by any identifier
+    if ("gemini-2.5-pro" in model_id or 
+        "gemini-pro" in model_name or
+        "gemini-2.5-pro" in str(context)):
+        logger.info("MCP_GUIDELINES: Skipping for gemini-2.5-pro due to prompt size limits")
+        return prompt
+    
     # Check if MCP tools are available in the context
     # This would be passed from the agent system when MCP is initialized
     mcp_tools_available = context.get("mcp_tools_available", False)

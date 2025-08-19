@@ -211,10 +211,10 @@ MODEL_CONFIGS = {
             "extended_context_header": "context-1m-2025-08-07"  # Beta header for extended context
         },
         "sonnet3.7": {
-            "model_id": {
-                "eu": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0" 
-                # only available (for ziya-profile anyway) within EU regiosn for nwo
-            },
+            "model_id": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "available_regions": ["eu-west-1", "eu-central-1"],
+            "region_restricted": True,  # Only available in EU regions
+            "preferred_region": "eu-west-1",
             "token_limit": 200000,  # Total context window size
             "max_output_tokens": 64000,  # Maximum output tokens
             "default_max_output_tokens": 10000,  # Default value for max_output_tokens
@@ -354,11 +354,13 @@ MODEL_CONFIGS = {
     },
     "google": {
         "gemini-pro": {
-            "model_id": "gemini-2.5-pro-preview-05-06",
+            "model_id": "gemini-2.5-pro",
             "token_limit": 1048576,
             "family": "gemini-pro",
-            "max_output_tokens": 65535,
-            "convert_system_message_to_human": True,
+            "max_output_tokens": 8192,
+            "convert_system_message_to_human": False,
+            "supports_function_calling": True,
+            "native_function_calling": True,
         },
         "gemini-flash": {
             "model_id": "gemini-2.5-flash-preview-05-20",
@@ -366,20 +368,18 @@ MODEL_CONFIGS = {
             "family": "gemini-flash",
             "max_output_tokens": 65535,
             "convert_system_message_to_human": False,
+            "supports_function_calling": True,
+            "native_function_calling": True,
         },
-        "gemini-2.0-pro": {
-            "model_id": "gemini-2.0-pro-exp-02-05",
-            "token_limit": 2097152,
-            "family": "gemini-pro",
-            "max_output_tokens": 8192,
-            "convert_system_message_to_human": False,
-        },
+
         "gemini-2.0-flash": {
             "model_id": "gemini-2.0-flash",
             "token_limit": 1048576,
             "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
+            "supports_function_calling": True,
+            "native_function_calling": False,
         },
         "gemini-2.0-flash-lite": {
             "model_id": "gemini-2.0-flash-lite",
@@ -387,6 +387,8 @@ MODEL_CONFIGS = {
             "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
+            "supports_function_calling": False,  # This model doesn't support function calling per Google docs
+            "native_function_calling": False,
         },
         "gemini-1.5-flash": {
             "model_id": "gemini-1.5-flash",
@@ -394,6 +396,8 @@ MODEL_CONFIGS = {
             "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
+            "supports_function_calling": True,
+            "native_function_calling": False,
         },
         "gemini-1.5-pro": {
             "model_id": "gemini-1.5-pro",
@@ -401,6 +405,8 @@ MODEL_CONFIGS = {
             "family": "gemini-pro",
             "max_output_tokens": 2048,
             "convert_system_message_to_human": False,
+            "supports_function_calling": True,
+            "native_function_calling": False,
         }
     }
 }

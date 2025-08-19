@@ -189,6 +189,11 @@ class ModelManager:
         """Invalidate the agent chain cache to force fresh agent creation."""
         cls._state['agent_chain_cache'] = {}
         logger.info("ModelManager: Agent chain cache invalidated")
+    
+    @classmethod
+    def get_state(cls):
+        """Get the current ModelManager state."""
+        return cls._state.copy()  # Return a copy to prevent external modification
             
         # Force garbage collection again to clean up any lingering references
         gc.collect()
@@ -1008,13 +1013,9 @@ class ModelManager:
                 # Update base_max_tokens to use the default
                 base_max_tokens = default_max_tokens
         
-        if settings_override:
+        if settings_override and isinstance(settings_override, dict):
             logger.info("Using settings_override for initialization parameters.")
             logger.info(f"  settings_override received: {settings_override}") # DEBUG LOG
-
-        # --- End Determine Effective Parameters ---+
-            logger.info("Using environment variables (or defaults) for initialization parameters.")
-            # Read environment variables *now*
 
             # Directly use settings_override, falling back to base config only if key is missing in override
             effective_temperature = float(settings_override.get("temperature", base_temperature))
@@ -1023,25 +1024,9 @@ class ModelManager:
             effective_top_p = settings_override.get("top_p", base_top_p)
             effective_thinking_mode = bool(settings_override.get("thinking_mode", base_thinking_mode))
             logger.info(f"  >>> DEBUG: effective_max_tokens assigned value: {effective_max_tokens}")
-            effective_top_p_str = os.environ.get("ZIYA_TOP_P")
-            effective_top_p = None
-            if effective_top_p_str is not None:
-                try:
-                    effective_top_p = float(effective_top_p_str)
-                except ValueError:
-                    logger.warning(f"Invalid ZIYA_TOP_P value '{effective_top_p_str}', using default.")
-                    effective_top_p = base_top_p
-            else:
-                effective_top_p = base_top_p
- 
-            effective_thinking_mode_str = os.environ.get("ZIYA_THINKING_MODE")
-            effective_thinking_mode = base_thinking_mode
-            if effective_thinking_mode_str is not None:
-                effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes", "t", "y")
-
         else:
-            logger.info("No settings_override provided, using environment variables/defaults.")
-            # Read environment variables *now*+            # Fall back to base config values if environment variable is not set
+            logger.info("Using environment variables (or defaults) for initialization parameters.")
+            # Fall back to base config values if environment variable is not set
             effective_temperature = float(os.environ.get("ZIYA_TEMPERATURE", base_temperature))
             effective_top_k = int(os.environ.get("ZIYA_TOP_K", base_top_k))
             effective_max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", base_max_tokens))
@@ -1052,9 +1037,12 @@ class ModelManager:
                     effective_top_p = float(effective_top_p_str)
                 except ValueError:
                     logger.warning(f"Invalid ZIYA_TOP_P value '{effective_top_p_str}', using default.")
-
+                    effective_top_p = base_top_p
+            
             effective_thinking_mode_str = os.environ.get("ZIYA_THINKING_MODE")
-            effective_thinking_mode = base_thinking_mode # Default to base
+            effective_thinking_mode = base_thinking_mode
+            if effective_thinking_mode_str is not None:
+                effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes", "t", "y")
             if effective_thinking_mode_str is not None:
                 effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes")
 
@@ -1185,26 +1173,23 @@ class ModelManager:
         return model
 
     @classmethod
-    def _initialize_google_model(cls, model_config: Dict[str, Any]) -> ChatGoogleGenerativeAI:
+    def _initialize_google_model(cls, model_config: Dict[str, Any]):
         """
-        Initialize a Google model with the given configuration.
+        Initialize a Google model with direct API (no langchain).
         
         Args:
             model_config: Model configuration
             
         Returns:
-            ChatGoogleGenerativeAI: The initialized Google model
+            DirectGoogleModel: The initialized Google model
         """
-        # Import here to avoid unnecessary imports when not using Google models
-        try:
-            from app.agents.wrappers.ziya_google_genai import ZiyaChatGoogleGenerativeAI
-        except ImportError:
-            raise ValueError("langchain_google_genai package is not installed. Please install it to use Google models.")
+        # Import the direct Google wrapper
+        from app.agents.wrappers.google_direct import DirectGoogleModel
             
         # Force garbage collection before creating new model
         gc.collect()
         
-        logger.info("Initializing Google model")
+        logger.info("Initializing Google model with direct API")
         
         # Load environment variables from .env file specifically for Google models
         dotenv_path = find_dotenv()
@@ -1216,7 +1201,6 @@ class ModelManager:
         model_id = model_config.get("model_id")
         temperature = model_config.get("temperature", 0.3)
         max_output_tokens = model_config.get("max_output_tokens", 2048)
-        convert_system_message = model_config.get("convert_system_message_to_human", True)
         
         # Apply environment variable overrides
         settings = cls.get_model_settings(model_config)
@@ -1237,22 +1221,15 @@ class ModelManager:
                 google_api_key = None
         else:
             logger.info("GOOGLE_API_KEY not found in environment. ADC will be used by the library if configured.")
-            # This case should ideally be caught by _check_google_credentials,
-            # but as a safeguard:
-            # If _check_google_credentials didn't raise an error, it means ADC might be available.
-            # So, we explicitly set google_api_key to None to let the library use ADC.
             google_api_key = None
         
         logger.info(f"Initializing Google model: {model_id} with kwargs: {{'temperature': {temperature}, 'max_output_tokens': {max_output_tokens}}}")
         
-        # Create the model
-        model = ZiyaChatGoogleGenerativeAI(
-            model=model_id,
+        # Create the model with direct API
+        model = DirectGoogleModel(
+            model_name=model_id,
             temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            convert_system_message_to_human=False, # Explicitly set to False for Gemini
-            callbacks=[EmptyMessageFilter()],
-            google_api_key=google_api_key # Pass it explicitly
+            max_output_tokens=max_output_tokens
         )
         
         return model

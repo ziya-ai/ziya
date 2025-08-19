@@ -938,6 +938,8 @@ class ZiyaBedrock(Runnable):
         # Ensure system messages are properly ordered after caching
         messages = self._ensure_system_message_ordering(messages)        
 
+        logger.info(f"ZiyaBedrock.astream called with model_id: {self.model_id}")
+
         # Extract conversation_id from config if not in kwargs
         if not conversation_id and config and isinstance(config, dict):
             conversation_id = config.get("conversation_id")

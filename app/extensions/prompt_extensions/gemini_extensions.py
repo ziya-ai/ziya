@@ -8,17 +8,67 @@ from app.utils.prompt_extensions import prompt_extension
 from app.utils.logging_utils import logger
 
 @prompt_extension(
-    name="gemini_family_extension",
+    name="gemini_pro_family_extension",
     extension_type="family",
-    target="gemini",
+    target="gemini-pro",
     config={
         "enabled": True,
         "priority": 5
     }
 )
-def gemini_family_extension(prompt: str, context: dict) -> str:
+def gemini_pro_family_extension(prompt: str, context: dict) -> str:
     """
-    Add instructions for all Gemini family models.
+    Add instructions for Gemini Pro family models.
+    
+    Args:
+        prompt: The original prompt
+        context: Extension context
+        
+    Returns:
+        str: Modified prompt
+    """
+    from app.utils.logging_utils import logger
+    logger.info(f"GEMINI_EXTENSION: Called with prompt length: {len(prompt)}")
+    logger.info(f"GEMINI_EXTENSION: Context: {context}")
+    
+    if not context.get("config", {}).get("enabled", True):
+        logger.info("GEMINI_EXTENSION: Extension disabled, returning original prompt")
+        return prompt
+    
+    # For Google models, use a much simpler prompt to avoid safety filter issues
+    # Keep the template variables so they get replaced properly
+    simplified_prompt = """You are a helpful AI assistant that can analyze code and use tools when requested.
+
+TOOL USAGE:
+To use a tool, format your request as:
+<TOOL_SENTINEL><name>tool_name</name><arguments>{{"key": "value"}}</arguments></TOOL_SENTINEL>
+
+Available tools:
+- mcp_get_current_time: Get the current date and time
+- mcp_run_shell_command: Execute shell commands (pwd, ls, etc.)
+
+When the user asks you to use a tool, respond with the appropriate tool call format.
+
+{codebase}
+
+Remember to strictly adhere to the Git diff format guidelines when suggesting code changes.
+"""
+    
+    logger.info(f"GEMINI_EXTENSION: Returning simplified prompt with length: {len(simplified_prompt)}")
+    return simplified_prompt
+
+@prompt_extension(
+    name="gemini_flash_family_extension", 
+    extension_type="family",
+    target="gemini-flash",
+    config={
+        "enabled": True,
+        "priority": 5
+    }
+)
+def gemini_flash_family_extension(prompt: str, context: dict) -> str:
+    """
+    Add instructions for Gemini Flash family models.
     
     Args:
         prompt: The original prompt
@@ -30,24 +80,32 @@ def gemini_family_extension(prompt: str, context: dict) -> str:
     if not context.get("config", {}).get("enabled", True):
         return prompt
     
-    # Add Gemini family specific instructions
-    gemini_instructions = """
-GEMINI FAMILY INSTRUCTIONS:
-1. When generating code, focus on clarity and maintainability
-2. For complex code explanations, use step-by-step breakdowns
-3. When suggesting changes, provide clear reasoning for each modification
-4. Leverage your multimodal capabilities when appropriate for code visualization
+    # Replace TOOL_SENTINEL format with Google-compatible format
+    if "<TOOL_SENTINEL>" in prompt:
+        # Replace the tool format examples with Google-compatible format
+        prompt = prompt.replace(
+            "**mcp_get_current_time Format:**\n```\n<TOOL_SENTINEL>\n<name>mcp_get_current_time</name>\n<arguments>{\n  \"format\": \"readable\"\n}</arguments>\n</TOOL_SENTINEL>\n```",
+            "**mcp_get_current_time Format:**\n```\nI'll use the get_current_time tool to get the current date and time.\n```"
+        )
+        prompt = prompt.replace(
+            "**mcp_run_shell_command Format:**\n```\n<TOOL_SENTINEL>\n<name>mcp_run_shell_command</name>\n<arguments>{\n  \"command\": \"ls -la\",\n  \"timeout\": \"1\"\n}</arguments>\n</TOOL_SENTINEL>\n```",
+            "**mcp_run_shell_command Format:**\n```\nI'll use the shell command tool to execute: pwd\n```"
+        )
+        
+        # Add Google-specific tool instructions
+        gemini_tool_instructions = """
+GEMINI TOOL USAGE:
+- Use tools when requested by the user
+- For shell commands, use the mcp_run_shell_command tool with the appropriate command
+- For time queries, use the mcp_get_current_time tool
+- Provide actual tool results rather than describing what you would do
 """
+        
+        # Insert the tool instructions
+        if "**Usage Rules:**" in prompt:
+            prompt = prompt.replace("**Usage Rules:**", gemini_tool_instructions + "\n\n**Usage Rules:**")
     
-    # Find a good place to insert the instructions
-    if "CRITICAL: INSTRUCTION PRESERVATION:" in prompt:
-        # Insert after the instruction preservation section
-        parts = prompt.split("CRITICAL: INSTRUCTION PRESERVATION:", 1)
-        preservation_section = parts[1].split("\n\n", 1)
-        return parts[0] + "CRITICAL: INSTRUCTION PRESERVATION:" + preservation_section[0] + "\n\n" + gemini_instructions + "\n\n" + preservation_section[1]
-    else:
-        # Just add to the beginning
-        return gemini_instructions + "\n\n" + prompt
+    return prompt
 
 @prompt_extension(
     name="gemini_pro_extension",
