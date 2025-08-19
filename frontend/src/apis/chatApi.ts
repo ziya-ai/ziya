@@ -439,7 +439,15 @@ export const sendPayload = async (
                         }
 
                         // Extract text content from the response
-                        if (jsonData.text) {
+                        if (jsonData.type === 'text' && jsonData.content) {
+                            // Handle new streaming format with type field
+                            currentContent += jsonData.content;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else if (jsonData.text) {
                             currentContent += jsonData.text;
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
@@ -457,8 +465,12 @@ export const sendPayload = async (
                             // Handle structured tool execution using existing ToolBlock syntax
                             const signedIndicator = jsonData.signed ? ' 🔒' : '';
                             
+                            // Ensure tool name has mcp_ prefix for proper rendering
+                            const toolName = jsonData.tool_name.startsWith('mcp_') ? 
+                                jsonData.tool_name : `mcp_${jsonData.tool_name}`;
+                            
                             // Format as tool block that the MarkdownRenderer will recognize and style properly
-                            const toolDisplay = `\n\`\`\`tool:${jsonData.tool_name}${signedIndicator}\n${jsonData.result}\n\`\`\`\n\n`;
+                            const toolDisplay = `\n\`\`\`tool:${toolName}${signedIndicator}\n${jsonData.result}\n\`\`\`\n\n`;
                             
                             currentContent += toolDisplay;
                             setStreamedContentMap((prev: Map<string, string>) => {
@@ -495,8 +507,48 @@ export const sendPayload = async (
                                 continue;
                             }
                             if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
-                                const newContent = op.value || '';
+                                let newContent = op.value || '';
                                 if (!newContent) continue;
+                                
+                                // Handle new Bedrock format with content= wrapper
+                                if (typeof newContent === 'string' && newContent.includes('content=')) {
+                                    // More robust extraction for various formats:
+                                    // content='text' additional_kwargs={} response_metadata={}
+                                    // content="text" additional_kwargs={} response_metadata={}
+                                    
+                                    let extractedContent = '';
+                                    
+                                    // Try single quotes first
+                                    let match = newContent.match(/content='([^']*(?:\\.[^']*)*)'(?:\s+additional_kwargs=.*)?$/);
+                                    if (match) {
+                                        extractedContent = match[1];
+                                    } else {
+                                        // Try double quotes
+                                        match = newContent.match(/content="([^"]*(?:\\.[^"]*)*)"(?:\s+additional_kwargs=.*)?$/);
+                                        if (match) {
+                                            extractedContent = match[1];
+                                        } else {
+                                            // Fallback: extract anything between quotes after content=
+                                            match = newContent.match(/content=['"]([^'"]*)['"]/);
+                                            if (match) {
+                                                extractedContent = match[1];
+                                            } else {
+                                                // Last resort: use original content
+                                                extractedContent = newContent;
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Unescape common escape sequences
+                                    newContent = extractedContent
+                                        .replace(/\\'/g, "'")
+                                        .replace(/\\"/g, '"')
+                                        .replace(/\\n/g, '\n')
+                                        .replace(/\\t/g, '\t')
+                                        .replace(/\\r/g, '\r')
+                                        .replace(/\\\\/g, '\\');
+                                }
+                                
                                 currentContent += newContent;
                                 setStreamedContentMap((prev: Map<string, string>) => {
                                     const next = new Map(prev);

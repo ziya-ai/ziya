@@ -6,6 +6,7 @@ Bypasses LangChain for real-time tool execution during streaming
 
 import asyncio
 import json
+import os
 import subprocess
 import time
 from typing import Dict, List, Any, Optional, AsyncGenerator
@@ -40,8 +41,11 @@ class StreamingToolExecutor:
         try:
             # Get current model info from ModelManager state
             state = ModelManager.get_state()
-            self.model_id = state.get('current_model_id', {}).get('us', '')
-            if not self.model_id:
+            current_model_id_dict = state.get('current_model_id', {})
+            if current_model_id_dict:
+                # Get the first available model ID from the dict
+                self.model_id = next(iter(current_model_id_dict.values()), '')
+            else:
                 # Fallback: try to get from bedrock client config
                 self.model_id = getattr(bedrock_client, '_model_id', '')
         except:
@@ -53,8 +57,18 @@ class StreamingToolExecutor:
         self.active_tools: Dict[str, Dict[str, Any]] = {}
         self.completed_tools: set = set()
         
-        # Configuration
-        self.max_tokens = 4000  # Reduced from 2000 to reasonable limit for tool calling
+        # Configuration - respect environment variable for max_tokens
+        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
+        if env_max_tokens:
+            try:
+                self.max_tokens = int(env_max_tokens)
+                logger.info(f"Using ZIYA_MAX_OUTPUT_TOKENS from environment: {self.max_tokens}")
+            except ValueError:
+                logger.warning(f"Invalid ZIYA_MAX_OUTPUT_TOKENS value: {env_max_tokens}, using default")
+                self.max_tokens = 4000
+        else:
+            self.max_tokens = 4000  # Default fallback
+        
         self.command_timeout = 15  # Default timeout
         self.max_output_length = 10000  # Increased from 2000 to show more complete results
         
@@ -147,7 +161,7 @@ class StreamingToolExecutor:
             }
             
             # Add max_tokens only for models that support it
-            if not (self.model_id and 'nova-micro' in self.model_id.lower()):
+            if not (self.model_id and ('nova-micro' in self.model_id.lower() or 'nova-lite' in self.model_id.lower())):
                 body["max_tokens"] = self.max_tokens
             
             # Only add tools if model supports them
@@ -188,41 +202,15 @@ class StreamingToolExecutor:
                         "temperature": body.get("temperature", 0.3)
                     }
                     print(f"🔧 DEBUG: Deepseek request body keys: {list(body.keys())}")
-                elif current_model_id and 'nova-pro' in current_model_id.lower():
-                    print(f"🔧 DEBUG: Nova Pro model detected ({current_model_id}), using Nova wrapper formatting")
-                    # Use Nova wrapper for Nova Pro specific formatting
+                elif current_model_id and any(nova_model in current_model_id.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
+                    print(f"🔧 DEBUG: Nova model detected ({current_model_id}), delegating to Nova wrapper")
+                    # Delegate to Nova wrapper for proper handling
                     from app.agents.wrappers.nova_wrapper import NovaWrapper
                     nova_wrapper = NovaWrapper(model_id=current_model_id)
-                    body = nova_wrapper.format_nova_pro_request(body)
-                    print(f"🔧 DEBUG: Nova Pro request body keys: {list(body.keys())}")
-                elif current_model_id and any(nova_model in current_model_id.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
-                    print(f"🔧 DEBUG: Nova model detected ({current_model_id}), removing incompatible parameters")
-                    # Nova models don't accept anthropic_version parameter
-                    body.pop("anthropic_version", None)
-                    
-                    # Nova-micro and Nova-lite don't accept max_tokens, maxTokens, tool_choice, or tools parameters
-                    if 'nova-micro' in current_model_id.lower() or 'nova-lite' in current_model_id.lower():
-                        body.pop("max_tokens", None)
-                        body.pop("maxTokens", None)
-                        body.pop("tool_choice", None)
-                        body.pop("tools", None)
-                    
-                    # Nova models expect system message as array format
-                    if "system" in body and isinstance(body["system"], str):
-                        body["system"] = [{"text": body["system"]}]
-                    
-                    # Nova models expect message content as array format
-                    if "messages" in body:
-                        for message in body["messages"]:
-                            if "content" in message and isinstance(message["content"], str):
-                                message["content"] = [{"text": message["content"]}]
-                    
-                    print(f"🔧 DEBUG: Nova request body keys: {list(body.keys())}")
-                elif current_model_id and 'openai' in current_model_id.lower():
-                    print(f"🔧 DEBUG: OpenAI model detected ({current_model_id}), should not reach here - using LangChain path")
-                    # This should not happen as OpenAI models are handled in server.py
-                    yield {'type': 'error', 'content': 'OpenAI model reached StreamingToolExecutor unexpectedly'}
+                    async for chunk in nova_wrapper.stream_with_tools(body, tools, self.bedrock):
+                        yield chunk
                     return
+
                 
                 try:
                     response = self.bedrock.invoke_model_with_response_stream(
