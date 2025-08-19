@@ -740,16 +740,43 @@ class RetryingChatBedrock(Runnable):
                 if isinstance(messages, list):
                     logger.info(f"🔍 FILTERING: Before filtering - {len(messages)} messages")
                     for i, msg in enumerate(messages):
-                        logger.info(f"🔍 FILTERING: Message {i}: {type(msg).__name__} - content: '{str(msg.content)[:100]}...' - empty: {not msg.content}")
+                        # Handle both BaseMessage objects and dictionaries safely
+                        try:
+                            if hasattr(msg, 'content'):
+                                content = str(msg.content)[:100]
+                                empty = not msg.content
+                            elif isinstance(msg, dict) and 'content' in msg:
+                                content = str(msg['content'])[:100]
+                                empty = not msg['content']
+                            else:
+                                content = str(msg)[:100]
+                                empty = True
+                            logger.info(f"🔍 FILTERING: Message {i}: {type(msg).__name__} - content: '{content}...' - empty: {empty}")
+                        except Exception as e:
+                            logger.warning(f"🔍 FILTERING: Error accessing message {i} content: {e} - type: {type(msg)}")
                     
-                    messages = [
-                        msg for msg in messages 
-                        if isinstance(msg, BaseMessage) and msg.content
-                    ]
+                    # Filter messages - handle both BaseMessage objects and dictionaries
+                    filtered_messages = []
+                    for msg in messages:
+                        if isinstance(msg, BaseMessage) and msg.content:
+                            filtered_messages.append(msg)
+                        elif isinstance(msg, dict) and msg.get('content'):
+                            filtered_messages.append(msg)
+                    
+                    messages = filtered_messages
                     
                     logger.info(f"🔍 FILTERING: After filtering - {len(messages)} messages")
                     for i, msg in enumerate(messages):
-                        logger.info(f"🔍 FILTERING: Kept Message {i}: {type(msg).__name__} - content: '{str(msg.content)[:100]}...'")
+                        try:
+                            if hasattr(msg, 'content'):
+                                content = str(msg.content)[:100]
+                            elif isinstance(msg, dict) and 'content' in msg:
+                                content = str(msg['content'])[:100]
+                            else:
+                                content = str(msg)[:100]
+                            logger.info(f"🔍 FILTERING: Kept Message {i}: {type(msg).__name__} - content: '{content}...'")
+                        except Exception as e:
+                            logger.warning(f"🔍 FILTERING: Error accessing kept message {i} content: {e}")
                     
                     if not messages:
                         raise ValueError("No valid messages with content")
@@ -1651,14 +1678,42 @@ def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
     from langchain.agents import create_xml_agent
     import hashlib
+    from app.agents.models import ModelManager
     logger.error("🔍 EXECUTION_TRACE: create_agent_chain() called")
     
     # Create cache key based on model configuration
-    model_id = getattr(chat_model, 'model_id', 'unknown')
+    model_id = ModelManager.get_model_id() or getattr(chat_model, 'model_id', 'unknown')
     ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
     mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP") != "false"
     
-    cache_key = f"{model_id}_{ast_enabled}_{mcp_enabled}"
+    # Get MCP tools first to include in cache key
+    mcp_tools = []
+    try:
+        from app.mcp.manager import get_mcp_manager
+        from app.mcp.enhanced_tools import create_secure_mcp_tools
+        mcp_manager = get_mcp_manager()
+        # Ensure MCP is initialized before creating tools
+        if not mcp_manager.is_initialized:
+            logger.warning("MCP manager not initialized during agent creation, attempting initialization...")
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If we're in an async context, we can't wait for initialization
+                logger.warning("Cannot initialize MCP synchronously in async context")
+            else:
+                loop.run_until_complete(mcp_manager.initialize())
+        
+        if mcp_manager.is_initialized:
+            mcp_tools = create_secure_mcp_tools()
+            logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+        else:
+            logger.warning("MCP manager not initialized, no MCP tools available")
+    
+    except Exception as e:
+        logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+    
+    # Include MCP tool count in cache key to ensure different chains for different tool availability
+    cache_key = f"{model_id}_{ast_enabled}_{mcp_enabled}_{len(mcp_tools)}"
     cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
     
     # Check ModelManager cache
@@ -1670,18 +1725,6 @@ def create_agent_chain(chat_model: BaseChatModel):
     
     logger.info(f"Creating new agent chain for {cache_key_hash}")
     
-    # Bind the stop sequence to the model  
-    llm_with_stop = chat_model.bind(stop=[TOOL_SENTINEL_CLOSE])
-    
-    # Store the model with stop in the ModelManager state
-    from app.agents.models import ModelManager
-    ModelManager._state['llm_with_stop'] = llm_with_stop
-    
-    # Initialize MCP tools if available
-    mcp_tools = []
-    ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
-    logger.info(f"Creating agent chain with AST enabled: {ast_enabled}")
-    
     # Get model information for prompt extensions
     model_info = get_model_info_from_config()
     model_name = model_info["model_name"]
@@ -1689,8 +1732,6 @@ def create_agent_chain(chat_model: BaseChatModel):
     endpoint = model_info["endpoint"]
     
     logger.info(f"Creating agent chain for model: {model_name}, family: {model_family}, endpoint: {endpoint}")
-    
-    # Get the extended prompt with model-specific extensions
     
     # Define the input mapping with conditional AST context
     input_mapping = {
@@ -1720,37 +1761,98 @@ def create_agent_chain(chat_model: BaseChatModel):
         # Add empty AST context to avoid template errors
         input_mapping["ast_context"] = lambda x: {}
 
-    # Get MCP tools
-    mcp_tools = []
-    try:
-        from app.mcp.manager import get_mcp_manager
-        from app.mcp.tools import create_mcp_tools
-        mcp_manager = get_mcp_manager()
-        # Ensure MCP is initialized before creating tools
-        if not mcp_manager.is_initialized:
-            logger.warning("MCP manager not initialized during agent creation, attempting initialization...")
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're in an async context, we can't wait for initialization
-                logger.warning("Cannot initialize MCP synchronously in async context")
-            else:
-                loop.run_until_complete(mcp_manager.initialize())
-        
-        if mcp_manager.is_initialized:
-
-            mcp_tools = create_secure_mcp_tools()
-            logger.info(f"Created {len(mcp_tools)} MCP tools for XML agent: {[tool.name for tool in mcp_tools]}")
-        else:
-            logger.warning("MCP manager not initialized, no MCP tools available")
+    # Disable Google native function calling for now - will migrate off langchain later
+    if False: # endpoint == "google" and len(mcp_tools) > 0:
+        logger.info(f"Detected Google model with {len(mcp_tools)} tools - enabling native function calling")
+        try:
+            # Import Google wrapper
+            from app.agents.wrappers.ziya_google_genai import ZiyaChatGoogleGenerativeAI
+            
+            # Check if the model is our custom wrapper (handle RetryingChatBedrock wrapper)
+            underlying_model = chat_model.model if hasattr(chat_model, 'model') else chat_model
+            if isinstance(underlying_model, ZiyaChatGoogleGenerativeAI):
+                # Get prompt template for system message
+                mcp_context = {
+                     "mcp_tools_available": len(mcp_tools) > 0,
+                     "available_mcp_tools": [tool.name for tool in mcp_tools],
+                     "model_id": model_id
+                }
+                
+                prompt_template = get_extended_prompt(
+                    model_name=model_name,
+                    model_family=model_family,
+                    endpoint=endpoint,
+                    context=mcp_context
+                )
+                
+                # Bind tools using Google's native function calling
+                llm_with_tools = underlying_model.bind_tools(mcp_tools)
+                logger.info(f"Successfully bound {len(mcp_tools)} tools to Google model")
+                
+                # Create a simple chain that just calls the model with tools
+                def google_agent_call(input_data):
+                    """Handle Google function calling."""
+                    # Apply input mapping
+                    mapped_input = {}
+                    for key, mapper in input_mapping.items():
+                        try:
+                            mapped_input[key] = mapper(input_data)
+                        except Exception as e:
+                            logger.error(f"Error applying input mapping for {key}: {e}")
+                            mapped_input[key] = ""
+                    
+                    # Format messages for Google
+                    messages = []
+                    
+                    # Add system message from prompt
+                    if hasattr(prompt_template, 'messages') and prompt_template.messages:
+                        system_msg = prompt_template.messages[0]
+                        if hasattr(system_msg, 'format'):
+                            formatted_content = system_msg.format(**mapped_input)
+                            messages.append(SystemMessage(content=formatted_content))
+                    
+                    # Add user question
+                    question = mapped_input.get("question", "")
+                    if question:
+                        messages.append(HumanMessage(content=question))
+                    
+                    # Call model with function calling
+                    try:
+                        result = llm_with_tools.invoke(messages)
+                        return {"output": result.content}
+                    except Exception as e:
+                        logger.error(f"Google function calling error: {e}")
+                        # Fall back to regular model without tools
+                        result = chat_model.invoke(messages)
+                        return {"output": result.content}
+                
+                from langchain_core.runnables import RunnableLambda
+                agent_chain = RunnableLambda(google_agent_call)
+                
+                logger.info("Created Google function calling agent chain")
+                
+                # Cache and return
+                if 'agent_chain_cache' not in ModelManager._state:
+                    ModelManager._state['agent_chain_cache'] = {}
+                ModelManager._state['agent_chain_cache'][cache_key_hash] = agent_chain
+                logger.info(f"Cached Google agent chain for {cache_key_hash}")
+                
+                return agent_chain
+                
+        except Exception as e:
+            logger.warning(f"Failed to create Google function calling agent, falling back to XML: {e}")
     
-    except Exception as e:
-        logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+    # Bind the stop sequence to the model for XML agents
+    llm_with_stop = chat_model.bind(stop=[TOOL_SENTINEL_CLOSE])
+    
+    # Store the model with stop in the ModelManager state
+    ModelManager._state['llm_with_stop'] = llm_with_stop
     
     # Add MCP context for prompt extensions
     mcp_context = {
          "mcp_tools_available": len(mcp_tools) > 0,
-         "available_mcp_tools": [tool.name for tool in mcp_tools]
+         "available_mcp_tools": [tool.name for tool in mcp_tools],
+         "model_id": model_id
     }
     
     prompt_template = get_extended_prompt(

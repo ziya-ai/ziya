@@ -75,7 +75,7 @@ from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, Error
 from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
 
-def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str) -> List[BaseMessage]:
+def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False) -> List:
     """
     Build messages for streaming using the extended prompt template.
     This centralizes message construction to avoid duplication.
@@ -83,11 +83,16 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     
     from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
     from app.agents.agent import get_combined_docs_from_files, _format_chat_history
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
     
     model_info = get_model_info_from_config()
     
+    # Get model_id for MCP guidelines exclusion
+    from app.agents.models import ModelManager
+    model_id = ModelManager.get_model_id()
+    
     # Get MCP context
-    mcp_context = {}
+    mcp_context = {"model_id": model_id}
     try:
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
@@ -101,7 +106,6 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         logger.warning(f"Could not get MCP tools: {e}")
     
     # Get file context
-    # Load file context using extract_codebase
     from app.agents.agent import extract_codebase
     file_context = extract_codebase({"config": {"files": files}, "conversation_id": conversation_id})
     
@@ -132,18 +136,51 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     except Exception as e:
         logger.warning(f"Could not get tools for template: {e}")
     
-    # Format messages using the extended prompt template
-    formatted_messages = extended_prompt.format_messages(
-        codebase=file_context,  # This will be empty, template will call extract_codebase
-        question=modified_question,
-        chat_history=_format_chat_history(chat_history),
-        ast_context="",  # Will be enhanced if AST is enabled
+    # Build messages manually to ensure proper conversation history
+    messages = []
+    
+    # Add system message with context
+    system_content = extended_prompt.messages[0].prompt.template.format(
+        codebase=file_context,
+        ast_context="",
         tools="\n".join(tools_list) if tools_list else "No tools available",
         TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
         TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
     )
     
-    return formatted_messages
+    if use_langchain_format:
+        messages.append(SystemMessage(content=system_content))
+    else:
+        messages.append({"role": "system", "content": system_content})
+    
+    # Add conversation history
+    for item in chat_history:
+        if isinstance(item, dict):
+            role = item.get('type', item.get('role', 'human'))
+            content = item.get('content', '')
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            role, content = item[0], item[1]
+        else:
+            continue
+            
+        if role in ['human', 'user']:
+            if use_langchain_format:
+                messages.append(HumanMessage(content=content))
+            else:
+                messages.append({"role": "user", "content": content})
+        elif role in ['assistant', 'ai']:
+            if use_langchain_format:
+                messages.append(AIMessage(content=content))
+            else:
+                messages.append({"role": "assistant", "content": content})
+    
+    # Add current question
+    if use_langchain_format:
+        messages.append(HumanMessage(content=modified_question))
+    else:
+        messages.append({"role": "user", "content": modified_question})
+    
+    return messages
     logger.info("CONTEXT CONSTRUCTION DETAILS:")
     logger.info(f"File context length: {len(file_context)} characters")
     logger.info(f"Modified question length: {len(modified_question)} characters")
@@ -228,22 +265,54 @@ async def chat_endpoint(request: Request):
         # Check current model to determine routing
         from app.agents.models import ModelManager
         current_model = ModelManager.get_model_alias()
-        is_bedrock_claude = current_model and ('claude' in current_model.lower() or 'sonnet' in current_model.lower())
+        is_bedrock_claude = current_model and ('claude' in current_model.lower() or 'sonnet' in current_model.lower() or 'opus' in current_model.lower() or 'haiku' in current_model.lower())
+        is_bedrock_nova = current_model and 'nova' in current_model.lower()
+        is_bedrock_deepseek = current_model and 'deepseek' in current_model.lower()
+        is_bedrock_openai = current_model and 'openai' in current_model.lower()
+        is_google_model = current_model and ('gemini' in current_model.lower() or 'google' in current_model.lower())
+        use_direct_streaming = is_bedrock_claude or is_bedrock_nova or is_bedrock_deepseek or is_bedrock_openai or is_google_model
         
         logger.info(f"🔍 CHAT_ENDPOINT: Current model = {current_model}, is_bedrock_claude = {is_bedrock_claude}")
         
-        if is_bedrock_claude:
-            # Use direct streaming for Bedrock Claude models
-            logger.info("🔍 CHAT_ENDPOINT: Using DIRECT STREAMING for Bedrock Claude")
+        if use_direct_streaming:
+            # Use direct streaming for Bedrock Claude and Nova models
+            logger.info("🔍 CHAT_ENDPOINT: Using DIRECT STREAMING for Bedrock models")
             
-            # Format chat history
+            # Format chat history - handle both tuple and dict formats
             chat_history = []
-            for msg in messages[:-1] if messages else []:
-                if isinstance(msg, dict):
-                    role = msg.get('role', 'user')
+            
+            # Check if the question is already the last message to avoid duplication
+            messages_to_process = messages
+            if messages and question:
+                last_msg = messages[-1]
+                if isinstance(last_msg, list) and len(last_msg) >= 2:
+                    last_content = last_msg[1]
+                elif isinstance(last_msg, dict):
+                    last_content = last_msg.get('content', '')
+                else:
+                    last_content = ''
+                
+                # If the last message content matches the question, exclude it
+                if last_content.strip() == question.strip():
+                    messages_to_process = messages[:-1]
+            
+            for msg in messages_to_process:
+                if isinstance(msg, list) and len(msg) >= 2:
+                    # Frontend tuple format: ["human", "content"]
+                    role, content = msg[0], msg[1]
+                    if role in ['human', 'user']:
+                        chat_history.append({'type': 'human', 'content': content})
+                    elif role in ['assistant', 'ai']:
+                        chat_history.append({'type': 'ai', 'content': content})
+                elif isinstance(msg, dict):
+                    # Already in dict format
+                    role = msg.get('role', msg.get('type', 'user'))
                     content = msg.get('content', '')
                     if role and content:
-                        chat_history.append((role, content))
+                        if role in ['human', 'user']:
+                            chat_history.append({'type': 'human', 'content': content})
+                        elif role in ['assistant', 'ai']:
+                            chat_history.append({'type': 'ai', 'content': content})
             
             # Format the data for stream_chunks
             formatted_body = {
@@ -256,7 +325,7 @@ async def chat_endpoint(request: Request):
                 }
             }
             
-            logger.info("[CHAT_ENDPOINT] Calling stream_chunks directly for Bedrock Claude")
+            logger.info("[CHAT_ENDPOINT] Calling stream_chunks directly for Bedrock models")
             
             return StreamingResponse(
                 stream_chunks(formatted_body),
@@ -276,12 +345,39 @@ async def chat_endpoint(request: Request):
             
             # Format chat history for LangChain
             formatted_chat_history = []
-            for msg in messages[:-1] if messages else []:
-                if isinstance(msg, dict):
-                    role = msg.get('role', 'user')
+            
+            # Check if the question is already the last message to avoid duplication
+            messages_to_process = messages
+            if messages and question:
+                last_msg = messages[-1]
+                if isinstance(last_msg, list) and len(last_msg) >= 2:
+                    last_content = last_msg[1]
+                elif isinstance(last_msg, dict):
+                    last_content = last_msg.get('content', '')
+                else:
+                    last_content = ''
+                
+                # If the last message content matches the question, exclude it
+                if last_content.strip() == question.strip():
+                    messages_to_process = messages[:-1]
+            
+            for msg in messages_to_process:
+                if isinstance(msg, list) and len(msg) >= 2:
+                    # Frontend tuple format: ["human", "content"]
+                    role, content = msg[0], msg[1]
+                    if role in ['human', 'user']:
+                        formatted_chat_history.append(('human', content))
+                    elif role in ['assistant', 'ai']:
+                        formatted_chat_history.append(('assistant', content))
+                elif isinstance(msg, dict):
+                    # Already in dict format
+                    role = msg.get('role', msg.get('type', 'user'))
                     content = msg.get('content', '')
                     if role and content:
-                        formatted_chat_history.append((role, content))
+                        if role in ['human', 'user']:
+                            formatted_chat_history.append(('human', content))
+                        elif role in ['assistant', 'ai']:
+                            formatted_chat_history.append(('assistant', content))
             
             # Format the data for LangChain endpoint
             formatted_body = {
@@ -419,6 +515,11 @@ async def startup_event():
             
             # Reinitialize the agent chain now that MCP is available
             logger.info("Reinitializing agent chain with MCP tools...")
+            
+            # Invalidate agent chain cache since MCP tools are now available
+            from app.agents.models import ModelManager
+            ModelManager.invalidate_agent_chain_cache()
+            logger.info("Invalidated agent chain cache for MCP tool integration")
             
             # Initialize secure MCP tools
             from app.mcp.enhanced_tools import get_connection_pool as get_secure_pool
@@ -726,9 +827,9 @@ async def stream_chunks(body):
     
     # Dynamic check for direct streaming (not relying on import-time config)
     import os
-    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'false').lower() == 'true'
+    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'true').lower() == 'true'
     
-    # FORCE DIRECT STREAMING - the env var check is failing somehow
+    # FORCE DIRECT STREAMING - Claude should use direct streaming, not LangChain
     use_direct_streaming = True
     print(f"🔍 STREAM_CHUNKS: FORCED use_direct_streaming = {use_direct_streaming}")
     
@@ -738,11 +839,99 @@ async def stream_chunks(body):
     
     # Check if we should use direct streaming
     if use_direct_streaming:
-        print("🔍 STREAM_CHUNKS: ENTERING DIRECT STREAMING SECTION")
-        logger.info("🚀 DIRECT_STREAMING: Using direct streaming mode")
-        print("🚀 DIRECT_STREAMING: About to enter direct streaming section")
-        logger.info("🚀 DIRECT_STREAMING: Using direct streaming mode")
-        yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
+        logger.info("🚀 DIRECT_STREAMING: Using DirectStreamingAgent")
+        from app.agents.direct_streaming import DirectStreamingAgent
+        
+        # Extract messages from body
+        messages = []
+        print(f"🔧 DEBUG: Request body keys: {list(body.keys())}")
+        print(f"🔧 DEBUG: chat_history present: {'chat_history' in body}")
+        print(f"🔧 DEBUG: question present: {'question' in body}")
+        print(f"🔧 DEBUG: config contents: {body.get('config', 'No config key')}")
+        if 'question' in body:
+            print(f"🔧 DEBUG: question value: '{body['question']}'")
+        
+        # Add system prompt with full capabilities (including visualization)
+        from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
+        
+        # Get model info for prompt extensions
+        model_info = get_model_info_from_config()
+        extended_prompt = get_extended_prompt(
+            model_name=model_info["model_name"],
+            model_family=model_info["model_family"],
+            endpoint=model_info["endpoint"]
+        )
+        
+        # Extract system content from the extended prompt
+        system_message_template = extended_prompt.messages[0]
+        if hasattr(system_message_template, 'prompt') and hasattr(system_message_template.prompt, 'template'):
+            system_content = system_message_template.prompt.template
+            
+            # Add codebase context
+            codebase_content = ""
+            print(f"🔧 DEBUG: Files in body: {'files' in body}")
+            print(f"🔧 DEBUG: Files in config: {'files' in body.get('config', {})}")
+            
+            files_list = None
+            if 'files' in body:
+                files_list = body['files']
+            elif 'config' in body and 'files' in body['config']:
+                files_list = body['config']['files']
+                
+            if files_list:
+                print(f"🔧 DEBUG: Files count: {len(files_list)}")
+                from app.agents.agent import get_combined_docs_from_files
+                codebase_content = get_combined_docs_from_files(files_list)
+                print(f"🔧 DEBUG: Codebase content length: {len(codebase_content)}")
+            else:
+                print(f"🔧 DEBUG: No files provided, codebase will be empty")
+            
+            # Format the system message
+            formatted_system_content = system_content.replace('{codebase}', codebase_content)
+            formatted_system_content = formatted_system_content.replace('{tools}', 'MCP tools available')
+            
+            messages.append({'type': 'system', 'content': formatted_system_content})
+        
+        # Handle both 'chat_history' and 'messages' formats
+        chat_messages = body.get('chat_history') or body.get('messages', [])
+        print(f"🔧 DEBUG: Found {len(chat_messages)} chat messages")
+        for i, msg in enumerate(chat_messages):
+            print(f"🔧 DEBUG: Message {i}: {msg}")
+            # Convert list format [role, content] to dict format
+            if isinstance(msg, list) and len(msg) == 2:
+                role, content = msg
+                if role == 'human':
+                    messages.append({'type': 'human', 'content': content})
+                elif role == 'assistant':
+                    messages.append({'type': 'ai', 'content': content})
+                elif role == 'system':
+                    messages.append({'type': 'system', 'content': content})
+            else:
+                messages.append(msg)
+        
+        # Add the current question as a user message
+        if 'question' in body and body['question']:
+            messages.append({'type': 'human', 'content': body['question']})
+        
+        print(f"🔧 DEBUG: Final messages count: {len(messages)}")
+        if messages:
+            print(f"🔧 DEBUG: First message type: {messages[0].get('type', 'unknown')}")
+            print(f"🔧 DEBUG: System message length: {len(messages[0].get('content', '')) if messages[0].get('type') == 'system' else 'N/A'}")
+        
+        # Create DirectStreamingAgent and stream
+        try:
+            agent = DirectStreamingAgent()
+            async for chunk in agent.stream_with_tools(messages, conversation_id=body.get('conversation_id')):
+                yield f"data: {json.dumps(chunk)}\n\n"
+            
+            yield "data: [DONE]\n\n"
+            return
+        except ValueError as e:
+            if "OpenAI models should use LangChain path" in str(e):
+                logger.info("🚀 DIRECT_STREAMING: OpenAI model detected, falling back to LangChain path")
+                # Fall through to LangChain path below
+            else:
+                raise
         
         # Check if model should use LangChain path instead of StreamingToolExecutor
         from app.agents.models import ModelManager
@@ -753,10 +942,69 @@ async def stream_chunks(body):
             else:
                 current_model_id = model_id_result
             
-            # OpenAI and Nova models should use LangChain path even in direct streaming mode
-            if current_model_id and ('openai' in current_model_id.lower() or 'nova' in current_model_id.lower()):
-                print(f"🔧 DEBUG: {current_model_id} detected, using LangChain path within direct streaming")
-                # Fall through to LangChain section below
+            # OpenAI models should use same message construction as other Bedrock models
+            if current_model_id and 'openai' in current_model_id.lower():
+                print(f"🔧 DEBUG: {current_model_id} detected, using same message construction as other Bedrock models")
+                
+                # Extract variables from request body
+                question = body.get("question", "")
+                chat_history = body.get("chat_history", [])
+                config_data = body.get("config", {})
+                files = config_data.get("files", [])
+                conversation_id = body.get("conversation_id") or config_data.get("conversation_id")
+                
+                # Handle frontend messages format - same as other models
+                if "messages" in body:
+                    frontend_messages = body.get("messages", [])
+                    # Convert frontend format to chat_history
+                    for msg in frontend_messages:
+                        if isinstance(msg, list) and len(msg) >= 2:
+                            role, content = msg[0], msg[1]
+                            if role in ['human', 'user']:
+                                chat_history.append({'type': 'human', 'content': content})
+                            elif role in ['assistant', 'ai']:
+                                chat_history.append({'type': 'ai', 'content': content})
+                
+                # Use StreamingToolExecutor path for OpenAI models to get same context
+                try:
+                    from app.agents.direct_streaming import StreamingToolExecutor
+                    executor = StreamingToolExecutor()
+                    
+                    # Build messages using same method as other Bedrock models
+                    messages = executor.build_messages(question, chat_history, files, conversation_id)
+                    
+                    # Convert to LangChain format for OpenAI wrapper
+                    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+                    langchain_messages = []
+                    for msg in messages:
+                        if msg["role"] == "system":
+                            langchain_messages.append(SystemMessage(content=msg["content"]))
+                        elif msg["role"] == "user":
+                            langchain_messages.append(HumanMessage(content=msg["content"]))
+                        elif msg["role"] == "assistant":
+                            langchain_messages.append(AIMessage(content=msg["content"]))
+                    
+                    # Skip to LangChain execution with proper messages
+                    messages = langchain_messages
+                    print(f"🔧 DEBUG: Built {len(messages)} LangChain messages for OpenAI model")
+                    
+                    # Jump directly to LangChain execution
+                    model_instance = model.get_model()
+                    
+                    # Stream the response
+                    async for chunk in model_instance.astream(messages):
+                        if hasattr(chunk, 'content') and chunk.content:
+                            content_str = chunk.content
+                            if content_str:
+                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
+                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                    
+                    yield f"data: {json.dumps({'done': True})}\n\n"
+                    return
+                    
+                except Exception as e:
+                    logger.error(f"🚀 DIRECT_STREAMING: Error in OpenAI message construction: {e}")
+                    # Fall through to regular LangChain path
             else:
                 # Use StreamingToolExecutor for other models
                 # Extract variables from request body
@@ -765,9 +1013,24 @@ async def stream_chunks(body):
                 config_data = body.get("config", {})
                 files = config_data.get("files", [])
                 
-                # Build messages using existing function
+                # Debug: Log what we received
+                print(f"🔧 DEBUG: Received question: '{question}'")
+                print(f"🔧 DEBUG: Received chat_history with {len(chat_history)} items")
+                for i, item in enumerate(chat_history):
+                    print(f"🔧 DEBUG: Chat history item {i}: {item}")
+                print(f"🔧 DEBUG: Received {len(files)} files")
+                
+                # Build messages using existing function - use langchain format for proper message handling
                 messages = build_messages_for_streaming(question, chat_history, files, 
-                                                       body.get("conversation_id", f"direct_{int(time.time())}"))
+                                                       body.get("conversation_id", f"direct_{int(time.time())}"),
+                                                       use_langchain_format=True)
+                
+                # Debug: Log the messages being sent
+                print(f"🔧 DEBUG: Built {len(messages)} messages for StreamingToolExecutor")
+                for i, msg in enumerate(messages):
+                    role = msg.get('role', 'unknown')
+                    content_preview = msg.get('content', '')[:100] + '...' if len(msg.get('content', '')) > 100 else msg.get('content', '')
+                    print(f"🔧 DEBUG: Message {i}: role={role}, content_preview='{content_preview}'")
                 
                 # Use StreamingToolExecutor for proper tool execution (Bedrock only)
                 endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
@@ -778,8 +1041,11 @@ async def stream_chunks(body):
                         print("🔧 DEBUG: ENTERING StreamingToolExecutor section")
                         from app.streaming_tool_executor import StreamingToolExecutor
                         
-                        # Create StreamingToolExecutor instance
-                        executor = StreamingToolExecutor()
+                        # Create StreamingToolExecutor instance with correct region
+                        state = ModelManager.get_state()
+                        current_region = state.get('aws_region', 'us-east-1')
+                        aws_profile = state.get('aws_profile')
+                        executor = StreamingToolExecutor(profile_name=aws_profile, region=current_region)
                         
                         logger.info("🚀 DIRECT_STREAMING: Using StreamingToolExecutor")
                         print("🔧 DEBUG: About to load MCP tools")
@@ -829,7 +1095,87 @@ async def stream_chunks(body):
                     logger.info(f"🚀 DIRECT_STREAMING: Skipping StreamingToolExecutor for endpoint '{endpoint}' - using LangChain path")
         except Exception as e:
             logger.error(f"🚀 DIRECT_STREAMING: Error checking model ID: {e}")
-            # Fall through to LangChain path
+            # For Nova models, still try to use StreamingToolExecutor even if model ID check fails
+            from app.agents.models import ModelManager
+            try:
+                current_model = ModelManager.get_model_alias()
+                if current_model and any(nova_model in current_model.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
+                    logger.info(f"🚀 DIRECT_STREAMING: Nova model detected ({current_model}), forcing StreamingToolExecutor path")
+                    # Force Nova to use StreamingToolExecutor
+                    endpoint = "bedrock"
+                    # Continue to StreamingToolExecutor section below
+                else:
+                    # Fall through to LangChain path for non-Nova models
+                    pass
+            except:
+                # Fall through to LangChain path
+                pass
+    
+    # Check if this is a Nova model before falling back to LangChain
+    try:
+        from app.agents.models import ModelManager
+        current_model = ModelManager.get_model_alias()
+        if current_model and any(nova_model in current_model.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
+            logger.info(f"🚀 DIRECT_STREAMING: Nova model ({current_model}) should not use LangChain path - redirecting to StreamingToolExecutor")
+            # Force Nova models to use StreamingToolExecutor by setting endpoint to bedrock
+            endpoint = "bedrock"
+            # Jump to StreamingToolExecutor section
+            if endpoint == "bedrock":
+                try:
+                    print("🔧 DEBUG: ENTERING StreamingToolExecutor section for Nova")
+                    from app.streaming_tool_executor import StreamingToolExecutor
+                    
+                    # Create StreamingToolExecutor instance with correct region
+                    state = ModelManager.get_state()
+                    current_region = state.get('aws_region', 'us-east-1')
+                    aws_profile = state.get('aws_profile')
+                    executor = StreamingToolExecutor(profile_name=aws_profile, region=current_region)
+                    
+                    logger.info("🚀 DIRECT_STREAMING: Using StreamingToolExecutor for Nova")
+                    
+                    # Build messages for Nova
+                    question = body.get("question", "")
+                    chat_history = body.get("chat_history", [])
+                    config_data = body.get("config", {})
+                    files = config_data.get("files", [])
+                    conversation_id = body.get("conversation_id") or config_data.get("conversation_id")
+                    
+                    # Handle frontend messages format conversion
+                    if (not chat_history or len(chat_history) == 0) and "messages" in body:
+                        messages = body.get("messages", [])
+                        if len(messages) > 1:
+                            raw_history = messages[:-1]
+                            for msg in raw_history:
+                                if isinstance(msg, list) and len(msg) >= 2:
+                                    role, content = msg[0], msg[1]
+                                    if role in ['human', 'user']:
+                                        chat_history.append({'type': 'human', 'content': content})
+                                    elif role in ['assistant', 'ai']:
+                                        chat_history.append({'type': 'ai', 'content': content})
+                    
+                    # Build messages using same method as other Bedrock models
+                    messages = build_messages_for_streaming(
+                        question=question,
+                        chat_history=chat_history,
+                        files=files,
+                        conversation_id=conversation_id
+                    )
+                    
+                    print(f"🔧 DEBUG: Built {len(messages)} messages for Nova StreamingToolExecutor")
+                    
+                    # Use StreamingToolExecutor for Nova
+                    async for chunk in executor.stream_with_tools(messages):
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    
+                    yield f"data: {json.dumps({'done': True})}\n\n"
+                    return
+                    
+                except Exception as e:
+                    logger.error(f"🚀 DIRECT_STREAMING: Error in Nova StreamingToolExecutor: {e}")
+                    # Fall through to LangChain as last resort
+                    pass
+    except:
+        pass
     
     # Fallback to LangChain for non-direct streaming
     logger.info("🔍 STREAM_CHUNKS: Using LangChain mode")
@@ -841,46 +1187,49 @@ async def stream_chunks(body):
     # Prepare messages for the model
     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-    # Extract all needed variables from request body
-    question = body.get("question", "")
-    chat_history = body.get("chat_history", [])
-    
-    # Handle frontend messages format conversion
-    if not chat_history and "messages" in body:
-        messages = body.get("messages", [])
-        logger.info(f"🔍 FRONTEND_MESSAGES: Raw messages from frontend: {messages}")
-        # Convert [["human", "content"], ["assistant", "content"]] to chat_history format
-        # Skip the last message as it's the current question
-        if len(messages) > 1:
-            raw_history = messages[:-1]  # All but the last message
-            # Convert to proper format
-            chat_history = []
-            for msg in raw_history:
-                if isinstance(msg, list) and len(msg) >= 2:
-                    role, content = msg[0], msg[1]
-                    if role in ['human', 'user']:
-                        chat_history.append({'type': 'human', 'content': content})
-                    elif role in ['assistant', 'ai']:
-                        chat_history.append({'type': 'ai', 'content': content})
-        logger.info(f"🔍 FRONTEND_MESSAGES: Converted {len(messages)} frontend messages to {len(chat_history)} chat history items")
-        logger.info(f"🔍 FRONTEND_MESSAGES: Chat history: {chat_history}")
-    
-    
-    config_data = body.get("config", {})
-    files = config_data.get("files", [])
-    
-    # Extract conversation_id from multiple possible locations
+    # Initialize variables that are always needed
     conversation_id = body.get("conversation_id")
     if not conversation_id:
+        config_data = body.get("config", {})
         conversation_id = config_data.get("conversation_id")
     if not conversation_id:
         import uuid
         conversation_id = f"stream_{uuid.uuid4().hex[:8]}"
-        
-    logger.info(f"🔍 STREAM_CHUNKS: Using conversation_id: {conversation_id}")
 
-    # Use centralized message construction to eliminate all duplication
-    messages = build_messages_for_streaming(question, chat_history, files, conversation_id)
+    # Check if messages were already built for OpenAI models in direct streaming section
+    if 'messages' not in locals():
+        # Extract all needed variables from request body
+        question = body.get("question", "")
+        chat_history = body.get("chat_history", [])
+        
+        # Handle frontend messages format conversion
+        if (not chat_history or len(chat_history) == 0) and "messages" in body:
+            messages = body.get("messages", [])
+            logger.info(f"🔍 FRONTEND_MESSAGES: Raw messages from frontend: {messages}")
+            # Convert [["human", "content"], ["assistant", "content"]] to chat_history format
+            # Skip the last message as it's the current question
+            if len(messages) > 1:
+                raw_history = messages[:-1]  # All but the last message
+                # Convert to proper format
+                chat_history = []
+                for msg in raw_history:
+                    if isinstance(msg, list) and len(msg) >= 2:
+                        role, content = msg[0], msg[1]
+                        if role in ['human', 'user']:
+                            chat_history.append({'type': 'human', 'content': content})
+                        elif role in ['assistant', 'ai']:
+                            chat_history.append({'type': 'ai', 'content': content})
+            logger.info(f"🔍 FRONTEND_MESSAGES: Converted {len(messages)} frontend messages to {len(chat_history)} chat history items")
+            logger.info(f"🔍 FRONTEND_MESSAGES: Chat history: {chat_history}")
+        
+        
+        config_data = body.get("config", {})
+        files = config_data.get("files", [])
+        
+        logger.info(f"🔍 STREAM_CHUNKS: Using conversation_id: {conversation_id}")
+
+        # Use centralized message construction to eliminate all duplication
+        messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
     
     # COMPLETE CONTEXT OUTPUT - Log the entire context being sent to the model
     logger.info("=" * 100)
@@ -894,9 +1243,11 @@ async def stream_chunks(body):
     logger.info("-" * 80)
     
     for i, message in enumerate(messages):
-        logger.info(f"MESSAGE {i+1}/{len(messages)} - TYPE: {message.type}")
+        msg_type = getattr(message, 'type', getattr(message, 'role', 'unknown') if hasattr(message, 'role') else 'unknown')
+        logger.info(f"MESSAGE {i+1}/{len(messages)} - TYPE: {msg_type}")
         logger.info(f"ROLE: {getattr(message, 'role', 'N/A')}")
-        logger.info(f"CONTENT LENGTH: {len(message.content) if hasattr(message, 'content') and message.content else 0} characters")
+        content = getattr(message, 'content', '')
+        logger.info(f"CONTENT LENGTH: {len(content) if content else 0} characters")
         logger.info("CONTENT START:")
         logger.info("▼" * 50)
         if hasattr(message, 'content') and message.content:
@@ -972,6 +1323,41 @@ async def stream_chunks(body):
         from app.agents.agent import model
         model_instance = model.get_model()
         
+        # Check if we have a Google function calling agent available
+        from app.agents.models import ModelManager
+        agent_chain_cache = ModelManager._state.get('agent_chain_cache', {})
+        agent_chain = None
+        for cache_key, cached_agent in agent_chain_cache.items():
+            if cached_agent and hasattr(cached_agent, 'func') and 'google_agent_call' in str(cached_agent.func):
+                agent_chain = cached_agent
+                break
+        
+        if agent_chain:
+            logger.info("🔍 STREAM_CHUNKS: Using Google function calling agent")
+            # Use Google function calling agent directly
+            try:
+                input_data = {
+                    "question": question,
+                    "conversation_id": conversation_id,
+                    "chat_history": chat_history,
+                    "config": {
+                        "conversation_id": conversation_id,
+                        "files": []
+                    }
+                }
+                
+                result = agent_chain.invoke(input_data)
+                response_content = result.get("output", "")
+                
+                # Stream the response
+                yield f"data: {json.dumps({'type': 'text', 'content': response_content})}\\n\\n"
+                yield f"data: {json.dumps({'type': 'done'})}\\n\\n"
+                return
+                
+            except Exception as e:
+                logger.error(f"Google function calling failed: {e}")
+                # Fall back to XML approach
+        
         # Use the messages that were already built correctly above with build_messages_for_streaming()
         # Don't rebuild them here - this was causing the context history loss for OpenAI models
         logger.info(f"🔍 STREAM_CHUNKS: Using {len(messages)} messages built by build_messages_for_streaming()")
@@ -1002,11 +1388,9 @@ async def stream_chunks(body):
         
         processed_tool_calls = set()  # Track which tool calls we've already processed
         # Create a background task for cleanup when the stream ends
-        # AGGRESSIVE STOP: Stop at the OPENING of a tool call to prevent hallucination
+        # Allow tool calls to complete - only stop at the END of tool calls
         model_with_stop = model_instance.bind(stop=[
-            "<TOOL_SENTINEL>",  # Stop BEFORE the tool call
-            "TOOL_SENTINEL>",   # Catch partial
-            "_SENTINEL>"        # Catch even more partial
+            "</TOOL_SENTINEL>",  # Stop AFTER the tool call completes
         ])
 
         # Get MCP tools for the iteration
@@ -1051,7 +1435,12 @@ async def stream_chunks(body):
                         logger.debug("🔥" * 50)
                         for idx, msg in enumerate(messages):
                             logger.debug(f"FINAL MESSAGE {idx+1}: {type(msg).__name__}")
-                            logger.debug(f"CONTENT: {msg.content}")
+                            if hasattr(msg, 'content'):
+                                logger.debug(f"CONTENT: {msg.content}")
+                            elif isinstance(msg, dict) and 'content' in msg:
+                                logger.debug(f"CONTENT: {msg['content']}")
+                            else:
+                                logger.debug(f"CONTENT: {msg}")
                             if hasattr(msg, 'additional_kwargs') and msg.additional_kwargs:
                                 logger.debug(f"ADDITIONAL_KWARGS: {msg.additional_kwargs}")
                             logger.debug("-" * 30)
@@ -1061,64 +1450,77 @@ async def stream_chunks(body):
                     if not connection_active:
                         logger.info("Connection lost during agent iteration")
                         break
-                    # Process chunk content
-
-                    if hasattr(chunk, 'content'):
-                        # Check if this is an error response chunk
-                        if (hasattr(chunk, 'response_metadata') and 
-                            chunk.response_metadata and 
-                            chunk.response_metadata.get('error_response')):
-                            # This is an error response, handle it specially
-                            logger.info(f"🔍 AGENT: Detected error response chunk")
-                            # The content should already be JSON formatted
-                            yield f"data: {chunk.content}\n\n"
-                            yield f"data: {json.dumps({'done': True})}\n\n"
-                            return
-                        
-                        content = chunk.content() if callable(chunk.content) else chunk.content
+                    # Process chunk content - always process chunks, don't check for 'content' attribute first
+                    
+                    # Check if this is an error response chunk
+                    if (hasattr(chunk, 'response_metadata') and 
+                        chunk.response_metadata and 
+                        chunk.response_metadata.get('error_response')):
+                        # This is an error response, handle it specially
+                        logger.info(f"🔍 AGENT: Detected error response chunk")
+                        # The content should already be JSON formatted
+                        yield f"data: {chunk.content}\n\n"
+                        yield f"data: {json.dumps({'done': True})}\n\n"
+                        return
+                    
+                    # Extract content from different chunk types
+                    if hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
+                        content = chunk.message.content
+                    elif hasattr(chunk, 'content'):
+                        if callable(chunk.content):
+                            content = chunk.content()
+                        else:
+                            content = chunk.content
+                    else:
+                        content = ""
+                    
+                    # Ensure we get the actual text content, not the object representation
+                    if hasattr(content, 'text'):
+                        content_str = content.text
+                    elif isinstance(content, str):
+                        content_str = content
+                    else:
                         content_str = str(content) if content else ""
+                    
+                    # Always accumulate content in current_response for tool detection
+                    current_response += content_str
+                    # Check for reasoning content in OpenAI format (ops structure)
+                    if content_str and '<reasoning>' in content_str and '</reasoning>' in content_str:
+                        import re
+                        reasoning_matches = re.findall(r'<reasoning>(.*?)</reasoning>', content_str, re.DOTALL)
+                        for reasoning in reasoning_matches:
+                            ops = [{"op": "add", "path": "/reasoning_content/-", "value": reasoning}]
+                            yield f"data: {json.dumps({'ops': ops})}\n\n"
+                        # Remove reasoning tags from main content
+                        content_str = re.sub(r'<reasoning>.*?</reasoning>', '', content_str, flags=re.DOTALL)
                         
-                        # Check for reasoning content in OpenAI format (ops structure)
-                        if content_str and '<reasoning>' in content_str and '</reasoning>' in content_str:
-                            import re
-                            reasoning_matches = re.findall(r'<reasoning>(.*?)</reasoning>', content_str, re.DOTALL)
-                            for reasoning in reasoning_matches:
-                                ops = [{"op": "add", "path": "/reasoning_content/-", "value": reasoning}]
-                                yield f"data: {json.dumps({'ops': ops})}\n\n"
-                            # Remove reasoning tags from main content
-                            content_str = re.sub(r'<reasoning>.*?</reasoning>', '', content_str, flags=re.DOTALL)
-                        
-                        # Check for reasoning content in additional_kwargs (alternative format)
-                        if hasattr(chunk, 'message') and hasattr(chunk.message, 'additional_kwargs'):
-                            reasoning = chunk.message.additional_kwargs.get('reasoning')
-                            if reasoning:
-                                ops = [{"op": "add", "path": "/reasoning_content/-", "value": reasoning}]
-                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                    # Check for reasoning content in additional_kwargs (alternative format)
+                    if hasattr(chunk, 'message') and hasattr(chunk.message, 'additional_kwargs'):
+                        reasoning = chunk.message.additional_kwargs.get('reasoning')
+                        if reasoning:
+                            ops = [{"op": "add", "path": "/reasoning_content/-", "value": reasoning}]
+                            yield f"data: {json.dumps({'ops': ops})}\n\n"
 
-                        # AGGRESSIVE: If we see ANY hint of a tool call starting, stop everything
-                        if any(marker in content_str for marker in ["<TOOL_SENTINEL>", "</TOOL_SENTINEL>", "<name>mcp_"]):
-                            tool_call_detected = True
-                            logger.info(f"🔍 STREAM: AGGRESSIVE STOP - detected tool marker in: {content_str[:50]}")
-                            # Add to current_response to capture the tool call
-                            current_response += content_str
-                            # CRITICAL: Break immediately to stop accumulating more chunks
-                            # This prevents the model from generating multiple tool calls
-                            logger.info("🔍 STREAM: BREAKING IMMEDIATELY after detecting tool marker")
-                            # Force close the stream to prevent hanging
-                            if hasattr(stream_generator, 'aclose'):
-                                try:
-                                    await stream_generator.aclose()
-                                except:
-                                    pass
-                            break  # Exit the streaming loop immediately
-                        
-                        # If we've just executed tools, the model should now be generating the response
-                        if tool_execution_completed:
-                            # Reset flag and allow normal streaming
-                            tool_execution_completed = False
-                        
-                        # Always accumulate content in current_response for tool detection
-                        current_response += content_str
+                    # AGGRESSIVE: If we see ANY hint of a tool call starting, stop everything
+                    # Check for tool markers in the content
+                    if any(marker in content_str for marker in ["<TOOL_SENTINEL>", "</TOOL_SENTINEL>", "<name>mcp_"]):
+                        tool_call_detected = True
+                        logger.info(f"🔍 STREAM: AGGRESSIVE STOP - detected tool marker in: {content_str[:50]}")
+                        # CRITICAL: Break immediately to stop accumulating more chunks
+                        # This prevents the model from generating multiple tool calls
+                        logger.info("🔍 STREAM: BREAKING IMMEDIATELY after detecting tool marker")
+                        # Force close the stream to prevent hanging
+                        if hasattr(stream_generator, 'aclose'):
+                            try:
+                                await stream_generator.aclose()
+                            except:
+                                pass
+                        break  # Exit the streaming loop immediately
+                    
+                    # If we've just executed tools, the model should now be generating the response
+                    if tool_execution_completed:
+                        # Reset flag and allow normal streaming
+                        tool_execution_completed = False
                         
                         # If we've detected a tool call, buffer everything instead of streaming
                         if tool_call_detected:
@@ -1324,8 +1726,10 @@ async def stream_chunks(body):
                                         for tool_block in tool_blocks:
                                             tool_result = "\n" + tool_block + "\n"
                                             ops = [{"op": "add", "path": "/streamed_output_str/-", "value": tool_result}]
-                                            yield f"data: {json.dumps({'ops': ops})}\n\n"
-                                            logger.info(f"🔍 STREAM: Tool result streamed")
+                                            # Don't send markdown tool blocks when we're using structured tool_execution events
+                                            # The structured events are already handled by the frontend
+                                            logger.info(f"🔍 STREAM: Skipping markdown tool block (using structured events)")
+                                            continue
                                         
                                         # Update messages with tool results
                                         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -1673,7 +2077,7 @@ async def stream_endpoint(request: Request, body: dict):
     
     # Check for direct streaming mode
     import os
-    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'false').lower() == 'true'
+    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'true').lower() == 'true'
     logger.info(f"🚀 DIRECT_STREAMING: stream_endpoint check = {use_direct_streaming}")
     
     if use_direct_streaming:
