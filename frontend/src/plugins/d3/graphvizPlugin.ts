@@ -172,7 +172,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                 // Now, escape for HTML-like label format.
                 const escapedForHtml = unescapedContent
                     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;').replace(/\n/g, '<br/>');
+                    .replace(/"/g, '&quot;').replace(/\\n/g, '<br/>').replace(/\n/g, '<br/>');
 
                 return `label=<${escapedForHtml}>`;
 
