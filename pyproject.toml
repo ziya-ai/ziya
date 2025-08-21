@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.2.5"
+version = "0.3.0"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>",
            "Dan Cohn <chroma@gmail.com>"]
