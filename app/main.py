@@ -344,6 +344,8 @@ def start_server(args):
             from app.utils.custom_exceptions import KnownCredentialException
             
             # Only check AWS credentials if using Bedrock endpoint
+            from app.utils.custom_exceptions import KnownCredentialException
+            
             if args.endpoint == "bedrock":
                 # Check AWS credentials first - specify this is server startup
                 from app.utils.aws_utils import check_aws_credentials
