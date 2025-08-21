@@ -611,10 +611,18 @@ class DiffRegressionTest(unittest.TestCase):
         if 'details' in result_dict and 'already_applied' in result_dict['details']:
             self.assertEqual(len(result_dict['details']['already_applied']), 0,
                            f"No hunks should be reported as already_applied, but found: {result_dict['details']['already_applied']}")
-        
+       
         # Verify the content matches the expected result
         self.assertEqual(modified_content, expected, 
                        f"Modified content doesn't match expected result")
+        
+    def test_MRE_hunk_context_mismatch(self):
+        """Test handling of hunk context mismatches"""
+        self.run_diff_test('MRE_hunk_context_mismatch')
+
+    def test_delete_end_block(self):
+        """Test deletion of final codeblock"""
+        self.run_diff_test("delete-end-block")
         
     def test_apply_state_reporting(self):
         """

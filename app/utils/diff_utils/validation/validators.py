@@ -248,6 +248,18 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
         if not found_exact_match:
             logger.debug(f"No exact match found for: {repr(added_line_normalized)}")
             return False
+    return True
+
+
+def _check_pure_addition_already_applied(file_lines: List[str], added_lines: List[str]) -> bool:
+    """Check if a pure addition (no removals) is already applied."""
+    # Check if the exact content exists anywhere in the file
+    added_content = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
+    file_content = "\n".join([normalize_line_for_comparison(line) for line in file_lines])
+    
+    if added_content not in file_content:
+        logger.debug("Pure addition not found in file content")
+        return False
     
     logger.debug("All added lines found as exact matches - pure addition already applied")
     return True
@@ -255,6 +267,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
 
 def _check_duplicate_declarations(file_lines: List[str], added_lines: List[str]) -> bool:
     """Check if added lines contain declarations that already exist in the file."""
+
     for added_line in added_lines:
         # Handle import statements specifically
         if _is_import_statement(added_line):

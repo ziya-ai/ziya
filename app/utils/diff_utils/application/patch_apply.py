@@ -523,6 +523,7 @@ def apply_diff_with_difflib_hybrid_forced(
                 fuzzy_best_pos = fuzzy_initial_pos_search
                 fuzzy_best_ratio = 0.8  # Higher confidence to ensure it passes the threshold
             
+
             # Store fuzzy match results for later use in indentation adaptation
             hunk_fuzzy_ratio = fuzzy_best_ratio  # Store for use in indentation adaptation
             

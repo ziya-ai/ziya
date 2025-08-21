@@ -135,6 +135,11 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             # Skip symlinks to prevent infinite loops
             if os.path.islink(subdir.rstrip('/')):
                 logger.debug(f"Skipping symlink directory: {subdir}")
+                
+            # Skip directories with problematic characters that cause regex errors
+            dir_name = os.path.basename(subdir.rstrip('/'))
+            if '[' in dir_name or ']' in dir_name:
+                logger.debug(f"Skipping directory with brackets: {subdir}")
                 continue
             try:
                 patterns.extend(get_patterns_recursive(subdir))
