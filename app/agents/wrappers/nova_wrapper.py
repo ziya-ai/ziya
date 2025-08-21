@@ -95,16 +95,8 @@ class NovaWrapper(BaseChatModel):
         self.model_kwargs = {}
         
         # Always include max_tokens and top_p which are supported by all Nova models
-        # Respect environment variable for max_tokens
-        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
-        default_max_tokens = 4096
-        if env_max_tokens:
-            try:
-                default_max_tokens = int(env_max_tokens)
-            except ValueError:
-                pass  # Use default if invalid
-        
-        self.model_kwargs["max_tokens"] = kwargs.get("max_tokens", default_max_tokens)
+        # Check environment variable dynamically for frontend updates
+        self.model_kwargs["max_tokens"] = kwargs.get("max_tokens", self._get_current_max_tokens())
         self.model_kwargs["top_p"] = kwargs.get("top_p", 0.9)
         
         # Only include temperature if it's provided (will be filtered by supported_parameters)
@@ -114,6 +106,39 @@ class NovaWrapper(BaseChatModel):
         # Only include top_k if it's provided (will be filtered by supported_parameters)
         if "top_k" in kwargs:
             self.model_kwargs["top_k"] = kwargs.get("top_k")
+    
+    def _get_current_max_tokens(self):
+        """Get current max_tokens, checking environment variable first (for frontend updates)"""
+        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
+        if env_max_tokens:
+            try:
+                return int(env_max_tokens)
+            except ValueError:
+                pass
+        
+        # Fallback to model config default
+        return self._get_model_config_max_tokens()
+    
+    def _get_model_config_max_tokens(self):
+        """Get max_tokens from model config like LangChain version did"""
+        try:
+            from app.agents.models import ModelManager
+            
+            # Get current model config
+            state = ModelManager.get_state()
+            current_model_alias = state.get('current_model_alias', 'nova-pro')
+            
+            model_config = ModelManager.get_model_config('bedrock', current_model_alias)
+            
+            # Use default_max_output_tokens from config, fallback to max_output_tokens, then 4096
+            default_max = model_config.get('default_max_output_tokens')
+            if default_max:
+                return default_max
+                
+            return model_config.get('max_output_tokens', 4096)
+            
+        except Exception:
+            return 4096  # Fallback only if config lookup fails
             
         logger.info(f"Initialized NovaWrapper with model_kwargs: {self.model_kwargs}")
     
@@ -193,21 +218,12 @@ class NovaWrapper(BaseChatModel):
         # Use NovaFormatter to format the messages
         formatted_messages = NovaFormatter.format_messages(message_dicts)
         
-        # Get default max_tokens from environment
-        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
-        default_max_tokens = 4096
-        if env_max_tokens:
-            try:
-                default_max_tokens = int(env_max_tokens)
-            except ValueError:
-                pass
-        
         # Add model parameters
         result = {
             "messages": formatted_messages,
             "temperature": self.model_kwargs.get("temperature", 0.7),
             "top_p": self.model_kwargs.get("top_p", 0.9),
-            "max_tokens": self.model_kwargs.get("max_tokens", default_max_tokens),
+            "max_tokens": self.model_kwargs.get("max_tokens", self._get_current_max_tokens()),
         }
         
         return result
@@ -266,18 +282,9 @@ class NovaWrapper(BaseChatModel):
         request_body = self._format_messages(messages)
         logger.info(f"Formatted {len(messages)} messages")
         
-        # Get default max_tokens from environment
-        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
-        default_max_tokens = 4096
-        if env_max_tokens:
-            try:
-                default_max_tokens = int(env_max_tokens)
-            except ValueError:
-                pass
-        
         # Use model_kwargs from the instance which have been filtered for supported parameters
         inference_params = {
-            "max_tokens": self.model_kwargs.get("max_tokens", default_max_tokens),
+            "max_tokens": self.model_kwargs.get("max_tokens", self._get_current_max_tokens()),
             "top_p": self.model_kwargs.get("top_p", 0.9),
             "stop_sequences": stop if stop else []
         }
@@ -363,7 +370,7 @@ class NovaWrapper(BaseChatModel):
         
         # Use model_kwargs from the instance
         inference_params = {
-            "max_tokens": self.model_kwargs.get("max_tokens", 4096),
+            "max_tokens": self.model_kwargs.get("max_tokens", self._get_current_max_tokens()),
             "top_p": self.model_kwargs.get("top_p", 0.9),
             "stop_sequences": stop if stop else []
         }
