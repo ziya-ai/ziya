@@ -112,9 +112,18 @@ class OpenAIBedrock(BaseChatModel):
         logger.info(f"🔍 OPENAI_WRAPPER: Converted to {len(openai_messages)} OpenAI messages")
         
         # Build the request body
+        # Get default max_tokens from environment
+        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
+        default_max_tokens = 4096
+        if env_max_tokens:
+            try:
+                default_max_tokens = int(env_max_tokens)
+            except ValueError:
+                pass
+        
         body = {
             "messages": openai_messages,
-            "max_completion_tokens": self.model_kwargs.get("max_tokens", 4096),
+            "max_completion_tokens": self.model_kwargs.get("max_tokens", default_max_tokens),
             "temperature": self.model_kwargs.get("temperature", 0.7),
         }
         
