@@ -57,20 +57,46 @@ class StreamingToolExecutor:
         self.active_tools: Dict[str, Dict[str, Any]] = {}
         self.completed_tools: set = set()
         
-        # Configuration - respect environment variable for max_tokens
+        # Configuration - don't cache max_tokens, check dynamically
+        self.command_timeout = 15  # Default timeout
+        self.max_output_length = 10000  # Increased from 2000 to show more complete results
+        
+    def _get_current_max_tokens(self):
+        """Get current max_tokens, checking environment variable first (for frontend updates)"""
         env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
         if env_max_tokens:
             try:
-                self.max_tokens = int(env_max_tokens)
-                logger.info(f"Using ZIYA_MAX_OUTPUT_TOKENS from environment: {self.max_tokens}")
+                return int(env_max_tokens)
             except ValueError:
-                logger.warning(f"Invalid ZIYA_MAX_OUTPUT_TOKENS value: {env_max_tokens}, using default")
-                self.max_tokens = 4000
-        else:
-            self.max_tokens = 4000  # Default fallback
+                logger.warning(f"Invalid ZIYA_MAX_OUTPUT_TOKENS value: {env_max_tokens}, using model config default")
         
-        self.command_timeout = 15  # Default timeout
-        self.max_output_length = 10000  # Increased from 2000 to show more complete results
+        # Fallback to model config default
+        return self._get_model_config_max_tokens()
+        
+    def _get_model_config_max_tokens(self):
+        """Get max_tokens from model config like LangChain version did"""
+        try:
+            from app.agents.models import ModelManager
+            
+            # Get current model config
+            state = ModelManager.get_state()
+            current_model_alias = state.get('current_model_alias', 'sonnet3.5')
+            
+            model_config = ModelManager.get_model_config('bedrock', current_model_alias)
+            
+            # Use default_max_output_tokens from config, fallback to max_output_tokens, then 4096
+            default_max = model_config.get('default_max_output_tokens')
+            if default_max:
+                logger.info(f"Using model config default_max_output_tokens: {default_max}")
+                return default_max
+                
+            max_output = model_config.get('max_output_tokens', 4096)
+            logger.info(f"Using model config max_output_tokens: {max_output}")
+            return max_output
+            
+        except Exception as e:
+            logger.warning(f"Could not get model config max_tokens: {e}, using fallback")
+            return 4096  # Fallback only if config lookup fails
         
     def reset_state(self):
         """Reset tool execution state for new streaming request"""
@@ -162,7 +188,7 @@ class StreamingToolExecutor:
             
             # Add max_tokens only for models that support it
             if not (self.model_id and ('nova-micro' in self.model_id.lower() or 'nova-lite' in self.model_id.lower())):
-                body["max_tokens"] = self.max_tokens
+                body["max_tokens"] = self._get_current_max_tokens()
             
             # Only add tools if model supports them
             if model_supports_tools and tools:
