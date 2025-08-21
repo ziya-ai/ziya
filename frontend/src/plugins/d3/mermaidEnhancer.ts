@@ -493,8 +493,16 @@ export function initMermaidEnhancer(): void {
       const result = definition.replace(/(==>|-->|-\.->|--[xo]>|---|->>|-->>)\s*\|([^|]*?)\|/g, (match, arrow, label) => {
         console.log('🔍 ARROW-LABEL-CLEANER: Found match:', { match, arrow, label });
         
+        let processedLabel = label.trim();
+        
+        // If the label is already properly quoted, don't add more quotes
+        if (processedLabel.startsWith('"') && processedLabel.endsWith('"')) {
+          console.log('🔍 ARROW-LABEL-CLEANER: Label already quoted, skipping:', processedLabel);
+          return match;
+        }
+        
         // Clean arrow characters from the label
-        let cleanedLabel = label.trim()
+        let cleanedLabel = processedLabel
           .replace(/-->/g, '')     // Remove -->
           .replace(/<--/g, '')     // Remove <--
           .replace(/==>/g, '')     // Remove ==>
