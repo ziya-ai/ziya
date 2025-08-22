@@ -1,0 +1,5 @@
+{
+    "target_file": "test_file.py",
+    "description": "Test parsing of a multi-hunk diff where one hunk header includes context (a function signature).",
+    "expected_to_fail": false
+}
