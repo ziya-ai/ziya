@@ -18,7 +18,7 @@ from langchain.callbacks.manager import CallbackManagerForToolRun, AsyncCallback
 
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 
 # Global counter for tracking tool execution order and implementing progressive delays
 _tool_execution_counter = 0

@@ -193,7 +193,9 @@ class TestStreamingModels:
                     server_process.wait(timeout=5)
                 except:
                     server_process.kill()
-                    server_process.wait()
+                    server_process.wait(timeout=2)
+                # Add delay to ensure port is released
+                time.sleep(1)
 
     @pytest.mark.parametrize("endpoint,model_name", [
         (endpoint, model) 
@@ -261,8 +263,15 @@ class TestStreamingModels:
             pytest.fail(f"Failed {endpoint}/{model_name}: {e}")
         finally:
             # Cleanup server
-            server_process.terminate()
-            server_process.wait()
+            if server_process:
+                try:
+                    server_process.terminate()
+                    server_process.wait(timeout=5)
+                except:
+                    server_process.kill()
+                    server_process.wait(timeout=2)
+                # Add delay to ensure port is released
+                time.sleep(1)
 
     @pytest.mark.parametrize("endpoint,model_name", [
         (endpoint, model) 
@@ -349,8 +358,14 @@ class TestStreamingModels:
                 pytest.fail(f"Failed {endpoint}/{model_name}: {e}")
         finally:
             if server_process:
-                server_process.terminate()
-                server_process.wait()
+                try:
+                    server_process.terminate()
+                    server_process.wait(timeout=5)
+                except:
+                    server_process.kill()
+                    server_process.wait(timeout=2)
+                # Add delay to ensure port is released
+                time.sleep(1)
 
     def teardown_class(cls):
         """Print results matrix after all tests complete."""

@@ -13,6 +13,10 @@ import time
 import shlex
 from typing import Dict, Any, Optional
 
+# Import centralized shell configuration
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config.shell_config import DEFAULT_SHELL_CONFIG
+
 
 # Global timeout tracking
 _consecutive_timeouts = {}
@@ -24,16 +28,8 @@ class ShellServer:
     def __init__(self):
         self.request_id = 0
         
-        # Define the single source of truth for allowed commands
-        self.allowed_commands = [
-            # Basic file operations (read-only)
-            "ls", "cat", "pwd", "cd", "tree", "find", "grep", "wc",
-            # Text processing
-            "head", "tail", "sort", "cut", "sed", "awk", "less", "xargs",
-            "echo", "printf", "tr", "uniq", "column", "nl", "tee",
-            # System info
-            "date", "ps", "curl", "ping", "which", "du", "df", "file"
-        ]
+        # Use centralized configuration as the single source of truth
+        self.allowed_commands = DEFAULT_SHELL_CONFIG["allowedCommands"].copy()
 
         # Get configuration from environment
         self.git_operations_enabled = os.environ.get('GIT_OPERATIONS_ENABLED', 'true').lower() in ('true', '1', 'yes')

@@ -104,7 +104,7 @@ def get_model_info_from_config() -> Dict[str, str]:
     Returns:
         Dict[str, str]: Dictionary with model_name, model_family, and endpoint
     """
-    from app.config import DEFAULT_ENDPOINT, DEFAULT_MODELS, MODEL_CONFIGS
+    from app.config.models_config import DEFAULT_ENDPOINT, DEFAULT_MODELS, MODEL_CONFIGS
     
     # Get endpoint and model from environment variables
     endpoint = os.environ.get("ZIYA_ENDPOINT", DEFAULT_ENDPOINT)

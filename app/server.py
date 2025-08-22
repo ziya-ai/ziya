@@ -27,20 +27,21 @@ from fastapi.templating import Jinja2Templates
 from langserve import add_routes
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from app.agents.agent import model, RetryingChatBedrock, initialize_langserve
-from app.agents.agent import agent, agent_executor, create_agent_chain, create_agent_executor
+from app.agents.agent import get_or_create_agent, get_or_create_agent_executor, create_agent_chain, create_agent_executor
 from app.agents.agent import update_conversation_state, update_and_return, parse_output
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError 
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Direct streaming imports
-from app.config import USE_DIRECT_STREAMING
+from app.config.app_config import USE_DIRECT_STREAMING
 from app.agents.direct_streaming import get_direct_streaming_agent, get_shell_tool_schema
 
 # Import configuration
-import app.config as config
+import app.config.models_config as config
+from app.config.app_config import DEFAULT_PORT
 from app.agents.models import ModelManager
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from app.agents.wrappers.nova_wrapper import NovaBedrock  # Import NovaBedrock for isinstance check
 from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
 from botocore.exceptions import EventStreamError
@@ -514,12 +515,9 @@ async def startup_event():
             logger.info(f"MCP initialized: {connected_servers} servers connected, {total_tools} tools available")
             
             # Reinitialize the agent chain now that MCP is available
-            logger.info("Reinitializing agent chain with MCP tools...")
-            
             # Invalidate agent chain cache since MCP tools are now available
             from app.agents.models import ModelManager
             ModelManager.invalidate_agent_chain_cache()
-            logger.info("Invalidated agent chain cache for MCP tool integration")
             
             # Initialize secure MCP tools
             from app.mcp.enhanced_tools import get_connection_pool as get_secure_pool
@@ -527,7 +525,6 @@ async def startup_event():
             secure_pool.set_server_configs(mcp_manager.server_configs)
             logger.info("Initialized secure MCP connection pool")
             
-            global agent, agent_executor
             # Force garbage collection to ensure clean state
             import gc; gc.collect()
             from app.agents.agent import create_agent_chain, create_agent_executor, model
@@ -2568,7 +2565,7 @@ def get_available_models():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run the Ziya server")
-    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT, help="Port to run the server on")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to run the server on")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to run the server on")
     parser.add_argument("--model", type=str, default=None, help="Model to use")
     parser.add_argument("--profile", type=str, default=None, help="AWS profile to use")

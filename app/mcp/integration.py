@@ -9,7 +9,7 @@ import asyncio
 from typing import Optional, Dict, Any, Set, Tuple
 
 from app.utils.logging_utils import logger
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from app.mcp.utils import clean_sentinels
 from app.mcp.consolidated import execute_mcp_tools_with_status
 

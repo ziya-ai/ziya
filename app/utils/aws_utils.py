@@ -71,7 +71,7 @@ def get_current_region():
         logger.warning(f"Error getting region from boto3 session: {e}")
         
     # Fall back to default region
-    from app.config import DEFAULT_REGION
+    from app.config.models_config import DEFAULT_REGION
     logger.warning(f"Using default region: {DEFAULT_REGION}")
     return DEFAULT_REGION
 

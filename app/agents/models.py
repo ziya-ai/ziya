@@ -11,8 +11,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models import BaseChatModel
 from langchain.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
-import app.config as config
-from app.config import get_supported_parameters  # Import the function explicitly
+import app.config.models_config as config
+from app.config.models_config import get_supported_parameters  # Import the function explicitly
 import google.auth
 import google.auth.exceptions
 from dotenv import load_dotenv
@@ -31,7 +31,7 @@ from langchain.agents.format_scratchpad import format_xml
 from langchain_core.messages import HumanMessage
 
 # Import configuration from the central config module
-import app.config as config
+import app.config.models_config as config
 
 class ModelManager:
     """Manages model initialization and configuration."""
@@ -349,10 +349,10 @@ class ModelManager:
         
         # Check cache
         if cache_key in cls._state['filtered_kwargs_cache']:
-            logger.info(f"Using cached filtered kwargs for {cache_key}")
+            logger.debug(f"Using cached filtered kwargs for {cache_key}")
             return cls._state['filtered_kwargs_cache'][cache_key]
         
-        logger.info(f"Filtering model kwargs: {model_kwargs}")
+        logger.debug(f"Filtering model kwargs: {model_kwargs}")
         
         # Get supported parameters from the model config
         supported_params = []
@@ -410,7 +410,7 @@ class ModelManager:
         
         # Cache the result
         cls._state['filtered_kwargs_cache'][cache_key] = filtered_kwargs
-        logger.info(f"Cached filtered kwargs for {cache_key}")
+        logger.debug(f"Cached filtered kwargs for {cache_key}")
         
         return filtered_kwargs
             

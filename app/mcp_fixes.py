@@ -14,7 +14,7 @@ import asyncio
 from typing import Dict, Any, List, Tuple, Optional, Union
 
 from app.utils.logging_utils import logger
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 
 def clean_sentinels(text: str) -> str:
     """
@@ -185,7 +185,7 @@ def _parse_standard_sentinel_format(response: str) -> Optional[Dict[str, Any]]:
     end_idx = -1
     
     # Try config values first
-    from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+    from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
     start_idx = response.find(TOOL_SENTINEL_OPEN)
     if start_idx >= 0:
         end_idx = response.find(TOOL_SENTINEL_CLOSE, start_idx)
@@ -514,7 +514,7 @@ async def find_and_execute_all_tools(response: str) -> Tuple[str, List[Dict[str,
     end_markers = ['</TOOL_SENTINEL>', '</tool_sentinel>']
     
     # Also check config values
-    from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+    from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
     if TOOL_SENTINEL_OPEN not in start_markers:
         start_markers.append(TOOL_SENTINEL_OPEN)
     if TOOL_SENTINEL_CLOSE not in end_markers:

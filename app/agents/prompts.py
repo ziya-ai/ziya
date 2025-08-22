@@ -5,7 +5,7 @@ import os
 import importlib.util
 
 # IMPORT MCP capabilities if available
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 
 # Import AST capabilities if available
 try:
