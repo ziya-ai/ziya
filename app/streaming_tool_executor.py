@@ -58,7 +58,6 @@ class StreamingToolExecutor:
         self.completed_tools: set = set()
         
         # Configuration - don't cache max_tokens, check dynamically
-        self.command_timeout = 15  # Default timeout
         self.max_output_length = 10000  # Increased from 2000 to show more complete results
         
     def _get_current_max_tokens(self):
@@ -505,15 +504,8 @@ class StreamingToolExecutor:
             tool_name = self.active_tools[tool_id]['name']
             print(f"🔧 DEBUG: Executing tool '{tool_name}' with args: {args}")
             
-            if tool_name in ['execute_shell_command', 'run_shell_command']:
-                command = args.get('command', '')
-                result = await self._execute_shell_command(command)
-                if result:
-                    # Format shell command with $ prefix for frontend styling
-                    result = f"$ {command}\n{result}"
-                self.completed_tools.add(tool_id)
-                return result
-            elif tool_name.startswith('mcp_') or tool_name in ['get_current_time']:
+            # Handle all tools through MCP
+            if tool_name.startswith('mcp_') or tool_name in ['get_current_time', 'execute_shell_command', 'run_shell_command']:
                 # Handle MCP tools - convert name to mcp_ format for frontend
                 mcp_tool_name = tool_name if tool_name.startswith('mcp_') else f'mcp_{tool_name}'
                 print(f"🔧 DEBUG: Calling MCP tool: {tool_name} -> {mcp_tool_name}")
@@ -593,83 +585,6 @@ class StreamingToolExecutor:
             traceback.print_exc()
             return f"MCP tool '{tool_name}' failed: {str(e)}. Check tool parameters and server status."
     
-    def _get_command_timeout(self, command: str) -> int:
-        """Get appropriate timeout based on command complexity"""
-        command_lower = command.lower()
-        
-        # Very long operations (up to 2 minutes)
-        if any(pattern in command_lower for pattern in [
-            'git clone', 'git pull', 'npm install', 'pip install', 
-            'curl -o', 'wget', 'docker build', 'make'
-        ]):
-            return 120
-            
-        # Long operations (up to 1 minute)  
-        if any(pattern in command_lower for pattern in [
-            'find /', 'find /usr', 'find /var', 'grep -r /', 
-            'du -h /', 'tar -', 'zip -r', 'unzip'
-        ]):
-            return 60
-            
-        # Medium operations (up to 30 seconds)
-        if any(pattern in command_lower for pattern in [
-            'find ', 'grep -r', 'curl ', 'git ', 'ps aux',
-            'netstat', 'lsof', 'df -h'
-        ]):
-            return 30
-            
-        # Default timeout for simple commands
-        return self.command_timeout
-
-    async def _execute_shell_command(self, command: str) -> str:
-        """Execute shell command safely with timeout and output limits"""
-        if not command.strip():
-            return "Empty command"
-        
-        # Basic safety checks
-        dangerous_patterns = ['rm -rf /', 'sudo rm', 'mkfs', 'dd if=', ':(){ :|:& };:']
-        if any(pattern in command.lower() for pattern in dangerous_patterns):
-            return "Command blocked for safety reasons"
-        
-        try:
-            # Get dynamic timeout based on command
-            timeout = self._get_command_timeout(command)
-            print(f"🔧 DEBUG: Using timeout {timeout}s for command: {command[:50]}...")
-            
-            # Execute command with timeout
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=1024*1024  # 1MB limit
-            )
-            
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), 
-                    timeout=timeout
-                )
-                
-                output = stdout.decode('utf-8', errors='replace') + stderr.decode('utf-8', errors='replace')
-                
-                # Truncate long outputs
-                if len(output) > self.max_output_length:
-                    output = output[:self.max_output_length] + "\n... (output truncated)"
-                
-                return output if output.strip() else "(command completed with no output)"
-                
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-                return f"Command timed out after {timeout} seconds. Consider breaking down complex operations or using more specific commands."
-                
-        except FileNotFoundError:
-            return f"Command not found: {command.split()[0]}. Check if the command is installed and available."
-        except PermissionError:
-            return f"Permission denied executing: {command}. Command may require elevated privileges."
-        except Exception as e:
-            return f"Error executing command '{command}': {str(e)}. Try a simpler command or check syntax."
-    
     def _get_available_tools(self) -> List[Dict[str, Any]]:
         """Get all available tools including MCP tools"""
         tools = []
@@ -693,31 +608,13 @@ class StreamingToolExecutor:
         except Exception as e:
             print(f"🔧 DEBUG: MCP tool loading error: {e}")
         
-        # Add shell tool if no MCP tools or as fallback
+        # Return MCP tools only
         if not tools:
-            print("🔧 DEBUG: No MCP tools found, using shell tool")
-            tools = [self._get_default_shell_tool()]
+            print("🔧 DEBUG: No MCP tools found")
         else:
             print(f"🔧 DEBUG: Using {len(tools)} MCP tools: {[t['name'] for t in tools]}")
             
         return tools
-    
-    def _get_default_shell_tool(self) -> Dict[str, Any]:
-        """Get default shell command tool definition"""
-        return {
-            "name": "execute_shell_command",
-            "description": "Execute a shell command and return the output",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to execute"
-                    }
-                },
-                "required": ["command"]
-            }
-        }
 
 # Example usage and testing
 async def example_usage():

@@ -8,7 +8,8 @@ from app.utils.logging_utils import logger
 from app.utils.version_util import get_current_version, get_latest_version
 
 # Import configuration instead of individual constants
-import app.config as config
+import app.config.models_config as config
+from app.config.app_config import DEFAULT_PORT
 
 
 def get_available_models(endpoint=None):
@@ -54,9 +55,9 @@ def parse_arguments():
                         help=f"Model to use from selected endpoint (default: {default_model}). Available models: {model_list}")
     parser.add_argument("--model-id", type=str, default=None,
                         help="Override the model ID directly (advanced usage, bypasses model name lookup)")
-    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT,
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=(f"Port number to run Ziya frontend on "
-                              f"(default: {config.DEFAULT_PORT}, e.g., --port 8080)"))
+                              f"(default: {DEFAULT_PORT}, e.g., --port 8080)"))
 
     # Add model parameter arguments without specific ranges
     parser.add_argument("--temperature", type=float, default=None,

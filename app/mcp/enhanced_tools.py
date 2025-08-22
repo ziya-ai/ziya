@@ -345,7 +345,7 @@ def parse_enhanced_triggers(content: str) -> List[Dict[str, Any]]:
     triggers = []
     
     # Import config
-    from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+    from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
     
     # Parse tool calls
     tool_call_pattern = f"({re.escape(TOOL_SENTINEL_OPEN)}|<TOOL_SENTINEL>)(.*?)({re.escape(TOOL_SENTINEL_CLOSE)}|</TOOL_SENTINEL>)"

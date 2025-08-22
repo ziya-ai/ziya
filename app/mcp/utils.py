@@ -15,7 +15,7 @@ import asyncio
 from typing import Dict, Any, List, Tuple, Optional, Union
 
 from app.utils.logging_utils import logger
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 
 def clean_sentinels(text: str) -> str:
     """
