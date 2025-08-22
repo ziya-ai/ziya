@@ -1,0 +1,5 @@
+{
+    "target_file": "app/mcp/tools.py",
+    "description": "Reproduces the original issue where only 3 of 4 hunks were applied due to a malformed hunk header with context.",
+    "expected_to_fail": false
+}

@@ -1,0 +1,71 @@
+diff --git a/frontend/src/plugins/d3/vegaLitePlugin.ts b/frontend/src/plugins/d3/vegaLitePlugin.ts
+index 1234567..abcdefg 100644
+--- a/frontend/src/plugins/d3/vegaLitePlugin.ts
++++ b/frontend/src/plugins/d3/vegaLitePlugin.ts
+@@ -111,9 +111,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
+ 
+   render: async (container: HTMLElement, d3: any, spec: VegaLiteSpec, isDarkMode: boolean): Promise<void> => {
+     console.log('Vega-Lite plugin render called with spec:', spec);
+ 
++    // Completely clear container and any Vega instances
++    container.innerHTML = '';
++    
++    // Remove any existing vega-embed instances
++    const existingEmbeds = container.querySelectorAll('.vega-embed');
++    existingEmbeds.forEach(embed => {
++      if (embed.parentNode) embed.parentNode.removeChild(embed);
++    });
++
+     try {
+-      // Clear container
+-      container.innerHTML = '';
+ 
+       // Show loading spinner
+       const loadingSpinner = document.createElement('div');
+@@ -273,11 +279,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
+       }
+ 
+       // Fix duplicate signal names in nested donut charts with shared selections
+       // Generate unique parameter names to avoid conflicts during re-renders
+       if (vegaSpec.params) {
+-        const timestamp = Date.now();
+-        const random = Math.random().toString(36).substring(2, 8);
++        // Create a truly unique identifier combining multiple sources of randomness
++        const timestamp = Date.now();
++        const random1 = Math.random().toString(36).substring(2, 8);
++        const random2 = Math.random().toString(36).substring(2, 8);
++        const containerId = container.id || 'container';
++        
+         vegaSpec.params = vegaSpec.params.map((param, index) => ({
+           ...param,
+-          name: `${param.name}_${timestamp}_${random}_${index}`
++          name: `${param.name}_${containerId}_${timestamp}_${random1}_${random2}_${index}`
+         }));
+       }
+       
+@@ -330,15 +340,20 @@ export const vegaLitePlugin: D3RenderPlugin = {
+       // Remove loading spinner
+       container.removeChild(loadingSpinner);
+ 
++      // Create a fresh container div to ensure no conflicts
++      const renderContainer = document.createElement('div');
++      renderContainer.style.width = '100%';
++      renderContainer.style.height = '100%';
++      container.appendChild(renderContainer);
++
+       // Add debugging for complex layouts
+       if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {
+         console.log(">>> vegaLitePlugin: Rendering complex layout:", {
+           type: vegaSpec.vconcat ? 'vconcat' : vegaSpec.hconcat ? 'hconcat' : 'facet',
+           containerWidth: container.offsetWidth,
+           containerHeight: container.offsetHeight
+         });
+       }
+ 
+       // Render the visualization
+-      const result = await embed(container, vegaSpec, embedOptions);
++      const result = await embed(renderContainer, vegaSpec, embedOptions);
+ 
+       // Store references to the vega view and container content
+-      const vegaContainer = container.querySelector('.vega-embed') as HTMLElement;
++      const vegaContainer = renderContainer.querySelector('.vega-embed') as HTMLElement;
