@@ -6,7 +6,7 @@ with MCP (Model Context Protocol) servers and tools.
 """
 
 from app.utils.prompt_extensions import prompt_extension
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from app.utils.logging_utils import logger
 
 logger.info("MCP_GUIDELINES: mcp_prompt_extensions.py module being imported")

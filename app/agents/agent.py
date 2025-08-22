@@ -54,7 +54,7 @@ from app.utils.error_handlers import format_error_response, detect_error_type
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 
 from app.mcp.manager import get_mcp_manager
-from app.config import TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_CLOSE
 from app.mcp.tools import create_mcp_tools, parse_tool_call
 # Wrap model initialization in try/except to catch credential errors early
 try:
@@ -430,7 +430,7 @@ class RetryingChatBedrock(Runnable):
         
     def _get_model_config(self):
         """Get the configuration for the current model."""
-        from app.config import MODEL_CONFIGS, MODEL_FAMILIES
+        from app.config.models_config import MODEL_CONFIGS, MODEL_FAMILIES
         
         if not hasattr(self.model, 'model_id'):
             return {}
@@ -1123,7 +1123,7 @@ class RetryingChatBedrock(Runnable):
     def _is_tool_execution_content(self, content: str) -> bool:
         """Check if content indicates tool execution."""
         # Check for tool sentinel markers
-        from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
         
         # Check for complete tool calls
         if TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content:
@@ -1443,6 +1443,31 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
                 preview = "\n".join(annotated_lines[:5]) if annotated_lines else "NO CONTENT"
                 logger.debug(f"Content preview for {file_path}:\n{preview}\n...")
                 combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
+            else:
+                # Add file directly to FileStateManager when not found
+                logger.info(f"File {file_path} not in FileStateManager, adding it directly")
+                content = read_file_content(full_path)
+                if content:
+                    # Ensure conversation exists
+                    if conversation_id not in file_state_manager.conversation_states:
+                        file_state_manager.conversation_states[conversation_id] = {}
+                    
+                    # Add file directly to state
+                    from app.utils.file_state_manager import FileState
+                    lines = content.splitlines()
+                    file_state_manager.conversation_states[conversation_id][file_path] = FileState(
+                        path=file_path,
+                        content_hash=file_state_manager._compute_hash(lines),
+                        line_states={},
+                        original_content=lines.copy(),
+                        current_content=lines.copy(),
+                        last_seen_content=lines.copy(),
+                        last_context_submission_content=lines.copy()
+                    )
+                    
+                    # Get annotated content
+                    annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
+                    combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
     
@@ -1586,13 +1611,12 @@ def extract_codebase(x):
             continue
  
     # Initialize conversation state immediately after loading files
-    if conversation_id not in file_state_manager.conversation_states:
-        logger.info(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
-        file_state_manager.initialize_conversation(conversation_id, file_contents)
-        logger.info(f"Initialized conversation {conversation_id} with {len(file_contents)} files")
-        # Set initial context submission baseline
-        file_state_manager.mark_context_submission(conversation_id)
-        logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
+    logger.info(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
+    file_state_manager.initialize_conversation(conversation_id, file_contents)
+    logger.info(f"Initialized conversation {conversation_id} with {len(file_contents)} files")
+    # Set initial context submission baseline
+    file_state_manager.mark_context_submission(conversation_id)
+    logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
     
     # Update any files that may have changed
     file_state_manager.update_files_in_state(conversation_id, file_contents)
@@ -1694,14 +1718,12 @@ def create_agent_chain(chat_model: BaseChatModel):
         mcp_manager = get_mcp_manager()
         # Ensure MCP is initialized before creating tools
         if not mcp_manager.is_initialized:
-            logger.warning("MCP manager not initialized during agent creation, attempting initialization...")
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're in an async context, we can't wait for initialization
-                logger.warning("Cannot initialize MCP synchronously in async context")
-            else:
-                loop.run_until_complete(mcp_manager.initialize())
+            # Don't initialize during startup - let server startup handle it
+            logger.info("MCP manager not yet initialized, will use available tools when ready")
+            mcp_tools = []
+        else:
+            mcp_tools = create_secure_mcp_tools()
+            logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
         
         if mcp_manager.is_initialized:
             mcp_tools = create_secure_mcp_tools()
@@ -1862,22 +1884,6 @@ def create_agent_chain(chat_model: BaseChatModel):
         context=mcp_context
     )
     
-    logger.error(f"🔍 EXECUTION_TRACE: Agent chain using extended prompt template of length: {len(str(prompt_template))}")
-    
-    logger.info(f"AGENT_CHAIN: Received prompt template type: {type(prompt_template)}")
-    logger.info(f"AGENT_CHAIN: Prompt template messages: {len(prompt_template.messages)}")
-    for i, msg in enumerate(prompt_template.messages):
-        logger.info(f"AGENT_CHAIN: Message {i} type: {type(msg)}")
-        if hasattr(msg, 'prompt') and hasattr(msg.prompt, 'template'):
-            logger.info(f"AGENT_CHAIN: Message {i} template length: {len(msg.prompt.template)}")
-            logger.info(f"AGENT_CHAIN: Message {i} last 200 chars: {msg.prompt.template[-200:]}")
-        elif hasattr(msg, 'template'):
-            logger.info(f"AGENT_CHAIN: Message {i} template length: {len(msg.template)}")
-        else:
-            logger.info(f"AGENT_CHAIN: Message {i} has no accessible template")
-    
-    logger.info(f"AGENT_CHAIN: Tools being passed to create_xml_agent: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
-    
     # Check if model is available before creating agent
     if llm_with_stop is None:
         logger.error("Cannot create XML agent - model is not available (likely due to credential issues)")
@@ -1924,10 +1930,17 @@ def create_agent_chain(chat_model: BaseChatModel):
     
     return agent_chain
  
-# Initialize the agent chain
-agent = create_agent_chain(model)
-if agent is None:
-    logger.warning("Agent creation failed - will retry when credentials are available")
+# Initialize the agent chain lazily
+agent = None
+
+def get_or_create_agent():
+    """Get the agent, creating it if necessary."""
+    global agent
+    if agent is None:
+        agent = create_agent_chain(model)
+        if agent is None:
+            logger.warning("Agent creation failed - will retry when credentials are available")
+    return agent
 
 def reset_mcp_tool_counter():
     """Reset the MCP tool execution counter for a new request cycle."""
@@ -2188,9 +2201,19 @@ def create_agent_executor(agent_chain: Runnable):
     # Return a new instance of our safe executor
     return SafeAgentExecutor(original_executor)
 
-agent_executor = create_agent_executor(agent)
-if agent_executor is None:
-    logger.warning("Agent executor creation failed - will retry when credentials are available")
+# Initialize agent_executor lazily
+agent_executor = None
+
+def get_or_create_agent_executor():
+    """Get the agent executor, creating it if necessary."""
+    global agent_executor
+    if agent_executor is None:
+        current_agent = get_or_create_agent()
+        if current_agent is not None:
+            agent_executor = create_agent_executor(current_agent)
+            if agent_executor is None:
+                logger.warning("Agent executor creation failed - will retry when credentials are available")
+    return agent_executor
 
 def initialize_langserve(app, executor):
     """Initialize or reinitialize langserve routes with the given executor."""

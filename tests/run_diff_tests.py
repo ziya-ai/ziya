@@ -527,6 +527,10 @@ class DiffRegressionTest(unittest.TestCase):
         self.assertTrue(result_dict.get('changes_written'), 
                       f"changes_written should be True")
         
+    def test_MRE_hunk_header_parsing_error(self):
+        """Test parsing of a multi-hunk diff where the first hunk header includes context, causing it to be skipped."""
+        self.run_diff_test('MRE_hunk_header_parsing_error')
+
     def test_MRE_css_padding_already_applied(self):
         """Test case for CSS padding property incorrectly marked as already applied in the wild"""
         # This test is expected to fail with "already applied" error

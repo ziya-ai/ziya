@@ -465,9 +465,13 @@ export const sendPayload = async (
                             // Handle structured tool execution using existing ToolBlock syntax
                             const signedIndicator = jsonData.signed ? ' 🔒' : '';
                             
-                            // Ensure tool name has mcp_ prefix for proper rendering
-                            const toolName = jsonData.tool_name.startsWith('mcp_') ? 
-                                jsonData.tool_name : `mcp_${jsonData.tool_name}`;
+                            // Normalize tool name - ensure single mcp_ prefix
+                            let toolName = jsonData.tool_name;
+                            if (!toolName.startsWith('mcp_')) {
+                                toolName = `mcp_${toolName}`;
+                            }
+                            // Remove any double prefixes
+                            toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
                             
                             // Format as tool block that the MarkdownRenderer will recognize and style properly
                             const toolDisplay = `\n\`\`\`tool:${toolName}${signedIndicator}\n${jsonData.result}\n\`\`\`\n\n`;

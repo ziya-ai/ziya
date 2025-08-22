@@ -32,7 +32,7 @@ async def execute_mcp_tools_with_status(full_response: str) -> str:
     # Import improved functions
     from app.mcp_fixes import clean_sentinels
     from app.mcp.enhanced_tools import process_enhanced_triggers
-    from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+    from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
     
     # First process any enhanced triggers (secure execution)
     processed_response = await process_enhanced_triggers(full_response, "default")
@@ -132,7 +132,7 @@ async def _execute_direct_mcp_tools(full_response: str) -> str:
     """
     from app.mcp.tools import parse_tool_call
     from app.mcp.manager import get_mcp_manager
-    from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+    from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
     import re
     
     logger.info(f"🔧 MCP: Direct execution starting for response length {len(full_response)}")
@@ -257,7 +257,7 @@ async def find_and_execute_all_tools(response: str) -> Tuple[str, List[Dict[str,
     end_markers = ['</TOOL_SENTINEL>', '</tool_sentinel>']
     
     # Also check config values
-    from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+    from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
     if TOOL_SENTINEL_OPEN not in start_markers:
         start_markers.append(TOOL_SENTINEL_OPEN)
     if TOOL_SENTINEL_CLOSE not in end_markers:

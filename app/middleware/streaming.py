@@ -8,7 +8,7 @@ from typing import AsyncIterator, Any
 from app.agents.wrappers.nova_formatter import NovaFormatter
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from starlette.responses import StreamingResponse, Response
 from starlette.types import ASGIApp
 from langchain_core.outputs import ChatGeneration
@@ -564,7 +564,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
     
     def _contains_partial(self, content: str) -> bool:
         """Check if content contains the start of a tool call but not the end."""
-        from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
         
         # Check for configurable sentinels
         config_partial = TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE not in content
@@ -590,7 +590,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
     
     def _contains_complete_tool_call(self, content: str) -> bool:
         """Check if content contains a complete tool call."""
-        from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
         
         # For TOOL_SENTINEL format, check if it has both name and arguments tags
         if TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content:
@@ -661,7 +661,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
     
     def _might_be_tool_start(self, content: str) -> bool:
         """Check if content might be the start of a tool call."""
-        from app.config import TOOL_SENTINEL_OPEN
+        from app.config.models_config import TOOL_SENTINEL_OPEN
         
         # Check for configurable sentinel
         sentinel_start = TOOL_SENTINEL_OPEN[:min(len(content), len(TOOL_SENTINEL_OPEN))]

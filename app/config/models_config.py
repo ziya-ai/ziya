@@ -1,16 +1,10 @@
 """
-Configuration module for Ziya.
+Model configuration for Ziya.
 
-This module contains all configuration constants and settings.
+This module contains model-specific configuration constants and settings.
 It should be importable without triggering any side effects or initializations.
 """
 import os
-
-# Migration feature flag
-USE_DIRECT_STREAMING = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'false').lower() == 'true'
-
-# Server configuration
-DEFAULT_PORT = 6969
 
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
