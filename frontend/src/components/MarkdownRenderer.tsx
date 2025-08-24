@@ -9,6 +9,7 @@ import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
+import { parseThinkingContent, removeThinkingTags } from '../utils/thinkingParser';
 import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
@@ -20,9 +21,52 @@ import type * as PrismType from 'prismjs';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
+import 'katex/dist/katex.min.css';
+
+// Thinking component for DeepSeek reasoning content
+const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean }> = ({ children, isDarkMode }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const thinkingRenderedRef = useRef(false);
+    
+    return (
+        <div className={`thinking-block ${isDarkMode ? 'dark' : 'light'}`} style={{
+            border: `1px solid ${isDarkMode ? '#444' : '#ddd'}`,
+            borderRadius: '8px',
+            margin: '12px 0',
+            backgroundColor: isDarkMode ? '#1a1a1a' : '#f8f9fa'
+        }}>
+            <div 
+                onClick={() => setIsExpanded(!isExpanded)}
+                style={{
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    borderBottom: isExpanded ? `1px solid ${isDarkMode ? '#444' : '#ddd'}` : 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontSize: '14px',
+                    color: isDarkMode ? '#888' : '#666'
+                }}
+            >
+                <span>{isExpanded ? '▼' : '▶'}</span>
+                <span>🤔 Thinking...</span>
+            </div>
+            {isExpanded && (
+                <div style={{
+                    padding: '12px',
+                    fontSize: '13px',
+                    fontFamily: 'monospace',
+                    color: isDarkMode ? '#ccc' : '#555',
+                    whiteSpace: 'pre-wrap'
+                }}>
+                    {children}
+                </div>
+            )}
+        </div>
+    );
+};
 
 // Define the status interface
-import 'katex/dist/katex.min.css';
 interface HunkStatus {
     applied: boolean;
     alreadyApplied?: boolean;
@@ -3141,7 +3185,7 @@ const decodeHtmlEntities = (text: string): string => {
         .replace(/&trade;/g, '™');
 };
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingContentRef?: React.MutableRefObject<string>): React.ReactNode => {
     // Only log when debug logging is enabled and not too frequently
     const shouldLog = isDebugLoggingEnabled() &&
         (Date.now() - lastLogTimestamp > 10000);
@@ -3422,7 +3466,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Filter out empty text tokens that might remain after processing
                     const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
-                    return <p key={index}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode)}</p>;
+                    return <p key={index}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef)}</p>;
 
                 case 'list':
                     // Render list, processing items recursively
@@ -3433,7 +3477,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             {listToken.items.map((item, itemIndex) => (
                                 // Render list items using the 'list_item' case below
                                 <React.Fragment key={itemIndex}>
-                                    {renderTokens([item], enableCodeApply, isDarkMode)}
+                                    {renderTokens([item], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef)}
                                 </React.Fragment>
                             ))}
                         </ListTag>
@@ -3442,7 +3486,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'list_item':
                     const listItemToken = token as Tokens.ListItem;
 
-                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode);
+                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef);
 
                     // Handle task list items
                     if (listItemToken.task) {
@@ -3491,7 +3535,21 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     );
 
                 case 'html':
-                    if (!hasText(tokenWithText)) return null;                    // Be cautious with dangerouslySetInnerHTML
+                    if (!hasText(tokenWithText)) return null;
+
+                    // Handle thinking blocks - check for thinking-data tags
+                    if (tokenWithText.text.includes('thinking-wrapper') || tokenWithText.text.match(/<thinking-data>([\s\S]*?)<\/thinking-data>/)) {
+                        console.log('🤔 Detected thinking-data tag in HTML token:', tokenWithText.text.substring(0, 100));
+                        const match = tokenWithText.text.match(/<thinking-data>([\s\S]*?)<\/thinking-data>/);
+                        if (match) {
+                            const content = match[1];
+                            console.log('🤔 Extracted thinking content:', content.substring(0, 50) + '...');
+                            console.log('🤔 Returning ThinkingBlock component');
+                            return <ThinkingBlock key={index} isDarkMode={isDarkMode}>{content}</ThinkingBlock>;
+                        }
+                    }
+
+                    // Be cautious with dangerouslySetInnerHTML
 
                     // List of known/safe HTML tags that we want to actually render as HTML
                     const knownHtmlTags = [
@@ -3502,7 +3560,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         'a', 'img', 'video', 'audio',
                         'blockquote', 'pre', 'code',
                         'details', 'summary',
-                        'math', 'mi', 'mo', 'mn', 'mrow', 'mfrac', 'msup', 'msub', 'msubsup', 'msqrt', 'mroot'
+                        'math', 'mi', 'mo', 'mn', 'mrow', 'mfrac', 'msup', 'msub', 'msubsup', 'msqrt', 'mroot',
+                        'thinking-data'
 
                     ];
 
@@ -3557,6 +3616,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
                     let decodedText = decodeHtmlEntities(tokenWithText.text);
+
+                    // Handle thinking block tokens
+                    if (decodedText.startsWith('THINKING_MARKER')) {
+                        const thinkingContent = thinkingContentRef?.current || '';
+                        return <ThinkingBlock key={index} isDarkMode={isDarkMode}>{thinkingContent}</ThinkingBlock>;
+                    }
 
                     // Handle math expressions in text tokens
                     if (decodedText.includes('⟨MATH_INLINE:')) {
@@ -3827,13 +3892,17 @@ const normalizeIndentedDiffs = (content: string): string => {
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
-    // State for the tokens that are currently displayed with stable reference
-    const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
-    // Ref to store the previous set of tokens, useful for certain streaming optimizations or comparisons
+    
+    // All refs declared at the top to ensure they're in scope for useMemo
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
-    // Track if we're in a streaming response - this is for the overall component 
     const parseTimeoutRef = useRef<NodeJS.Timeout>();
     const markdownRef = useRef<string>(markdown);
+    const thinkingRenderedRef = useRef(false);
+    const thinkingContentRef = useRef<string>('');
+    const [forceRenderKey, setForceRenderKey] = useState(0);
+    
+    // State for the tokens that are currently displayed with stable reference
+    const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
     const isStreamingState = isStreaming;
 
     // Memoize the parsing of markdown into tokens.
@@ -3845,6 +3914,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
 
         try {
+            // Reset thinking refs only when content actually shrinks (indicating a new message)
+            // Don't reset when content is just growing during streaming
+            if (markdownRef.current && markdown.length < markdownRef.current.length) {
+                thinkingRenderedRef.current = false;
+                thinkingContentRef.current = '';
+            }
             markdownRef.current = markdown;
             // During streaming, if we already have a diff being rendered, keep it stable
             let processedMarkdown = markdown;
@@ -3866,6 +3941,23 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     /<TOOL_SENTINEL>[\s\S]*?<\/TOOL_SENTINEL>/,
                     formattedToolCall
                 );
+            }
+
+            // Pre-process thinking content to extract and handle separately (only once)
+            if (!thinkingRenderedRef.current) {
+                const thinkingMatch = parseThinkingContent(processedMarkdown);
+                if (thinkingMatch) {
+                    // Store thinking content in ref IMMEDIATELY
+                    thinkingContentRef.current = thinkingMatch.content;
+                    thinkingRenderedRef.current = true;
+                    // Remove thinking tags from main content
+                    processedMarkdown = removeThinkingTags(processedMarkdown);
+                    // Add simple marker at the beginning
+                    processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
+                }
+            } else {
+                // Remove thinking tags from subsequent renders
+                processedMarkdown = removeThinkingTags(processedMarkdown);
             }
 
             // Pre-process tool blocks to clean up literal inclusions
@@ -3979,8 +4071,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Only memoize the rendered content when not streaming or when streaming completes
     const renderedContent = useMemo(() => {
-        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming);
-    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Remove streaming state for live updates
+        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef);
+    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, forceRenderKey]); // Use forceRenderKey to trigger re-renders
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?

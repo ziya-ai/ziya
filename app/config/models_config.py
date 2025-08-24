@@ -94,7 +94,7 @@ MODEL_FAMILIES = {
         "context_window": 1000000
     },
     "deepseek": {
-        "wrapper_class": "ThrottleSafeBedrock",
+        "wrapper_class": "DeepSeekWrapper",
         "supported_parameters": ["temperature", "top_p", "max_tokens"],
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 1.0, "default": 0.7},
@@ -104,6 +104,7 @@ MODEL_FAMILIES = {
         "internal_parameters": {
             "stop_sequences": {"default": []}
         },
+        "supports_thinking": True,
         "token_limit": 128000
     },
     "gemini-pro": {
