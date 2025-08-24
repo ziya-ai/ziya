@@ -219,14 +219,67 @@ class StreamingToolExecutor:
                 
                 # Check if model supports tools and adjust parameters
                 if current_model_id and 'deepseek' in current_model_id.lower():
-                    print(f"🔧 DEBUG: Deepseek model detected ({current_model_id}), using minimal request format")
-                    # Use minimal request body for Deepseek
-                    body = {
-                        "messages": body["messages"],
-                        "max_tokens": body.get("max_tokens", 4096),
-                        "temperature": body.get("temperature", 0.3)
+                    print(f"🔧 DEBUG: Deepseek model detected ({current_model_id}), using Converse API")
+                    # DeepSeek requires Converse API, not InvokeModelWithResponseStream
+                    
+                    # Convert messages to Converse format
+                    converse_messages = []
+                    for msg in body["messages"]:
+                        if msg.get("role") == "user":
+                            converse_messages.append({
+                                "role": "user",
+                                "content": [{"text": msg["content"]}]
+                            })
+                        elif msg.get("role") == "assistant":
+                            converse_messages.append({
+                                "role": "assistant", 
+                                "content": [{"text": msg["content"]}]
+                            })
+                    
+                    # Prepare Converse request
+                    converse_request = {
+                        "modelId": current_model_id,
+                        "messages": converse_messages,
+                        "inferenceConfig": {
+                            "maxTokens": body.get("max_tokens", 4096),
+                            "temperature": body.get("temperature", 0.3)
+                        }
                     }
-                    print(f"🔧 DEBUG: Deepseek request body keys: {list(body.keys())}")
+                    
+                    # Add system prompt if present
+                    if "system" in body:
+                        converse_request["system"] = [{"text": body["system"]}]
+                        print(f"🔧 DEBUG: Deepseek system content preserved ({len(body['system'])} chars)")
+                    
+                    print(f"🔧 DEBUG: Using Converse API for DeepSeek with {len(converse_messages)} messages")
+                    
+                    try:
+                        response = self.bedrock.converse_stream(**converse_request)
+                        
+                        # Handle Converse stream response
+                        round_text = ""
+                        for event in response['stream']:
+                            if 'contentBlockDelta' in event:
+                                delta = event['contentBlockDelta']['delta']
+                                if 'text' in delta and delta['text']:
+                                    text = delta['text']
+                                    round_text += text
+                                    yield {'type': 'text', 'content': text}
+                                elif 'reasoningContent' in delta and delta['reasoningContent'].get('text'):
+                                    # Handle DeepSeek R1 reasoning content as thinking type
+                                    reasoning_text = delta['reasoningContent']['text']
+                                    yield {'type': 'thinking', 'content': reasoning_text}
+                            elif 'messageStop' in event:
+                                break
+                        
+                        print(f"🔄 DEBUG: Round {round_num + 1} completed - DeepSeek text: {len(round_text)} chars")
+                        # DeepSeek doesn't support tools in the same way, so we're done
+                        return
+                        
+                    except Exception as e:
+                        print(f"🔄 DEBUG: DeepSeek Converse API error: {e}")
+                        raise
+                        
                 elif current_model_id and any(nova_model in current_model_id.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
                     print(f"🔧 DEBUG: Nova model detected ({current_model_id}), delegating to Nova wrapper")
                     # Delegate to Nova wrapper for proper handling
