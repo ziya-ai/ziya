@@ -80,9 +80,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const currentConversationRef = useRef<string>(currentConversationId);
     const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
-    const [isTopToBottom, setIsTopToBottom] = useState(false);
+    const [isTopToBottom, setIsTopToBottom] = useState(() => {
+        const saved = localStorage.getItem('ZIYA_TOP_DOWN_MODE');
+        return saved ? JSON.parse(saved) : false;
+    });
     const [isInitialized, setIsInitialized] = useState(false);
     const [userHasScrolled, setUserHasScrolled] = useState(false);
+
+    // Persist top-down mode preference
+    useEffect(() => {
+        localStorage.setItem('ZIYA_TOP_DOWN_MODE', JSON.stringify(isTopToBottom));
+    }, [isTopToBottom]);
     const initializationStarted = useRef(false);
     const [folders, setFolders] = useState<ConversationFolder[]>([]);
     const [dbError, setDbError] = useState<string | null>(null);
