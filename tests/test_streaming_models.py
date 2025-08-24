@@ -11,7 +11,7 @@ import requests
 # Add app to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.config import MODEL_CONFIGS
+from app.config.models_config import MODEL_CONFIGS
 
 # Global test results matrix
 TEST_RESULTS = {}
@@ -356,6 +356,107 @@ class TestStreamingModels:
             else:
                 record_result("tool_calling", endpoint, model_name, False, str(e))
                 pytest.fail(f"Failed {endpoint}/{model_name}: {e}")
+        finally:
+            if server_process:
+                try:
+                    server_process.terminate()
+                    server_process.wait(timeout=5)
+                except:
+                    server_process.kill()
+                    server_process.wait(timeout=2)
+                # Add delay to ensure port is released
+                time.sleep(1)
+
+    @pytest.mark.parametrize("endpoint,model_name", [
+        (endpoint, model) 
+        for endpoint, models in MODEL_CONFIGS.items() 
+        for model in models.keys()
+    ])
+    def test_system_instructions_and_context_visibility(self, endpoint, model_name):
+        """Test that system instructions and code context are included and visible to models."""
+        server_port = find_available_port()
+        
+        env = os.environ.copy()
+        env.update({
+            'ZIYA_ENDPOINT': endpoint,
+            'ZIYA_MODEL': model_name,
+            'ZIYA_AWS_PROFILE': 'ziya'
+        })
+        
+        # For Google models, ensure API key is loaded from .env
+        if endpoint == 'google':
+            from dotenv import load_dotenv
+            load_dotenv()
+            google_key = os.environ.get('GOOGLE_API_KEY')
+            if google_key:
+                env['GOOGLE_API_KEY'] = google_key
+        
+        # For sonnet3.7, ensure EU region and force correct model ID
+        if model_name == 'sonnet3.7':
+            env['AWS_REGION'] = 'eu-west-1'
+            env['ZIYA_MODEL_ID_OVERRIDE'] = 'eu.anthropic.claude-3-7-sonnet-20250219-v1:0'
+        
+        server_process = None
+        try:
+            # Start server
+            server_process = subprocess.Popen([
+                sys.executable, '-m', 'uvicorn', 
+                'app.server:app',
+                '--host', '127.0.0.1',
+                '--port', str(server_port),
+                '--log-level', 'info'
+            ], env=env, cwd=os.path.dirname(os.path.dirname(__file__)),
+               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            
+            if not wait_for_server(server_port):
+                raise Exception(f"Server failed to start on port {server_port}")
+            
+            time.sleep(5)  # Ensure model is fully initialized
+            
+            conversation_id = f"test-system-context-{endpoint}-{model_name}"
+            
+            # Test with a specific question that requires system context awareness
+            response = requests.post(
+                f"http://127.0.0.1:{server_port}/api/chat",
+                json={
+                    "conversation_id": conversation_id,
+                    "files": [],
+                    "messages": [],
+                    "question": "What is your role and what codebase context do you have access to? Mention any specific instructions you've been given."
+                },
+                timeout=30
+            )
+            
+            assert response.status_code == 200, f"Request failed: {response.status_code}"
+            
+            content = response.text.lower()
+            
+            # Check for evidence that system instructions are visible
+            system_indicators = [
+                'ziya', 'ai assistant', 'codebase', 'code analysis', 
+                'development environment', 'instructions', 'context',
+                'files', 'directory', 'project'
+            ]
+            
+            system_working = any(indicator in content for indicator in system_indicators)
+            
+            # Debug output for failed tests
+            if not system_working:
+                print(f"\n=== DEBUG: {endpoint}/{model_name} SYSTEM CONTEXT ===")
+                print(f"Response status: {response.status_code}")
+                print(f"Response content (first 2000 chars): {response.text[:2000]}")
+                print(f"Searched for indicators: {system_indicators}")
+                print("=== END DEBUG ===\n")
+            
+            record_result("system_context_visibility", endpoint, model_name, system_working, 
+                         "System instructions visible" if system_working else "No system context awareness")
+            
+            if not system_working:
+                pytest.fail(f"System instructions not visible for {endpoint}/{model_name}")
+                
+        except Exception as e:
+            record_result("system_context_visibility", endpoint, model_name, False, str(e))
+            pytest.fail(f"System context test failed {endpoint}/{model_name}: {e}")
         finally:
             if server_process:
                 try:
