@@ -227,6 +227,7 @@ export const sendPayload = async (
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
+    let currentThinkingContent = '';
     let errorOccurred = false;
     let containsDiff = false;  // Flag to track if content contains diff blocks
 
@@ -423,6 +424,11 @@ export const sendPayload = async (
                         return;
                     }
 
+                    // Skip [DONE] marker
+                    if (data.trim() === '[DONE]') {
+                        continue;
+                    }
+
                     try {
                         const jsonData = JSON.parse(data);
 
@@ -441,6 +447,11 @@ export const sendPayload = async (
                         // Extract text content from the response
                         if (jsonData.type === 'text' && jsonData.content) {
                             // Handle new streaming format with type field
+                            if (currentThinkingContent) {
+                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
+                                currentThinkingContent = ''; // Clear after using
+                            }
+                            // Always add the current text content
                             currentContent += jsonData.content;
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
@@ -448,7 +459,33 @@ export const sendPayload = async (
                                 return next;
                             });
                         } else if (jsonData.text) {
+                            // Handle text content - check for accumulated thinking first
+                            console.log('Text via jsonData.text, thinking content length:', currentThinkingContent?.length || 0);
+                            if (currentThinkingContent) {
+                                console.log('Adding thinking content via text branch:', currentThinkingContent.substring(0, 50) + '...');
+                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
+                                currentThinkingContent = ''; // Clear after using
+                            }
                             currentContent += jsonData.text;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else if (jsonData.type === 'thinking') {
+                            // Handle thinking content - accumulate but don't display yet
+                            if (!currentThinkingContent) {
+                                currentThinkingContent = '';
+                            }
+                            currentThinkingContent += jsonData.content;
+                            // Don't update the main content stream for thinking
+                        } else if (jsonData.type === 'text') {
+                            // When we get text, prepend any accumulated thinking content
+                            if (currentThinkingContent) {
+                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
+                                currentThinkingContent = ''; // Clear after using
+                            }
+                            currentContent += jsonData.content;
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
                                 next.set(conversationId, currentContent);

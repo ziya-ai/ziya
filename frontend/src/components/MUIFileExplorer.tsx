@@ -457,7 +457,7 @@ export const MUIFileExplorer = () => {
         setTimeout(async () => {
           if (!isMounted) return;
           try {
-            const tokenResponse = await fetch('/api/accurate-token-counts');
+            const tokenResponse = await fetch('/api/accurate-token-count');
             if (tokenResponse.ok) {
               const tokenData = await tokenResponse.json();
               console.log('Loaded accurate token counts:', Object.keys(tokenData).length);
@@ -619,7 +619,7 @@ export const MUIFileExplorer = () => {
       // Also refresh accurate token counts asynchronously
       setTimeout(async () => {
         try {
-          const tokenResponse = await fetch('/api/accurate-token-counts');
+          const tokenResponse = await fetch('/api/accurate-token-count');
           if (tokenResponse.ok) {
             const tokenData = await tokenResponse.json();
             console.log('Refreshed accurate token counts:', Object.keys(tokenData).length);
