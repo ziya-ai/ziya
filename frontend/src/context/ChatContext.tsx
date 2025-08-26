@@ -344,6 +344,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const startNewChat = useCallback((specificFolderId?: string | null) => {
         return new Promise<void>((resolve, reject) => {
+            if (!isInitialized) {
+                reject(new Error('Chat context not initialized yet'));
+                return;
+            }
             try {
                 const newId = uuidv4();
 
@@ -384,7 +388,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 reject(error);
             }
         });
-    }, [currentConversationId, currentFolderId, conversations, queueSave]);
+    }, [isInitialized, currentConversationId, currentFolderId, conversations, queueSave]);
 
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
@@ -595,13 +599,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, [createBackup, currentConversationId]);
 
-    // Load current messages when conversation changes
-    useEffect(() => {
-        if (currentConversationId && isInitialized) {
-            const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
-            setCurrentMessages(messages);
-        }
-    }, [conversations, currentConversationId, isInitialized]);
+
 
     useEffect(() => {
         initializeWithRecovery();

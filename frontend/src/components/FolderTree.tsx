@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react';
 import { Tabs, message } from 'antd';
-import { useFolderContext } from '../context/FolderContext';
+import { useFolderContext, FolderProvider } from '../context/FolderContext';
 import { useChatContext } from '../context/ChatContext';
 import { TokenCountDisplay } from "./TokenCountDisplay";
 import { FolderOutlined } from '@ant-design/icons'; // Import icons

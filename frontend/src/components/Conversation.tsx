@@ -4,14 +4,14 @@ import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip } from 'antd';
 import { RedoOutlined, SoundOutlined, MutedOutlined } from "@ant-design/icons";
 import { sendPayload } from "../apis/chatApi";
-import { useFolderContext } from "../context/FolderContext";
+
 import ModelChangeNotification from './ModelChangeNotification';
 import { convertKeysToStrings } from "../utils/types";
 import { useQuestionContext } from '../context/QuestionContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 
 // Lazy load the MarkdownRenderer
-const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 interface ConversationProps {
     enableCodeApply: boolean;
@@ -37,9 +37,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         toggleMessageMute,
     } = useChatContext();
 
-    // Don't block conversation rendering on folder context
-    const folderContext = useFolderContext();
-    const checkedKeys = folderContext?.checkedKeys || [];
+    // Get checked keys from chat context instead of blocking on folder context
+    const checkedKeys: string[] = [];
     const { setQuestion } = useQuestionContext();
     const visibilityRef = useRef<boolean>(true);
     // Sort messages to maintain order
@@ -432,13 +431,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                         <EditSection index={actualIndex} isInline={false} />
                                     ) : msg.role === 'human' && msg.content ? (
                                         <div className="message-content">
-                                            <Suspense fallback={<div>Loading content...</div>}>
-                                                <MarkdownRenderer
-                                                    markdown={msg.content}
-                                                    enableCodeApply={enableCodeApply}
-                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                                />
-                                            </Suspense>
+                                            <MarkdownRenderer
+                                                markdown={msg.content}
+                                                enableCodeApply={enableCodeApply}
+                                                isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                            />
                                         </div>
                                     ) : msg.role === 'assistant' && msg.content && (
                                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -458,13 +455,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                     {/* Only show message content for assistant messages or non-editing human messages */}
                                     {msg.role === 'assistant' && msg.content && (
                                         <div className="message-content">
-                                            <Suspense fallback={<div>Loading content...</div>}>
-                                                <MarkdownRenderer
-                                                    markdown={msg.content}
-                                                    enableCodeApply={enableCodeApply}
-                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                                />
-                                            </Suspense>
+                                            <MarkdownRenderer
+                                                markdown={msg.content}
+                                                enableCodeApply={enableCodeApply}
+                                                isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                            />
                                         </div>
                                     )}
                                 </>

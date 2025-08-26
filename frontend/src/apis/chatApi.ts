@@ -473,12 +473,14 @@ export const sendPayload = async (
                                 return next;
                             });
                         } else if (jsonData.type === 'thinking') {
-                            // Handle thinking content - accumulate but don't display yet
-                            if (!currentThinkingContent) {
-                                currentThinkingContent = '';
-                            }
-                            currentThinkingContent += jsonData.content;
-                            // Don't update the main content stream for thinking
+                            // Handle thinking content - display immediately
+                            const thinkingContent = `<thinking-data>${jsonData.content}</thinking-data>\n\n`;
+                            currentContent += thinkingContent;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
                         } else if (jsonData.type === 'text') {
                             // When we get text, prepend any accumulated thinking content
                             if (currentThinkingContent) {

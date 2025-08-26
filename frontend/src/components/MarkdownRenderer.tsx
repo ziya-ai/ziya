@@ -24,8 +24,9 @@ import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
 
 // Thinking component for DeepSeek reasoning content
-const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean }> = ({ children, isDarkMode }) => {
-    const [isExpanded, setIsExpanded] = useState(false);
+const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; isStreaming?: boolean }> = ({ children, isDarkMode, isStreaming = false }) => {
+    // Start expanded during streaming, collapsed when done
+    const [isExpanded, setIsExpanded] = useState(isStreaming);
     const thinkingRenderedRef = useRef(false);
     
     return (
@@ -3545,7 +3546,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             const content = match[1];
                             console.log('🤔 Extracted thinking content:', content.substring(0, 50) + '...');
                             console.log('🤔 Returning ThinkingBlock component');
-                            return <ThinkingBlock key={index} isDarkMode={isDarkMode}>{content}</ThinkingBlock>;
+                            return <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{content}</ThinkingBlock>;
                         }
                     }
 
@@ -3620,7 +3621,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Handle thinking block tokens
                     if (decodedText.startsWith('THINKING_MARKER')) {
                         const thinkingContent = thinkingContentRef?.current || '';
-                        return <ThinkingBlock key={index} isDarkMode={isDarkMode}>{thinkingContent}</ThinkingBlock>;
+                        return <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{thinkingContent}</ThinkingBlock>;
                     }
 
                     // Handle math expressions in text tokens
