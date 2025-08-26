@@ -1,5 +1,5 @@
 /**
- * Frontend thinking content parser to handle <thinking-data> tags
+ * Frontend thinking content parser to handle <thinking-data> and <thinking> tags
  */
 
 export interface ThinkingContent {
@@ -7,9 +7,19 @@ export interface ThinkingContent {
 }
 
 export function parseThinkingContent(content: string): ThinkingContent | null {
-    // Use non-greedy matching to capture all content including newlines
-    const thinkingPattern = /<thinking-data>([\s\S]*?)<\/thinking-data>/;
-    const match = content.match(thinkingPattern);
+    // Try thinking-data tags first (for deepseek-r1)
+    let thinkingPattern = /<thinking-data>([\s\S]*?)<\/thinking-data>/;
+    let match = content.match(thinkingPattern);
+    
+    if (match) {
+        return {
+            content: match[1] // Don't trim to preserve formatting
+        };
+    }
+    
+    // Try thinking tags (for nova-pro)
+    thinkingPattern = /<thinking>([\s\S]*?)<\/thinking>/;
+    match = content.match(thinkingPattern);
     
     if (match) {
         return {
@@ -21,6 +31,8 @@ export function parseThinkingContent(content: string): ThinkingContent | null {
 }
 
 export function removeThinkingTags(content: string): string {
-    // Remove all thinking-data blocks, preserving spacing
-    return content.replace(/<thinking-data>[\s\S]*?<\/thinking-data>\s*/g, '');
+    // Remove both thinking-data and thinking blocks, preserving spacing
+    return content
+        .replace(/<thinking-data>[\s\S]*?<\/thinking-data>\s*/g, '')
+        .replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '');
 }

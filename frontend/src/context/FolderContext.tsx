@@ -36,14 +36,22 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [folders, setFolders] = useState<Folders>();
   const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
-    const saved = localStorage.getItem('ZIYA_CHECKED_FOLDERS');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('ZIYA_CHECKED_FOLDERS');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
-    const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [isScanning, setIsScanning] = useState(false);
@@ -250,14 +258,19 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     };
   }, []);
 
-  // Debounced accurate token updates
+  // Debounced accurate token updates - completely non-blocking
   useEffect(() => {
-    if (checkedKeys.length > 0) {
-      console.log('Checked keys changed, current count:', checkedKeys.length);
-      debouncedUpdateAccurateTokens(checkedKeys);
-    } else {
-      console.log('No items selected, skipping accurate token updates');
-    }
+    // Defer all token counting to not block UI
+    const timeoutId = setTimeout(() => {
+      if (checkedKeys.length > 0) {
+        console.log('Checked keys changed, current count:', checkedKeys.length);
+        debouncedUpdateAccurateTokens(checkedKeys);
+      } else {
+        console.log('No items selected, skipping accurate token updates');
+      }
+    }, 100); // Small delay to ensure UI renders first
+    
+    return () => clearTimeout(timeoutId);
   }, [checkedKeys, debouncedUpdateAccurateTokens]);
 
   // Remove chat context dependency that was causing render loops
@@ -350,44 +363,51 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const fetchFoldersRef = useRef<() => Promise<void>>();
 
   const fetchFolders = useCallback(async () => {
-    try {
-      const response = await fetch('/api/folders');
-      if (!response.ok) {
-        throw new Error(`Failed to fetch folders: ${response.status}`);
-      }
-      const data = await response.json();
+    // Don't block the main thread - use MessageChannel for true async
+    const channel = new MessageChannel();
+    channel.port1.onmessage = async () => {
+      try {
+        const response = await fetch('/api/folders');
+        if (!response.ok) {
+          throw new Error(`Failed to fetch folders: ${response.status}`);
+        }
+        const data = await response.json();
 
-      if (data.error) {
-        setScanError(data.error);
-        setIsScanning(false);
-        return;
-      }
+        if (data.error) {
+          setScanError(data.error);
+          setIsScanning(false);
+          return;
+        }
 
-      if (data._scanning || data._stale_and_scanning) {
-        setIsScanning(true);
-        setScanError(null);
-        startProgressPolling();
-        if (data._stale_and_scanning) {
-          const { _stale_and_scanning, ...folderData } = data;
-          setFolders(folderData);
-          const treeNodes = convertToTreeData(folderData);
+        if (data._scanning || data._stale_and_scanning) {
+          setIsScanning(true);
+          setScanError(null);
+          startProgressPolling();
+          if (data._stale_and_scanning) {
+            const { _stale_and_scanning, ...folderData } = data;
+            setFolders(folderData);
+            const treeNodes = convertToTreeData(folderData);
+            setTreeData(treeNodes);
+          }
+        } else {
+          setIsScanning(false);
+          setScanError(null);
+          if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+          }
+          setFolders(data);
+          const treeNodes = convertToTreeData(data);
           setTreeData(treeNodes);
         }
-      } else {
+      } catch (error) {
+        setScanError(error instanceof Error ? error.message : 'Unknown error');
         setIsScanning(false);
-        setScanError(null);
-        if (progressIntervalRef.current) {
-          clearInterval(progressIntervalRef.current);
-          progressIntervalRef.current = null;
-        }
-        setFolders(data);
-        const treeNodes = convertToTreeData(data);
-        setTreeData(treeNodes);
       }
-    } catch (error) {
-      setScanError(error instanceof Error ? error.message : 'Unknown error');
-      setIsScanning(false);
-    }
+    };
+    
+    // Post message to trigger async execution
+    channel.port2.postMessage(null);
   }, [startProgressPolling]);
 
   useEffect(() => {
@@ -395,7 +415,22 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, [fetchFolders]);
 
   useEffect(() => {
-    fetchFolders();
+    // Make folder fetching completely asynchronous and non-blocking
+    const asyncInit = async () => {
+      // Use requestIdleCallback to ensure this doesn't block the main thread
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(() => {
+          fetchFolders();
+        });
+      } else {
+        // Fallback for browsers without requestIdleCallback
+        setTimeout(() => {
+          fetchFolders();
+        }, 100);
+      }
+    };
+    
+    asyncInit();
   }, [fetchFolders]);
 
   // Add timeout handling with user notification
@@ -470,8 +505,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 export const useFolderContext = () => {
   const context = useContext(FolderContext);
   if (context === undefined) {
-    // Don't throw error during initialization - return safe defaults
-    console.warn('useFolderContext called before FolderProvider is ready, returning defaults');
+    // Return safe defaults when called outside FolderProvider
     return {
       folders: undefined,
       treeData: [],
