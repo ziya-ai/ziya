@@ -389,8 +389,12 @@ class NovaWrapper(BaseChatModel):
                 inferenceConfig=inference_config
             )
             
-            # Process streaming response - yield complete response at once to avoid tool executor loop
+            # Process streaming response with thinking content detection
             accumulated_text = ""
+            thinking_buffer = ""
+            in_thinking = False
+            thinking_content = ""
+            final_text = ""
             
             for chunk in response.get('stream', []):
                 if 'contentBlockDelta' in chunk:
@@ -398,13 +402,61 @@ class NovaWrapper(BaseChatModel):
                     if 'delta' in delta and 'text' in delta['delta']:
                         text = delta['delta']['text']
                         accumulated_text += text
+                        
+                        # Handle thinking content detection
+                        thinking_buffer += text
+                        
+                        # Check for thinking start
+                        if '<thinking>' in thinking_buffer and not in_thinking:
+                            in_thinking = True
+                            logger.info("Nova _astream: Detected thinking start")
+                            # Extract any content before <thinking>
+                            parts = thinking_buffer.split('<thinking>', 1)
+                            if parts[0].strip():
+                                final_text += parts[0]
+                            thinking_buffer = parts[1] if len(parts) > 1 else ""
+                            continue
+                        
+                        # Check for thinking end
+                        if '</thinking>' in thinking_buffer and in_thinking:
+                            in_thinking = False
+                            logger.info("Nova _astream: Detected thinking end")
+                            # Extract thinking content
+                            parts = thinking_buffer.split('</thinking>', 1)
+                            thinking_content += parts[0]
+                            # Continue with remaining content
+                            thinking_buffer = parts[1] if len(parts) > 1 else ""
+                            if thinking_buffer.strip():
+                                final_text += thinking_buffer
+                            thinking_buffer = ""
+                            continue
+                        
+                        # If we're in thinking mode, don't add to final text
+                        if in_thinking:
+                            continue
+                        
+                        # If we have accumulated non-thinking content, add it to final text
+                        if thinking_buffer and not in_thinking:
+                            final_text += thinking_buffer
+                            thinking_buffer = ""
+                        
                 elif 'messageStop' in chunk:
                     break
             
+            # Handle any remaining content
+            if thinking_buffer and not in_thinking:
+                final_text += thinking_buffer
+            
+            # Create the final content with thinking tags if we found thinking content
+            final_content = ""
+            if thinking_content.strip():
+                final_content += f"<thinking>{thinking_content}</thinking>\n\n"
+            final_content += final_text
+            
             # Yield the complete response as a single chunk
-            if accumulated_text:
+            if final_content:
                 from langchain_core.messages import AIMessageChunk
-                chunk_message = AIMessageChunk(content=accumulated_text)
+                chunk_message = AIMessageChunk(content=final_content)
                 generation = ChatGeneration(
                     message=chunk_message,
                     generation_info={"model_id": self.model_id}
@@ -569,6 +621,9 @@ class NovaWrapper(BaseChatModel):
 
     async def stream_with_tools(self, body: Dict[str, Any], tools: List[Dict[str, Any]], bedrock_client: Any):
         """Handle Nova model streaming using Converse API."""
+        logger.info(f"Nova stream_with_tools called with {len(tools)} tools")
+        logger.info(f"Nova tools: {[tool.get('name', 'unnamed') for tool in tools]}")
+        
         try:
             # Format messages for Converse API
             messages = body.get("messages", [])
@@ -618,8 +673,9 @@ class NovaWrapper(BaseChatModel):
             if system_config:
                 converse_params["system"] = system_config
                 
-            # Add tools if supported (nova-lite and nova-pro support tools)
-            if tools and not ('nova-micro' in self.model_id.lower()):
+            # Add tools if supported (disable toolConfig for now due to Nova inconsistencies)
+            # Nova models sometimes generate XML-style tools even with toolConfig
+            if False and tools and any(model in self.model_id.lower() for model in ['nova-pro', 'nova-premier']):
                 # Convert tools to Nova Converse API format
                 nova_tools = []
                 for tool in tools:
@@ -641,32 +697,72 @@ class NovaWrapper(BaseChatModel):
             
             logger.info(f"Nova Converse request keys: {list(converse_params.keys())}")
             
-            # Use converse_stream for Nova models
-            response = bedrock_client.converse_stream(**converse_params)
+            # Use proper Nova tool execution
+            logger.info("🔧 DEBUG: About to call execute_nova_tools_properly")
+            from app.agents.wrappers.nova_tool_execution import execute_nova_tools_properly
             
-            accumulated_text = ""
-            for chunk in response.get('stream', []):
-                if 'contentBlockDelta' in chunk:
-                    delta = chunk.get('contentBlockDelta', {})
-                    if 'delta' in delta and 'text' in delta['delta']:
-                        text = delta['delta']['text']
-                        accumulated_text += text
-                        yield {
-                            'type': 'text',
-                            'content': text
-                        }
-                elif 'messageStop' in chunk:
-                    break
+            accumulated_content = ""
+            chunks_buffer = []
+            
+            async for chunk in execute_nova_tools_properly(bedrock_client, converse_params, formatted_messages):
+                chunks_buffer.append(chunk)
+                
+                # Check if Nova is using XML-style tools instead of Converse API
+                if chunk.get('type') == 'text':
+                    content = chunk.get('content', '')
+                    accumulated_content += content
                     
-            # Ensure we yield something for the test
-            if not accumulated_text:
-                yield {
-                    'type': 'text', 
-                    'content': '4'
-                }
+                    # Detect XML-style tool formats
+                    if any(pattern in accumulated_content for pattern in [
+                        '{TOOL_SENTINEL', 'TOOL_SENTINEL_OPEN', '{mcp_'
+                    ]):
+                        logger.warning("Nova is using XML-style tools, falling back to regular streaming")
+                        # Signal that we need to fall back to regular streaming
+                        raise Exception("NOVA_FALLBACK_NEEDED")
+                
+                # Normal processing - yield the chunk
+                yield chunk
                 
         except Exception as e:
-            logger.error(f"Nova streaming error: {str(e)}")
+            # If XML tools detected, re-raise to let streaming executor handle fallback
+            if "NOVA_FALLBACK_NEEDED" in str(e):
+                logger.warning("XML tools detected, re-raising for streaming executor fallback")
+                raise e
+            
+            # If any Nova model fails with toolConfig, fall back to XML-style tools
+            elif "modelStreamErrorException" in str(e):
+                logger.warning(f"Nova toolConfig failed, falling back to XML-style tools: {e}")
+                
+                # Remove toolConfig and let it fall back to XML-style tool processing
+                converse_params_fallback = converse_params.copy()
+                converse_params_fallback.pop('toolConfig', None)
+                
+                try:
+                    response = bedrock_client.converse_stream(**converse_params_fallback)
+                    
+                    for chunk in response.get('stream', []):
+                        if 'contentBlockDelta' in chunk:
+                            delta = chunk.get('contentBlockDelta', {})
+                            if 'delta' in delta and 'text' in delta['delta']:
+                                yield {
+                                    'type': 'text',
+                                    'content': delta['delta']['text']
+                                }
+                        elif 'messageStop' in chunk:
+                            break
+                            
+                except Exception as fallback_error:
+                    logger.error(f"Nova fallback also failed: {fallback_error}")
+                    yield {
+                        'type': 'error',
+                        'content': f"Nova streaming error: {str(fallback_error)}"
+                    }
+            else:
+                logger.error(f"Nova streaming error: {str(e)}")
+                yield {
+                    'type': 'error',
+                    'content': f"Nova streaming error: {str(e)}"
+                }
             yield {
                 'type': 'error',
                 'content': f"Nova streaming error: {str(e)}"
