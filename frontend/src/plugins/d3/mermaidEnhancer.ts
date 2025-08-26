@@ -170,6 +170,62 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
 
+  // Add a preprocessor to fix style statements with quoted subgraph names - HIGHEST PRIORITY
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 STYLE-SUBGRAPH-FIX: Processing style statements with quoted subgraph names');
+
+      // First, extract all subgraph declarations to build a mapping
+      const subgraphMapping = new Map<string, string>();
+      const subgraphMatches = definition.matchAll(/subgraph\s+"([^"]+)"/g);
+      
+      for (const match of subgraphMatches) {
+        const quotedName = match[1];
+        // Create a valid identifier from the quoted name
+        const identifier = quotedName
+          .replace(/\s+/g, '') // Remove spaces
+          .replace(/[^a-zA-Z0-9_]/g, '_') // Replace special chars with underscores
+          .replace(/^(\d)/, '_$1'); // Prefix with underscore if starts with number
+        
+        subgraphMapping.set(quotedName, identifier);
+        console.log(`🔍 STYLE-SUBGRAPH-FIX: Mapped "${quotedName}" -> ${identifier}`);
+      }
+
+      if (subgraphMapping.size === 0) {
+        console.log('🔍 STYLE-SUBGRAPH-FIX: No quoted subgraphs found, skipping');
+        return definition;
+      }
+
+      // Replace subgraph declarations to use identifiers
+      let result = definition;
+      for (const [quotedName, identifier] of subgraphMapping) {
+        // Replace: subgraph "Frontend Stack" -> subgraph Frontend_Stack ["Frontend Stack"]
+        const subgraphRegex = new RegExp(`subgraph\\s+"${quotedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g');
+        result = result.replace(subgraphRegex, `subgraph ${identifier} ["${quotedName}"]`);
+        console.log(`🔍 STYLE-SUBGRAPH-FIX: Updated subgraph declaration for "${quotedName}"`);
+      }
+
+      // Replace style statements to use identifiers instead of quoted names
+      for (const [quotedName, identifier] of subgraphMapping) {
+        // Replace: style "Frontend Stack" fill:#color -> style Frontend_Stack fill:#color
+        const styleRegex = new RegExp(`style\\s+"${quotedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g');
+        result = result.replace(styleRegex, `style ${identifier}`);
+        console.log(`🔍 STYLE-SUBGRAPH-FIX: Fixed style statement for "${quotedName}" -> ${identifier}`);
+      }
+
+      console.log('🔍 STYLE-SUBGRAPH-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'style-subgraph-fix',
+    priority: 500, // Highest priority to run before all other fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
   // Add a preprocessor to fix naming conflicts between subgraphs and nodes
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
@@ -182,9 +238,15 @@ export function initMermaidEnhancer(): void {
 
       // Extract subgraph names
       const subgraphNames = new Set<string>();
-      const subgraphMatches = definition.matchAll(/subgraph\s+"([^"]+)"/g);
-      for (const match of subgraphMatches) {
+      // Handle both old format: subgraph "Name" and new format: subgraph Identifier ["Name"]
+      const quotedSubgraphMatches = definition.matchAll(/subgraph\s+"([^"]+)"/g);
+      const identifierSubgraphMatches = definition.matchAll(/subgraph\s+(\w+)\s*(?:\["[^"]+"\])?/g);
+      
+      for (const match of quotedSubgraphMatches) {
         subgraphNames.add(match[1]);
+      }
+      for (const match of identifierSubgraphMatches) {
+        subgraphNames.add(match[1]); // Add the identifier (e.g., "Integration")
       }
 
       // Extract node IDs
