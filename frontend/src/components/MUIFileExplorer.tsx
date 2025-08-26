@@ -413,7 +413,7 @@ export const MUIFileExplorer = () => {
         if (cachedResponse.ok) {
           const cachedData: Folders = await cachedResponse.json();
           if (isMounted && cachedData && Object.keys(cachedData).length > 0) {
-            console.log('Using cached folder structure');
+
             // Convert and sort data
             const sortedData = sortTreeData(convertToTreeData(cachedData));
             setTreeData(sortedData);
