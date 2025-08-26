@@ -285,6 +285,27 @@ class StreamingToolExecutor:
                     # Delegate to Nova wrapper for proper handling
                     from app.agents.wrappers.nova_wrapper import NovaWrapper
                     nova_wrapper = NovaWrapper(model_id=current_model_id)
+                    
+                    try:
+                        nova_generator = nova_wrapper.stream_with_tools(body, tools, self.bedrock)
+                        async for chunk in nova_generator:
+                            yield chunk
+                        return
+                    except Exception as e:
+                        if "NOVA_FALLBACK_NEEDED" in str(e):
+                            print(f"🔧 DEBUG: Nova wrapper requested fallback, using regular processing")
+                            # Fall through to regular processing
+                        else:
+                            # Nova wrapper had a real error
+                            yield {
+                                'type': 'error',
+                                'content': f"Nova wrapper error: {str(e)}"
+                            }
+                            return
+                    print(f"🔧 DEBUG: Nova model detected ({current_model_id}), delegating to Nova wrapper")
+                    # Delegate to Nova wrapper for proper handling
+                    from app.agents.wrappers.nova_wrapper import NovaWrapper
+                    nova_wrapper = NovaWrapper(model_id=current_model_id)
                     async for chunk in nova_wrapper.stream_with_tools(body, tools, self.bedrock):
                         yield chunk
                     return
