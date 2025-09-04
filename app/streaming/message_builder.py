@@ -6,6 +6,7 @@ Builds messages for streaming without LangChain message types
 
 from typing import Dict, List, Any, Optional
 from app.utils.logging_utils import logger
+import tiktoken
 
 
 def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str) -> List[Dict]:
@@ -102,6 +103,48 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     messages.append({"role": "user", "content": modified_question})
     
     return messages
+
+
+def estimate_context_size(messages: List[Dict]) -> int:
+    """
+    Estimate the total token count of the message context.
+    
+    This helps determine if we're approaching context limits.
+    """
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")
+        total_tokens = 0
+        
+        for message in messages:
+            content = message.get("content", "")
+            if content:
+                total_tokens += len(encoding.encode(content))
+        
+        return total_tokens
+    except Exception as e:
+        logger.warning(f"Failed to estimate context size: {e}")
+        # Fallback estimation
+        total_chars = sum(len(msg.get("content", "")) for msg in messages)
+        return int(total_chars / 4)  # Rough approximation
+
+
+def should_prepare_continuation(messages: List[Dict], response_so_far: str) -> bool:
+    """
+    Determine if we should prepare for context continuation.
+    
+    Args:
+        messages: Current message context
+        response_so_far: Response generated so far
+        
+    Returns:
+        True if continuation should be prepared
+    """
+    context_tokens = estimate_context_size(messages)
+    response_tokens = estimate_context_size([{"content": response_so_far}])
+    
+    # Assume model has ~200k context limit, use 80% as threshold
+    total_tokens = context_tokens + response_tokens
+    return total_tokens > 160000  # 80% of 200k tokens
 
 
 def format_chat_history(chat_history: List) -> str:
