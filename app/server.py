@@ -1,3 +1,12 @@
+# Context overflow management
+from typing import Optional
+import asyncio
+from threading import Lock
+
+# Global state for managing context overflow
+_continuation_lock = Lock()
+_active_continuations = {}
+
 import os
 import os.path
 import re
@@ -75,6 +84,7 @@ from app.utils.file_utils import read_file_content
 from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
+from app.middleware.continuation import ContinuationMiddleware
 
 def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False) -> List:
     """
@@ -189,13 +199,13 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     logger.info(f"Available tools: {len(tools_list)}")
     logger.info(f"MCP tools available: {mcp_context.get('mcp_tools_available', False)}")
 
-    # DEBUG: Check template substitution
-    print(f"=== TEMPLATE SUBSTITUTION DEBUG ===")
-    print(f"Template variables being substituted:")
-    print(f"- codebase length: {len(file_context)}")
-    print(f"- question length: {len(modified_question)}")
-    print(f"- chat_history items: {len(_format_chat_history(chat_history))}")
-    print(f"- tools count: {len(tools_list)}")
+    # Debug: Check template substitution
+    logger.debug("=== TEMPLATE SUBSTITUTION DEBUG ===")
+    logger.debug("Template variables being substituted:")
+    logger.debug(f"- codebase length: {len(file_context)}")
+    logger.debug(f"- question length: {len(modified_question)}")
+    logger.debug(f"- chat_history items: {len(_format_chat_history(chat_history))}")
+    logger.debug(f"- tools count: {len(tools_list)}")
     
     formatted_messages = extended_prompt.format_messages(
         codebase=file_context,
@@ -207,12 +217,12 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
     )
     
-    # DEBUG: Check if template substitution caused duplication
+    # Debug: Check if template substitution caused duplication
     for i, msg in enumerate(formatted_messages):
         if hasattr(msg, 'content'):
             file_markers_count = msg.content.count('File: ')
             if file_markers_count > 0:
-                print(f"Message {i} after template substitution has {file_markers_count} file markers")
+                logger.debug(f"Message {i} after template substitution has {file_markers_count} file markers")
     
     return formatted_messages
 
@@ -251,7 +261,6 @@ app = FastAPI(
 @app.post('/api/chat')
 async def chat_endpoint(request: Request):
     """Handle chat requests from the frontend with model-specific routing."""
-    print("🔍 CHAT_ENDPOINT: /api/chat called - PRIORITY ROUTE")
     logger.info("🔍 CHAT_ENDPOINT: /api/chat endpoint called - PRIORITY ROUTE")
     
     try:
@@ -424,6 +433,10 @@ app.add_middleware(ErrorHandlingMiddleware)
 
 # Add hunk status middleware
 app.add_middleware(HunkStatusMiddleware)
+
+# Add continuation middleware
+app.add_middleware(ContinuationMiddleware)
+
 # Import and include AST routes
 from app.routes.ast_routes import router as ast_router
 app.include_router(ast_router)
@@ -433,7 +446,6 @@ app.include_router(ast_router)
 async def connection_state_middleware(request: Request, call_next):
     """Track connection state to handle disconnections gracefully."""
     # Log ALL requests to trace routing
-    print(f"🔍 MIDDLEWARE: Request {request.method} {request.url.path}")
     logger.info(f"🔍 MIDDLEWARE: Request {request.method} {request.url.path}")
     
     try:
@@ -691,6 +703,7 @@ async def cleanup_stream(conversation_id: str):
     else:
         logger.warning(f"Attempted to clean up non-existent stream: {conversation_id}")
 
+
 async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Optional[set] = None) -> str:
     def clean_internal_sentinels(text: str) -> str:
         """Remove any tool sentinel fragments that might have leaked into the response."""
@@ -764,7 +777,6 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
         arguments = parsed_call["arguments"]
         
         logger.info(f"🔍 MCP TOOL CALL: tool_name='{tool_name}', arguments={arguments}")
-        print(f"🔍 MCP TOOL CALL: tool_name='{tool_name}', arguments={arguments}")
         logger.debug(f"🔍 MCP: Executing tool {tool_name} with args: {arguments}")
         
         try:
@@ -779,6 +791,7 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
             result = await mcp_manager.call_tool(internal_tool_name, arguments)
             
             logger.info(f"🔍 MCP TOOL RESULT: tool_name='{internal_tool_name}', result_type={type(result)}, result={result}")
+            logger.info(f"🔧 MCP EXECUTION: {internal_tool_name}({arguments}) -> {str(result)[:300]}{'...' if len(str(result)) > 300 else ''}")
             
             if result is None:
                 logger.error(f"🔍 MCP: Tool {internal_tool_name} returned None")
@@ -816,9 +829,219 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
     # Final cleanup to ensure no fragments remain
     return clean_internal_sentinels(modified_response)
 
+def get_response_continuation_threshold() -> int:
+    """
+    Get the response continuation threshold based on current model's max_output_tokens.
+    
+    Returns:
+        Token threshold at which continuation should be considered
+    """
+    try:
+        from app.agents.models import ModelManager
+        
+        # Get current model settings
+        model_settings = ModelManager.get_model_settings()
+        max_output_tokens = model_settings.get("max_output_tokens", 4096)
+        
+        # Use 85% of the configured max_output_tokens as threshold
+        # This leaves room for the model to complete its thought naturally
+        threshold = int(max_output_tokens * 0.85)
+        
+        logger.debug(f"🔄 THRESHOLD: Using {threshold} tokens (85% of {max_output_tokens} max_output_tokens)")
+        return threshold
+        
+    except Exception as e:
+        logger.warning(f"Failed to get model token limit, using default: {e}")
+        # Fallback to reasonable default
+        return 3400  # 85% of 4096
+
+async def check_context_overflow(
+    current_response: str, 
+    conversation_id: str,
+    messages: List,
+    full_context: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """
+    Check if we're approaching context limits and need to continue in a new session.
+    
+    Returns:
+        None if no continuation needed
+        Dict with continuation info if overflow detected
+    """
+    # Get current model's token threshold
+    token_threshold = get_response_continuation_threshold()
+    
+    # Estimate current response tokens
+    try:
+        import tiktoken
+        encoding = tiktoken.get_encoding("cl100k_base")
+        response_tokens = len(encoding.encode(current_response))
+    except Exception:
+        # Fallback: rough character-based estimation
+        response_tokens = len(current_response) // 4
+    
+    # Check if we're approaching the model's output token limit
+    if response_tokens > token_threshold:
+        logger.info(f"🔄 CONTEXT: Response tokens ({response_tokens}) approaching limit ({token_threshold}), preparing continuation")
+        
+        # Find a good breaking point (end of sentence or paragraph)
+        continuation_point = find_continuation_point(current_response)
+        
+        if continuation_point:
+            # Split the response at the continuation point
+            completed_part = current_response[:continuation_point]
+            remaining_part = current_response[continuation_point:].strip()
+            
+            # Add continuation marker to completed part
+            continuation_marker = "\n\n---\n**🔄 Continuing this thread...**\n---\n\n"
+            completed_part += continuation_marker
+            
+            # Prepare continuation state
+            continuation_state = {
+                "conversation_id": conversation_id,
+                "completed_response": completed_part,
+                "remaining_response": remaining_part,
+                "messages": messages,
+                "context": full_context,
+                "continuation_id": f"{conversation_id}_cont_{int(time.time())}"
+            }
+            
+            return continuation_state
+    
+    return None
+ 
+def find_continuation_point(text: str) -> Optional[int]:
+    """
+    Find an appropriate point to break the response for continuation.
+    
+    Prioritizes:
+    1. End of paragraphs (double newlines)
+    2. End of sentences
+    3. End of code blocks
+    4. Natural word boundaries
+    """
+    # Look for paragraph breaks first
+    paragraph_breaks = [m.end() for m in re.finditer(r'\n\n+', text)]
+    if paragraph_breaks:
+        # Find the last paragraph break that's not too close to the end
+        for break_point in reversed(paragraph_breaks):
+            if break_point < len(text) * 0.8:  # Not in last 20% of text
+                return break_point
+    
+    # Look for sentence endings
+    sentence_endings = [m.end() for m in re.finditer(r'[.!?]\s+', text)]
+    if sentence_endings:
+        for break_point in reversed(sentence_endings):
+            if break_point < len(text) * 0.8:
+                return break_point
+    
+    # Look for code block endings
+    code_block_endings = [m.end() for m in re.finditer(r'```\n+', text)]
+    if code_block_endings:
+        for break_point in reversed(code_block_endings):
+            if break_point < len(text) * 0.8:
+                return break_point
+    
+    # Fall back to word boundary
+    words = text.split()
+    if len(words) > 10:
+        # Take about 80% of the words
+        word_count = int(len(words) * 0.8)
+        return len(' '.join(words[:word_count])) + 1
+    
+    return None
+ 
+async def handle_continuation(continuation_state: Dict[str, Any]):
+    """
+    Handle continuation in a new query with clean output buffer.
+    
+    This creates a new streaming session that appears seamless to the user.
+    """
+    continuation_id = continuation_state["continuation_id"]
+    
+    with _continuation_lock:
+        _active_continuations[continuation_id] = continuation_state
+    
+    try:
+        logger.info(f"🔄 CONTINUATION: Starting continuation session {continuation_id}")
+        
+        # Create a continuation prompt that maintains context
+        continuation_prompt = create_continuation_prompt(continuation_state)
+        
+        # Update messages for continuation
+        updated_messages = continuation_state["messages"].copy()
+        
+        # Add the completed part as an AI message
+        from langchain_core.messages import AIMessage, HumanMessage
+        updated_messages.append(AIMessage(content=continuation_state["completed_response"]))
+        
+        # Add a marker for the continuation start
+        continuation_start_marker = "**📝 Continuing from previous response...**\n\n"
+        yield f"data: {json.dumps({'ops': [{'op': 'add', 'path': '/streamed_output_str/-', 'value': continuation_start_marker}]})}\n\n"
+        
+        # Add continuation prompt
+        updated_messages.append(HumanMessage(content=continuation_prompt))
+        
+        # Stream continuation with clean buffer
+        async for chunk in stream_continuation(updated_messages, continuation_state):
+            yield chunk
+            
+    except Exception as e:
+        logger.error(f"🔄 CONTINUATION: Error in continuation {continuation_id}: {e}")
+        # Yield error and complete the stream
+        error_chunk = {"op": "add", "path": "/streamed_output_str/-", "value": f"\n\n*[Continuation error: {str(e)}]*"}
+        yield f"data: {json.dumps({'ops': [error_chunk]})}\n\n"
+    finally:
+        # Clean up continuation state
+        with _continuation_lock:
+            _active_continuations.pop(continuation_id, None)
+ 
+def create_continuation_prompt(continuation_state: Dict[str, Any]) -> str:
+    """Create a prompt for seamless continuation."""
+    remaining = continuation_state.get("remaining_response", "")
+    
+    if remaining:
+        return f"Continue from where you left off. You were in the middle of: {remaining[:200]}..."
+    else:
+        return "Continue your response from where you left off. Maintain the same context and tone."
+
+async def stream_continuation(messages: List, continuation_state: Dict[str, Any]):
+    """Stream the continuation part with clean output buffer."""
+    try:
+        # Use the same streaming logic but with updated messages
+        from app.agents.agent import model
+        model_instance = model.get_model()
+        
+        # Stream the continuation
+        async for chunk in model_instance.astream(messages):
+            # Extract content from chunk - handle different chunk types
+            if hasattr(chunk, 'content'):
+                if callable(chunk.content):
+                    content = chunk.content()
+                else:
+                    content = chunk.content
+            else:
+                content = str(chunk) if chunk else ""
+            
+            # Convert to string
+            if isinstance(content, str):
+                content_str = content
+            else:
+                content_str = str(content) if content else ""
+                
+            if content_str:
+                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
+                yield f"data: {json.dumps({'ops': ops})}\n\n"
+        
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        
+    except Exception as e:
+        logger.error(f"Error in stream_continuation: {e}")
+        raise
+
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
-    print("🔍 STREAM_CHUNKS: FUNCTION CALLED - ENTRY POINT")
+    logger.debug("🔍 STREAM_CHUNKS: FUNCTION CALLED - ENTRY POINT")
     logger.error("🔍 EXECUTION_TRACE: stream_chunks() called - ENTRY POINT")
     logger.info("🔍 STREAM_CHUNKS: Function called")
     
@@ -828,7 +1051,7 @@ async def stream_chunks(body):
     
     # FORCE DIRECT STREAMING - Claude should use direct streaming, not LangChain
     use_direct_streaming = True
-    print(f"🔍 STREAM_CHUNKS: FORCED use_direct_streaming = {use_direct_streaming}")
+    logger.debug(f"🔍 STREAM_CHUNKS: FORCED use_direct_streaming = {use_direct_streaming}")
     
     logger.info(f"🚀 DIRECT_STREAMING: Environment check = {use_direct_streaming}")
     logger.info(f"🚀 DIRECT_STREAMING: Import-time config = {USE_DIRECT_STREAMING}")
@@ -841,12 +1064,12 @@ async def stream_chunks(body):
         
         # Extract messages from body
         messages = []
-        print(f"🔧 DEBUG: Request body keys: {list(body.keys())}")
-        print(f"🔧 DEBUG: chat_history present: {'chat_history' in body}")
-        print(f"🔧 DEBUG: question present: {'question' in body}")
-        print(f"🔧 DEBUG: config contents: {body.get('config', 'No config key')}")
+        logger.debug(f"Request body keys: {list(body.keys())}")
+        logger.debug(f"chat_history present: {'chat_history' in body}")
+        logger.debug(f"question present: {'question' in body}")
+        logger.debug(f"config contents: {body.get('config', 'No config key')}")
         if 'question' in body:
-            print(f"🔧 DEBUG: question value: '{body['question']}'")
+            logger.debug(f"question value: '{body['question']}'")
         
         # Add system prompt with full capabilities (including visualization)
         from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
@@ -866,8 +1089,8 @@ async def stream_chunks(body):
             
             # Add codebase context
             codebase_content = ""
-            print(f"🔧 DEBUG: Files in body: {'files' in body}")
-            print(f"🔧 DEBUG: Files in config: {'files' in body.get('config', {})}")
+            logger.debug(f"Files in body: {'files' in body}")
+            logger.debug(f"Files in config: {'files' in body.get('config', {})}")
             
             files_list = None
             if 'files' in body:
@@ -876,12 +1099,12 @@ async def stream_chunks(body):
                 files_list = body['config']['files']
                 
             if files_list:
-                print(f"🔧 DEBUG: Files count: {len(files_list)}")
+                logger.debug(f"Files count: {len(files_list)}")
                 from app.agents.agent import get_combined_docs_from_files
                 codebase_content = get_combined_docs_from_files(files_list)
-                print(f"🔧 DEBUG: Codebase content length: {len(codebase_content)}")
+                logger.debug(f"Codebase content length: {len(codebase_content)}")
             else:
-                print(f"🔧 DEBUG: No files provided, codebase will be empty")
+                logger.debug("No files provided, codebase will be empty")
             
             # Format the system message
             formatted_system_content = system_content.replace('{codebase}', codebase_content)
@@ -891,9 +1114,9 @@ async def stream_chunks(body):
         
         # Handle both 'chat_history' and 'messages' formats
         chat_messages = body.get('chat_history') or body.get('messages', [])
-        print(f"🔧 DEBUG: Found {len(chat_messages)} chat messages")
+        logger.debug(f"Found {len(chat_messages)} chat messages")
         for i, msg in enumerate(chat_messages):
-            print(f"🔧 DEBUG: Message {i}: {msg}")
+            logger.debug(f"Message {i}: {msg}")
             # Convert list format [role, content] to dict format
             if isinstance(msg, list) and len(msg) == 2:
                 role, content = msg
@@ -910,10 +1133,10 @@ async def stream_chunks(body):
         if 'question' in body and body['question']:
             messages.append({'type': 'human', 'content': body['question']})
         
-        print(f"🔧 DEBUG: Final messages count: {len(messages)}")
+        logger.debug(f"Final messages count: {len(messages)}")
         if messages:
-            print(f"🔧 DEBUG: First message type: {messages[0].get('type', 'unknown')}")
-            print(f"🔧 DEBUG: System message length: {len(messages[0].get('content', '')) if messages[0].get('type') == 'system' else 'N/A'}")
+            logger.debug(f"First message type: {messages[0].get('type', 'unknown')}")
+            logger.debug(f"System message length: {len(messages[0].get('content', '')) if messages[0].get('type') == 'system' else 'N/A'}")
         
         # Create DirectStreamingAgent and stream
         try:
@@ -941,7 +1164,7 @@ async def stream_chunks(body):
             
             # OpenAI models should use same message construction as other Bedrock models
             if current_model_id and 'openai' in current_model_id.lower():
-                print(f"🔧 DEBUG: {current_model_id} detected, using same message construction as other Bedrock models")
+                logger.debug(f"{current_model_id} detected, using same message construction as other Bedrock models")
                 
                 # Extract variables from request body
                 question = body.get("question", "")
@@ -983,7 +1206,7 @@ async def stream_chunks(body):
                     
                     # Skip to LangChain execution with proper messages
                     messages = langchain_messages
-                    print(f"🔧 DEBUG: Built {len(messages)} LangChain messages for OpenAI model")
+                    logger.debug(f"Built {len(messages)} LangChain messages for OpenAI model")
                     
                     # Jump directly to LangChain execution
                     model_instance = model.get_model()
@@ -1011,11 +1234,11 @@ async def stream_chunks(body):
                 files = config_data.get("files", [])
                 
                 # Debug: Log what we received
-                print(f"🔧 DEBUG: Received question: '{question}'")
-                print(f"🔧 DEBUG: Received chat_history with {len(chat_history)} items")
+                logger.debug(f"Received question: '{question}'")
+                logger.debug(f"Received chat_history with {len(chat_history)} items")
                 for i, item in enumerate(chat_history):
-                    print(f"🔧 DEBUG: Chat history item {i}: {item}")
-                print(f"🔧 DEBUG: Received {len(files)} files")
+                    logger.debug(f"Chat history item {i}: {item}")
+                logger.debug(f"Received {len(files)} files")
                 
                 # Build messages using existing function - use langchain format for proper message handling
                 messages = build_messages_for_streaming(question, chat_history, files, 
@@ -1023,19 +1246,19 @@ async def stream_chunks(body):
                                                        use_langchain_format=True)
                 
                 # Debug: Log the messages being sent
-                print(f"🔧 DEBUG: Built {len(messages)} messages for StreamingToolExecutor")
+                logger.debug(f"Built {len(messages)} messages for StreamingToolExecutor")
                 for i, msg in enumerate(messages):
                     role = msg.get('role', 'unknown')
                     content_preview = msg.get('content', '')[:100] + '...' if len(msg.get('content', '')) > 100 else msg.get('content', '')
-                    print(f"🔧 DEBUG: Message {i}: role={role}, content_preview='{content_preview}'")
+                    logger.debug(f"Message {i}: role={role}, content_preview='{content_preview}'")
                 
                 # Use StreamingToolExecutor for proper tool execution (Bedrock only)
                 endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-                print(f"🔧 DEBUG: Current endpoint: {endpoint}")
+                logger.debug(f"Current endpoint: {endpoint}")
                 
                 if endpoint == "bedrock":
                     try:
-                        print("🔧 DEBUG: ENTERING StreamingToolExecutor section")
+                        logger.debug("ENTERING StreamingToolExecutor section")
                         from app.streaming_tool_executor import StreamingToolExecutor
                         
                         # Create StreamingToolExecutor instance with correct region
@@ -1045,36 +1268,36 @@ async def stream_chunks(body):
                         executor = StreamingToolExecutor(profile_name=aws_profile, region=current_region)
                         
                         logger.info("🚀 DIRECT_STREAMING: Using StreamingToolExecutor")
-                        print("🔧 DEBUG: About to load MCP tools")
+                        logger.debug("About to load MCP tools")
                         
                         # Get available tools including MCP tools
                         tools = []
                         try:
                             from app.mcp.manager import get_mcp_manager
                             mcp_manager = get_mcp_manager()
-                            print(f"🔧 DEBUG: MCP manager initialized: {mcp_manager.is_initialized}")
+                            logger.debug(f"MCP manager initialized: {mcp_manager.is_initialized}")
                             if mcp_manager.is_initialized:
                                 # Convert MCP tools to Bedrock format
                                 mcp_tools = mcp_manager.get_all_tools()
-                                print(f"🔧 DEBUG: Found {len(mcp_tools)} MCP tools")
+                                logger.debug(f"Found {len(mcp_tools)} MCP tools")
                                 for tool in mcp_tools:
-                                    print(f"🔧 DEBUG: MCP tool: {tool.name}")
+                                    logger.debug(f"MCP tool: {tool.name}")
                                     tools.append({
                                         'name': tool.name,
                                     'description': tool.description,
                                     'input_schema': getattr(tool, 'inputSchema', getattr(tool, 'input_schema', {}))
                                 })
                         except Exception as e:
-                            print(f"🔧 DEBUG: MCP tool loading error: {e}")
+                            logger.debug(f"MCP tool loading error: {e}")
                             logger.warning(f"Could not get MCP tools: {e}")
                         
                         # Add shell tool if no MCP tools available
                         if not tools:
-                            print("🔧 DEBUG: No MCP tools found, using shell tool")
+                            logger.debug("No MCP tools found, using shell tool")
                             from app.agents.direct_streaming import get_shell_tool_schema
                             tools = [get_shell_tool_schema()]
                         else:
-                            print(f"🔧 DEBUG: Using {len(tools)} tools: {[t['name'] for t in tools]}")
+                            logger.debug(f"Using {len(tools)} tools: {[t['name'] for t in tools]}")
                         
                         # Stream with proper tool execution
                         async for chunk in executor.stream_with_tools(messages, tools):
@@ -1119,7 +1342,7 @@ async def stream_chunks(body):
             # Jump to StreamingToolExecutor section
             if endpoint == "bedrock":
                 try:
-                    print("🔧 DEBUG: ENTERING StreamingToolExecutor section for Nova")
+                    logger.debug("ENTERING StreamingToolExecutor section for Nova")
                     from app.streaming_tool_executor import StreamingToolExecutor
                     
                     # Create StreamingToolExecutor instance with correct region
@@ -1158,7 +1381,7 @@ async def stream_chunks(body):
                         conversation_id=conversation_id
                     )
                     
-                    print(f"🔧 DEBUG: Built {len(messages)} messages for Nova StreamingToolExecutor")
+                    logger.debug(f"Built {len(messages)} messages for Nova StreamingToolExecutor")
                     
                     # Use StreamingToolExecutor for Nova
                     async for chunk in executor.stream_with_tools(messages):
@@ -1198,6 +1421,10 @@ async def stream_chunks(body):
         # Extract all needed variables from request body
         question = body.get("question", "")
         chat_history = body.get("chat_history", [])
+        
+        # Log the user's question at INFO level
+        if question.strip():
+            logger.info(f"👤 USER QUERY: {question}")
         
         # Handle frontend messages format conversion
         if (not chat_history or len(chat_history) == 0) and "messages" in body:
@@ -1370,6 +1597,7 @@ async def stream_chunks(body):
         chunk_count = 0
         full_response = ""
 
+        full_context = {"body": body, "files": files, "chat_history": chat_history}
         # Initialize variables for agent iteration loop
         processed_tool_calls = set()
         max_iterations = 20
@@ -1385,10 +1613,13 @@ async def stream_chunks(body):
         
         processed_tool_calls = set()  # Track which tool calls we've already processed
         # Create a background task for cleanup when the stream ends
-        # Allow tool calls to complete - only stop at the END of tool calls
-        model_with_stop = model_instance.bind(stop=[
-            "</TOOL_SENTINEL>",  # Stop AFTER the tool call completes
-        ])
+
+        # Context overflow detection state
+        overflow_checked = False
+        continuation_triggered = False
+        
+        # Get MCP tools for the iteration
+        mcp_tools = []
 
         # Get MCP tools for the iteration
         mcp_tools = []
@@ -1481,6 +1712,36 @@ async def stream_chunks(body):
                     
                     # Always accumulate content in current_response for tool detection
                     current_response += content_str
+
+                    # Check for context overflow before processing further
+                    # Check every 100 chunks to avoid performance impact
+                    if (not overflow_checked and 
+                        chunk_count % 100 == 0 and
+                        len(current_response) > 10000):  # Only check if response is getting substantial
+
+                        overflow_info = await check_context_overflow(
+                            current_response, 
+                            conversation_id, 
+                            messages_for_model, 
+                            full_context
+                        )
+                        
+                        if overflow_info:
+                            logger.info("🔄 CONTEXT: Triggering continuation due to overflow")
+                            # Stream the completed part
+                            
+                            # Add visual marker that continuation is happening
+                            marker_ops = [{"op": "add", "path": "/streamed_output_str/-", "value": "\n\n---\n**⏳ Response is long, preparing continuation...**\n---\n\n"}]
+                            yield f"data: {json.dumps({'ops': marker_ops})}\n\n"
+                            
+                            completed_ops = [{"op": "add", "path": "/streamed_output_str/-", "value": overflow_info["completed_response"]}]
+                            yield f"data: {json.dumps({'ops': completed_ops})}\n\n"
+                            
+                            # Start continuation
+                            async for continuation_chunk in handle_continuation(overflow_info):
+                                yield continuation_chunk
+                            return
+                        overflow_checked = True
                     # Check for reasoning content in OpenAI format (ops structure)
                     if content_str and '<reasoning>' in content_str and '</reasoning>' in content_str:
                         import re
@@ -1983,7 +2244,7 @@ async def stream_chunks(body):
                 # Preserve any accumulated response content before handling the error
                 if current_response and len(current_response.strip()) > 0:
                     logger.info(f"Preserving {len(current_response)} characters of partial response before error")
-                    print(f"PARTIAL RESPONSE PRESERVED (AGENT ERROR):\n{current_response}")
+                    logger.debug(f"PARTIAL RESPONSE PRESERVED (AGENT ERROR):\n{current_response}")
                     
                     # Send the partial content to the frontend
                     ops = [{"op": "add", "path": "/streamed_output_str/-", "value": current_response}]
@@ -2034,9 +2295,13 @@ async def stream_chunks(body):
         logger.info(f"Messages sent to model: {len(messages)}")
         logger.info(f"Files in context: {len(files)}")
         logger.info(f"Chat history items: {len(chat_history)}")
+        
+        # Log the final server response at INFO level
+        if full_response.strip():
+            logger.info(f"🤖 FINAL SERVER RESPONSE: {full_response[:500]}{'...' if len(full_response) > 500 else ''}")
+        
         logger.info("=" * 50)
         
-        logger.info(f"Response content:\n{full_response}")
         logger.info("=== END SERVER RESPONSE ===")
 
         # Send DONE marker and cleanup
