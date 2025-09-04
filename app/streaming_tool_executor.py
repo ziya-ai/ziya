@@ -51,7 +51,7 @@ class StreamingToolExecutor:
         except:
             self.model_id = ''
         
-        print(f"🔧 DEBUG: StreamingToolExecutor initialized with model_id: '{self.model_id}'")
+        logger.debug(f"StreamingToolExecutor initialized with model_id: '{self.model_id}'")
         
         # State management for tool execution
         self.active_tools: Dict[str, Dict[str, Any]] = {}
@@ -108,24 +108,24 @@ class StreamingToolExecutor:
         Stream response from Bedrock while executing tools in real-time
         Support hundreds of chained tool calls within single stream like Q CLI
         """
-        print(f"🔧 DEBUG: StreamingToolExecutor.stream_with_tools called with {len(messages)} messages")
-        print("🔧 DEBUG: *** MODIFIED VERSION WITH MCP SUPPORT ***")
-        print(f"🔧 DEBUG: Model ID: '{self.model_id}'")
-        print(f"🔧 DEBUG: Tools parameter: {tools}")
+        logger.debug(f"StreamingToolExecutor.stream_with_tools called with {len(messages)} messages")
+        logger.debug("*** MODIFIED VERSION WITH MCP SUPPORT ***")
+        logger.debug(f"Model ID: '{self.model_id}'")
+        logger.debug(f"Tools parameter: {tools}")
         logger.info(f"🔧 STREAMING_TOOL_EXECUTOR: Starting stream_with_tools with {len(messages)} messages")
         
         self.reset_state()
         
         if tools is None:
-            print("🔧 DEBUG: No tools provided, loading MCP tools")
+            logger.debug("No tools provided, loading MCP tools")
             # Check if model supports tools before loading
             if self.model_id and ('deepseek' in self.model_id.lower() or 'openai' in self.model_id.lower()):
-                print(f"🔧 DEBUG: Model {self.model_id} detected, skipping tool loading (uses LangChain path)")
+                logger.debug(f"Model {self.model_id} detected, skipping tool loading (uses LangChain path)")
                 tools = []
             else:
                 tools = self._get_available_tools()
         else:
-            print(f"🔧 DEBUG: Using provided tools: {[t.get('name', 'unknown') for t in tools]}")
+            logger.debug(f"Using provided tools: {[t.get('name', 'unknown') for t in tools]}")
             # Check if model supports tools and disable if needed
             if self.model_id and ('deepseek' in self.model_id.lower() or 'openai' in self.model_id.lower()):
                 print(f"🔧 DEBUG: Model {self.model_id} detected, disabling provided tools (uses LangChain path)")
@@ -135,7 +135,7 @@ class StreamingToolExecutor:
         max_rounds = 100  # Support hundreds of tool calls
         
         for round_num in range(max_rounds):
-            print(f"🔄 DEBUG: Starting tool round {round_num + 1}")
+            logger.debug(f"Starting tool round {round_num + 1}")
             
             # Extract system messages and convert to Bedrock format
             system_messages = []
@@ -176,7 +176,7 @@ class StreamingToolExecutor:
             # Check if model supports tools
             model_supports_tools = True
             if self.model_id and ('deepseek' in self.model_id.lower() or 'openai' in self.model_id.lower()):
-                print(f"🔧 DEBUG: Model {self.model_id} detected, disabling tools (uses LangChain path)")
+                logger.debug(f"Model {self.model_id} detected, disabling tools (uses LangChain path)")
                 model_supports_tools = False
                 tools = []
 
@@ -197,8 +197,8 @@ class StreamingToolExecutor:
                 })
             
             # Debug: Print tools being sent to Bedrock
-            print(f"🔧 DEBUG: Sending {len(tools)} tools to Bedrock: {[t.get('name', 'unnamed') for t in tools]}")
-            print(f"🔧 DEBUG: First tool schema: {tools[0] if tools else 'No tools'}")
+            logger.debug(f"Sending {len(tools)} tools to Bedrock: {[t.get('name', 'unnamed') for t in tools]}")
+            logger.debug(f"First tool schema: {tools[0] if tools else 'No tools'}")
             
             if system_content:
                 body["system"] = system_content
@@ -215,11 +215,11 @@ class StreamingToolExecutor:
                 else:
                     current_model_id = model_id_result
                 
-                print(f"🔄 DEBUG: Round {round_num + 1} - Calling Bedrock with model {current_model_id}")
+                logger.debug(f"Round {round_num + 1} - Calling Bedrock with model {current_model_id}")
                 
                 # Check if model supports tools and adjust parameters
                 if current_model_id and 'deepseek' in current_model_id.lower():
-                    print(f"🔧 DEBUG: Deepseek model detected ({current_model_id}), using Converse API")
+                    logger.debug(f"Deepseek model detected ({current_model_id}), using Converse API")
                     # DeepSeek requires Converse API, not InvokeModelWithResponseStream
                     
                     # Convert messages to Converse format
@@ -249,9 +249,9 @@ class StreamingToolExecutor:
                     # Add system prompt if present
                     if "system" in body:
                         converse_request["system"] = [{"text": body["system"]}]
-                        print(f"🔧 DEBUG: Deepseek system content preserved ({len(body['system'])} chars)")
+                        logger.debug(f"Deepseek system content preserved ({len(body['system'])} chars)")
                     
-                    print(f"🔧 DEBUG: Using Converse API for DeepSeek with {len(converse_messages)} messages")
+                    logger.debug(f"Using Converse API for DeepSeek with {len(converse_messages)} messages")
                     
                     try:
                         response = self.bedrock.converse_stream(**converse_request)
@@ -272,16 +272,16 @@ class StreamingToolExecutor:
                             elif 'messageStop' in event:
                                 break
                         
-                        print(f"🔄 DEBUG: Round {round_num + 1} completed - DeepSeek text: {len(round_text)} chars")
+                        logger.debug(f"Round {round_num + 1} completed - DeepSeek text: {len(round_text)} chars")
                         # DeepSeek doesn't support tools in the same way, so we're done
                         return
                         
                     except Exception as e:
-                        print(f"🔄 DEBUG: DeepSeek Converse API error: {e}")
+                        logger.debug(f"DeepSeek Converse API error: {e}")
                         raise
                         
                 elif current_model_id and any(nova_model in current_model_id.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
-                    print(f"🔧 DEBUG: Nova model detected ({current_model_id}), delegating to Nova wrapper")
+                    logger.debug(f"Nova model detected ({current_model_id}), delegating to Nova wrapper")
                     # Delegate to Nova wrapper for proper handling
                     from app.agents.wrappers.nova_wrapper import NovaWrapper
                     nova_wrapper = NovaWrapper(model_id=current_model_id)
@@ -293,7 +293,7 @@ class StreamingToolExecutor:
                         return
                     except Exception as e:
                         if "NOVA_FALLBACK_NEEDED" in str(e):
-                            print(f"🔧 DEBUG: Nova wrapper requested fallback, using regular processing")
+                            logger.debug("Nova wrapper requested fallback, using regular processing")
                             # Fall through to regular processing
                         else:
                             # Nova wrapper had a real error
@@ -302,7 +302,7 @@ class StreamingToolExecutor:
                                 'content': f"Nova wrapper error: {str(e)}"
                             }
                             return
-                    print(f"🔧 DEBUG: Nova model detected ({current_model_id}), delegating to Nova wrapper")
+                    logger.debug(f"Nova model detected ({current_model_id}), delegating to Nova wrapper")
                     # Delegate to Nova wrapper for proper handling
                     from app.agents.wrappers.nova_wrapper import NovaWrapper
                     nova_wrapper = NovaWrapper(model_id=current_model_id)
@@ -324,7 +324,7 @@ class StreamingToolExecutor:
                         model_config = ModelManager.get_model_config('bedrock', ModelManager.get_model_alias())
                         
                         if model_config.get('supports_extended_context', False):
-                            print(f"🚀 STREAMING_EXTENDED_CONTEXT: Detected context limit error, retrying with extended context")
+                            logger.debug("STREAMING_EXTENDED_CONTEXT: Detected context limit error, retrying with extended context")
                             # Add extended context header and retry
                             header_value = model_config.get('extended_context_header')
                             if header_value:
@@ -334,36 +334,35 @@ class StreamingToolExecutor:
                                     modelId=current_model_id,
                                     body=json.dumps(body)
                                 )
-                                print(f"🚀 STREAMING_EXTENDED_CONTEXT: Extended context retry successful")
+                                logger.debug("STREAMING_EXTENDED_CONTEXT: Extended context retry successful")
                             else:
-                                print(f"🔄 DEBUG: Round {round_num + 1} error: {e}")
+                                logger.debug(f"Round {round_num + 1} error: {e}")
                                 raise
                         else:
-                            print(f"🔄 DEBUG: Round {round_num + 1} error: {e}")
+                            logger.debug(f"Round {round_num + 1} error: {e}")
                             raise
                     else:
-                        print(f"🔄 DEBUG: Round {round_num + 1} error: {e}")
+                        logger.debug(f"Round {round_num + 1} error: {e}")
                         raise
                 
-                print(f"🔧 DEBUG: Got response type: {type(response)}")
-                print(f"🔧 DEBUG: Response keys: {list(response.keys()) if hasattr(response, 'keys') else 'No keys'}")
+                logger.debug(f"Got response type: {type(response)}")
+                logger.debug(f"Response keys: {list(response.keys()) if hasattr(response, 'keys') else 'No keys'}")
                 
                 round_text = ""
                 round_tool_results = []
                 has_tool_calls = False
                 
-                print(f"🔧 DEBUG: About to iterate over response['body']")
+                logger.debug("About to iterate over response['body']")
                 chunk_count = 0
                 for event in response['body']:
                     chunk_count += 1
                     if chunk_count <= 3:  # Only log first few chunks
-                        print(f"🔧 DEBUG: Processing chunk {chunk_count}")
+                        logger.debug(f"Processing chunk {chunk_count}")
                     chunk = json.loads(event['chunk']['bytes'])
                     
                     # Debug: Print chunk structure for first few chunks
                     if chunk_count <= 2:
-                        print(f"🔧 DEBUG: Chunk {chunk_count} structure: {chunk}")
-                    
+                        logger.debug(f"Chunk {chunk_count} structure: {chunk}")                    
                     # Handle different response formats
                     if current_model_id and 'deepseek' in current_model_id.lower():
                         # Deepseek response format
@@ -390,10 +389,10 @@ class StreamingToolExecutor:
                                 yield {'type': 'text', 'content': text}
                         elif 'messageStart' in chunk:
                             # Just log message start, no content to yield
-                            print(f"🔧 DEBUG: Nova Pro message started with role: {chunk['messageStart'].get('role')}")
+                            logger.debug(f"Nova Pro message started with role: {chunk['messageStart'].get('role')}")
                         elif 'messageStop' in chunk:
                             # Message completed - check for text-based tool calls
-                            print(f"🔧 DEBUG: Nova Pro message completed")
+                            logger.debug("Nova Pro message completed")
                             # Parse text-based tool calls from Nova Pro using wrapper
                             from app.agents.wrappers.nova_wrapper import NovaWrapper
                             nova_wrapper = NovaWrapper(model_id=current_model_id)
@@ -421,11 +420,15 @@ class StreamingToolExecutor:
                                 round_tool_results.append(tool_result)
                             yield tool_result
                 
-                print(f"🔄 DEBUG: Round {round_num + 1} completed - text: {len(round_text)} chars, tools: {len(round_tool_results)}")
+                logger.info(f"🔄 ROUND {round_num + 1} COMPLETE: {len(round_text)} chars, {len(round_tool_results)} tools")
+                if round_text.strip():
+                    logger.info(f"📝 SERVER RESPONSE: {round_text[:300]}{'...' if len(round_text) > 300 else ''}")
+                if round_tool_results:
+                    logger.info(f"🔧 TOOLS EXECUTED: {[r.get('tool_name', 'unknown') for r in round_tool_results]}")
                 
                 # If no tool calls were made, we're done
                 if not has_tool_calls:
-                    print(f"🔄 DEBUG: No more tool calls, ending after round {round_num + 1}")
+                    logger.debug(f"No more tool calls, ending after round {round_num + 1}")
                     break
                 
                 # Add assistant response to conversation
@@ -445,7 +448,7 @@ class StreamingToolExecutor:
                 await asyncio.sleep(0.1)
                 
             except Exception as e:
-                print(f"🔄 DEBUG: Round {round_num + 1} error: {str(e)}")
+                logger.debug(f"Round {round_num + 1} error: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 
@@ -460,7 +463,7 @@ class StreamingToolExecutor:
                     yield {'type': 'error', 'content': f"Streaming error: {str(e)}"}
                     break
         
-        print(f"🔄 DEBUG: Completed after {round_num + 1} rounds")
+        logger.debug(f"Completed after {round_num + 1} rounds")
     
     async def _handle_tool_chunk(self, chunk: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Bedrock tool_use chunks and execute tools in real-time"""
@@ -476,14 +479,14 @@ class StreamingToolExecutor:
             if content_block.get('type') == 'tool_use':
                 tool_id = content_block.get('id')
                 tool_name = content_block.get('name')
-                print(f"🔧 DEBUG: Tool use start - id: {tool_id}, name: {tool_name}")
+                logger.debug(f"Tool use start - id: {tool_id}, name: {tool_name}")
                 if tool_id and tool_name:
                     self.active_tools[tool_id] = {
                         'name': tool_name,
                         'partial_json': '',
                         'index': chunk.get('index')
                     }
-                    print(f"🔧 DEBUG: Registered tool: {self.active_tools[tool_id]}")
+                    logger.debug(f"Registered tool: {self.active_tools[tool_id]}")
         
         elif chunk['type'] == 'content_block_delta':
             delta = chunk.get('delta', {})
@@ -499,8 +502,8 @@ class StreamingToolExecutor:
                     # Try to execute when JSON is complete
                     result = await self._try_execute_tool(tool_id)
                     if result:
-                        print(f"🔧 DEBUG: Tool execution successful: {result[:100]}...")
                         tool_name = self.active_tools[tool_id]['name']
+                        logger.info(f"🔧 TOOL RESULT: {tool_name} -> {result[:200]}...")
                         
                         # Convert tool name to frontend format and detect special cases
                         display_name = tool_name
@@ -529,13 +532,13 @@ class StreamingToolExecutor:
             index = chunk.get('index')
             tool_id = self._find_tool_by_index(index)
             
-            print(f"🔧 DEBUG: Content block stop - index: {index}, tool_id: {tool_id}")
+            logger.debug(f"Content block stop - index: {index}, tool_id: {tool_id}")
             
             if tool_id and tool_id not in self.completed_tools:
                 result = await self._try_execute_tool(tool_id)
                 if result:
-                    print(f"🔧 DEBUG: Final tool execution successful: {result[:100]}...")
                     tool_name = self.active_tools[tool_id]['name']
+                    logger.info(f"🔧 FINAL TOOL RESULT: {tool_name} -> {result[:200]}...")
                     
                     # Convert tool name to frontend format and detect special cases
                     display_name = tool_name
@@ -576,18 +579,18 @@ class StreamingToolExecutor:
             args = json.loads(complete_json)  # Validate JSON
             
             tool_name = self.active_tools[tool_id]['name']
-            print(f"🔧 DEBUG: Executing tool '{tool_name}' with args: {args}")
+            logger.info(f"🔧 TOOL EXECUTION: '{tool_name}' with args: {args}")
             
             # Handle all tools through MCP
             if tool_name.startswith('mcp_') or tool_name in ['get_current_time', 'execute_shell_command', 'run_shell_command']:
                 # Handle MCP tools - convert name to mcp_ format for frontend
                 mcp_tool_name = tool_name if tool_name.startswith('mcp_') else f'mcp_{tool_name}'
-                print(f"🔧 DEBUG: Calling MCP tool: {tool_name} -> {mcp_tool_name}")
+                logger.debug(f"Calling MCP tool: {tool_name} -> {mcp_tool_name}")
                 result = await self._execute_mcp_tool(tool_name, args)
                 self.completed_tools.add(tool_id)
                 return result
             else:
-                print(f"🔧 DEBUG: Unknown tool type: {tool_name}")
+                logger.debug(f"Unknown tool type: {tool_name}")
                 self.completed_tools.add(tool_id)
                 return f"Unknown tool: {tool_name}"
             
@@ -595,7 +598,7 @@ class StreamingToolExecutor:
             # JSON not complete yet
             return None
         except Exception as e:
-            print(f"🔧 DEBUG: Tool execution exception: {str(e)}")
+            logger.debug(f"Tool execution exception: {str(e)}")
             import traceback
             traceback.print_exc()
             self.completed_tools.add(tool_id)
@@ -604,32 +607,32 @@ class StreamingToolExecutor:
     async def _execute_mcp_tool(self, tool_name: str, args: dict) -> str:
         """Execute MCP tool by calling the MCP manager"""
         try:
-            print(f"🔧 DEBUG: _execute_mcp_tool called with tool_name='{tool_name}', args={args}")
+            logger.debug(f"_execute_mcp_tool called with tool_name='{tool_name}', args={args}")
             
             # Import MCP manager
             from app.mcp.manager import get_mcp_manager
             
             # Remove 'mcp_' prefix to get actual tool name
             actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
-            print(f"🔧 DEBUG: Actual tool name: '{actual_tool_name}'")
+            logger.debug(f"Actual tool name: '{actual_tool_name}'")
             
             mcp_manager = get_mcp_manager()
-            print(f"🔧 DEBUG: Got MCP manager: {mcp_manager}")
+            logger.debug(f"Got MCP manager: {mcp_manager}")
             
             # Execute the MCP tool - let the manager find the right server
             if actual_tool_name == 'run_shell_command':
                 command = args.get('command', args.get('input', ''))
-                print(f"🔧 DEBUG: Executing shell command: '{command}'")
+                logger.info(f"🔧 SHELL COMMAND: '{command}'")
                 result = await mcp_manager.call_tool('run_shell_command', {'command': command})
             elif actual_tool_name == 'get_current_time':
-                print(f"🔧 DEBUG: Getting current time")
+                logger.info("🔧 TIME QUERY: Getting current time")
                 result = await mcp_manager.call_tool('get_current_time', {})
             else:
                 # Generic MCP tool call
-                print(f"🔧 DEBUG: Generic MCP tool call: '{actual_tool_name}' with args: {args}")
+                logger.info(f"🔧 MCP TOOL: '{actual_tool_name}' with args: {args}")
                 result = await mcp_manager.call_tool(actual_tool_name, args)
             
-            print(f"🔧 DEBUG: MCP tool result: {result}")
+            logger.info(f"🔧 MCP RESULT: {result}")
             
             if isinstance(result, dict) and 'content' in result:
                 content = result['content']
@@ -645,16 +648,16 @@ class StreamingToolExecutor:
                 return str(result)
                 
         except ConnectionError as e:
-            print(f"🔧 DEBUG: MCP connection error: {str(e)}")
+            logger.debug(f"MCP connection error: {str(e)}")
             return f"MCP server connection failed for tool '{tool_name}'. Server may be unavailable."
         except TimeoutError as e:
-            print(f"🔧 DEBUG: MCP timeout error: {str(e)}")
+            logger.debug(f"MCP timeout error: {str(e)}")
             return f"MCP tool '{tool_name}' timed out. Try a simpler operation or check server status."
         except json.JSONDecodeError as e:
-            print(f"🔧 DEBUG: MCP JSON error: {str(e)}")
+            logger.debug(f"MCP JSON error: {str(e)}")
             return f"Invalid parameters for MCP tool '{tool_name}'. Check parameter format."
         except Exception as e:
-            print(f"🔧 DEBUG: MCP tool execution exception: {str(e)}")
+            logger.debug(f"MCP tool execution exception: {str(e)}")
             import traceback
             traceback.print_exc()
             return f"MCP tool '{tool_name}' failed: {str(e)}. Check tool parameters and server status."
@@ -667,12 +670,12 @@ class StreamingToolExecutor:
         try:
             from app.mcp.manager import get_mcp_manager
             mcp_manager = get_mcp_manager()
-            print(f"🔧 DEBUG: MCP manager initialized: {mcp_manager.is_initialized}")
+            logger.debug(f"MCP manager initialized: {mcp_manager.is_initialized}")
             if mcp_manager.is_initialized:
                 mcp_tools = mcp_manager.get_all_tools()
-                print(f"🔧 DEBUG: Found {len(mcp_tools)} MCP tools")
+                logger.debug(f"Found {len(mcp_tools)} MCP tools")
                 for tool in mcp_tools:
-                    print(f"🔧 DEBUG: MCP tool: {tool.name}")
+                    logger.debug(f"MCP tool: {tool.name}")
                     # MCPTool objects use 'inputSchema' not 'input_schema'
                     tools.append({
                         'name': tool.name,
@@ -680,13 +683,13 @@ class StreamingToolExecutor:
                         'input_schema': getattr(tool, 'inputSchema', getattr(tool, 'input_schema', {}))
                     })
         except Exception as e:
-            print(f"🔧 DEBUG: MCP tool loading error: {e}")
+            logger.debug(f"MCP tool loading error: {e}")
         
         # Return MCP tools only
         if not tools:
-            print("🔧 DEBUG: No MCP tools found")
+            logger.debug("No MCP tools found")
         else:
-            print(f"🔧 DEBUG: Using {len(tools)} MCP tools: {[t['name'] for t in tools]}")
+            logger.debug(f"Using {len(tools)} MCP tools: {[t['name'] for t in tools]}")
             
         return tools
 
@@ -700,18 +703,18 @@ async def example_usage():
         {"role": "user", "content": "Check the current directory and list its contents"}
     ]
     
-    print("🔄 Starting streaming with tools...")
+    logger.debug("Starting streaming with tools...")
     
     async for chunk in executor.stream_with_tools(messages):
         if chunk['type'] == 'text':
-            print(chunk['content'], end='', flush=True)
+            logger.debug(chunk['content'])
         elif chunk['type'] == 'tool_result':
-            print(f"\n🔧 Tool executed: {chunk['tool_name']}")
-            print(f"📄 Result: {chunk['result'][:200]}...")
+            logger.debug(f"Tool executed: {chunk['tool_name']}")
+            logger.debug(f"Result: {chunk['result'][:200]}...")
         elif chunk['type'] == 'error':
-            print(f"\n❌ Error: {chunk['content']}")
+            logger.debug(f"Error: {chunk['content']}")
     
-    print("\n✅ Streaming completed")
+    logger.debug("Streaming completed")
 
 if __name__ == "__main__":
     asyncio.run(example_usage())

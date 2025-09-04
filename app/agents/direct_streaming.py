@@ -110,9 +110,14 @@ class DirectStreamingAgent:
             Dict with 'type' field indicating 'text', 'tool_result', or 'error'
         """
         try:
-            print(f"🔧 DEBUG: DirectStreamingAgent received {len(messages)} messages")
+            logger.debug(f"DirectStreamingAgent received {len(messages)} messages")
+            
+            # Log user messages at INFO level
             for i, msg in enumerate(messages):
-                print(f"🔧 DEBUG: Message {i}: {msg}")
+                if msg.get('type') == 'human' and msg.get('content'):
+                    logger.info(f"👤 USER MESSAGE: {msg.get('content')}")
+                elif i < 3:  # Only debug log first 3 message structures
+                    logger.debug(f"Message {i}: type={msg.get('type', 'unknown')}")
             
             if self.is_bedrock:
                 # Use StreamingToolExecutor for Bedrock models
@@ -133,10 +138,10 @@ class DirectStreamingAgent:
                 async for chunk in self.executor.stream_with_tools(openai_messages, tools):
                     chunk_count += 1
                     if chunk_count <= 3:
-                        print(f"🔍 DIRECT_STREAMING: Got Bedrock chunk {chunk_count}: {chunk.get('type', 'unknown')}")
+                        logger.debug(f"DIRECT_STREAMING: Got Bedrock chunk {chunk_count}: {chunk.get('type', 'unknown')}")
                     yield chunk
-                
-                print(f"🔍 DIRECT_STREAMING: Finished Bedrock streaming, total chunks: {chunk_count}")
+            
+                logger.debug(f"DIRECT_STREAMING: Finished Bedrock streaming, total chunks: {chunk_count}")
                 
             else:
                 # Use DirectGoogleModel for Google models
@@ -161,18 +166,18 @@ class DirectStreamingAgent:
                 async for chunk in self.google_model.astream(langchain_messages):
                     chunk_count += 1
                     if chunk_count <= 3:
-                        print(f"🔍 DIRECT_STREAMING: Got Google chunk {chunk_count}")
-                    
+                        logger.debug(f"DIRECT_STREAMING: Got Google chunk {chunk_count}")
+                
                     # Convert Google response to our standard format
                     if hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
                         content = chunk.message.content
                         if content:
                             yield {"type": "text", "content": content}
-                
-                print(f"🔍 DIRECT_STREAMING: Finished Google streaming, total chunks: {chunk_count}")
-                
+            
+                logger.debug(f"DIRECT_STREAMING: Finished Google streaming, total chunks: {chunk_count}")
+            
         except Exception as e:
-            print(f"DEBUG: DirectStreamingAgent exception: {str(e)}")
+            logger.debug(f"DirectStreamingAgent exception: {str(e)}")
             import traceback
             traceback.print_exc()
             logger.error(f"[DIRECT_STREAMING] Error: {str(e)}")
