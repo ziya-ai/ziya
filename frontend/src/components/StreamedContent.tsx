@@ -374,7 +374,7 @@ export const StreamedContent: React.FC = () => {
 
                 // Add pre-streaming work if available and meaningful
                 if (pre_streaming_work && pre_streaming_work.length > 0) {
-                    // Filter out generic steps, keep only meaningful ones
+                    // Filter out generic steps, keep only meaningful ones  
                     const meaningfulWork = pre_streaming_work.filter(work =>
                         work.includes('💾 Cache') ||
                         work.includes('📝 Prepared') ||
@@ -410,6 +410,10 @@ export const StreamedContent: React.FC = () => {
                         : '');
                 preservedContent += errorContext;
 
+                console.log('Creating preserved message with content length:', preservedContent.length);
+                console.log('First 200 chars:', preservedContent.substring(0, 200));
+                console.log('Contains existing streamed content:', !!existing_streamed_content);
+                
                 const preservedMessage = {
                     id: uuidv4(),
                     role: 'assistant' as const,
@@ -520,7 +524,7 @@ export const StreamedContent: React.FC = () => {
     return (
         <div style={{
             display: 'flex',
-            // In bottom-up view, reverse the order of elements
+            // In bottom-up view, reverse the order of elements  
             flexDirection: isTopToBottom ? 'column' : 'column-reverse',
         }}>
             {streamingConversations.has(currentConversationId) &&
@@ -555,7 +559,7 @@ export const StreamedContent: React.FC = () => {
                                         {/* Show preservation notice if this content was preserved */}
                                         {streamedContent.includes('Successful Tool Executions Before Error:') && (
                                             <Alert
-                                                message="⚠️ Partial Response Preserved"
+                                                message="⚠️ Partial Response Preserved" 
                                                 description="Some tool executions completed successfully before an error occurred. Results are shown below."
                                                 type="warning"
                                                 showIcon
@@ -570,6 +574,21 @@ export const StreamedContent: React.FC = () => {
                                             enableCodeApply={enableCodeApply}
                                         />
                                     </div>
+                                )}
+                                {/* Show preservation notice for any preserved content */}
+                                {streamedContent.includes('Response was interrupted by an error') && (
+                                    <Alert
+                                        message="⚠️ Partial Response Preserved"
+                                        description="The response was interrupted by an error, but the content generated before the error has been preserved."
+                                        type="warning"
+                                        showIcon
+                                        style={{ marginBottom: '16px' }}
+                                        action={
+                                            <span style={{ fontSize: '12px', opacity: 0.7 }}>
+                                                You can continue the conversation or regenerate the response.
+                                            </span>
+                                        }
+                                    />
                                 )}
                                 {/* Show content even when there's an error */}
                                 {error && streamedContent && streamedContent.trim() && (
