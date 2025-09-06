@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant U as User
+    participant S as System
+    
+    U->>S: Request
+    alt Success case
+        S-->>U: - Success response
+            else Error case
+        S-->>U: - Error response
+    end
+    Note over U,S: - Process completed

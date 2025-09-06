@@ -1,0 +1,6 @@
+{
+    "description": "Complex Sankey diagram showing energy flow from sources through generation to end uses",
+    "diagram_type": "sankey",
+    "expected_to_fail": false,
+    "target_issue": "Beta Sankey diagram with multi-level energy flow visualization"
+}

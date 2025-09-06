@@ -1,0 +1,6 @@
+{
+    "description": "Quadrant chart analyzing technology investment portfolio with complexity vs impact analysis",
+    "diagram_type": "quadrantChart",
+    "expected_to_fail": false,
+    "target_issue": "Quadrant chart with multiple data points and strategic analysis visualization"
+}
