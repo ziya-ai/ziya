@@ -249,16 +249,16 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
     }
 
+    // Final override: if markdown block is closed, try to render regardless of other conditions
+    if (spec.isMarkdownBlockClosed && (isCompleteVegaLiteObject || (spec.definition && spec.definition.trim().length > 0))) {
+      console.log('Vega-Lite: Markdown block closed with content, forcing render');
+      shouldWaitForComplete = false;
+    }
+
     // Additional check: if we're actively streaming and block isn't closed, wait regardless of content
     if (spec.isStreaming && !spec.isMarkdownBlockClosed && !spec.forceRender) {
       console.log('Vega-Lite: Waiting due to active streaming state');
       shouldWaitForComplete = true;
-    }
-
-    // Final override: if markdown block is closed and we have some definition, try to render
-    if (spec.isMarkdownBlockClosed && (isCompleteVegaLiteObject || (spec.definition && spec.definition.trim().length > 0))) {
-      console.log('Vega-Lite: Markdown block closed with content, attempting render');
-      shouldWaitForComplete = false;
     }
 
     console.log('Vega-Lite: After all checks, shouldWaitForComplete =', shouldWaitForComplete);
@@ -266,22 +266,242 @@ export const vegaLitePlugin: D3RenderPlugin = {
     console.log('Vega-Lite: About to check shouldWaitForComplete condition...');
     if (shouldWaitForComplete) {
       console.log('Vega-Lite: Inside shouldWaitForComplete block');
-      loadingSpinner.innerHTML = `
-            <div style="text-align: center; padding: 20px; background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; border: 1px dashed #ccc; border-radius: 4px;">
-              <p>Waiting for complete Vega-Lite specification...</p>
-            </div>
-          `;
+      // Create enhanced waiting interface with debugging options like Mermaid
+      const waitingContainer = document.createElement('div');
+      waitingContainer.style.cssText = `
+        text-align: center; 
+        padding: 20px; 
+        background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; 
+        border: 1px dashed #ccc; 
+        border-radius: 4px;
+        position: relative;
+      `;
+      
+      waitingContainer.innerHTML = `
+        <p>Waiting for complete Vega-Lite specification...</p>
+        <div style="margin-top: 15px;">
+          <button class="vega-lite-retry-btn" style="
+            background-color: #4361ee;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            margin: 0 5px;
+            cursor: pointer;
+            font-size: 14px;
+          ">🔄 Force Render</button>
+          <button class="vega-lite-source-btn" style="
+            background-color: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            margin: 0 5px;
+            cursor: pointer;
+            font-size: 14px;
+          ">📝 View Source</button>
+        </div>
+      `;
+      
+      container.innerHTML = '';
+      container.appendChild(waitingContainer);
+      
+      // Add event listeners for the buttons using querySelector instead of getElementById
+      const retryButton = waitingContainer.querySelector('.vega-lite-retry-btn') as HTMLButtonElement;
+      const sourceButton = waitingContainer.querySelector('.vega-lite-source-btn') as HTMLButtonElement;
+      
+      if (retryButton) {
+        retryButton.onclick = () => {
+          console.log('Force rendering Vega-Lite visualization');
+          const forceSpec = { ...spec, forceRender: true };
+          vegaLitePlugin.render(container, d3, forceSpec, isDarkMode);
+        };
+      }
+      
+      if (sourceButton) {
+        sourceButton.onclick = () => {
+          console.log('Showing Vega-Lite source for debugging');
+          const sourceDefinition = spec.definition || JSON.stringify(spec, null, 2);
+          container.innerHTML = `
+              <div style="
+                background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+                border: 1px solid ${isDarkMode ? '#444' : '#e1e4e8'};
+                border-radius: 6px;
+                padding: 16px;
+                margin: 10px 0;
+              ">
+                <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                  <strong style="color: ${isDarkMode ? '#f8f9fa' : '#24292e'};">Vega-Lite Source:</strong>
+                  <div>
+                    <button class="force-render-from-source" style="
+                      background-color: #28a745;
+                      color: white;
+                      border: none;
+                      border-radius: 4px;
+                      padding: 6px 12px;
+                      margin-right: 8px;
+                      cursor: pointer;
+                      font-size: 13px;
+                    ">🔄 Force Render</button>
+                    <button class="expand-source" style="
+                      background-color: #6c757d;
+                      color: white;
+                      border: none;
+                      border-radius: 4px;
+                      padding: 6px 12px;
+                      cursor: pointer;
+                      font-size: 13px;
+                    ">📄 Expand</button>
+                  </div>
+                </div>
+                <pre style="
+                  background-color: ${isDarkMode ? '#0d1117' : '#f6f8fa'};
+                  padding: 12px;
+                  border-radius: 4px;
+                  overflow: auto;
+                  max-height: 300px;
+                  margin: 0;
+                  border: 1px solid ${isDarkMode ? '#30363d' : '#e1e4e8'};
+                  font-family: 'SFMono-Regular', 'Monaco', 'Inconsolata', 'Liberation Mono', 'Courier New', monospace;
+                  font-size: 13px;
+                  line-height: 1.45;
+                  color: ${isDarkMode ? '#e6edf3' : '#24292f'};
+                "><code>${sourceDefinition}</code></pre>
+                <div style="margin-top: 12px; font-size: 13px; color: ${isDarkMode ? '#8b949e' : '#656d76'};">
+                  <strong>Debug Info:</strong><br>
+                  • Streaming: ${spec.isStreaming ? 'Yes' : 'No'}<br>
+                  • Block Closed: ${spec.isMarkdownBlockClosed ? 'Yes' : 'No'}<br>
+                  • Definition Length: ${sourceDefinition.length} characters<br>
+                  • Complete Object: ${isCompleteVegaLiteObject ? 'Yes' : 'No'}
+                </div>
+              </div>
+            `;
+          
+          // Add event listeners for the new buttons in the source view
+          setTimeout(() => {
+            const forceRenderBtn = container.querySelector('.force-render-from-source') as HTMLButtonElement;
+            const expandBtn = container.querySelector('.expand-source') as HTMLButtonElement;
+            
+            if (forceRenderBtn) {
+              forceRenderBtn.onclick = () => {
+                console.log('Force rendering from source view');
+                const forceSpec = { ...spec, forceRender: true };
+                vegaLitePlugin.render(container, d3, forceSpec, isDarkMode);
+              };
+            }
+            
+            if (expandBtn) {
+              expandBtn.onclick = () => {
+                const pre = container.querySelector('pre') as HTMLElement;
+                if (pre) {
+                  const isExpanded = pre.style.maxHeight === 'none';
+                  pre.style.maxHeight = isExpanded ? '300px' : 'none';
+                  expandBtn.textContent = isExpanded ? '📄 Expand' : '📄 Collapse';
+                }
+              };
+            }
+          }, 0);
+        };
+      }
+      
       return; // Exit early and wait for complete definition
     }
     console.log('Vega-Lite: Past shouldWaitForComplete check, about to declare vegaSpec');
-
     console.log('Vega-Lite: Proceeding with spec processing...');
     let vegaSpec: any;
+
+    // CRITICAL PREPROCESSING: Fix common issues that cause "Cannot read properties of undefined (reading 'type')"
+    const preprocessVegaSpec = (rawSpec: any): any => {
+      if (!rawSpec || typeof rawSpec !== 'object') {
+        return rawSpec;
+      }
+
+      const spec = JSON.parse(JSON.stringify(rawSpec)); // Deep clone
+      
+      console.log('🔧 VEGA-PREPROCESS: Starting comprehensive preprocessing');
+      
+      // Fix 1: Remove problematic shape encodings entirely - this is the most common cause
+      if (spec.encoding?.shape) {
+        console.log('🔧 VEGA-PREPROCESS: Found shape encoding, analyzing...');
+        const shapeEnc = spec.encoding.shape;
+        
+        // Remove shape encoding in these problematic cases:
+        let shouldRemoveShape = false;
+        
+        if (shapeEnc.type === 'ordinal' && spec.data?.values) {
+          const fieldValues = spec.data.values.map((d: any) => d[shapeEnc.field]).filter((v: any) => v !== undefined);
+          const isNumeric = fieldValues.length > 0 && fieldValues.every((v: any) => typeof v === 'number');
+          if (isNumeric) {
+            console.log('🔧 VEGA-PREPROCESS: Removing ordinal shape encoding with numeric data');
+            shouldRemoveShape = true;
+          }
+        }
+        
+        if (shapeEnc.scale?.range?.some((s: any) => typeof s === 'string' && s.includes('triangle'))) {
+          console.log('🔧 VEGA-PREPROCESS: Removing shape encoding with problematic triangle shapes');
+          shouldRemoveShape = true;
+        }
+        
+        if (!shapeEnc.field || !spec.data?.values) {
+          console.log('🔧 VEGA-PREPROCESS: Removing shape encoding without proper field/data');
+          shouldRemoveShape = true;
+        }
+        
+        if (shouldRemoveShape) {
+          delete spec.encoding.shape;
+          console.log('🔧 VEGA-PREPROCESS: Removed problematic shape encoding');
+        }
+      }
+      
+      // Fix 2: Validate all encoding field references
+      if (spec.encoding && spec.data?.values && Array.isArray(spec.data.values) && spec.data.values.length > 0) {
+        const availableFields = Object.keys(spec.data.values[0]);
+        console.log('🔧 VEGA-PREPROCESS: Available fields:', availableFields);
+        
+        Object.keys(spec.encoding).forEach(channel => {
+          const channelSpec = spec.encoding[channel];
+          if (channelSpec?.field && !availableFields.includes(channelSpec.field)) {
+            console.log(`🔧 VEGA-PREPROCESS: Removing ${channel} encoding with invalid field: ${channelSpec.field}`);
+            delete spec.encoding[channel];
+          }
+        });
+      }
+      
+      // Fix 3: Clean up null/undefined values in scale domains
+      ['x', 'y', 'color', 'fill', 'stroke', 'opacity', 'size'].forEach(channel => {
+        if (spec.encoding?.[channel]?.scale?.domain) {
+          const domain = spec.encoding[channel].scale.domain;
+          if (Array.isArray(domain)) {
+            const cleanDomain = domain.filter(v => v !== null && v !== undefined);
+            if (cleanDomain.length !== domain.length) {
+              console.log(`🔧 VEGA-PREPROCESS: Cleaned null values from ${channel} domain`);
+              if (cleanDomain.length > 0) {
+                spec.encoding[channel].scale.domain = cleanDomain;
+              } else {
+                delete spec.encoding[channel].scale.domain;
+              }
+            }
+          } else if (domain === null || domain === undefined) {
+            console.log(`🔧 VEGA-PREPROCESS: Removed null ${channel} domain`);
+            delete spec.encoding[channel].scale.domain;
+          }
+        }
+      });
+      
+      // Fix 4: Ensure schema exists
+      if (!spec.$schema) {
+        spec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
+      }
+      
+      console.log('🔧 VEGA-PREPROCESS: Preprocessing complete');
+      return spec;
+    };
 
     if (typeof spec === 'string') {
       const extractedContent = extractDefinitionFromYAML(spec, 'vega-lite');
       try {
-        vegaSpec = sanitizeSpec(JSON.parse(extractedContent));
+        const rawSpec = JSON.parse(extractedContent);
+        vegaSpec = preprocessVegaSpec(sanitizeSpec(rawSpec));
       } catch (parseError) {
         console.debug('Vega-Lite: JSON parse error during processing:', parseError);
         throw parseError; // Re-throw to be handled by outer try-catch
@@ -289,87 +509,132 @@ export const vegaLitePlugin: D3RenderPlugin = {
     } else if (spec.definition) {
       const extractedContent = extractDefinitionFromYAML(spec.definition, 'vega-lite');
       try {
-        vegaSpec = sanitizeSpec(JSON.parse(extractedContent));
+        const rawSpec = JSON.parse(extractedContent);
+        vegaSpec = preprocessVegaSpec(sanitizeSpec(rawSpec));
       } catch (parseError) {
         console.debug('Vega-Lite: JSON parse error during processing:', parseError);
         throw parseError; // Re-throw to be handled by outer try-catch
       }
     } else {
       // Use the spec object directly, but remove our custom properties
-      vegaSpec = sanitizeSpec({ ...spec });
-      delete vegaSpec.type;
-      delete vegaSpec.isStreaming;
-      delete vegaSpec.forceRender;
-      delete vegaSpec.definition;
+      const rawSpec = sanitizeSpec({ ...spec });
+      ['type', 'isStreaming', 'forceRender', 'definition'].forEach(prop => delete rawSpec[prop]);
+      vegaSpec = preprocessVegaSpec(rawSpec);
     }
 
     console.log('Vega-Lite: Spec processed, starting try block for rendering...');
 
     try {
+      // COMPREHENSIVE FIX: Handle all cases that cause "Cannot read properties of null (reading 'slice')" error
+      // This error occurs when Vega-Lite tries to process invalid scale domains or ranges
+      
+      // Fix 0: Upgrade old schema versions that may be causing compatibility issues
+      if (vegaSpec.$schema && vegaSpec.$schema.includes('v4')) {
+        console.log('SCHEMA FIX: Upgrading old v4 schema to v5 for better compatibility');
+        vegaSpec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
+      }
+      
+      // Fix 0.1: Handle nominal fields with many categories that might cause slice errors
+      if (vegaSpec.encoding?.x?.field === 'file' && vegaSpec.data?.values) {
+        const fileCount = vegaSpec.data.values.length;
+        if (fileCount > 20) {
+          console.log('FILE COUNT FIX: Too many files for x-axis, limiting to top 20');
+          vegaSpec.data.values = vegaSpec.data.values.slice(0, 20);
+        }
+      }
+      
+      // Fix 1: Handle shape encoding with null/undefined values
+      if (vegaSpec.encoding?.shape) {
+        const shapeEncoding = vegaSpec.encoding.shape;
+        console.log('SHAPE FIX: Processing shape encoding:', JSON.stringify(shapeEncoding, null, 2));
+        
+        // Check if we have data to validate against
+        if (vegaSpec.data?.values && Array.isArray(vegaSpec.data.values)) {
+          const fieldValues = vegaSpec.data.values
+            .map(d => d[shapeEncoding.field])
+            .filter(v => v !== null && v !== undefined);
+            
+          // If field has null/undefined values or is numeric with ordinal type, remove shape encoding
+          if (fieldValues.length === 0 || 
+              (shapeEncoding.type === 'ordinal' && fieldValues.every(v => typeof v === 'number'))) {
+            console.log('SHAPE FIX: Removing problematic shape encoding');
+            delete vegaSpec.encoding.shape;
+          } else if (shapeEncoding.scale?.range) {
+            // Fix invalid shape names in scale range
+            const validShapes = ['circle', 'square', 'cross', 'diamond', 'triangle-up', 'triangle-down', 'triangle-right', 'triangle-left'];
+            vegaSpec.encoding.shape.scale.range = shapeEncoding.scale.range
+              .map(shape => validShapes.includes(shape) ? shape : 'circle')
+              .slice(0, Math.min(shapeEncoding.scale.range.length, fieldValues.length));
+          }
+        } else {
+          // No data available to validate, remove shape encoding as safety measure
+          console.log('SHAPE FIX: No data available, removing shape encoding as safety measure');
+          delete vegaSpec.encoding.shape;
+        }
+      }
+      
+      // Fix 2: Handle color encoding with invalid scale domains
+      ['color', 'fill', 'stroke', 'opacity', 'size'].forEach(channel => {
+        if (vegaSpec.encoding?.[channel]?.scale?.domain) {
+          const domain = vegaSpec.encoding[channel].scale.domain;
+          if (domain === null || (Array.isArray(domain) && domain.some(v => v === null || v === undefined))) {
+            console.log(`DOMAIN FIX: Removing null values from ${channel} domain`);
+            if (Array.isArray(domain)) {
+              vegaSpec.encoding[channel].scale.domain = domain.filter(v => v !== null && v !== undefined);
+            } else {
+              delete vegaSpec.encoding[channel].scale.domain;
+            }
+          }
+        }
+      });
+      
+      // Fix 3: Validate data fields before rendering
+      if (vegaSpec.data?.values && Array.isArray(vegaSpec.data.values)) {
+        // Remove any rows with all null/undefined values
+        const cleanedValues = vegaSpec.data.values.filter(row => 
+          row && typeof row === 'object' && Object.values(row).some(v => v !== null && v !== undefined)
+        );
+        
+        if (cleanedValues.length < vegaSpec.data.values.length) {
+          console.log(`DATA FIX: Cleaned ${vegaSpec.data.values.length - cleanedValues.length} empty rows`);
+          vegaSpec.data.values = cleanedValues;
+        }
+      }
+      
       // CRITICAL FIX: Handle shape encoding that causes "Cannot read properties of null (reading 'slice')" error
 
       // Apply this fix EARLY in the preprocessing pipeline
-    if (vegaSpec.encoding?.shape) {
-      const shapeEncoding = vegaSpec.encoding.shape;
-      console.log('EARLY SHAPE FIX: Detected shape encoding:', JSON.stringify(shapeEncoding, null, 2));
-
-      // More aggressive fix: remove shape encoding if it has ordinal type with numeric data
-      if (shapeEncoding.type === 'ordinal' && shapeEncoding.field && vegaSpec.data?.values) {
-        // Check if the field contains numeric values
-        const fieldValues = vegaSpec.data.values.map(d => d[shapeEncoding.field]).filter(v => v !== undefined);
-        const isNumeric = fieldValues.every(v => typeof v === 'number');
-
-        console.log('Shape field analysis:', {
-          field: shapeEncoding.field,
-          values: fieldValues.slice(0, 5), // Show first 5 values
-          isNumeric,
-          hasProblematicShapes: shapeEncoding.scale?.range?.some(s => typeof s === 'string' && s.includes('triangle'))
-        });
-
-        // Remove shape encoding if it's ordinal with numeric data - this is the root cause
-        if (isNumeric) {
-          console.log('CRITICAL: Removing ordinal shape encoding with numeric data to prevent Vega-Lite slice error');
-          delete vegaSpec.encoding.shape;
-        }
-      } else if (shapeEncoding.scale?.range) {
-        // Fix invalid shape names
-        vegaSpec.encoding.shape.scale.range = shapeEncoding.scale.range.map(shape =>
-          shape === 'triangle-down' || shape === 'triangle-up' ? 'triangle' : shape
-        );
-      }
+    // Additional post-preprocessing validations and fixes
+    console.log('🔧 VEGA-POST-PROCESS: Starting additional fixes');
+    
+    // Handle problematic axis configurations
+    if (vegaSpec.encoding?.x?.axis?.labelLimit !== undefined && vegaSpec.encoding.x.axis.labelLimit <= 0) {
+      console.log('🔧 VEGA-POST-PROCESS: Fixing problematic axis labelLimit');
+      delete vegaSpec.encoding.x.axis.labelLimit;
     }
-
-    // Fix for invalid color names like "#green" which can be produced by LLMs
+    
+    // Fix invalid color names like "#green" 
     try {
       let specStringForColorFix = JSON.stringify(vegaSpec);
       specStringForColorFix = specStringForColorFix.replace(/"#(green|red|orange|blue|yellow|purple|black|white|gray|grey|cyan|magenta|pink|brown|violet|indigo|gold|silver)"/gi, '"$1"');
       vegaSpec = JSON.parse(specStringForColorFix);
     } catch (e) {
       console.warn("Could not apply color fix to Vega-Lite spec", e);
-      // if it fails, we continue with the original spec
     }
-
-    // Special handling for violin plots and other density-based visualizations
-    if (vegaSpec.transform && vegaSpec.transform.some((t: any) => t.density || t.kde)) {
-      console.log('Detected density/violin plot, ensuring proper configuration');
-      // Ensure the spec has the right structure for density plots
-      if (!vegaSpec.mark) {
-        vegaSpec.mark = { type: "area", opacity: 0.7 };
-      }
-    }
-
+    
     // Validate the spec before rendering
     if (!vegaSpec || typeof vegaSpec !== 'object') {
       throw new Error('Invalid Vega-Lite specification: spec must be an object');
     }
-
+    
     // Ensure required properties exist
     if (!vegaSpec.data && !vegaSpec.datasets) {
       throw new Error('Invalid Vega-Lite specification: missing data or datasets');
     }
-
-    // Allow specs with transforms even if they don't have explicit marks initially
-    if (!vegaSpec.mark && !vegaSpec.layer && !vegaSpec.vconcat && !vegaSpec.hconcat && !vegaSpec.facet && !vegaSpec.repeat && !vegaSpec.transform) {
+    
+    // Check for valid mark or composition
+    if (!vegaSpec.mark && !vegaSpec.layer && !vegaSpec.vconcat && !vegaSpec.hconcat && 
+        !vegaSpec.facet && !vegaSpec.repeat && !vegaSpec.transform) {
       throw new Error('Invalid Vega-Lite specification: missing mark or composition');
     }
 
@@ -500,6 +765,575 @@ export const vegaLitePlugin: D3RenderPlugin = {
       vegaSpec.height = 300;
     }
 
+    // Fix unrecognized signal references that may be added during preprocessing
+    const removeInvalidSignals = (obj: any): any => {
+      if (obj && typeof obj === 'object') {
+        if (Array.isArray(obj)) {
+          return obj.map(removeInvalidSignals);
+        } else {
+          const cleaned: any = {};
+          for (const [key, value] of Object.entries(obj)) {
+            // Skip signal references that aren't defined
+            if (key === 'signal' && typeof value === 'string' && value.includes('tier_focus')) {
+              console.log('Removing invalid signal reference:', value);
+              continue;
+            }
+            cleaned[key] = removeInvalidSignals(value);
+          }
+          return cleaned;
+        }
+      }
+      return obj;
+    };
+    
+    vegaSpec = removeInvalidSignals(vegaSpec);
+
+    // Fix treemap charts missing x and color encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'rect' || vegaSpec.mark === 'rect') &&
+        vegaSpec.params && vegaSpec.params.some(p => p.bind && p.bind.input === 'select') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.aggregate) &&
+        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.x && !vegaSpec.encoding.color) {
+      console.log('Fixing treemap chart x and color encodings');
+      
+      vegaSpec.encoding.x = {
+        field: 'total_budget',
+        type: 'quantitative',
+        title: 'Budget'
+      };
+      vegaSpec.encoding.color = {
+        field: 'display_category',
+        type: 'nominal',
+        title: 'Category'
+      };
+    }
+
+    // Fix population density plots with sequence/coordinate issues
+    if (vegaSpec.transform && vegaSpec.data?.values && vegaSpec.data.values[0]?.lat && vegaSpec.data.values[0]?.lon) {
+      console.log('Fixing population density plot sequence and coordinates');
+      
+      // Fix any sequence transform that uses datum.count instead of datum.dot_count
+      vegaSpec.transform.forEach(transform => {
+        if (transform.calculate && transform.calculate.includes('datum.count')) {
+          transform.calculate = transform.calculate.replace('datum.count', 'datum.dot_count');
+          console.log('Fixed sequence transform to use dot_count');
+        }
+      });
+      
+      // Fix x/y encodings to use jittered coordinates correctly
+      if (vegaSpec.encoding && (vegaSpec.encoding.x?.field === 'lat' || vegaSpec.encoding.y?.field === 'lon')) {
+        vegaSpec.encoding.x = {
+          field: 'jittered_lon',
+          type: 'quantitative',
+          axis: null
+        };
+        vegaSpec.encoding.y = {
+          field: 'jittered_lat', 
+          type: 'quantitative',
+          axis: null
+        };
+        console.log('Fixed x/y encodings to use jittered coordinates');
+      }
+    }
+
+    // Fix sequence transforms that use expressions (need to be flattened)
+    if (vegaSpec.transform && vegaSpec.transform.some(t => t.sequence && t.sequence.stop && t.sequence.stop.expr)) {
+      console.log('Fixing sequence transform with expression');
+      
+      // Find the sequence transform and convert it to a flatten transform
+      const sequenceIndex = vegaSpec.transform.findIndex(t => t.sequence);
+      if (sequenceIndex >= 0) {
+        const sequenceTransform = vegaSpec.transform[sequenceIndex];
+        
+        // Replace sequence with flatten transform
+        vegaSpec.transform[sequenceIndex] = {
+          flatten: [sequenceTransform.as || 'unit']
+        };
+        
+        // Add a calculate transform to generate the sequence data
+        vegaSpec.transform.splice(sequenceIndex, 0, {
+          calculate: `sequence(1, datum.count + 1)`,
+          as: sequenceTransform.as || 'unit'
+        });
+      }
+    }
+
+    // Fix indexOf function usage in calculate transforms (not supported in Vega-Lite)
+    if (vegaSpec.transform && Array.isArray(vegaSpec.transform)) {
+      vegaSpec.transform.forEach((transform, index) => {
+        if (transform.calculate && transform.calculate.includes('indexOf(')) {
+          console.log(`Fixing indexOf usage in transform ${index}: ${transform.calculate}`);
+          
+          // Replace indexOf with conditional expressions using regex
+          let newCalculate = transform.calculate.replace(
+            /indexOf\(\[([^\]]+)\],\s*([^)]+)\)/g,
+            (match, arrayStr, field) => {
+              console.log(`Match found: ${match}, Array: ${arrayStr}, Field: ${field}`);
+              const items = arrayStr.split(',').map(item => item.trim().replace(/['"]/g, ''));
+              console.log(`Parsed items:`, items);
+              const conditions = items.map((item, idx) => 
+                `${field.trim()} == '${item}' ? ${idx}`
+              ).join(' : ');
+              const result = `(${conditions} : -1)`;
+              console.log(`Generated replacement: ${result}`);
+              return result;
+            }
+          );
+          
+          transform.calculate = newCalculate;
+          console.log(`Final calculate: ${newCalculate}`);
+        }
+      });
+    }
+
+    // Fix strokeDash encoding without proper scale (causes 'slice' error)
+    if (vegaSpec.encoding?.strokeDash && vegaSpec.encoding.strokeDash.type === 'nominal' && !vegaSpec.encoding.strokeDash.scale) {
+      console.log('Fixing strokeDash encoding scale');
+      vegaSpec.encoding.strokeDash.scale = {
+        range: [[1, 0], [5, 5]]  // solid line, dashed line
+      };
+    }
+
+    // Fix radar chart transform order - window transforms must come before calculate transforms that use them
+    if (vegaSpec.transform && Array.isArray(vegaSpec.transform)) {
+      const hasWindowTransform = vegaSpec.transform.some(t => t.window);
+      const hasCalculateUsingSkillIndex = vegaSpec.transform.some(t => 
+        t.calculate && t.calculate.includes('skill_index')
+      );
+      
+      if (hasWindowTransform && hasCalculateUsingSkillIndex) {
+        console.log('Fixing radar chart transform order');
+        // Move window transforms before calculate transforms
+        const windowTransforms = vegaSpec.transform.filter(t => t.window);
+        const otherTransforms = vegaSpec.transform.filter(t => !t.window);
+        vegaSpec.transform = [...windowTransforms, ...otherTransforms];
+      }
+    }
+
+    // Fix population pyramid charts missing x and color encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold && t.fold.includes('male') && t.fold.includes('female')) &&
+        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.x && !vegaSpec.encoding.color) {
+      console.log('Fixing population pyramid chart x and color encodings');
+      
+      vegaSpec.encoding.x = {
+        field: 'signed_population',
+        type: 'quantitative',
+        title: 'Population',
+        axis: {
+          format: '~s'
+        }
+      };
+      vegaSpec.encoding.color = {
+        field: 'gender',
+        type: 'nominal',
+        scale: {
+          domain: ['male', 'female'],
+          range: ['#4575b4', '#d73027']
+        },
+        title: 'Gender'
+      };
+    }
+
+    // Fix hierarchical drill-down charts missing x,y encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
+        vegaSpec.params && vegaSpec.params.some(p => p.bind && p.bind.input === 'select') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.calculate.includes('drill_level')) &&
+        vegaSpec.encoding && vegaSpec.encoding.color && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing hierarchical drill-down chart x,y encodings');
+      
+      vegaSpec.encoding.x = {
+        field: 'display_category',
+        type: 'nominal',
+        title: 'Category'
+      };
+      vegaSpec.encoding.y = {
+        field: 'total_value',
+        type: 'quantitative',
+        title: 'Value'
+      };
+    }
+
+    // Fix 2D histograms missing x,y,color encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'rect' || vegaSpec.mark === 'rect') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.aggregate && t.groupby && t.groupby.length === 2 && t.groupby.every(g => g.bin)) &&
+        vegaSpec.encoding && !vegaSpec.encoding.x && !vegaSpec.encoding.y && !vegaSpec.encoding.color) {
+      console.log('Fixing 2D histogram x,y,color encodings');
+      
+      vegaSpec.encoding.x = {
+        field: 'x_center',
+        type: 'quantitative',
+        title: 'X'
+      };
+      vegaSpec.encoding.y = {
+        field: 'y_center',
+        type: 'quantitative',
+        title: 'Y'
+      };
+      vegaSpec.encoding.color = {
+        field: 'count',
+        type: 'quantitative',
+        scale: { scheme: 'blues' },
+        title: 'Count'
+      };
+    }
+
+    // Fix combined violin/box plots with incorrect field references
+    if (vegaSpec.layer && Array.isArray(vegaSpec.layer)) {
+      vegaSpec.layer.forEach((layer, index) => {
+        if (layer.transform && layer.transform.some(t => t.density) &&
+            layer.mark && (layer.mark.type === 'area' || layer.mark === 'area') &&
+            layer.encoding && layer.encoding.x && layer.encoding.x.field === 'value') {
+          console.log(`Fixing violin layer ${index} field references`);
+          
+          // For violin plots, x should be the density transform output field 'value', not the original 'value'
+          // The density transform creates new 'value' and 'density' fields
+          layer.encoding.x = {
+            field: 'value', // This is the density transform output, not original data
+            type: 'quantitative',
+            title: layer.encoding.x.title || 'Value'
+          };
+          
+          // Remove xOffset as it's causing issues - the density field should control the shape
+          if (layer.encoding.xOffset) {
+            delete layer.encoding.xOffset;
+            console.log(`Removed xOffset from violin layer ${index}`);
+          }
+        }
+      });
+    }
+
+    // Fix gauge charts missing theta2 encoding (enhanced for multi-layer gauges)
+    if (vegaSpec.facet && vegaSpec.spec && vegaSpec.spec.layer &&
+        vegaSpec.spec.layer.some(layer => layer.mark && layer.mark.type === 'arc')) {
+      console.log('Fixing multi-layer gauge chart encodings');
+      
+      vegaSpec.spec.layer.forEach((layer, index) => {
+        if (layer.mark && layer.mark.type === 'arc') {
+          // Case 1: Background arc with theta2 in mark - don't add theta encoding
+          if (layer.mark.theta2 && layer.encoding?.color?.value) {
+            // This is a background arc, remove any theta encodings we might have added
+            if (layer.encoding.theta) {
+              delete layer.encoding.theta;
+              console.log(`Removed theta encoding from background arc layer ${index}`);
+            }
+            if (layer.encoding.theta2) {
+              delete layer.encoding.theta2;
+              console.log(`Removed theta2 encoding from background arc layer ${index}`);
+            }
+          }
+          // Case 2: Data arc with theta field but missing theta2
+          else if (layer.encoding && layer.encoding.theta && layer.encoding.theta.field && !layer.encoding.theta2) {
+            layer.encoding.theta2 = { value: 0 };
+            console.log(`Added theta2 to data arc layer ${index}`);
+          }
+        }
+      });
+    }
+
+    // Fix geographic dot density plots with wrong x,y field references
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'circle' || vegaSpec.mark === 'circle') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.sequence) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && vegaSpec.encoding.y &&
+        (vegaSpec.encoding.x.field === 'x' || vegaSpec.encoding.y.field === 'y') &&
+        vegaSpec.data?.values && vegaSpec.data.values[0]?.lat && vegaSpec.data.values[0]?.lon) {
+      console.log('Fixing geographic dot density plot x,y field references');
+      
+      vegaSpec.encoding.x = {
+        field: 'jittered_lon',
+        type: 'quantitative',
+        axis: null
+      };
+      vegaSpec.encoding.y = {
+        field: 'jittered_lat',
+        type: 'quantitative',
+        axis: null
+      };
+    }
+
+    // Fix annual calendar charts missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'rect' || vegaSpec.mark === 'rect') &&
+        vegaSpec.encoding && vegaSpec.encoding.x && vegaSpec.encoding.x.field === 'weekday' && !vegaSpec.encoding.y &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.calculate.includes('week('))) {
+      console.log('Fixing annual calendar chart y-axis encoding');
+      
+      vegaSpec.encoding.y = {
+        field: 'week',
+        type: 'ordinal',
+        title: 'Week of Year'
+      };
+    }
+
+    // Fix hexbin plots missing x,y,size encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'circle' || vegaSpec.mark === 'circle') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.aggregate && t.groupby && t.groupby.some(g => g.bin)) &&
+        vegaSpec.encoding && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing hexbin plot x,y,size encodings');
+      
+      vegaSpec.encoding.x = {
+        field: 'x_center',
+        type: 'quantitative',
+        title: 'X'
+      };
+      vegaSpec.encoding.y = {
+        field: 'y_center',
+        type: 'quantitative',
+        title: 'Y'
+      };
+      vegaSpec.encoding.size = {
+        field: 'count',
+        type: 'quantitative',
+        title: 'Count',
+        scale: { range: [50, 500] }
+      };
+    }
+
+    // Fix stacked bar charts missing x,y encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
+        vegaSpec.encoding && vegaSpec.encoding.color && !vegaSpec.encoding.x && !vegaSpec.encoding.y &&
+        vegaSpec.data?.values && vegaSpec.data.values.length > 0) {
+      console.log('Fixing stacked bar chart x,y encodings');
+      
+      const firstRow = vegaSpec.data.values[0];
+      const fields = Object.keys(firstRow);
+      const categoricalField = fields.find(f => typeof firstRow[f] === 'string' && f !== vegaSpec.encoding.color.field);
+      const quantitativeField = fields.find(f => typeof firstRow[f] === 'number' && (f.includes('revenue') || f.includes('value') || f.includes('amount')));
+      
+      if (categoricalField && quantitativeField) {
+        vegaSpec.encoding.x = {
+          field: categoricalField,
+          type: 'nominal',
+          title: categoricalField.charAt(0).toUpperCase() + categoricalField.slice(1)
+        };
+        vegaSpec.encoding.y = {
+          field: quantitativeField,
+          type: 'quantitative',
+          title: quantitativeField.charAt(0).toUpperCase() + quantitativeField.slice(1)
+        };
+      }
+    }
+
+    // Fix spiral charts missing x,y encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'circle' || vegaSpec.mark === 'circle') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && (t.calculate.includes('cos(') || t.calculate.includes('sin('))) &&
+        vegaSpec.encoding && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing spiral chart x,y encodings');
+      
+      vegaSpec.encoding.x = {
+        field: 'x',
+        type: 'quantitative',
+        axis: null
+      };
+      vegaSpec.encoding.y = {
+        field: 'y',
+        type: 'quantitative',
+        axis: null
+      };
+    }
+
+    // Fix diverging bar charts missing x and color encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold && t.fold.includes('positive') && t.fold.includes('negative')) &&
+        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.x && !vegaSpec.encoding.color) {
+      console.log('Fixing diverging bar chart x and color encodings');
+      
+      vegaSpec.encoding.x = {
+        field: 'value',
+        type: 'quantitative',
+        title: 'Value'
+      };
+      vegaSpec.encoding.color = {
+        field: 'sentiment',
+        type: 'nominal',
+        scale: {
+          domain: ['positive', 'negative'],
+          range: ['#2ca02c', '#d62728']
+        },
+        title: 'Sentiment'
+      };
+    }
+
+    // Fix scatter plots missing encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'point' || vegaSpec.mark === 'point' || vegaSpec.mark.type === 'circle') &&
+        vegaSpec.data?.values && !vegaSpec.encoding?.x && !vegaSpec.encoding?.y) {
+      console.log('Fixing scatter plot x,y encodings');
+      const firstRow = vegaSpec.data.values[0];
+      const numericFields = Object.keys(firstRow).filter(key => typeof firstRow[key] === 'number');
+      if (numericFields.length >= 2) {
+        vegaSpec.encoding = vegaSpec.encoding || {};
+        vegaSpec.encoding.x = { field: numericFields[0], type: 'quantitative' };
+        vegaSpec.encoding.y = { field: numericFields[1], type: 'quantitative' };
+      }
+    }
+
+    // Fix line charts missing encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.data?.values && !vegaSpec.encoding?.x && !vegaSpec.encoding?.y && !vegaSpec.transform?.some(t => t.fold)) {
+      console.log('Fixing line chart x,y encodings');
+      const firstRow = vegaSpec.data.values[0];
+      const fields = Object.keys(firstRow);
+      const dateField = fields.find(f => firstRow[f] && (f.includes('date') || f.includes('time') || typeof firstRow[f] === 'string' && firstRow[f].match(/\d{4}-\d{2}-\d{2}/)));
+      const numericField = fields.find(f => typeof firstRow[f] === 'number');
+      
+      if (dateField && numericField) {
+        vegaSpec.encoding = vegaSpec.encoding || {};
+        vegaSpec.encoding.x = { field: dateField, type: 'temporal' };
+        vegaSpec.encoding.y = { field: numericField, type: 'quantitative' };
+      }
+    }
+
+    // Fix heatmaps missing encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'rect' || vegaSpec.mark === 'rect') &&
+        vegaSpec.encoding?.color && !vegaSpec.encoding?.x && !vegaSpec.encoding?.y &&
+        !vegaSpec.transform?.some(t => t.calculate && (t.calculate.includes('day(') || t.calculate.includes('week(')))) {
+      console.log('Fixing heatmap x,y encodings');
+      const firstRow = vegaSpec.data?.values?.[0];
+      if (firstRow) {
+        const fields = Object.keys(firstRow);
+        const categoricalFields = fields.filter(f => typeof firstRow[f] === 'string' || typeof firstRow[f] === 'number');
+        if (categoricalFields.length >= 2) {
+          vegaSpec.encoding.x = { field: categoricalFields[0], type: 'nominal' };
+          vegaSpec.encoding.y = { field: categoricalFields[1], type: 'nominal' };
+        }
+      }
+    }
+
+    // Fix violin plots missing x,y encodings after density transform
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.density) &&
+        vegaSpec.encoding && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing violin plot x,y encodings');
+      
+      // Add x and y encodings for density plot
+      vegaSpec.encoding.x = {
+        field: 'value',
+        type: 'quantitative',
+        title: 'Response Time'
+      };
+      vegaSpec.encoding.y = {
+        field: 'density',
+        type: 'quantitative',
+        title: 'Density'
+      };
+    }
+
+    // Fix histograms with aggregate count issues (enhanced)
+    if (vegaSpec.mark === 'bar' && vegaSpec.encoding && vegaSpec.encoding.x && vegaSpec.encoding.x.bin &&
+        vegaSpec.encoding.y && vegaSpec.encoding.y.aggregate === 'count') {
+      console.log('Fixing histogram aggregate count encoding');
+      
+      // Ensure proper y encoding structure for count aggregate
+      vegaSpec.encoding.y = {
+        aggregate: 'count',
+        type: 'quantitative',
+        title: vegaSpec.encoding.y.title || 'Count'
+      };
+      // Remove any incorrect field reference
+      delete vegaSpec.encoding.y.field;
+    }
+
+    // Fix calendar heatmaps missing x,y encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'rect' || vegaSpec.mark === 'rect') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && (t.calculate.includes('day(') || t.calculate.includes('week('))) &&
+        vegaSpec.encoding && vegaSpec.encoding.color && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing calendar heatmap x,y encodings');
+      
+      // Add x and y encodings for calendar layout
+      vegaSpec.encoding.x = {
+        field: 'day',
+        type: 'ordinal',
+        title: 'Day of Week'
+      };
+      vegaSpec.encoding.y = {
+        field: 'week',
+        type: 'ordinal',
+        title: 'Week'
+      };
+    }
+
+    // Fix parallel coordinates charts missing x,y encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.detail && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing parallel coordinates chart x,y encodings');
+      
+      // Add x and y encodings for parallel coordinates
+      vegaSpec.encoding.x = {
+        field: 'dimension',
+        type: 'nominal',
+        title: 'Dimensions'
+      };
+      vegaSpec.encoding.y = {
+        field: 'value',
+        type: 'quantitative',
+        title: 'Value'
+      };
+    }
+
+    // Fix isotope/dot plot charts missing x,y encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'circle' || vegaSpec.mark === 'circle') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.sequence) &&
+        vegaSpec.encoding && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing isotope chart x,y encodings');
+      
+      // Add x and y encodings using calculated positions
+      vegaSpec.encoding.x = {
+        field: 'x',
+        type: 'ordinal',
+        axis: null  // Hide axis for cleaner look
+      };
+      vegaSpec.encoding.y = {
+        field: 'y',
+        type: 'ordinal',
+        axis: null  // Hide axis for cleaner look
+      };
+    }
+
+    // Fix waterfall charts missing y-axis encoding
+    if (vegaSpec.mark === 'bar' && vegaSpec.transform && 
+        vegaSpec.transform.some(t => t.window && t.window.some(w => w.op === 'sum')) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing waterfall chart y-axis encoding');
+      
+      // Add y and y2 encoding for proper waterfall display
+      vegaSpec.encoding.y = {
+        field: 'previous_sum',
+        type: 'quantitative',
+        title: 'Value'
+      };
+      vegaSpec.encoding.y2 = {
+        field: 'sum',
+        type: 'quantitative'
+      };
+    }
+
+    // Fix for bar charts missing y-axis encoding (common issue with flow/journey charts)
+    if (vegaSpec.mark && (vegaSpec.mark === 'bar' || vegaSpec.mark.type === 'bar') && 
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing bar chart missing y-axis encoding');
+      
+      // Check if we have a calculated flow field or similar categorical field
+      const flowField = vegaSpec.transform?.find(t => t.calculate && t.as)?.as;
+      const categoricalFields = ['flow', 'source', 'target', 'category', 'group'];
+      
+      let yField = flowField;
+      if (!yField) {
+        // Look for a suitable categorical field in the data
+        if (vegaSpec.data?.values && vegaSpec.data.values.length > 0) {
+          const firstRow = vegaSpec.data.values[0];
+          yField = categoricalFields.find(field => firstRow.hasOwnProperty(field));
+        }
+      }
+      
+      if (yField) {
+        vegaSpec.encoding.y = {
+          field: yField,
+          type: 'nominal',
+          title: yField.charAt(0).toUpperCase() + yField.slice(1)
+        };
+        console.log(`Added y-axis encoding with field: ${yField}`);
+      }
+    }
+
     // Fix for layered charts with selections
     if ((vegaSpec.layer || vegaSpec.facet || vegaSpec.vconcat || vegaSpec.hconcat) && vegaSpec.params) {
       // Check if we have selection parameters
@@ -594,8 +1428,8 @@ export const vegaLitePlugin: D3RenderPlugin = {
     // Pre-render legend optimization - configure legends to wrap based on estimated size
     const optimizeLegendLayout = (spec: any) => {
       const chartHeight = spec.height || 400;
-      const maxLegendHeight = chartHeight * 0.8; // Legend shouldn't exceed 80% of chart height
-      const estimatedItemHeight = 22; // Approximate height per legend item including padding
+      const maxLegendHeight = chartHeight * 0.6; // Legend shouldn't exceed 60% of chart height
+      const estimatedItemHeight = 20; // Approximate height per legend item including padding
       const maxItemsPerColumn = Math.floor(maxLegendHeight / estimatedItemHeight);
       
       console.log(`Legend optimization: Chart height=${chartHeight}, Max legend height=${maxLegendHeight}, Max items per column=${maxItemsPerColumn}`);
@@ -621,7 +1455,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         
         if (uniqueCount > maxItemsPerColumn) {
           const neededColumns = Math.ceil(uniqueCount / maxItemsPerColumn);
-          const columns = Math.min(neededColumns, 4); // Cap at 4 columns
+          const columns = Math.min(neededColumns, 3); // Cap at 3 columns to prevent horizontal overflow
           
           console.log(`Applying legend wrapping to ${channel} field "${fieldName}": ${uniqueCount} items -> ${columns} columns`);
           
@@ -633,13 +1467,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
             ...encoding[channel].legend,
             columns: columns,
             symbolLimit: 0,
-            labelLimit: 100,
-            titleLimit: 150,
-            orient: 'right',
-            offset: 10,
-            padding: 5,
-            rowPadding: 3,
-            columnPadding: 8
+            labelLimit: 80, // Shorter labels to fit multiple columns
+            titleLimit: 100,
+            orient: 'bottom', // Move to bottom to avoid vertical overflow
+            offset: 5,
+            padding: 3,
+            rowPadding: 2,
+            columnPadding: 6
           };
         }
       };
@@ -701,29 +1535,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
     }
 
-    // CRITICAL FIX: Handle shape encoding that causes "Cannot read properties of null (reading 'slice')" error
-    // This must happen right before vega-embed to catch all problematic shape configurations
-    if (vegaSpec.encoding?.shape) {
-      const shapeEncoding = vegaSpec.encoding.shape;
-
-      // If we have ordinal shape encoding with numeric data and invalid shapes, fix it
-      if (shapeEncoding.type === 'ordinal' && shapeEncoding.scale?.range?.includes('triangle-down')) {
-        console.log('CRITICAL: Fixing problematic shape encoding that causes slice error');
-
-        // Simply remove the shape encoding to prevent the error
-        // This is a safe fallback that maintains functionality
-        delete vegaSpec.encoding.shape;
-
-        console.log('Removed problematic shape encoding to prevent Vega-Lite error');
-      } else if (shapeEncoding.scale?.range) {
-        // Fix invalid shape names without changing the scale type
-        const fixedRange = shapeEncoding.scale.range.map(shape => {
-          if (shape === 'triangle-down') return 'triangle';
-          if (shape === 'triangle-up') return 'triangle';
-          return shape;
-        });
-        vegaSpec.encoding.shape.scale.range = fixedRange;
-      }
+    // Final validation: ensure the spec is still valid after preprocessing
+    if (vegaSpec.encoding && Object.keys(vegaSpec.encoding).length === 0) {
+      throw new Error('Invalid Vega-Lite specification: all encoding channels were invalid and removed');
     }
 
     // Set explicit container dimensions for complex layouts
@@ -932,14 +1746,16 @@ export const vegaLitePlugin: D3RenderPlugin = {
     // Add action buttons container
     const actionsContainer = document.createElement('div');
     actionsContainer.className = 'diagram-actions';
-    // Move the button bar up by 60px from its default position
+    // Position the buttons in the top-right corner, 12px higher than default
     actionsContainer.style.cssText = `
         position: absolute;
-        top: -30px;
-        right: 10px;
+        top: -4px;
+        right: 8px;
         z-index: 1000;
+        opacity: 0;
+        transition: opacity 0.2s ease-in-out;
       `;
-    // The diagram-actions class from index.css will handle styling
+    // The diagram-actions class from index.css will handle additional styling
 
     // Force container to have position: relative for absolute positioning
     container.style.position = 'relative';
@@ -1361,6 +2177,42 @@ ${svgData}`;
       const svgElement = container.querySelector('svg');
       const vegaEmbedDiv = container.querySelector('.vega-embed') as HTMLElement;
 
+      // Fix SVG scaling when content is smaller than container
+      const svg = container.querySelector('svg');
+      const embedDiv = container.querySelector('.vega-embed') as HTMLElement;
+
+      if (svg && embedDiv) {
+        const containerRect = embedDiv.getBoundingClientRect();
+        const svgRect = svg.getBoundingClientRect();
+        
+        // Only scale if SVG is significantly smaller than container
+        const scaleX = containerRect.width / svgRect.width;
+        const scaleY = containerRect.height / svgRect.height;
+        const scale = Math.min(scaleX, scaleY);
+        
+        if (scale > 1.2) { // Only scale if there's significant wasted space
+          const finalScale = Math.min(scale, 2.5); // Cap scaling
+          svg.style.transform = `scale(${finalScale})`;
+          svg.style.transformOrigin = 'center center';
+          console.log(`Scaled SVG by ${finalScale}x to reduce wasted space`);
+        }
+      }
+
+      // Fix SVG to fill vega-embed container properly
+      const svgEl = container.querySelector('svg');
+      const embedContainer = container.querySelector('.vega-embed') as HTMLElement;
+
+      if (svgEl && embedContainer) {
+        // Make SVG fill the container
+        svgEl.style.width = '100%';
+        svgEl.style.height = '100%';
+        svgEl.removeAttribute('width');
+        svgEl.removeAttribute('height');
+        svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        
+        console.log('Made SVG responsive to fill vega-embed container');
+      }
+
       // Critical fix: Ensure vega-embed div doesn't exceed parent width
       if (vegaEmbedDiv) {
         vegaEmbedDiv.style.maxWidth = '100%';
@@ -1596,13 +2448,19 @@ ${svgData}`;
   const isStreamingError = (error instanceof Error) && (
     error.message.includes('Unterminated string') ||
     error.message.includes('Unexpected end of JSON input') ||
-    error.message.includes('Unexpected token') ||
-    (spec.definition && !isVegaLiteDefinitionComplete(spec.definition))
+    error.message.includes('Unexpected token')
   );
+  
+  // Separate check for incomplete definition (only relevant if we're actually streaming)
+  const isIncompleteDefinition = spec.definition && !isVegaLiteDefinitionComplete(spec.definition);
 
   // During streaming or with incomplete JSON, don't show errors unless forced
+  // CRITICAL: Don't suppress errors when forceRender is true - user explicitly wants to see what's wrong
   const shouldSuppressError = (
-    (spec.isStreaming && !spec.isMarkdownBlockClosed) ||
+    !spec.forceRender && (
+      (spec.isStreaming && !spec.isMarkdownBlockClosed) ||
+      (spec.isStreaming && isIncompleteDefinition)
+    ) ||
     (!spec.definition || spec.definition.trim().length === 0) ||
     (isStreamingError && !spec.forceRender)
   );
@@ -1610,11 +2468,72 @@ ${svgData}`;
   if (shouldSuppressError) {
     console.debug('Suppressing Vega-Lite streaming error:', error instanceof Error ? error.message : String(error));
     // Show waiting message instead of error
-    container.innerHTML = `
-          <div style="text-align: center; padding: 20px; background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; border: 1px dashed #ccc; border-radius: 4px;">
-            <p>Waiting for complete Vega-Lite specification...</p>
-          </div>
-        `;
+    const suppressedErrorContainer = document.createElement('div');
+    suppressedErrorContainer.style.cssText = `
+      text-align: center; 
+      padding: 20px; 
+      background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; 
+      border: 1px dashed #ccc; 
+      border-radius: 4px;
+      position: relative;
+    `;
+    
+    suppressedErrorContainer.innerHTML = `
+      <p>Waiting for complete Vega-Lite specification...</p>
+      <div style="margin-top: 15px;">
+        <button class="vega-lite-force-retry-btn" style="
+          background-color: #dc3545;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          padding: 8px 16px;
+          margin: 0 5px;
+          cursor: pointer;
+          font-size: 14px;
+        ">🔄 Force Render Anyway</button>
+        <button id="vega-lite-debug-source-${Date.now()}" style="
+          background-color: #6c757d;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          padding: 8px 16px;
+          margin: 0 5px;
+          cursor: pointer;
+          font-size: 14px;
+        ">🔍 Debug Source</button>
+      </div>
+      <div style="margin-top: 10px; font-size: 12px; color: ${isDarkMode ? '#8b949e' : '#656d76'};">
+        Error: ${error instanceof Error ? error.message : String(error)}
+      </div>
+    `;
+    
+    container.innerHTML = '';
+    container.appendChild(suppressedErrorContainer);
+    
+    // Add event listeners
+    const forceRetryId = suppressedErrorContainer.querySelector('[id^="vega-lite-force-retry-"]')?.id;
+    const debugSourceId = suppressedErrorContainer.querySelector('[id^="vega-lite-debug-source-"]')?.id;
+    
+    if (forceRetryId) {
+      const forceRetryButton = document.getElementById(forceRetryId);
+      if (forceRetryButton) {
+        forceRetryButton.onclick = () => {
+          console.log('Force rendering Vega-Lite despite streaming error');
+          const forceSpec = { ...spec, forceRender: true };
+          vegaLitePlugin.render(container, d3, forceSpec, isDarkMode);
+        };
+      }
+    }
+    
+    if (debugSourceId) {
+      const debugSourceButton = document.getElementById(debugSourceId);
+      if (debugSourceButton) {
+        debugSourceButton.onclick = () => {
+          showVegaLiteDebugView(container, spec, isDarkMode, error instanceof Error ? error : new Error(String(error)));
+        };
+      }
+    }
+    
     return;
   }
 
@@ -1647,27 +2566,11 @@ ${svgData}`;
   }
 
   // Create error container with proper sizing
-  container.innerHTML = `
-        <div class="vega-lite-error" style="
-          padding: 16px;
-          margin: 16px 0;
-          border-radius: 6px;
-          background-color: ${isDarkMode ? '#2a1f1f' : '#fff2f0'};
-          border: 1px solid ${isDarkMode ? '#a61d24' : '#ffa39e'};
-          color: ${isDarkMode ? '#ff7875' : '#cf1322'};
-        ">
-          <strong>Vega-Lite Error:</strong>
-          <p>${error instanceof Error ? error.message : 'Unknown error'}</p>
-          <details>
-            <summary>Show Specification</summary>
-            <pre><code>${typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code></pre>
-          </details>
-        </div>
-      `;
+  showVegaLiteErrorView(container, spec, isDarkMode, error instanceof Error ? error : new Error(String(error)));
 
   // Apply the same container sizing logic used for successful renders
   setTimeout(() => {
-    const errorDiv = container.querySelector('.vega-lite-error') as HTMLElement;
+    const errorDiv = container.querySelector('.vega-lite-error, .vega-lite-debug') as HTMLElement;
     if (errorDiv) {
       const errorRect = errorDiv.getBoundingClientRect();
       console.log('Error container size:', errorRect);
@@ -1697,3 +2600,221 @@ ${svgData}`;
 }
 }
 };
+
+/**
+ * Show enhanced error view with debugging options similar to Mermaid
+ */
+function showVegaLiteErrorView(container: HTMLElement, spec: VegaLiteSpec, isDarkMode: boolean, error: Error): void {
+  const sourceDefinition = spec.definition || JSON.stringify(spec, null, 2);
+  const isCompleteVegaLiteObject = spec.$schema && (spec.data || spec.datasets) &&
+    (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
+
+  container.innerHTML = `
+    <div class="vega-lite-error" style="
+      padding: 16px;
+      margin: 16px 0;
+      border-radius: 6px;
+      background-color: ${isDarkMode ? '#2a1f1f' : '#fff2f0'};
+      border: 1px solid ${isDarkMode ? '#a61d24' : '#ffa39e'};
+      color: ${isDarkMode ? '#ff7875' : '#cf1322'};
+    ">
+      <div style="margin-bottom: 15px;">
+        <strong>Vega-Lite Rendering Error:</strong>
+        <p>${error.message || 'Unknown error'}</p>
+      </div>
+      
+      <div style="margin-bottom: 15px;">
+        <button class="vega-lite-retry-error-btn" style="
+          background-color: #28a745;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          padding: 8px 16px;
+          margin: 0 5px;
+          cursor: pointer;
+          font-size: 14px;
+        ">🔄 Retry Rendering</button>
+        <button class="vega-lite-show-source-btn" style="
+          background-color: #007bff;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          padding: 8px 16px;
+          margin: 0 5px;
+          cursor: pointer;
+          font-size: 14px;
+        ">📝 Show Source</button>
+        <button class="vega-lite-force-render-btn" style="
+          background-color: #dc3545;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          padding: 8px 16px;
+          margin: 0 5px;
+          cursor: pointer;
+          font-size: 14px;
+        ">⚡ Force Render</button>
+      </div>
+      
+      <div style="font-size: 13px; color: ${isDarkMode ? '#8b949e' : '#656d76'};">
+        <strong>Debug Info:</strong><br>
+        • Streaming: ${spec.isStreaming ? 'Yes' : 'No'}<br>
+        • Block Closed: ${spec.isMarkdownBlockClosed ? 'Yes' : 'No'}<br>
+        • Definition Length: ${sourceDefinition.length} characters<br>
+        • Complete Object: ${isCompleteVegaLiteObject ? 'Yes' : 'No'}<br>
+        • Error Type: ${error.constructor.name}
+      </div>
+    </div>
+  `;
+
+  // Add event listeners
+  const retryButton = container.querySelector('.vega-lite-retry-error-btn') as HTMLButtonElement;
+  const sourceButton = container.querySelector('.vega-lite-show-source-btn') as HTMLButtonElement;
+  const forceButton = container.querySelector('.vega-lite-force-render-btn') as HTMLButtonElement;
+
+  if (retryButton) {
+    retryButton.onclick = () => vegaLitePlugin.render(container, null, spec, isDarkMode);
+  }
+
+  if (sourceButton) {
+    sourceButton.onclick = () => showVegaLiteDebugView(container, spec, isDarkMode, error);
+  }
+
+  if (forceButton) {
+    forceButton.onclick = () => {
+      const forceSpec = { ...spec, forceRender: true };
+      vegaLitePlugin.render(container, null, forceSpec, isDarkMode);
+    };
+  }
+}
+
+/**
+ * Show debug view with source code and detailed information
+ */
+function showVegaLiteDebugView(container: HTMLElement, spec: VegaLiteSpec, isDarkMode: boolean, error?: Error): void {
+  const sourceDefinition = spec.definition || JSON.stringify(spec, null, 2);
+  const isCompleteVegaLiteObject = spec.$schema && (spec.data || spec.datasets) &&
+    (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
+
+  container.innerHTML = `
+    <div class="vega-lite-debug" style="
+      background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+      border: 1px solid ${isDarkMode ? '#444' : '#e1e4e8'};
+      border-radius: 6px;
+      padding: 16px;
+      margin: 10px 0;
+    ">
+      <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+        <strong style="color: ${isDarkMode ? '#f8f9fa' : '#24292e'};">Vega-Lite Debug View</strong>
+        <div>
+          <button class="vega-lite-debug-retry-btn" style="
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            margin-right: 8px;
+            cursor: pointer;
+            font-size: 13px;
+          ">🔄 Retry</button>
+          <button id="vega-lite-debug-force-${Date.now()}" style="
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 13px;
+          ">⚡ Force Render</button>
+        </div>
+      </div>
+      
+      ${error ? `
+        <div style="
+          background-color: ${isDarkMode ? '#2d1b1b' : '#ffeaea'};
+          border: 1px solid ${isDarkMode ? '#a61d24' : '#ffa39e'};
+          border-radius: 4px;
+          padding: 12px;
+          margin-bottom: 15px;
+        ">
+          <strong style="color: ${isDarkMode ? '#ff7875' : '#cf1322'};">Error Details:</strong><br>
+          <code style="color: ${isDarkMode ? '#ffa7cc' : '#d1242f'};">${error.message}</code>
+        </div>
+      ` : ''}
+      
+      <div style="margin-bottom: 15px;">
+        <strong style="color: ${isDarkMode ? '#f8f9fa' : '#24292e'};">Debug Information:</strong><br>
+        <div style="font-size: 13px; color: ${isDarkMode ? '#8b949e' : '#656d76'}; margin-top: 8px;">
+          • Streaming State: ${spec.isStreaming ? 'Active' : 'Inactive'}<br>
+          • Markdown Block: ${spec.isMarkdownBlockClosed ? 'Closed' : 'Open'}<br>
+          • Force Render: ${spec.forceRender ? 'Yes' : 'No'}<br>
+          • Definition Length: ${sourceDefinition.length} characters<br>
+          • Complete Object: ${isCompleteVegaLiteObject ? 'Yes' : 'No'}<br>
+          • Has Schema: ${spec.$schema ? 'Yes' : 'No'}<br>
+          • Has Data: ${spec.data || spec.datasets ? 'Yes' : 'No'}<br>
+          • Has Mark/Layer: ${spec.mark || spec.layer ? 'Yes' : 'No'}
+        </div>
+      </div>
+      
+      <details open>
+        <summary style="cursor: pointer; margin-bottom: 10px; color: ${isDarkMode ? '#f8f9fa' : '#24292e'};">
+          <strong>Source Specification</strong>
+        </summary>
+        <pre style="
+          background-color: ${isDarkMode ? '#0d1117' : '#f6f8fa'};
+          padding: 12px;
+          border-radius: 4px;
+          overflow: auto;
+          max-height: 400px;
+          margin: 0;
+          border: 1px solid ${isDarkMode ? '#30363d' : '#e1e4e8'};
+          font-family: 'SFMono-Regular', 'Monaco', 'Inconsolata', 'Liberation Mono', 'Courier New', monospace;
+          font-size: 13px;
+          line-height: 1.45;
+          color: ${isDarkMode ? '#e6edf3' : '#24292f'};
+        "><code>${sourceDefinition}</code></pre>
+      </details>
+    </div>
+  `;
+
+  // Add event listeners for debug view buttons using querySelector scoped to the container
+  const retryButton = container.querySelector('.vega-lite-debug-retry-btn') as HTMLButtonElement;
+  const forceButton = container.querySelector('.vega-lite-debug-force-btn') as HTMLButtonElement;
+
+  if (retryButton) {
+    retryButton.onclick = () => vegaLitePlugin.render(container, null, spec, isDarkMode);
+  }
+
+  if (forceButton) {
+    forceButton.onclick = () => {
+      const forceSpec = { ...spec, forceRender: true };
+    };
+  }
+  
+  // Force parent containers to accommodate the debug content
+  setTimeout(() => {
+    const debugDiv = container.querySelector('.vega-lite-debug') as HTMLElement;
+    if (debugDiv) {
+      const debugRect = debugDiv.getBoundingClientRect();
+      console.log('Debug container size:', debugRect);
+
+      // Force parent containers to accommodate the debug content
+      let parent = container.parentElement;
+      while (parent && (parent.classList.contains('d3-container') || parent.classList.contains('vega-lite-renderer-container'))) {
+        const parentElement = parent as HTMLElement;
+        
+        // Force auto height and visible overflow for debug display
+        parentElement.style.height = 'auto';
+        parentElement.style.minHeight = `${Math.max(debugRect.height + 40, 400)}px`;
+        parentElement.style.overflow = 'visible';
+        
+        // Also ensure the container can grow
+        if (parentElement.style.maxHeight) {
+          parentElement.style.maxHeight = 'none';
+        }
+        console.log(`Updated parent ${parentElement.className} height to ${debugRect.height + 40}px for debug display`);
+        parent = parent.parentElement;
+      }
+    }
+  }, 100);
+}

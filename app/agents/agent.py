@@ -567,8 +567,8 @@ class RetryingChatBedrock(Runnable):
         except Exception as e:
             logger.warning(f"Failed to reset MCP tool counter: {e}")
         
-        max_retries = 3
-        base_retry_delay = 1
+        max_retries = 4  # Allow 4 retries for throttling
+        throttling_base_delay = 5  # Start with 5 seconds for throttling
 
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
@@ -955,6 +955,23 @@ class RetryingChatBedrock(Runnable):
                 error_str = str(e)
                 logger.warning(f"Bedrock client error: {error_str}")
                 
+                # Handle throttling with proper backoff
+                if "ThrottlingException" in error_str or "Too many requests" in error_str or "Too many tokens" in error_str:
+                    if attempt < max_retries - 1:
+                        # Throttling-specific backoff: 5s, 10s, 20s, 40s
+                        if attempt == 0:
+                            retry_delay = 5
+                        elif attempt == 1:
+                            retry_delay = 10
+                        elif attempt == 2:
+                            retry_delay = 20
+                        else:
+                            retry_delay = 40
+                        
+                        logger.info(f"Throttling detected, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                
                 # Check for validation errors first (these are more important than throttling)
                 if "ValidationException" in error_str and "Input is too long" in error_str:
                     error_message = {
@@ -1093,14 +1110,32 @@ class RetryingChatBedrock(Runnable):
                 # Check if this is a Bedrock error that was wrapped in another exception
                 error_type, detail, status_code, retry_after = detect_error_type(error_str)
                 logger.info(f"Detected error type: {error_type}, status: {status_code}")
-                
-                # For final attempt failures, ensure proper error formatting
+                # Handle other exceptions
+                error_type, detail, status_code, retry_after = detect_error_type(error_str)
+            
+                # Handle throttling with proper backoff for generic exceptions too
+                if "ThrottlingException" in error_str or "Too many requests" in error_str or "Too many tokens" in error_str:
+                    if attempt < max_retries - 1:
+                        # Throttling-specific backoff: 5s, 10s, 20s, 40s
+                        if attempt == 0:
+                            retry_delay = 5
+                        elif attempt == 1:
+                            retry_delay = 10
+                        elif attempt == 2:
+                            retry_delay = 20
+                        else:
+                            retry_delay = 40
+                        
+                        logger.info(f"Throttling detected in exception, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        continue
+
+                # For non-throttling errors, use shorter backoff
                 if attempt < max_retries - 1:
-                    # Exponential backoff and retry
-                    retry_delay = base_retry_delay * (2 ** attempt)
+                    retry_delay = 1 * (2 ** attempt)  # 1s, 2s, 4s for other errors
+                    logger.info(f"Non-throttling error, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(retry_delay)
                     continue
-                
                 # Final attempt failed, send error response
                 error_message = {
                     "error": error_type,
@@ -1213,8 +1248,8 @@ class RetryingChatBedrock(Runnable):
 
     def invoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
         """Invoke the model with retries and proper message formatting."""
-        max_retries = 3
-        base_retry_delay = 1.0
+        max_retries = 4
+        throttling_base_delay = 5.0
         
         # Apply post-instructions if input is a user query
         if isinstance(input, str):
@@ -1326,11 +1361,28 @@ class RetryingChatBedrock(Runnable):
                         for i, msg in enumerate(formatted_input):
                             logger.error(f"Message {i}: {msg}")
                     else:
-                        logger.error(f"Input: {formatted_input}")
+                        logger.error(f"Message {i}: {msg}")
                 
+                # Handle throttling with proper backoff
+                if "ThrottlingException" in error_str or "Too many requests" in error_str or "Too many tokens" in error_str:
+                    if attempt < max_retries - 1:
+                        # Throttling-specific backoff: 5s, 10s, 20s, 40s
+                        if attempt == 0:
+                            retry_delay = 5.0
+                        elif attempt == 1:
+                            retry_delay = 10.0
+                        elif attempt == 2:
+                            retry_delay = 20.0
+                        else:
+                            retry_delay = 40.0
+                        
+                        logger.info(f"Throttling detected, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+
                 if attempt < max_retries - 1:
-                    # Exponential backoff
-                    retry_delay = base_retry_delay * (2 ** attempt)
+                    # For non-throttling errors, use shorter backoff
+                    retry_delay = 1.0 * (2 ** attempt)  # 1s, 2s, 4s for other errors
                     logger.info(f"Retrying in {retry_delay} seconds...")
                     time.sleep(retry_delay)
                 else:
