@@ -1,0 +1,6 @@
+{
+    "description": "Comprehensive e-commerce database schema with complex relationships and data types",
+    "diagram_type": "erDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Complex ER diagram with multiple entity relationships and advanced field types"
+}

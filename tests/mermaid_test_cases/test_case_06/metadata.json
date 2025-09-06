@@ -1,0 +1,6 @@
+{
+    "description": "Enterprise software development lifecycle Gantt chart with complex dependencies and milestones",
+    "diagram_type": "gantt",
+    "expected_to_fail": false,
+    "target_issue": "Complex Gantt chart with multiple phases and interdependencies"
+}

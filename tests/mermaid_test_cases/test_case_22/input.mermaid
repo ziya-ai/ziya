@@ -1,0 +1,140 @@
+sequenceDiagram
+    participant User as User Interface
+    participant Gateway as API Gateway
+    participant Auth as Auth Service
+    participant UserSvc as User Service
+    participant OrderSvc as Order Service
+    participant ProductSvc as Product Service
+    participant PaymentSvc as Payment Service
+    participant InventorySvc as Inventory Service
+    participant NotificationSvc as Notification Service
+    participant Cache as Redis Cache
+    participant DB as Database
+    participant Queue as Message Queue
+    participant External as External Payment API
+    
+    Note over User,External: Complex E-commerce Order Processing Flow
+    
+    User->>+Gateway: POST /api/orders (Order Request)
+    
+    par Authentication Flow
+        Gateway->>+Auth: Validate JWT Token
+        Auth->>Cache: Check token cache
+        alt Token in cache
+            Cache-->>Auth: Valid token data
+        else Token not cached
+            Auth->>+DB: Query user session
+            DB-->>-Auth: Session data
+            Auth->>Cache: Cache token (TTL: 1hr)
+        end
+        Auth-->>-Gateway: Authentication result
+    and Rate Limiting
+        Gateway->>Cache: Check rate limit
+        Cache-->>Gateway: Request count
+        Gateway->>Gateway: Evaluate limits
+    end
+    
+    alt Authentication failed
+        Gateway-->>User: 401 Unauthorized
+    else Rate limit exceeded
+        Gateway-->>User: 429 Too Many Requests
+    else Request valid
+        Gateway->>+UserSvc: Get user profile
+        UserSvc->>Cache: Check user cache
+        alt User in cache
+            Cache-->>UserSvc: User profile
+        else User not cached
+            UserSvc->>+DB: Query user data
+            DB-->>-UserSvc: User profile
+            UserSvc->>Cache: Cache user profile
+        end
+        UserSvc-->>-Gateway: User profile
+        
+        loop For each product in order
+            Gateway->>+ProductSvc: Validate product
+            ProductSvc->>Cache: Check product cache
+            alt Product in cache
+                Cache-->>ProductSvc: Product data
+            else Product not cached
+                ProductSvc->>+DB: Query product
+                DB-->>-ProductSvc: Product details
+                ProductSvc->>Cache: Cache product
+            end
+            
+            alt Product not found
+                ProductSvc-->>Gateway: Product not found
+                Gateway-->>User: 400 Bad Request
+                break Product validation failed
+            else Product found
+                ProductSvc-->>-Gateway: Product validated
+                
+                Gateway->>+InventorySvc: Check availability
+                InventorySvc->>+DB: Query inventory
+                DB-->>-InventorySvc: Stock levels
+                
+                alt Insufficient stock
+                    InventorySvc-->>Gateway: Out of stock
+                    Gateway-->>User: 409 Conflict
+                    break Insufficient inventory
+                else Stock available
+                    InventorySvc->>DB: Reserve inventory
+                    InventorySvc-->>-Gateway: Stock reserved
+                end
+            end
+        end
+        
+        Gateway->>+OrderSvc: Create order
+        OrderSvc->>+DB: Begin transaction
+        OrderSvc->>DB: Insert order record
+        OrderSvc->>DB: Insert order items
+        
+        critical Payment Processing
+            OrderSvc->>+PaymentSvc: Process payment
+            PaymentSvc->>+External: Charge credit card
+            External-->>-PaymentSvc: Payment response
+            
+            alt Payment successful
+                PaymentSvc->>DB: Record payment
+                PaymentSvc-->>OrderSvc: Payment confirmed
+            else Payment failed
+                PaymentSvc-->>OrderSvc: Payment failed
+                OrderSvc->>DB: Rollback transaction
+                OrderSvc-->>Gateway: Order failed
+                Gateway-->>User: 402 Payment Required
+                break Payment processing failed
+            end
+            PaymentSvc-->>-OrderSvc: Payment result
+        option Payment timeout
+            PaymentSvc-->>OrderSvc: Payment timeout
+            OrderSvc->>Queue: Queue payment retry
+            OrderSvc-->>Gateway: Payment processing
+            Gateway-->>User: 202 Accepted
+        end
+        
+        OrderSvc->>DB: Commit transaction
+        OrderSvc->>+InventorySvc: Confirm inventory
+        InventorySvc->>DB: Update stock levels
+        InventorySvc-->>-OrderSvc: Inventory updated
+        
+        OrderSvc->>Queue: Publish order created event
+        OrderSvc-->>-Gateway: Order created
+        Gateway-->>-User: 201 Created
+        
+        par Async Processing
+            Queue->>+NotificationSvc: Order confirmation
+            NotificationSvc->>External: Send email
+            NotificationSvc->>External: Send SMS
+            NotificationSvc-->>-Queue: Notifications sent
+        and Analytics
+            Queue->>ProductSvc: Update popularity metrics
+            Queue->>UserSvc: Update purchase history
+        and Cache Updates
+            OrderSvc->>Cache: Cache order details
+            ProductSvc->>Cache: Update product metrics
+            UserSvc->>Cache: Invalidate user cache
+        end
+    end
+    
+    Note over NotificationSvc,External: Background processes continue
+    NotificationSvc->>External: Send push notification
+    NotificationSvc->>DB: Log notification history

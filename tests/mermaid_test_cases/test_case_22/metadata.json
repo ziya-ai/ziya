@@ -1,0 +1,6 @@
+{
+    "description": "Multi-level sequence diagram with complex e-commerce order processing flow including authentication, validation, payment, and async operations",
+    "diagram_type": "sequenceDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Comprehensive sequence diagram testing nested conditions, loops, parallel processing, and error handling"
+}

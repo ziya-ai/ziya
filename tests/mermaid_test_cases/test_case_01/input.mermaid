@@ -1,0 +1,54 @@
+flowchart TB
+    subgraph "Microservices Architecture"
+        subgraph "API Gateway Layer"
+            GW[API Gateway]
+            LB[Load Balancer]
+            AUTH[Auth Service]
+        end
+        
+        subgraph "Core Services"
+            USER[User Service]
+            ORDER[Order Service]
+            PAYMENT[Payment Service]
+            INVENTORY[Inventory Service]
+            NOTIFICATION[Notification Service]
+        end
+        
+        subgraph "Data Layer"
+            USERDB[(User Database)]
+            ORDERDB[(Order Database)]
+            PAYMENTDB[(Payment Database)]
+            INVENTORYDB[(Inventory Database)]
+            CACHE[(Redis Cache)]
+        end
+        
+        subgraph "External Services"
+            STRIPE[Stripe API]
+            EMAIL[Email Service]
+            SMS[SMS Gateway]
+        end
+    end
+    
+    CLIENT[Client Application] --> LB
+    LB --> GW
+    GW --> AUTH
+    AUTH --> USER
+    GW --> ORDER
+    GW --> PAYMENT
+    GW --> INVENTORY
+    
+    USER --> USERDB
+    ORDER --> ORDERDB
+    PAYMENT --> PAYMENTDB
+    INVENTORY --> INVENTORYDB
+    
+    ORDER --> INVENTORY
+    ORDER --> PAYMENT
+    PAYMENT --> STRIPE
+    ORDER --> NOTIFICATION
+    NOTIFICATION --> EMAIL
+    NOTIFICATION --> SMS
+    
+    USER --> CACHE
+    ORDER --> CACHE
+    INVENTORY --> CACHE

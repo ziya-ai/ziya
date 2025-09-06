@@ -1,0 +1,6 @@
+{
+    "description": "Comprehensive digital banking customer journey with multiple touchpoints and satisfaction scores",
+    "diagram_type": "journey",
+    "expected_to_fail": false,
+    "target_issue": "Complex user journey mapping with multiple actors and detailed interactions"
+}

@@ -1,0 +1,6 @@
+{
+    "description": "Multi-dimensional Sankey diagram showing complex global energy flows from production through distribution to end uses",
+    "diagram_type": "sankey",
+    "expected_to_fail": false,
+    "target_issue": "Complex Sankey diagram with extensive multi-level energy flow analysis"
+}

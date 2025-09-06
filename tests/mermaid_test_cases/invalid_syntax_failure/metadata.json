@@ -1,0 +1,6 @@
+{
+    "description": "Flowchart with bullet characters that should be processed correctly",
+    "diagram_type": "flowchart",
+    "expected_to_fail": false,
+    "target_issue": "Bullet character preprocessing"
+}

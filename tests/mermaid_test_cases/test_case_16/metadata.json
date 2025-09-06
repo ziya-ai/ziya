@@ -1,0 +1,6 @@
+{
+    "description": "Detailed cloud infrastructure cost breakdown pie chart",
+    "diagram_type": "pie",
+    "expected_to_fail": false,
+    "target_issue": "Pie chart with multiple categories and precise percentage values"
+}

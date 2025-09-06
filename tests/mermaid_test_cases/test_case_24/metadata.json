@@ -1,0 +1,6 @@
+{
+    "description": "Block diagram with hierarchical structure showing microservices architecture",
+    "diagram_type": "block",
+    "expected_to_fail": false,
+    "target_issue": "Beta block diagram with complex nested structure and connections"
+}
