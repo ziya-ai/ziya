@@ -1,0 +1,63 @@
+block-beta
+    columns 3
+    
+    block:Frontend
+        A["Web Application"]
+        B["Mobile App"]
+        C["Desktop Client"]
+    end
+    
+    space
+    
+    block:APIGateway
+        D["Authentication"]
+        E["Rate Limiting"]
+        F["Load Balancer"]
+    end
+    
+    space
+    
+    block:Microservices
+        columns 2
+        G["User Service"]
+        H["Order Service"]
+        I["Product Service"]
+        J["Payment Service"]
+        K["Notification Service"]
+        L["Analytics Service"]
+    end
+    
+    block:DataLayer
+        columns 2
+        M[("PostgreSQL Primary DB")]
+        N[("Redis Cache")]
+        O[("Elasticsearch Search")]
+        P[("S3 File Storage")]
+    end
+    
+    block:Infrastructure
+        Q["Kubernetes Cluster"]
+        R["Monitoring & Logging"]
+        S["CI/CD Pipeline"]
+    end
+    
+    A --> D
+    B --> D
+    C --> D
+    
+    D --> G
+    E --> H
+    F --> I
+    
+    G --> M
+    H --> M
+    I --> N
+    J --> O
+    K --> P
+    L --> M
+    
+    Q --> G
+    Q --> H
+    Q --> I
+    R --> Q
+    S --> Q

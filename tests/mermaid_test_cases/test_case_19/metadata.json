@@ -1,0 +1,6 @@
+{
+    "description": "Comprehensive big data pipeline architecture with streaming, batch processing, ML, and governance",
+    "diagram_type": "flowchart",
+    "expected_to_fail": false,
+    "target_issue": "Complex data engineering architecture with multiple processing paradigms and technologies"
+}

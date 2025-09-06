@@ -1,0 +1,6 @@
+{
+    "description": "Comprehensive enterprise requirements diagram with compliance, security, and performance requirements",
+    "diagram_type": "requirementDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Complex requirements traceability with multiple requirement types and system elements"
+}

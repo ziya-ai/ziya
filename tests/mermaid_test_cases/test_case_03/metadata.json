@@ -1,0 +1,6 @@
+{
+    "description": "Complex e-commerce order processing sequence with nested alt blocks and multiple services",
+    "diagram_type": "sequenceDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Complex sequence diagram with nested conditional logic"
+}

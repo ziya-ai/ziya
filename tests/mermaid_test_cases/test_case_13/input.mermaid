@@ -1,0 +1,97 @@
+stateDiagram-v2
+    [*] --> SystemInitialization
+    
+    state SystemInitialization {
+        [*] --> LoadingConfiguration
+        LoadingConfiguration --> ValidatingConfig
+        ValidatingConfig --> InitializingDatabases
+        InitializingDatabases --> StartingServices
+        StartingServices --> RegisteringHealthChecks
+        RegisteringHealthChecks --> [*]
+    }
+    
+    SystemInitialization --> OperationalState
+    
+    state OperationalState {
+        [*] --> Healthy
+        
+        state Healthy {
+            [*] --> ServingRequests
+            ServingRequests --> ProcessingLoad : high_load
+            ProcessingLoad --> ServingRequests : load_normalized
+            ServingRequests --> MaintenanceMode : maintenance_scheduled
+            ProcessingLoad --> MaintenanceMode : maintenance_scheduled
+        }
+        
+        state MaintenanceMode {
+            [*] --> DrainConnections
+            DrainConnections --> BackupData
+            BackupData --> ApplyUpdates
+            ApplyUpdates --> RunMigrations
+            RunMigrations --> ValidateSystem
+            ValidateSystem --> RestoreConnections
+            RestoreConnections --> [*]
+        }
+        
+        MaintenanceMode --> Healthy : maintenance_complete
+        
+        Healthy --> Degraded : service_degradation
+        Degraded --> Healthy : service_restored
+        
+        state Degraded {
+            [*] --> PartialService
+            PartialService --> LimitedFunctionality : critical_service_down
+            LimitedFunctionality --> PartialService : service_restored
+            PartialService --> EmergencyMode : multiple_failures
+            LimitedFunctionality --> EmergencyMode : cascade_failure
+            
+            state EmergencyMode {
+                [*] --> ReadOnlyMode
+                ReadOnlyMode --> DisasterRecovery : data_corruption
+                DisasterRecovery --> RestoreFromBackup
+                RestoreFromBackup --> ValidateRestore
+                ValidateRestore --> ReadOnlyMode : restore_successful
+                ValidateRestore --> DisasterRecovery : restore_failed
+            }
+        }
+        
+        Degraded --> Critical : system_failure
+        
+        state Critical {
+            [*] --> ServiceUnavailable
+            ServiceUnavailable --> FailoverInitiated
+            FailoverInitiated --> SecondarySystemActivation
+            SecondarySystemActivation --> DataSynchronization
+            DataSynchronization --> TrafficRedirection
+            TrafficRedirection --> [*]
+        }
+        
+        Critical --> Healthy : failover_complete
+        Critical --> Failed : failover_unsuccessful
+    }
+    
+    OperationalState --> ShutdownSequence : shutdown_initiated
+    
+    state ShutdownSequence {
+        [*] --> GracefulShutdown
+        GracefulShutdown --> StopAcceptingRequests
+        StopAcceptingRequests --> CompleteActiveRequests
+        CompleteActiveRequests --> FlushBuffers
+        FlushBuffers --> CloseConnections
+        CloseConnections --> PersistState
+        PersistState --> StopServices
+        StopServices --> [*]
+    }
+    
+    ShutdownSequence --> [*]
+    
+    state Failed {
+        [*] --> SystemFailure
+        SystemFailure --> GenerateIncident
+        GenerateIncident --> NotifyOperations
+        NotifyOperations --> CollectDiagnostics
+        CollectDiagnostics --> [*]
+    }
+    
+    Failed --> SystemInitialization : manual_restart
+    OperationalState --> Failed : catastrophic_failure

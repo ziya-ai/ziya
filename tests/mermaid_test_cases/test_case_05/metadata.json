@@ -1,0 +1,6 @@
+{
+    "description": "Complex application lifecycle state machine with nested states and multiple transitions",
+    "diagram_type": "stateDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Advanced state diagram with deeply nested states and complex transitions"
+}
