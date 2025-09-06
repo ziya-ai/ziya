@@ -2467,15 +2467,6 @@ interface DiffTokenProps {
 }
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
-    console.log('🎯 DiffToken - Component rendering with token:', {
-        hasText: !!token.text,
-        textLength: token.text?.length,
-        lang: token.lang,
-        index,
-        enableCodeApply,
-        textPreview: token.text?.substring(0, 100) + '...'
-    });
-
     const { isStreaming } = useChatContext();
     // Generate a unique ID once when the component mounts
     const [diffId] = useState(() =>

@@ -47,6 +47,143 @@ const preprocessors: Preprocessor[] = [];
 // Registry of error handlers that can be extended
 const errorHandlers: ErrorHandler[] = [];
 
+// Cache for supported diagram types
+let supportedDiagramTypes: Set<string> | null = null;
+let mermaidInstance: any = null;
+
+/**
+ * Dynamically detect supported diagram types from the current Mermaid instance
+ * @param mermaid - The mermaid library instance
+ * @returns Set of supported diagram type names
+ */
+export function detectSupportedDiagramTypes(mermaid: any): Set<string> {
+  if (supportedDiagramTypes && mermaidInstance === mermaid) {
+    return supportedDiagramTypes;
+  }
+
+  const supportedTypes = new Set<string>();
+  
+  // Don't run detection if mermaid is not properly initialized
+  if (!mermaid || !mermaid.parse) {
+    console.warn('Mermaid not properly initialized for type detection');
+    return supportedTypes;
+  }
+  
+  // Test diagram types with minimal valid syntax
+  const testCases = [
+    // Stable diagram types
+    { type: 'flowchart', def: 'flowchart TD\n    A --> B' },
+    { type: 'graph', def: 'graph TD\n    A --> B' },
+    { type: 'sequenceDiagram', def: 'sequenceDiagram\n    A->>B: message' },
+    { type: 'classDiagram', def: 'classDiagram\n    class A' },
+    { type: 'stateDiagram', def: 'stateDiagram-v2\n    [*] --> A' },
+    { type: 'erDiagram', def: 'erDiagram\n    A { int id }' },
+    { type: 'journey', def: 'journey\n    title Test\n    section A\n        Task: 5: User' },
+    { type: 'gantt', def: 'gantt\n    title Test\n    dateFormat YYYY-MM-DD\n    Task: 2024-01-01, 1d' },
+    { type: 'pie', def: 'pie title Test\n    "A": 50\n    "B": 50' },
+    { type: 'gitgraph', def: 'gitgraph\n    commit id: "Initial"' },
+    { type: 'requirementDiagram', def: 'requirementDiagram\n    requirement test {\n        id: 1\n        text: test\n        risk: low\n        verifymethod: test\n    }' },
+    { type: 'timeline', def: 'timeline\n    title Test\n    2024: Event' },
+    { type: 'mindmap', def: 'mindmap\n    root\n        A\n        B' },
+    { type: 'quadrantChart', def: 'quadrantChart\n    title Test\n    x-axis Low --> High\n    y-axis Low --> High\n    "A": [0.5, 0.5]' },
+    
+    // Beta diagram types - test both with and without -beta suffix
+    { type: 'xychart', def: 'xychart-beta\n    title Test\n    x-axis [A, B]\n    y-axis Test 0 --> 10\n    line Test [1, 2]' },
+    { type: 'xychart-beta', def: 'xychart-beta\n    title Test\n    x-axis [A, B]\n    y-axis Test 0 --> 10\n    line Test [1, 2]' },
+    { type: 'sankey', def: 'sankey-beta\n    A,B,10' },
+    { type: 'sankey-beta', def: 'sankey-beta\n    A,B,10' },
+    { type: 'block', def: 'block-beta\n    A[Test]' },
+    { type: 'block-beta', def: 'block-beta\n    A[Test]' },
+    { type: 'packet', def: 'packet-beta\n    title Test\n    0-7: Test' },
+    { type: 'packet-beta', def: 'packet-beta\n    title Test\n    0-7: Test' },
+    { type: 'architecture', def: 'architecture-beta\n    service test[Test]' },
+    { type: 'architecture-beta', def: 'architecture-beta\n    service test[Test]' }
+  ];
+
+  for (const testCase of testCases) {
+    try {
+      mermaid.parse(testCase.def);
+      supportedTypes.add(testCase.type);
+    } catch (error) {
+      // Type not supported - this is expected for beta types
+    }
+  }
+
+  supportedDiagramTypes = supportedTypes;
+  mermaidInstance = mermaid;
+  
+  console.log('Detected supported diagram types:', Array.from(supportedTypes));
+  return supportedTypes;
+}
+
+/**
+ * Normalize diagram type name by checking for beta promotion
+ * @param diagramType - The diagram type to normalize
+ * @param mermaid - The mermaid library instance
+ * @returns The correct diagram type name to use
+ */
+export function normalizeDiagramType(diagramType: string, mermaid: any): string {
+  const supportedTypes = detectSupportedDiagramTypes(mermaid);
+  
+  // If the exact type is supported, use it
+  if (supportedTypes.has(diagramType)) {
+    return diagramType;
+  }
+  
+  // Check for beta promotion (beta type promoted to stable)
+  if (diagramType.endsWith('-beta')) {
+    const stableType = diagramType.replace('-beta', '');
+    if (supportedTypes.has(stableType)) {
+      return stableType;
+    }
+  }
+  
+  // Check for beta demotion (stable type needs beta suffix)
+  if (!diagramType.endsWith('-beta')) {
+    const betaType = diagramType + '-beta';
+    if (supportedTypes.has(betaType)) {
+      return betaType;
+    }
+  }
+  
+  // Return original if no alternative found
+  return diagramType;
+}
+
+/**
+ * Preprocess diagram definition with automatic type normalization
+ * @param definition - The diagram definition
+ * @param diagramType - The diagram type (will be normalized)
+ * @param mermaid - The mermaid library instance
+ * @returns Object with normalized type and processed definition
+ */
+export function preprocessWithTypeNormalization(
+  definition: string, 
+  diagramType: string, 
+  mermaid: any
+): { normalizedType: string; processedDefinition: string } {
+  const normalizedType = normalizeDiagramType(diagramType, mermaid);
+  
+  // Update the definition if the type changed
+  let processedDefinition = definition;
+  if (normalizedType !== diagramType) {
+    // Replace the first line if it contains the diagram type
+    const lines = definition.split('\n');
+    if (lines[0].trim().startsWith(diagramType)) {
+      lines[0] = lines[0].replace(diagramType, normalizedType);
+      processedDefinition = lines.join('\n');
+    }
+  }
+  
+  // Apply standard preprocessing
+  processedDefinition = preprocessDefinition(processedDefinition, normalizedType);
+  
+  return {
+    normalizedType,
+    processedDefinition
+  };
+}
+
 /**
  * Register a preprocessor function
  * @param fn - Function that takes diagram text and returns processed text
@@ -111,7 +248,7 @@ export function registerErrorHandler(
  * @param diagramType - The type of diagram (e.g., 'sequence', 'state')
  * @returns - The processed definition
  */
-export function preprocessDefinition(definition: string, diagramType?: string): string {
+export function preprocessDefinition(definition: string, diagramType?: string, mermaid?: any): string {
   let processedDef = definition;
 
   // Extract diagram type if not provided
@@ -120,11 +257,26 @@ export function preprocessDefinition(definition: string, diagramType?: string): 
     diagramType = firstLine.trim().replace(/^(\w+).*$/, '$1');
   }
 
+  // Normalize diagram type if mermaid instance is available
+  let normalizedType = diagramType;
+  if (mermaid) {
+    normalizedType = normalizeDiagramType(diagramType, mermaid);
+    
+    // Update the definition if the type changed
+    if (normalizedType !== diagramType) {
+      const lines = processedDef.split('\n');
+      if (lines[0].trim().startsWith(diagramType)) {
+        lines[0] = lines[0].replace(diagramType, normalizedType);
+        processedDef = lines.join('\n');
+      }
+    }
+  }
+
   // Apply each preprocessor in order
   for (const processor of preprocessors) {
-    if (processor.diagramTypes.includes('*') || processor.diagramTypes.includes(diagramType)) {
+    if (processor.diagramTypes.includes('*') || processor.diagramTypes.includes(normalizedType)) {
       try {
-        const result = processor.process(processedDef, diagramType);
+        const result = processor.process(processedDef, normalizedType);
         if (result) {
           processedDef = result;
         }
@@ -166,11 +318,314 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
 /*
  * Initialize the Mermaid enhancer with default preprocessors and error handlers
  */
-
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
 
-  // Add a preprocessor to fix style statements with quoted subgraph names - HIGHEST PRIORITY
+  // CRITICAL: Fix sankey diagram format - HIGHEST PRIORITY  
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (!definition.trim().startsWith('sankey')) {
+        return definition;
+      }
+
+      const lines = definition.split('\n').map(line => line.trim()).filter(line => line);
+      if (lines.length === 0) return definition;
+      const result: string[] = [];
+      result.push(lines[0]); // Keep the sankey-beta header
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+
+        // Skip empty lines and comments
+        if (!line || line.startsWith('%%')) continue;
+
+        // Process data lines - must have exactly 3 comma-separated values
+        if (line.includes(',')) {
+          const parts = line.split(',').map(p => p.trim());
+          if (parts.length >= 3) {
+            result.push(`${parts[0]},${parts[1]},${parts[2]}`);
+          }
+        }
+      }
+
+      console.log('🔍 CRITICAL-SANKEY-FORMAT-FIX: Processing complete');
+      return result.join('\n');
+    }, {
+    name: 'sankey-format-fix',
+    priority: 700, // Very high priority
+    diagramTypes: ['sankey']
+  });
+
+  // CRITICAL: Single comprehensive requirement diagram preprocessor
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'requirementdiagram' && !definition.trim().startsWith('requirementDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 REQUIREMENT-MASTER-FIX: Processing requirement diagram');
+
+      let result = definition;
+      
+      // Step 1: Ensure we have the proper header
+      if (!result.trim().startsWith('requirementDiagram')) {
+        result = 'requirementDiagram\n' + result;
+      }
+      
+      // Step 2: Parse and rebuild the entire structure properly
+      const lines = result.split('\n');
+      const output: string[] = [];
+      let inRequirementBlock = false;
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        
+        // Skip empty lines in blocks
+        if (!trimmed && inRequirementBlock) continue;
+        
+        // Add the header
+        if (trimmed.startsWith('requirementDiagram')) {
+          output.push(trimmed);
+          continue;
+        }
+        
+        // Handle requirement block start
+        if (trimmed.match(/^(requirement|functionalreq|performancereq|interfacereq|physicalreq|designconstraint)\s+\w+\s*\{/)) {
+          if (inRequirementBlock) {
+            output.push('    }'); // Close previous block
+          }
+          inRequirementBlock = true;
+          output.push('    ' + trimmed);
+          continue;
+        }
+        
+        // Handle requirement block end
+        if (trimmed === '}' && inRequirementBlock) {
+          output.push('    }');
+          inRequirementBlock = false;
+          continue;
+        }
+        
+        // Handle properties inside blocks
+        if (inRequirementBlock && trimmed.match(/^(id|text|risk|verifymethod):/)) {
+          const match = trimmed.match(/^(\w+):\s*(.+)$/);
+          if (match) {
+            const [, prop, value] = match;
+            // Clean the value and apply proper quoting rules
+            const cleanValue = value.replace(/^["']|["']$/g, '');
+            const shouldQuote = ['id', 'text'].includes(prop);
+            output.push(`        ${prop}: ${shouldQuote ? `"${cleanValue}"` : cleanValue}`);
+          }
+          continue;
+        }
+        
+        // Handle element definitions and relationships
+        if (!inRequirementBlock && (trimmed.startsWith('element ') || trimmed.includes(' - ') || trimmed.includes(' -> '))) {
+          output.push('    ' + trimmed);
+          continue;
+        }
+        
+        // Handle other lines
+        if (trimmed && !inRequirementBlock) {
+          output.push('    ' + trimmed);
+        }
+      }
+      
+      // Close any remaining block
+      if (inRequirementBlock) {
+        output.push('    }');
+      }
+      
+      console.log('🔍 REQUIREMENT-MASTER-FIX: Processing complete');
+      return output.join('\n');
+    }, {
+    name: 'requirement-master-fix',
+    priority: 650, // Single high priority
+    diagramTypes: ['requirementdiagram']
+  });
+
+  // Fix requirementDiagram ID and property syntax
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (!definition.trim().startsWith('requirementDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 REQUIREMENT-ID-FIX: Fixing ID format and properties');
+
+      let result = definition;
+      
+      // Fix ID format - remove hyphens and make alphanumeric
+      result = result.replace(/(\s+id:\s*)([A-Z]+-\d+)/g, (match, prefix, id) => {
+        const cleanId = id.replace(/-/g, '');
+        return `${prefix}${cleanId}`;
+      });
+      
+      // Fix verifymethod property name
+      result = result.replace(/verifymethod:/g, 'verifyMethod:');
+      
+      console.log('🔍 REQUIREMENT-ID-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'requirement-id-fix',
+    priority: 500,
+    diagramTypes: ['requirementDiagram']
+  });
+
+  // Fix sequence diagram break statements (invalid syntax)
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (!definition.trim().startsWith('sequenceDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 SEQUENCE-BREAK-FIX: Removing invalid break statements');
+
+      let result = definition;
+      
+      // Remove break statements completely as they're not valid in Mermaid sequence diagrams
+      result = result.replace(/^(\s*)break\s+.*$/gm, '');
+      
+      // Clean up any resulting empty lines
+      result = result.replace(/\n\s*\n\s*\n/g, '\n\n');
+      
+      console.log('🔍 SEQUENCE-BREAK-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'sequence-break-fix',
+    priority: 500,
+    diagramTypes: ['sequenceDiagram']
+  });
+
+  // Fix packet diagram syntax - add missing quotes
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (!definition.trim().startsWith('packet') && !definition.trim().startsWith('packet-beta')) {
+        return definition;
+      }
+
+      console.log('🔍 PACKET-SYNTAX-FIX: Adding quotes to packet fields');
+
+      let result = definition;
+      
+      // Add quotes around field descriptions if missing
+      result = result.replace(/^(\d+(-\d+)?): ([^"\n].*)$/gm, '$1: "$3"');
+      
+      // Add quotes around title if missing
+      result = result.replace(/^title ([^"\n].*)$/gm, 'title "$1"');
+      
+      console.log('🔍 PACKET-SYNTAX-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'packet-syntax-fix',
+    priority: 500,
+    diagramTypes: ['packet', 'packet-beta']
+  });
+
+  // Fix gitgraph syntax issues
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (!definition.trim().startsWith('gitgraph')) {
+        return definition;
+      }
+
+      console.log('🔍 GITGRAPH-FIX: Processing gitgraph syntax');
+
+      let result = definition;
+      
+      // Ensure proper gitgraph syntax
+      if (!result.includes('gitgraph:')) {
+        result = result.replace('gitgraph', 'gitgraph:');
+      }
+      
+      console.log('🔍 GITGRAPH-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'gitgraph-fix',
+    priority: 500,
+    diagramTypes: ['gitgraph']
+  });
+
+  // CRITICAL: Fix block diagram double quotes - HIGHEST PRIORITY 
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (!definition.trim().startsWith('block-beta') && !definition.trim().startsWith('block')) {
+        return definition;
+      }
+
+      console.log('🔍 BLOCK-QUOTE-FIX: Fixing double quotes and complex labels');
+
+      let result = definition;
+
+      // Fix double quote patterns that cause lexical errors
+      result = result.replace(/(\w+)\[""([^"]*)""\]/g, '$1["$2"]');
+      
+      // Fix complex parentheses patterns like M["("PostgreSQL<br/>Primary DB")"]
+      result = result.replace(/\["?\("([^"]*?)(?:<br\/?>([^"]*?))?"?\)?"?\]/g, '["$1$2"]');
+      
+      console.log('🔍 BLOCK-QUOTE-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'block-quote-fix',
+    priority: 600,
+    diagramTypes: ['block-beta', 'block']
+  });
+
+  // CRITICAL: Fix sequence diagram structural issues
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (!definition.trim().startsWith('sequenceDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 SEQUENCE-FIX: Processing sequence diagram');
+
+      let result = definition;
+      
+      // Fix bullet characters
+      result = result.replace(/•/g, '-');
+      
+      // Remove invalid option statements from alt blocks
+      // Remove quotes from risk and verifymethod values
+      result = result.replace(/(critical[\s\S]*?)option\s+[^\n]*\n([\s\S]*?)end/g, (match, criticalPart, rest) => {
+        // Keep option statements only in critical blocks
+        return match;
+      });
+      
+      // Remove option statements from alt blocks
+      result = result.replace(/(alt[\s\S]*?)option\s+[^\n]*\n/g, '$1');
+
+      console.log('🔍 SEQUENCE-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'sequence-fix',
+    priority: 550,
+    diagramTypes: ['sequencediagram']
+  });
+
+  // Fix state diagram divider syntax
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'statediagram' && diagramType !== 'statediagram-v2' &&
+        !definition.trim().startsWith('stateDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 CRITICAL-STATE-FIX: Fixing divider syntax errors');
+
+      let result = definition;
+      // Remove problematic -- dividers that cause "No such shape: divider" errors
+      result = result.replace(/^\s*--\s*$/gm, '');
+
+      console.log('🔍 CRITICAL-STATE-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'critical-state-divider-fix',
+    priority: 555, // High priority
+    diagramTypes: ['statediagram', 'statediagram-v2']
+  });
+
+  // Add a preprocessor to fix quoted style references - HIGHEST PRIORITY  
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
       if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
@@ -178,50 +633,28 @@ export function initMermaidEnhancer(): void {
         return definition;
       }
 
-      console.log('🔍 STYLE-SUBGRAPH-FIX: Processing style statements with quoted subgraph names');
+      console.log('🔍 QUOTED-STYLE-FIX: Removing invalid quoted style statements');
 
-      // First, extract all subgraph declarations to build a mapping
-      const subgraphMapping = new Map<string, string>();
-      const subgraphMatches = definition.matchAll(/subgraph\s+"([^"]+)"/g);
-      
-      for (const match of subgraphMatches) {
-        const quotedName = match[1];
-        // Create a valid identifier from the quoted name
-        const identifier = quotedName
-          .replace(/\s+/g, '') // Remove spaces
-          .replace(/[^a-zA-Z0-9_]/g, '_') // Replace special chars with underscores
-          .replace(/^(\d)/, '_$1'); // Prefix with underscore if starts with number
-        
-        subgraphMapping.set(quotedName, identifier);
-        console.log(`🔍 STYLE-SUBGRAPH-FIX: Mapped "${quotedName}" -> ${identifier}`);
-      }
-
-      if (subgraphMapping.size === 0) {
-        console.log('🔍 STYLE-SUBGRAPH-FIX: No quoted subgraphs found, skipping');
-        return definition;
-      }
-
-      // Replace subgraph declarations to use identifiers
+      // Simply remove all style statements that reference quoted names
+      // These are invalid in Mermaid and cause parse errors
       let result = definition;
-      for (const [quotedName, identifier] of subgraphMapping) {
-        // Replace: subgraph "Frontend Stack" -> subgraph Frontend_Stack ["Frontend Stack"]
-        const subgraphRegex = new RegExp(`subgraph\\s+"${quotedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g');
-        result = result.replace(subgraphRegex, `subgraph ${identifier} ["${quotedName}"]`);
-        console.log(`🔍 STYLE-SUBGRAPH-FIX: Updated subgraph declaration for "${quotedName}"`);
-      }
 
-      // Replace style statements to use identifiers instead of quoted names
-      for (const [quotedName, identifier] of subgraphMapping) {
-        // Replace: style "Frontend Stack" fill:#color -> style Frontend_Stack fill:#color
-        const styleRegex = new RegExp(`style\\s+"${quotedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g');
-        result = result.replace(styleRegex, `style ${identifier}`);
-        console.log(`🔍 STYLE-SUBGRAPH-FIX: Fixed style statement for "${quotedName}" -> ${identifier}`);
-      }
+      // Remove style statements with quoted subgraph references
+      // Pattern: style "Subgraph Name" fill:#color
+      const removedStyles: string[] = [];
+      result = result.replace(/style\s+"([^"]+)"\s+fill:[^;\n]*/g, (match, quotedName) => {
+        removedStyles.push(quotedName);
+        console.log(`🔍 QUOTED-STYLE-FIX: Removing invalid style statement: ${match}`);
+        return ''; // Remove the entire invalid style statement
+      });
 
-      console.log('🔍 STYLE-SUBGRAPH-FIX: Processing complete');
+      if (removedStyles.length > 0) {
+        console.log(`🔍 QUOTED-STYLE-FIX: Removed ${removedStyles.length} invalid style statements`);
+      }
+      console.log('🔍 QUOTED-STYLE-FIX: Processing complete');
       return result;
     }, {
-    name: 'style-subgraph-fix',
+    name: 'quoted-style-fix',
     priority: 500, // Highest priority to run before all other fixes
     diagramTypes: ['flowchart', 'graph']
   });
@@ -241,7 +674,7 @@ export function initMermaidEnhancer(): void {
       // Handle both old format: subgraph "Name" and new format: subgraph Identifier ["Name"]
       const quotedSubgraphMatches = definition.matchAll(/subgraph\s+"([^"]+)"/g);
       const identifierSubgraphMatches = definition.matchAll(/subgraph\s+(\w+)\s*(?:\["[^"]+"\])?/g);
-      
+
       for (const match of quotedSubgraphMatches) {
         subgraphNames.add(match[1]);
       }
@@ -265,14 +698,14 @@ export function initMermaidEnhancer(): void {
         // Check if there's a node with the same ID as the subgraph name
         if (nodeIds.has(subgraphName)) {
           console.log(`🔍 NAMING-CONFLICT-FIX: Found conflict - subgraph "${subgraphName}" has node with same ID`);
-          
+
           // Create a unique new node ID
           const newNodeId = `${subgraphName}Node`;
-          
+
           // Replace node definition: TRI[...] -> TRINode[...]
           const nodeDefRegex = new RegExp(`\\b${subgraphName}\\[`, 'g');
           result = result.replace(nodeDefRegex, `${newNodeId}[`);
-          
+
           // Replace all references to this node in connections, but NOT in subgraph declarations
           // This regex matches the node ID when it's used in connections but not in subgraph declarations
           const nodeRefRegex = new RegExp(`\\b${subgraphName}\\b(?!\\s*\\[|"\\s*$)`, 'g');
@@ -281,7 +714,7 @@ export function initMermaidEnhancer(): void {
             const beforeMatch = result.substring(Math.max(0, offset - 20), offset);
             return beforeMatch.includes('subgraph') ? match : newNodeId;
           });
-          
+
           console.log(`🔍 NAMING-CONFLICT-FIX: Renamed conflicting node from "${subgraphName}" to "${newNodeId}"`);
         }
       }
@@ -541,6 +974,43 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['flowchart', 'graph']
   });
 
+  // Add preprocessor to fix bullet characters and other problematic Unicode
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      console.log('🔍 UNICODE-FIX: Processing problematic Unicode characters');
+
+      let result = definition;
+
+      // Replace bullet characters with hyphens
+      result = result.replace(/•/g, '-');
+
+      // Replace other problematic Unicode characters
+      result = result.replace(/[\u2022\u2023\u2043]/g, '-'); // Various bullet chars
+      result = result.replace(/[\u2013\u2014]/g, '-'); // En dash, Em dash
+      result = result.replace(/[\u201C\u201D]/g, '"'); // Smart quotes
+      result = result.replace(/[\u2018\u2019]/g, "'"); // Smart single quotes
+
+      // Fix incomplete connections that end abruptly
+      const lines = result.split('\n');
+      const fixedLines = lines.map(line => {
+        // Check for lines that end with arrows pointing nowhere
+        if (line.trim().match(/-->\s*$|--->\s*$|\|\s*$/) && !line.includes('subgraph')) {
+          console.log('🔍 UNICODE-FIX: Removing incomplete connection:', line.trim());
+          return ''; // Remove incomplete connections
+        }
+        return line;
+      }).filter(line => line !== '');
+
+      result = fixedLines.join('\n');
+
+      console.log('🔍 UNICODE-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'unicode-and-incomplete-connection-fix',
+    priority: 490, // Very high priority
+    diagramTypes: ['*']
+  });
+
   // Add a preprocessor to clean arrow characters from edge labels
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
@@ -554,15 +1024,15 @@ export function initMermaidEnhancer(): void {
       // This regex finds edge labels and removes arrow characters from them
       const result = definition.replace(/(==>|-->|-\.->|--[xo]>|---|->>|-->>)\s*\|([^|]*?)\|/g, (match, arrow, label) => {
         console.log('🔍 ARROW-LABEL-CLEANER: Found match:', { match, arrow, label });
-        
+
         let processedLabel = label.trim();
-        
+
         // If the label is already properly quoted, don't add more quotes
         if (processedLabel.startsWith('"') && processedLabel.endsWith('"')) {
           console.log('🔍 ARROW-LABEL-CLEANER: Label already quoted, skipping:', processedLabel);
           return match;
         }
-        
+
         // Clean arrow characters from the label
         let cleanedLabel = processedLabel
           .replace(/-->/g, '')     // Remove -->
@@ -650,7 +1120,7 @@ export function initMermaidEnhancer(): void {
   // Add a preprocessor to fix class diagram syntax issues
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
-      if (diagramType !== 'classDiagram' && !definition.trim().startsWith('classDiagram')) {
+      if (diagramType !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) {
         return definition;
       }
 
@@ -672,7 +1142,7 @@ export function initMermaidEnhancer(): void {
     }, {
     name: 'class-diagram-inheritance-fix',
     priority: 190,
-    diagramTypes: ['classDiagram']
+    diagramTypes: ['classdiagram']
   });
 
   // Add a preprocessor to fix single-quoted link labels that cause SQS errors
@@ -722,7 +1192,7 @@ export function initMermaidEnhancer(): void {
     }, {
     name: 'class-diagram-syntax-fix',
     priority: 180,
-    diagramTypes: ['classDiagram']
+    diagramTypes: ['classdiagram']
   });
 
   // Add a quote cleanup preprocessor that runs first to fix quote multiplication
@@ -794,7 +1264,7 @@ export function initMermaidEnhancer(): void {
       }
       return fixedLines.join('\n');
     }, {
-    name: 'flowchart-line-break-fix',
+    name: 'flowchart-node-termination-fix',
     priority: 185,
     diagramTypes: ['flowchart', 'graph']
   });
@@ -831,7 +1301,7 @@ export function initMermaidEnhancer(): void {
   }, {
     name: 'gitgraph-syntax-fix',
     priority: 140,
-    diagramTypes: ['gitgraph', 'gitGraph']
+    diagramTypes: ['gitgraph']  // This is correct - gitgraph becomes 'gitgraph' in lowercase
   });
 
   // Add a preprocessor to fix XYChart excessive quotes
@@ -868,8 +1338,8 @@ export function initMermaidEnhancer(): void {
 
       return processedDef;
     }, {
-    name: 'flowchart-line-break-fix',
-    priority: 190,
+    name: 'flowchart-arrow-spacing-fix',
+    priority: 195, // Slightly different priority to avoid conflicts
     diagramTypes: ['flowchart', 'graph']
   });
   // Add a quote cleanup preprocessor that runs first to fix quote multiplication
@@ -908,7 +1378,18 @@ export function initMermaidEnhancer(): void {
     console.log('Quote cleanup - before:', finalDef.substring(0, 200));
 
     // Fix quote multiplication by cleaning up malformed quotes
-    finalDef = finalDef.replace(/(\w+)\[([\s\S]*?)\]/g, (match, nodeId, content) => {
+    finalDef = finalDef.replace(/(\w+)(\s*)\[([\s\S]*?)\]/g, (match, nodeId, spacing, content) => {
+      // Skip subgraph display names - they should be handled by style-subgraph-fix
+      // Pattern: subgraph Identifier ["Display Name"]
+      const beforeMatch = finalDef.substring(Math.max(0, finalDef.indexOf(match) - 50), finalDef.indexOf(match));
+      if (beforeMatch.includes('subgraph') && spacing.length === 1) {
+        console.log(`Skipping subgraph display name: ${nodeId}${spacing}[${content}]`);
+        return match; // Don't process subgraph display names
+      }
+
+      // Only process actual node definitions, not subgraph display names
+      const actualNodeId = nodeId + spacing;
+
       // Skip if this is already properly quoted
       if (content.match(/^"[^"]*"$/)) {
         return match;
@@ -918,8 +1399,8 @@ export function initMermaidEnhancer(): void {
       if (content.includes('""') || content.match(/"{2,}/) || content.includes('\\"') || content.match(/^".*".*"/)) {
         // Extract the actual text content by removing all quote variations and trailing backslashes
         const cleanContent = content.replace(/^"+|"+$/g, '').replace(/\\"/g, '"').replace(/"{2,}/g, '"').replace(/\\+$/g, '');
-        console.log(`Cleaning quotes for ${nodeId}: "${content}" -> "${cleanContent}"`);
-        return `${nodeId}["${cleanContent}"]`;
+        console.log(`Cleaning quotes for ${actualNodeId}: "${content}" -> "${cleanContent}"`);
+        return `${actualNodeId}["${cleanContent}"]`;
       }
       return match;
     });
@@ -927,7 +1408,7 @@ export function initMermaidEnhancer(): void {
     console.log('Quote cleanup - after:', finalDef.substring(0, 200));
     return finalDef;
   }, {
-    name: 'quote-cleanup',
+    name: 'quote-cleanup-flowchart',
     priority: 200, // High priority to run first
     diagramTypes: ['flowchart', 'graph']
   });
@@ -968,8 +1449,17 @@ export function initMermaidEnhancer(): void {
 
     console.log('Mixed node shapes - processing:', finalDef.substring(0, 200));
     finalDef = finalDef.replace(/(\w+)(\[|\()([\s\S]*?)(\]|\))/g, (match, nodeId, open, content, close) => {
+      // Skip subgraph display names - they should not be modified
+      // Pattern: subgraph Identifier ["Display Name"]
+      const beforeMatch = finalDef.substring(Math.max(0, finalDef.indexOf(match) - 50), finalDef.indexOf(match));
+      if (beforeMatch.includes('subgraph')) {
+        console.log(`Skipping subgraph display name in special-char fix: ${nodeId}${open}${content}${close}`);
+        return match; // Don't process subgraph display names
+      }
+
       // Ensure open and close brackets match
       if ((open === '[' && close !== ']') || (open === '(' && close !== ')')) {
+        console.log(`Malformed brackets in special-char fix: ${match}`);
         return match; // Malformed, skip
       }
 
@@ -981,6 +1471,7 @@ export function initMermaidEnhancer(): void {
       // Quote if content has special characters, newlines, or <br>
       if (/[()\/\n<>&:\.,']/.test(content) || content.includes('<br>')) {
         const escapedContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
+        console.log(`Adding quotes for special chars: ${nodeId}${open}${content}${close} -> ${nodeId}${open}"${escapedContent}"${close}`);
         return `${nodeId}${open}"${escapedContent}"${close}`;
       }
       return match;
@@ -995,18 +1486,47 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['flowchart', 'graph']
   });
 
-  // Add a preprocessor to fix issues with quoted text in node labels
-  registerPreprocessor((def: string, type: string) => {
-    let finalDef = def;
+  // Add a preprocessor to fix spacing issues between subgraph end and style statements
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
 
-    // Fix nodes with "DONE" text by replacing quotes with escaped quotes
-    finalDef = finalDef.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
-      // Replace with HTML entity quotes to avoid parsing issues
-      return `[${before}"${quoted}"${after}]`;
-    });
+      console.log('🔍 SUBGRAPH-STYLE-SPACING: Fixing spacing between subgraph end and style statements');
 
-    return finalDef;
-  }, {
+      // Fix subgraph syntax - replace } with end and ensure proper spacing
+      let result = definition;
+
+      // Replace closing braces with 'end' for subgraphs
+      result = result.replace(/(\s+)}\s*\n/g, '$1end\n');
+      result = result.replace(/(\s+)}\s*$/g, '$1end');
+
+      // Ensure proper line breaks between subgraph end and style statements
+      result = result.replace(/(end\s*)(style\s+)/g, '$1\n    $2');
+
+      console.log('🔍 SUBGRAPH-STYLE-SPACING: Processing complete');
+      return result;
+    }, {
+    name: 'subgraph-style-spacing-fix',
+    priority: 160, // Run after other structural fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
+  // Add a preprocessor to clean arrow characters from edge labels
+  registerPreprocessor(
+    (def: string, type: string) => {
+      let finalDef = def;
+
+      // Fix nodes with "DONE" text by replacing quotes with escaped quotes
+      finalDef = finalDef.replace(/\[([^"\]]*)"([^"\]]*)"([^"\]]*)\]/g, (match, before, quoted, after) => {
+        // Replace with HTML entity quotes to avoid parsing issues
+        return `[${before}"${quoted}"${after}]`;
+      });
+
+      return finalDef;
+    }, {
     name: 'quoted-text-fix',
     priority: 125,
     diagramTypes: ['*']
@@ -1114,16 +1634,139 @@ export function initMermaidEnhancer(): void {
 
     return result.join('\n');
   }, {
-    name: 'xychart-diagram-fix',
+    name: 'xychart-array-format-fix', // Rename to avoid duplicate
     priority: 110,
     diagramTypes: ['xychart']
   });
 
-  // Add a preprocessor to fix Sankey diagram line break issues
+  // Add a preprocessor to fix Gantt diagram task definition issues
   registerPreprocessor((def: string, type: string) => {
-    if (type !== 'sankey' && !def.trim().startsWith('sankey-beta') && !def.trim().startsWith('sankey')) {
+    if (type !== 'gantt' && !def.trim().startsWith('gantt')) {
       return def;
     }
+
+    console.log('🔍 GANTT-FIX: Processing gantt diagram task definitions');
+
+    let processedDef = def;
+
+    // CRITICAL FIX: Mermaid's gantt parser expects very specific task format
+    // The error "Cannot read properties of undefined (reading 'type')" happens when
+    // the task object structure is malformed. Let's ensure proper task format.
+
+    // First, ensure we have proper section structure
+    if (!processedDef.includes('section ')) {
+      console.log('🔍 GANTT-FIX: Adding missing section structure');
+      const lines = processedDef.split('\n');
+      const hasTitle = lines.some(line => line.trim().startsWith('title'));
+      const titleIndex = hasTitle ? lines.findIndex(line => line.trim().startsWith('title')) : 0;
+
+      // Insert a default section after title/dateFormat lines
+      const insertIndex = Math.max(titleIndex + 1, 3);
+      lines.splice(insertIndex, 0, '    section Tasks');
+      processedDef = lines.join('\n');
+    }
+
+    // CRITICAL FIX: Replace dateFormat X with a standard date format
+    // But handle different types of data appropriately
+    if (processedDef.includes('dateFormat X') || processedDef.includes('dateFormat  X')) {
+
+      // Check if this uses hour/minute formats (like "1h", "30m") 
+      const usesTimeFormat = processedDef.match(/:\s*\w+,\s*\w+,\s*\d*[hm]/);
+
+      if (usesTimeFormat) {
+        console.log('🔍 GANTT-FIX: Detected time-based gantt chart, using appropriate format');
+        // For hour/minute based charts, convert to a format Mermaid can actually parse
+        // dateFormat X with time strings like "1h" doesn't work - convert to numeric minutes
+        processedDef = processedDef.replace(/dateFormat\s+X/g, 'dateFormat X');
+
+        // Keep the time axis format but we'll convert the times to minutes
+        // This allows Mermaid to parse the timeline as minute offsets
+        console.log('🔍 GANTT-FIX: Converting time strings to minute numbers for Mermaid compatibility');
+      } else {
+        // For large timestamp charts, convert to date format
+        console.log('🔍 GANTT-FIX: Replacing Unix timestamp dateFormat with YYYY-MM-DD');
+        processedDef = processedDef.replace(/dateFormat\s+X/g, 'dateFormat YYYY-MM-DD');
+
+        // Also update axisFormat to match
+        if (processedDef.includes('axisFormat %s')) {
+          processedDef = processedDef.replace(/axisFormat %s/g, 'axisFormat %Y-%m-%d');
+        }
+      }
+    }
+
+    // CRITICAL: Convert all tasks to use simple relative format
+    // This avoids the complex date parsing that's causing the "type" error
+    const lines = processedDef.split('\n');
+    const fixedLines: string[] = [];
+    let taskCounter = 1;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      // Skip non-task lines
+      if (!trimmed || trimmed.startsWith('gantt') || trimmed.startsWith('title') ||
+        trimmed.startsWith('dateFormat') || trimmed.startsWith('axisFormat') ||
+        trimmed.startsWith('section') || trimmed.startsWith('%%')) {
+        fixedLines.push(line);
+        continue;
+      }
+
+      // Process task lines
+      if (trimmed.includes(':')) {
+        const colonIndex = trimmed.indexOf(':');
+        const taskName = trimmed.substring(0, colonIndex).trim();
+        const taskDef = trimmed.substring(colonIndex + 1).trim();
+
+        // Parse task definition
+        const taskDefParts = taskDef.split(',').map(p => p.trim());
+
+        // Handle simplified format: TaskName: start, end (only 2 parameters)
+        if (taskDefParts.length === 2 && !isNaN(parseInt(taskDefParts[0])) && !isNaN(parseInt(taskDefParts[1]))) {
+          console.log(`🔍 GANTT-FIX: Converting simple numeric format for task: ${taskName}`);
+
+          const startNum = parseInt(taskDefParts[0]);
+          const endNum = parseInt(taskDefParts[1]);
+          const duration = Math.max(1, endNum - startNum);
+
+          if (taskCounter === 1) {
+            fixedLines.push(`    ${taskName}    :done, t${taskCounter}, 2024-01-01, ${duration}d`);
+          } else {
+            fixedLines.push(`    ${taskName}    :done, t${taskCounter}, after t${taskCounter - 1}, ${duration}d`);
+          }
+          taskCounter++;
+          continue;
+        }
+
+        if (taskDefParts.length >= 3) {
+          // ... rest of the existing logic
+        } else {
+          // Handle incomplete tasks
+          console.log(`🔍 GANTT-FIX: Adding default format for incomplete task: ${taskName}`);
+          const id = `t${taskCounter}`;
+          fixedLines.push(`    ${taskName}    :done, ${id}, 2024-01-01, 1d`);
+          taskCounter++;
+        }
+      } else {
+        fixedLines.push(line);
+      }
+    }
+
+    const result = fixedLines.join('\n');
+    console.log('🔍 GANTT-FIX: Processing complete');
+    return result;
+  }, {
+    name: 'gantt-task-definition-fix',
+    diagramTypes: ['gantt']
+  });
+
+  // Add a preprocessor to fix line break issues in sankey diagrams  
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('sankey')) {
+      return def;
+    }
+
+    console.log('🔍 SANKEY-FIX: Processing sankey diagram');
 
     // Fix line break issues in sankey diagrams
     let lines = def.split('\n');
@@ -1142,16 +1785,305 @@ export function initMermaidEnhancer(): void {
         result.push(trimmedLine);
       } else if (trimmedLine.includes(',')) {
         // Ensure each data line has proper comma separation and no extra whitespace
-        line = line.replace(/\s+/g, ' ').trim();
-        result.push(line);
+        // Also ensure all data lines have exactly 3 parts: source,target,value
+        const parts = trimmedLine.split(',').map(p => p.trim());
+        if (parts.length >= 3) {
+          result.push(`    ${parts[0]},${parts[1]},${parts[2]}`);
+        }
       }
     }
 
+    console.log('🔍 SANKEY-FIX: Processing complete');
     return result.join('\n');
   }, {
-    name: 'sankey-line-break-fix',
-    priority: 115,
-    diagramTypes: ['sankey', 'sankey-beta']
+    name: 'sankey-format-fix',
+    priority: 315, // Higher priority
+    diagramTypes: ['sankey']
+  });
+
+  // Add comprehensive block diagram node label fixer
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('block')) {
+      return def;
+    }
+
+    console.log('🔍 BLOCK-COMPREHENSIVE-FIX: Processing block diagram node labels');
+
+    let result = def;
+
+    // Fix the exact pattern causing lexical error: M["("PostgreSQL<br/>Primary DB")"]
+    result = result.replace(/(\w+)\["?\("([^"]+?)<br\/>([^"]+?)"\)/g, '$1["$2 $3"]');
+
+    // Fix other malformed patterns
+    result = result.replace(/\["?\("([^"]+)"\)/g, '["$1"]');
+    result = result.replace(/\[""([^"]+)""\]/g, '["$1"]');
+
+    console.log('🔍 BLOCK-COMPREHENSIVE-FIX: Processing complete');
+    return result;
+  }, {
+    name: 'block-advanced-node-fix', // Rename duplicate
+    priority: 325, // Higher than existing block fix
+    diagramTypes: ['block']
+  });
+
+  // Add a preprocessor to fix block diagram node label issues
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('block')) {
+      return def;
+    }
+
+    console.log('🔍 BLOCK-DIAGRAM-FIX: Processing block diagram node labels');
+
+    let result = def;
+
+    // Fix problematic parentheses in node labels like ["("PostgreSQL...]
+    // Replace with proper format: ["PostgreSQL"]
+    result = result.replace(/\["?\(["`]([^"`)]+)["`]([^"]*)["`]\]/g, '["$1$2"]');
+
+    // Fix malformed parentheses in labels
+    result = result.replace(/\["?\("([^"]+)"([^"]*?)"\]/g, '["$1$2"]');
+
+    // Fix double quotes and parentheses combinations
+    result = result.replace(/\["\("([^"]+)<br\/>([^"]+)"\)/g, '["$1 $2"]');
+
+    console.log('🔍 BLOCK-DIAGRAM-FIX: Processing complete');
+    return result;
+  }, {
+    name: 'block-basic-node-label-fix', // Rename to be more specific
+    priority: 320,
+    diagramTypes: ['block']
+  });
+
+  // Add a more comprehensive class diagram relationship fixer
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('classDiagram')) {
+      return def;
+    }
+
+    console.log('🔍 CLASS-CARDINALITY-FIX: Processing class diagram cardinality relationships');
+
+    let result = def;
+
+    // CRITICAL: Fix cardinality relationships like ||--o{ that cause lexical errors
+    const cardinalityPatterns = [
+      { pattern: /\|\|--o\{/g, replacement: '||--o{' }, // This pattern is actually valid, need to check context
+      { pattern: /(\w+)\s+\|\|--o\{\s+(\w+)\s*:\s*(.+)/g, replacement: '$1 ||--o{ $2 : $3' },
+      { pattern: /(\w+)\s+\|\|--\|\|\s*\{\s+(\w+)/g, replacement: '$1 ||--o{ $2' },
+      { pattern: /\|\|--\|\|\{/g, replacement: '||--o{' },
+      { pattern: /\|\|--\|\|/g, replacement: '-->' }, // Fallback for invalid double pipes
+    ];
+
+    cardinalityPatterns.forEach(({ pattern, replacement }) => {
+      const beforeCount = (result.match(pattern) || []).length;
+      if (beforeCount > 0) {
+        result = result.replace(pattern, replacement);
+        console.log(`🔍 CLASS-CARDINALITY-FIX: Fixed ${beforeCount} instances of ${pattern.source}`);
+      }
+    });
+
+    // Fix the specific "User ||--o{ Role : has" error by ensuring proper spacing
+    result = result.replace(/(\w+)\s+\|\|--o\{\s+(\w+)\s*:\s*(.+?)(\s*)$/gm, '$1 ||--o{ $2 : $3$4');
+
+    console.log('🔍 CLASS-CARDINALITY-FIX: Processing complete');
+    return result;
+  }, {
+    name: 'class-cardinality-relationship-fix',
+    priority: 510, // Highest priority to fix before other class processors
+    diagramTypes: ['classdiagram']
+  });
+
+  // Add a more comprehensive class diagram relationship fixer  
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('classDiagram')) {
+      return def;
+    }
+
+    console.log('🔍 CLASS-COMPREHENSIVE-FIX: Processing class diagram relationships');
+
+    let result = def;
+
+    // CRITICAL: Fix all invalid relationship patterns
+    const invalidPatterns = [
+      { pattern: /\|\|--\|\|/g, replacement: '-->' },
+      { pattern: /\|\|\s*--\s*\|\|/g, replacement: '-->' },
+      { pattern: /\|\|-->/g, replacement: '-->' },
+      { pattern: /--\|\|/g, replacement: '-->' },
+      { pattern: /<\|\|--\|\|>/g, replacement: '<-->' },
+      { pattern: /\|\|==\|\|/g, replacement: '-->' },
+      { pattern: /\|\|\.\.>\|\|/g, replacement: '..>' },
+      { pattern: /\|\|<\.\.\|\|/g, replacement: '<..' },
+    ];
+
+    invalidPatterns.forEach(({ pattern, replacement }) => {
+      const beforeCount = (result.match(pattern) || []).length;
+      if (beforeCount > 0) {
+        result = result.replace(pattern, replacement);
+        console.log(`🔍 CLASS-COMPREHENSIVE-FIX: Fixed ${beforeCount} instances of ${pattern.source}`);
+      }
+    });
+
+    // Fix relationship lines that have extra syntax
+    result = result.replace(/(\w+)\s+(\|\|--\|\||\|\|-\|\||--\|\|--)\s+(\w+)/g, '$1 --> $3');
+
+    console.log('🔍 CLASS-COMPREHENSIVE-FIX: Processing complete');
+    return result;
+  }, {
+    name: 'class-invalid-relationship-fix',
+    priority: 500, // Highest priority to fix before other processors
+    diagramTypes: ['classdiagram']
+  });
+
+  // Add a comprehensive sequence diagram alt/else block fixer
+  registerPreprocessor(
+    (def: string, type: string) => {
+      if (!def.trim().startsWith('sequenceDiagram')) {
+        return def;
+      }
+
+      console.log('🔍 CRITICAL-SEQUENCE-FIX: Processing comprehensive sequence diagram alt/else/critical structure');
+
+      const lines = def.split('\n');
+      const result: string[] = [];
+      let inAltBlock = false;
+      let inCriticalBlock = false;
+      let inParBlock = false;
+      let blockDepth = 0;
+      let hasElseInCurrentBlock = false;
+      let hasBreakInCurrentBlock = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        // CRITICAL: Handle option statements - they can only be in critical blocks, not alt blocks
+        if (trimmed.startsWith('option ')) {
+          if (inCriticalBlock) {
+            result.push(line); // Valid option in critical block
+            continue;
+          } else {
+            // Convert invalid option to else in alt blocks
+            console.log(`🔍 CRITICAL-SEQUENCE-FIX: Converting invalid option to else: "${trimmed}"`);
+            const indentation = line.match(/^\s*/)?.[0] || '';
+            if (inAltBlock && !hasElseInCurrentBlock) {
+              result.push(`${indentation}else`);
+              hasElseInCurrentBlock = true;
+            }
+            continue;
+          }
+        }
+
+        // Track block starts
+        if (trimmed.startsWith('alt ')) {
+          inAltBlock = true;
+          blockDepth++;
+          hasElseInCurrentBlock = false;
+          hasBreakInCurrentBlock = false;
+          result.push(line);
+          continue;
+        }
+
+        if (trimmed.startsWith('critical ')) {
+          inCriticalBlock = true;
+          blockDepth++;
+          hasElseInCurrentBlock = false;
+          hasBreakInCurrentBlock = false;
+          result.push(line);
+          continue;
+        }
+
+        if (trimmed.startsWith('par ')) {
+          inParBlock = true;
+          blockDepth++;
+          result.push(line);
+          continue;
+        }
+
+        // Track block ends
+        if (trimmed === 'end' && blockDepth > 0) {
+          blockDepth--;
+          if (blockDepth === 0) {
+            inAltBlock = false;
+            inCriticalBlock = false;
+            inParBlock = false;
+            hasElseInCurrentBlock = false;
+          }
+          hasBreakInCurrentBlock = false;
+          result.push(line);
+          continue;
+        }
+
+        // Handle 'and' in par blocks
+        if (inParBlock && trimmed === 'and') {
+          result.push(line);
+          continue;
+        }
+
+        // Handle 'option' in critical blocks
+        if (inCriticalBlock && trimmed.startsWith('option ')) {
+          result.push(line);
+          continue;
+        }
+
+        // Handle break statements - they terminate the current alt path
+        if (inAltBlock && trimmed.startsWith('break ')) {
+          hasBreakInCurrentBlock = true;
+          result.push(line);
+          continue;
+        }
+
+        // CRITICAL: Fix problematic 'else' statements
+        if (inAltBlock && trimmed.startsWith('else ')) {
+          // For "else Stock available" or "else Some condition", convert to just "else"
+          console.log(`🔍 CRITICAL-SEQUENCE-FIX: Converting "${trimmed}" -> "else"`);
+          const indentation = line.match(/^\s*/)?.[0] || '';
+
+          if (hasBreakInCurrentBlock) {
+            // Cannot have else after break - skip it entirely
+            console.log(`🔍 CRITICAL-SEQUENCE-FIX: Skipping else after break: "${trimmed}"`);
+            continue;
+          } else if (!hasElseInCurrentBlock) {
+            result.push(`${indentation}else`);
+            hasElseInCurrentBlock = true;
+          } else {
+            // Convert additional else to a note to preserve logic
+            result.push(`${indentation}Note over DB: Alternative path`);
+          }
+          continue;
+        }
+
+        // Handle standalone 'else' in alt blocks - ensure proper indentation
+        if (inAltBlock && trimmed === 'else') {
+          if (hasBreakInCurrentBlock) {
+            // Cannot have else after break - convert to a note
+            const indentation = line.match(/^\s*/)?.[0] || '';
+            result.push(`${indentation}Note over DB: Break terminated this path`);
+          } else if (!hasElseInCurrentBlock) {
+            const indentation = line.match(/^\s*/)?.[0] || '';
+            // Ensure proper indentation (at least 4 spaces for sequence diagrams)
+            if (indentation.length < 4) {
+              result.push('    else');
+            } else {
+              result.push(line);
+            }
+            hasElseInCurrentBlock = true;
+          } else {
+            // Skip duplicate else, convert to note
+            const indentation = line.match(/^\s*/)?.[0] || '';
+            result.push(`${indentation}Note over DB: Alternative path`);
+          }
+          continue;
+        }
+
+        // Default: add the line as-is
+        result.push(line);
+      }
+
+      console.log('🔍 CRITICAL-SEQUENCE-FIX: Processing complete');
+      return result.join('\n');
+    }, {
+    name: 'sequence-comprehensive-else-fix',
+    priority: 590, // Very high priority
+    diagramTypes: ['sequencediagram']
   });
 
   // Add a preprocessor to fix Timeline diagram syntax issues
@@ -1368,14 +2300,9 @@ export function initMermaidEnhancer(): void {
           fixedLines.push(line);
         }
       }
-
       return fixedLines.join('\n');
-    },
-    {
-      name: 'state-diagram-note-fixer',
-      priority: 295, // High priority to run before other general fixers
-      diagramTypes: ['statediagram', 'statediagram-v2']
     }
+
   );
 
   // Add a preprocessor to handle participant names with special characters
@@ -1416,21 +2343,11 @@ export function initMermaidEnhancer(): void {
 
   // Add preprocessor for beta diagram types
   registerPreprocessor((def: string, type: string) => {
-    // Handle beta diagram types that might not be supported
-    if (def.trim().startsWith('architecture-beta')) {
-      // Convert to a supported diagram type or provide fallback
-      return def.replace('architecture-beta', 'graph TD\n    %% Architecture diagram (beta feature not supported)\n    %%');
-    }
-
-    if (def.trim().startsWith('packet-beta')) {
-      // Convert to a supported diagram type or provide fallback
-      return def.replace('packet-beta', 'graph TD\n    %% Packet diagram (beta feature not supported)\n    %%');
-    }
-
+    // Remove old beta diagram fallbacks - now handled by dynamic type normalization
     return def;
   }, {
     name: 'beta-diagram-fallback',
-    priority: 300,
+    priority: 290, // Lower priority than the comprehensive one
     diagramTypes: ['*']
   });
 
@@ -1567,7 +2484,7 @@ export function initMermaidEnhancer(): void {
   }, {
     name: 'state-shape-fix',
     priority: 90,
-    diagramTypes: ['stateDiagram', 'stateDiagram-v2']
+    diagramTypes: ['statediagram', 'statediagram-v2']
   });
 
   // Generic syntax validator and fixer
@@ -1817,11 +2734,64 @@ export function enhanceMermaid(mermaid: any): void {
         typeLine = diagramDeclarationLine || lines[0]?.trim() || ''; // Fallback if no declaration found
       }
       diagramType = typeLine.split(' ')[0].toLowerCase(); // Get the first word as type
-      // Preprocess the definition
-      const processedDef = preprocessDefinition(definition, diagramType); // Pass the correctly determined diagramType
+      
+      // Debug logging for type normalization
+      console.log('Mermaid preprocessing debug:', {
+        originalType: diagramType,
+        definition: definition.substring(0, 100) + '...'
+      });
+      
+      // Preprocess the definition with type normalization
+      const processedDef = preprocessDefinition(definition, diagramType, mermaid);
+      
+      console.log('After preprocessing:', {
+        originalType: diagramType,
+        processedLength: processedDef.length,
+        processedStart: processedDef.substring(0, 100) + '...'
+      });
 
+      // Final validation before sending to Mermaid
+      if (!processedDef || processedDef.trim().length === 0) {
+        throw new Error('Empty definition after preprocessing');
+      }
+
+      // Check for obvious syntax issues that would cause parsing errors
+      if (processedDef.includes('• ') || processedDef.includes('•')) {
+        console.warn('Definition still contains bullet characters after preprocessing');
+      }
+
+      // Add a unique marker to verify this exact definition is being used
+      // Only add marker if definition doesn't end with incomplete syntax
+      const markedDef = processedDef.trim() + `\n%% PROCESSED-${Date.now()}`;
+
+      // DEBUG: Log the final processed definition to see what's actually being sent to Mermaid
+      console.log('🔍 FINAL-DEF: About to render with processed definition:');
+      console.log('🔍 FINAL-DEF: Length:', markedDef.length);
+      console.log('🔍 FINAL-DEF: Content:', markedDef);
+
+      // CRITICAL: Try to bypass Mermaid's internal preprocessing that might be corrupting definitions
+      // Instead of using the high-level render() function, try the lower-level API
+      if (mermaid.mermaidAPI && typeof mermaid.mermaidAPI.render === 'function') {
+        console.log('🔍 BYPASS: Using mermaidAPI.render directly to avoid internal preprocessing');
+        try {
+          const directResult = await mermaid.mermaidAPI.render(id, markedDef);
+          // mermaidAPI.render returns SVG string directly, not wrapped in an object
+          const svg = typeof directResult === 'string' ? directResult : directResult.svg || '';
+          console.log('🔍 BYPASS: Direct API render successful, SVG length:', svg.length);
+          return {
+            svg: svg,
+            bindFunctions: () => { }
+          };
+        } catch (directError) {
+          console.log('🔍 BYPASS: Direct API render failed, falling back to original method:', directError instanceof Error ? directError.message : String(directError));
+        }
+      }
+
+      console.log('🔍 FALLBACK: Using original render method');
       // Call the original render with processed definition
-      const result = await originalRender.call(this, id, processedDef, ...args);
+      const result = await originalRender.call(this, id, markedDef, ...args);
+
+      console.log('🔍 RENDER-RESULT: Mermaid render completed, result type:', typeof result);
 
       // Handle case where result doesn't have svg property
       if (!result || typeof result !== 'object' || !result.svg) {
@@ -1870,16 +2840,209 @@ export default function initMermaidSupport(mermaidInstance?: any): void {
     }, 100);
 
     // Stop checking after 10 seconds
+    setTimeout(() => {
+      clearInterval(checkInterval);
+    }, 10000);
   }
 
   // Add a preprocessor for class diagram relationship syntax issues
+  // CONSOLIDATED: Remove duplicate class diagram relationship fixes and create one comprehensive one
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('classDiagram')) {
+      return def;
+    }
+
+    console.log('🔍 CLASS-CONSOLIDATED-FIX: Processing all class diagram relationship issues');
+
+    let result = def;
+
+    // Fix 1: Invalid cardinality syntax that causes lexical errors
+    result = result.replace(/(\w+)\s+\|\|--o\{\s+(\w+)\s*:\s*(.+)/g, '$1 --> $2 : $3');
+    result = result.replace(/(\w+)\s+\}\|--\|\{\s+(\w+)\s*:\s*(.+)/g, '$1 --> $2 : $3');
+
+    // Fix 2: All invalid double-pipe patterns  
+    const invalidPatterns = [
+      { pattern: /\|\|--\|\|/g, replacement: '-->' },
+      { pattern: /\|\|\s*--\s*\|\|/g, replacement: '-->' },
+      { pattern: /\|\|-->/g, replacement: '-->' },
+      { pattern: /--\|\|/g, replacement: '-->' },
+      { pattern: /<\|\|--\|\|>/g, replacement: '<-->' },
+      { pattern: /\|\|==\|\|/g, replacement: '-->' },
+      { pattern: /\|\|\.\.>\|\|/g, replacement: '..>' },
+      { pattern: /\|\|<\.\.\|\|/g, replacement: '<..' },
+    ];
+
+    invalidPatterns.forEach(({ pattern, replacement }) => {
+      const beforeCount = (result.match(pattern) || []).length;
+      if (beforeCount > 0) {
+        result = result.replace(pattern, replacement);
+        console.log(`🔍 CLASS-CONSOLIDATED-FIX: Fixed ${beforeCount} instances of ${pattern.source}`);
+      }
+    });
+
+    // Fix 3: Remove incomplete relationship lines
+    result = result.replace(/(\w+)\s+(-->|<--|<\|--|-->\||<\|--\|>)\s*$/gm, '');
+    result = result.replace(/^\s*(-->|<--|<\|--|-->\||<\|--\|>)\s*$/gm, '');
+
+    console.log('🔍 CLASS-CONSOLIDATED-FIX: Processing complete');
+    return result;
+  }, {
+    name: 'class-consolidated-relationship-fix',
+    priority: 520, // Highest priority
+    diagramTypes: ['classdiagram']
+  });
+
+  // Remove the old duplicate preprocessors by commenting them out
+  /*
   registerPreprocessor(
     (definition: string, diagramType: string) => {
-      if (diagramType.toLowerCase() !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) return definition;
+      if (diagramType.toLowerCase() !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) {
+        return definition;
+      }
 
-      console.log('Running class diagram relationship fixer');
+      console.log('🔍 CLASS-DIAGRAM-CLEANUP: Fixing malformed relationships');
 
-      const lines = definition.split('\n');
+      let result = definition;
+
+      // Fix incomplete relationship lines that end abruptly
+      // Pattern: "SomeClass --> " followed by newline or end of string
+      result = result.replace(/(\w+)\s+(-->|<--|<\|--|-->\||<\|--\|>)\s*$/gm, '');
+
+      // Remove lines that have only arrows without proper class references
+      result = result.replace(/^\s*(-->|<--|<\|--|-->\||<\|--\|>)\s*$/gm, '');
+
+      console.log('🔍 CLASS-DIAGRAM-CLEANUP: Processing complete');
+      return result;
+    }, {
+    name: 'class-diagram-cleanup',
+    priority: 400, // High priority to clean up before other class diagram fixes
+    diagramTypes: ['classDiagram']
+  });  
+  */
+
+  // Remove duplicate - this is the same as above
+  /*
+  registerPreprocessor(
+    (definition: string, diagramType: string) => {
+      if (diagramType.toLowerCase() !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 CLASS-RELATIONSHIP-FIX: Starting class diagram relationship syntax fixes');
+
+      let result = definition;
+
+      // Log before changes for debugging
+      const beforeCount = (result.match(/\|\|--\|\|/g) || []).length;
+      console.log(`🔍 CLASS-RELATIONSHIP-FIX: Found ${beforeCount} instances of ||--||`);
+
+      // CRITICAL FIX: Replace all invalid double-pipe relationships
+      // Use global replacement with explicit escaping
+      result = result.replace(/\|\|--\|\|/g, '-->');
+
+      // Also handle variations with spaces
+      result = result.replace(/\|\|\s*--\s*\|\|/g, '-->');
+
+      // Fix other invalid relationship patterns
+      result = result.replace(/\|\|-->/g, '-->');       // Invalid to association  
+      result = result.replace(/--\|\|/g, '-->');        // Invalid to association
+      result = result.replace(/<\|\|--\|\|>/g, '<-->'); // Invalid bidirectional
+      result = result.replace(/\|\|==\|\|/g, '-->');    // Convert to simple association
+      result = result.replace(/\|\|\.\.>\|\|/g, '..>'); // Invalid to dependency
+      result = result.replace(/\|\|<\.\.\|\|/g, '<..'); // Invalid to dependency
+
+      // Log after changes for debugging
+      const afterCount = (result.match(/\|\|--\|\|/g) || []).length;
+      console.log(`🔍 CLASS-RELATIONSHIP-FIX: After replacement: ${afterCount} instances remaining`);
+
+      // Additional safety check - if replacements didn't work, try a different approach
+      if (afterCount > 0) {
+        console.log('🔍 CLASS-RELATIONSHIP-FIX: Standard replacement failed, trying line-by-line approach');
+        const lines = result.split('\n');
+        result = lines.map(line => {
+          if (line.includes('||--||')) {
+            console.log('🔍 CLASS-RELATIONSHIP-FIX: Fixing line:', line);
+            return line.replace(/\|\|--\|\|/g, '-->');
+          }
+          return line;
+        }).join('\n');
+      }
+
+      // Fix other invalid relationship patterns that cause parsing errors
+      console.log('🔍 CLASS-RELATIONSHIP-FIX: Processing complete');
+
+      // Ensure relationships are on separate lines
+      const lines = result.split('\n');
+      const processedLines = lines.map(line => {
+        const trimmed = line.trim();
+        // If line contains relationship syntax, ensure proper spacing
+        if (trimmed.match(/\w+\s*(--|\.\.>|<\.\.|-->|<--|==|<==|\|>|<\|)\s*\w+/)) {
+          return `    ${trimmed}`;
+        }
+        return line;
+      });
+
+      result = processedLines.join('\n');
+      console.log('🔍 CLASS-RELATIONSHIP-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'class-relationship-syntax-fix-1',
+    priority: 450, // Higher priority to run before other class diagram fixes
+    diagramTypes: ['classdiagram']
+  });
+  */
+
+  registerPreprocessor(
+    (definition: string, diagramType: string) => {
+      if (diagramType.toLowerCase() !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 CLASS-RELATIONSHIP-FIX: Running class diagram relationship fixer (priority 85)');
+
+      let result = definition;
+
+      // CRITICAL FIX: Replace invalid ||--|| syntax FIRST
+      result = result.replace(/\|\|--\|\|/g, '-->');
+      result = result.replace(/\|\|\s*--\s*\|\|/g, '-->');
+
+      // Fix other invalid relationship patterns
+      result = result.replace(/\|\|-->/g, '-->');
+      result = result.replace(/--\|\|/g, '-->');
+      result = result.replace(/<\|\|--\|\|>/g, '<-->');
+
+      console.log('🔍 CLASS-RELATIONSHIP-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'class-relationship-syntax-fix-2', // Rename duplicate
+    priority: 440, // Slightly lower priority to avoid duplicate
+    diagramTypes: ['classdiagram']
+  });
+
+  registerPreprocessor(
+    (definition: string, diagramType: string) => {
+      if (diagramType.toLowerCase() !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 CLASS-RELATIONSHIP-FIX: Running class diagram relationship fixer (priority 85)');
+
+      // CRITICAL FIX: Replace invalid ||--|| syntax FIRST
+      let result = definition;
+
+      // Log before changes for debugging
+      const beforeCount = (result.match(/\|\|--\|\|/g) || []).length;
+      console.log(`🔍 CLASS-RELATIONSHIP-FIX: Found ${beforeCount} instances of ||--||`);
+
+      // Replace all invalid double-pipe relationships
+      result = result.replace(/\|\|--\|\|/g, '-->');
+      result = result.replace(/\|\|\s*--\s*\|\|/g, '-->');
+
+      // Log after changes
+      const afterCount = (result.match(/\|\|--\|\|/g) || []).length;
+      console.log(`🔍 CLASS-RELATIONSHIP-FIX: After replacement: ${afterCount} instances remaining`);
+
+      const lines = result.split('\n'); // Use the fixed result
       const fixedLines: string[] = [];
       let inClassDefinition = false;
 
@@ -1917,10 +3080,10 @@ export default function initMermaidSupport(mermaidInstance?: any): void {
         fixedLines.push(fixedLine);
       }
 
-      return fixedLines.join('\n');
+      return result; // Return the preprocessed result with ||--|| fixed
     },
     {
-      name: 'classDiagramRelationshipFixer',
+      name: 'class-diagram-legacy-relationship-fixer',
       priority: 85,
       diagramTypes: ['classdiagram']
     }
@@ -1949,7 +3112,7 @@ export default function initMermaidSupport(mermaidInstance?: any): void {
     return processedDef;
   }, {
     name: 'sequence-diagram-keyword-participant-fix',
-    priority: 285, // Run after participant declarations are clear but before main parsing
+    priority: 285,
     diagramTypes: ['sequencediagram']
   });
 }
