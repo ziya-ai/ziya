@@ -74,7 +74,6 @@ export const MUIFileExplorer = () => {
 
   const { isDarkMode } = useTheme();
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [filteredTreeData, setFilteredTreeData] = useState<any[]>([]);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const lastClickRef = useRef<number>(0);
@@ -84,11 +83,8 @@ export const MUIFileExplorer = () => {
   const nodePathCache = useRef(new Map());
   const lastAccurateCountsRef = useRef<Record<string, any>>({});
 
-  // Fast initial render - show skeleton immediately
-  useEffect(() => {
-    setIsInitialLoad(false);
-    setIsLoading(false);
-  }, []);
+  // Track if we have any data loaded (either cached or fresh)
+  const [hasLoadedData, setHasLoadedData] = useState(false);
 
   // Force recalculation when accurate token counts change
   // Helper function to determine if a node has children
@@ -99,11 +95,12 @@ export const MUIFileExplorer = () => {
   // Lightweight tree data - only process what's visible
   const muiTreeData = useMemo(() => {
     // For initial render, show empty state immediately
-    if (isInitialLoad) return [];
+    if (isInitialLoad && !hasLoadedData && !isScanning) return [];
+    if (!folders) return [];
 
     // Return tree data as-is for now - optimization happens in TreeNode
     return treeData;
-  }, [treeData, isInitialLoad]);
+  }, [treeData, isInitialLoad, hasLoadedData]);
 
   // Fast node lookup cache
   const getNodeFromCache = useCallback((nodeKey: string) => {
@@ -399,105 +396,6 @@ export const MUIFileExplorer = () => {
   });
 
   // Effect to load folders on component mount - with improved caching
-  useEffect(() => {
-    // Track if component is still mounted
-    let isMounted = true;
-    
-    const loadFolders = async () => {
-      if (isLoading) return; // Prevent multiple simultaneous loads
-      
-      // First try to load from cache immediately
-      try {
-        // Use a new endpoint that will return cached data instantly
-        const cachedResponse = await fetch('/api/folders-cached');
-        if (cachedResponse.ok) {
-          const cachedData: Folders = await cachedResponse.json();
-          if (isMounted && cachedData && Object.keys(cachedData).length > 0) {
-
-            // Convert and sort data
-            const sortedData = sortTreeData(convertToTreeData(cachedData));
-            setTreeData(sortedData);
-            setIsLoading(false);
-            
-            // Dispatch event to notify that we have initial data
-            window.dispatchEvent(new CustomEvent('initialFolderDataLoaded'));
-          }
-        }
-      } catch (error) {
-        console.debug('No cached folder data available:', error);
-        // Continue to fetch fresh data
-      }
-      
-      // Then fetch fresh data in the background
-      try {
-        // Use a non-blocking fetch with cache validation
-        const response = await fetch('/api/folders-with-accurate-tokens', {
-          headers: {
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-          }
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Failed to load folders: ${response.status}`);
-        }
-        
-        const data: Folders = await response.json();
-        
-        if (isMounted) {
-          // Convert and sort data
-          const sortedData = sortTreeData(convertToTreeData(data));
-          setTreeData(sortedData);
-          
-          // Dispatch event to notify that we have fresh data
-          window.dispatchEvent(new CustomEvent('freshFolderDataLoaded'));
-        }
-        
-        // Also load accurate token counts, but don't block the UI
-        setTimeout(async () => {
-          if (!isMounted) return;
-          try {
-            const tokenResponse = await fetch('/api/accurate-token-count');
-            if (tokenResponse.ok) {
-              const tokenData = await tokenResponse.json();
-              console.log('Loaded accurate token counts:', Object.keys(tokenData).length);
-            }
-          } catch (error) {
-            console.error('Failed to load accurate token counts:', error);
-          }
-        }, 100);
-      } catch (err) {
-        console.error('Failed to load folders:', err);
-        if (isMounted) {
-          message.error('Failed to load folder structure');
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    };
-
-    // Only load folders if we don't already have them
-    // Also check if we're not already loading to prevent race conditions
-    if ((!treeData || treeData.length === 0) && !isInitialLoad) {
-      // Use a small timeout to ensure the initial UI renders first
-      setTimeout(() => {
-        if (isMounted) {
-          setIsLoading(true);
-          loadFolders();
-        }
-      }, 0);
-    } else {
-      if (treeData && treeData.length > 0 && isMounted) setIsLoading(false);
-    }
-    
-    // Cleanup function to prevent state updates after unmount
-    return () => {
-      isMounted = false;
-    };
-  }, [isInitialLoad, isLoading, treeData]);
-
   // Update tree data when folders change
   useEffect(() => {
     if (folders && Object.keys(folders).length > 0) {
@@ -505,17 +403,15 @@ export const MUIFileExplorer = () => {
       console.log('MUI Folders updated, converting to tree data');
       // Cast folders to any to avoid TypeScript error
       const sortedData = sortTreeData(convertToTreeData(folders as any));
-
-      // Ensure we have all expected top-level directories
-      const expectedDirs = ['miditrim', 'miditrim.xcodeproj', 'miditrimTests', 'miditrimUITests'];
-      const foundDirs = sortedData.map(node => String(node.key));
-      console.log('Found top-level directories:', foundDirs);
-
+      
       // Set tree data in a stable way
-      setTreeData(sortedData);
-      setIsLoading(false);
+      setHasLoadedData(true);
+      setIsInitialLoad(false);
+      
+      console.log('MUI: Updated tree data with', sortedData.length, 'top-level nodes');
     }
-  }, [folders]);
+  }, [folders, setTreeData]);
+
 
   // Debounced search function
   const debouncedSearch = useCallback(
@@ -960,9 +856,9 @@ export const MUIFileExplorer = () => {
 
     window.addEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
     return () => window.removeEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
-  }, [setTreeData]);
+  });
   // Show loading state while scanning and no data
-  if (isScanning && (!muiTreeData || muiTreeData.length === 0)) {
+  if ((isScanning || isInitialLoad) && (!hasLoadedData || !muiTreeData || muiTreeData.length === 0)) {
     return (
       <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
         <Box sx={{
@@ -1014,7 +910,7 @@ export const MUIFileExplorer = () => {
   }
 
   // Show empty state if no folders loaded and not scanning
-  if (!isScanning && (!muiTreeData || muiTreeData.length === 0)) {
+  if (!isScanning && !isInitialLoad && hasLoadedData && (!muiTreeData || muiTreeData.length === 0)) {
     return (
       <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
         <Box sx={{ textAlign: 'center', py: 4 }}>
@@ -1093,7 +989,7 @@ export const MUIFileExplorer = () => {
           </Box>
         )}
 
-        {isLoading ? (
+        {(isScanning && !hasLoadedData) ? (
           <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
             <LinearProgress sx={{ width: '80%', mb: 2 }} />
             <Typography variant="body2" color="text.secondary">
