@@ -1,0 +1,19 @@
+diff --git a/frontend/src/components/App.tsx b/frontend/src/components/App.tsx
+index 1234567..abcdefg 100644
+--- a/frontend/src/components/App.tsx
++++ b/frontend/src/components/App.tsx
+@@ -18,12 +18,14 @@ export const App: React.FC = () => {
+                     
+                     <Suspense fallback={null}>
+                         {mcpEnabled && (
++                            <>
+                                 <ShellConfigModal
+                                     visible={showShellConfig}
+                                     onClose={() => setShowShellConfig(false)}
+                                 />
+                                 <MCPStatusModal
+                                     visible={showMCPStatus}
+                                     onClose={() => setShowMCPStatus(false)}
+                                 />
++                            </>
+                         )}
