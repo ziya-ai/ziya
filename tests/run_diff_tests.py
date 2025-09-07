@@ -624,6 +624,61 @@ class DiffRegressionTest(unittest.TestCase):
         """Test handling of hunk context mismatches"""
         self.run_diff_test('MRE_hunk_context_mismatch')
 
+    def test_MRE_react_suspense_wrapper(self):
+        """Test case for React Suspense wrapper diff incorrectly marked as already applied"""
+        self.run_diff_test('MRE_react_suspense_wrapper')
+
+    def test_MRE_react_suspense_wrapper_already_applied_detection(self):
+        """Test that the React Suspense wrapper diff is not incorrectly marked as already applied"""
+        test_case = 'MRE_react_suspense_wrapper'
+        metadata, original, diff, expected = self.load_test_case(test_case)
+        
+        # Set up the test file in the temp directory
+        test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+        os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+        
+        with open(test_file_path, 'w', encoding='utf-8') as f:
+            f.write(original)
+        
+        # Apply the diff and get the result
+        result_dict = use_git_to_apply_code_diff(diff, test_file_path)
+        
+        # Read the modified content
+        with open(test_file_path, 'r', encoding='utf-8') as f:
+            modified_content = f.read()
+        
+        # Check if the content changed (which would indicate successful application)
+        content_changed = original != modified_content
+        
+        # For this test, we expect:
+        # 1. Content to change (diff should be applied)
+        # 2. Status to be "success"
+        # 3. changes_written to be True
+        # 4. No hunks should be reported as already_applied
+        self.assertTrue(content_changed, 
+                       f"Content didn't change but should have been modified")
+        self.assertEqual(result_dict['status'], 'success', 
+                       f"Status should be success, got {result_dict['status']}")
+        
+        # Check if changes_written is in the result_dict or in details
+        if 'changes_written' in result_dict:
+            self.assertTrue(result_dict['changes_written'], 
+                          f"changes_written should be True")
+        elif 'details' in result_dict and 'changes_written' in result_dict['details']:
+            self.assertTrue(result_dict['details']['changes_written'], 
+                          f"changes_written should be True")
+        else:
+            self.fail("changes_written not found in result_dict or details")
+        
+        # CRITICAL CHECK: Verify that no hunks are incorrectly reported as already_applied
+        if 'details' in result_dict and 'already_applied' in result_dict['details']:
+            self.assertEqual(len(result_dict['details']['already_applied']), 0,
+                           f"No hunks should be reported as already_applied, but found: {result_dict['details']['already_applied']}")
+
+    def test_MRE_react_suspense_false_already_applied(self):
+        """Test case for React Suspense wrapper that returns false 'already applied' indicator"""
+        self.run_diff_test('MRE_react_suspense_false_already_applied')
+
     def test_delete_end_block(self):
         """Test deletion of final codeblock"""
         self.run_diff_test("delete-end-block")

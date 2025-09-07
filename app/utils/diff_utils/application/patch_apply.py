@@ -394,6 +394,28 @@ def apply_diff_with_difflib_hybrid_forced(
     applied_hunks = []
 
     for hunk_idx, h in enumerate(hunks, start=1):
+        # CRITICAL FIX: Use exact matching when added content is mostly whitespace/short tokens
+        exact_match_applied = False
+        old_block = h.get('old_block', [])
+        added_lines = h.get('added_lines', [])
+        
+        # Check if added lines are short/whitespace-heavy (problematic for fuzzy matching)
+        if old_block and added_lines:
+            avg_added_length = sum(len(line.strip()) for line in added_lines) / len(added_lines)
+            if avg_added_length <= 5:  # Very short content that fuzzy matching struggles with
+                for pos in range(len(final_lines_with_endings) - len(old_block) + 1):
+                    file_slice = final_lines_with_endings[pos:pos + len(old_block)]
+                    if [normalize_line_for_comparison(line) for line in file_slice] == [normalize_line_for_comparison(line) for line in old_block]:
+                        # Found exact match - apply immediately
+                        new_lines_with_endings = [line + dominant_ending if not line.endswith('\n') else line for line in h['new_lines']]
+                        final_lines_with_endings[pos:pos + len(old_block)] = new_lines_with_endings
+                        logger.info(f"Hunk #{hunk_idx}: Applied using exact match for short content at position {pos}")
+                        exact_match_applied = True
+                        break
+        
+        if exact_match_applied:
+            continue  # Skip to next hunk
+        
         # Initialize fuzzy match tracking
         fuzzy_match_applied = False
         skip_duplicate_check = False  # Initialize duplicate check flag

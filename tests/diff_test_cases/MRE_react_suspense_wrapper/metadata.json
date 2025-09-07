@@ -1,0 +1,5 @@
+{
+    "description": "Test case for React Suspense wrapper diff incorrectly marked as already applied",
+    "target_file": "frontend/src/components/App.tsx",
+    "expected_to_fail": false
+}
