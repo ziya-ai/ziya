@@ -13,6 +13,28 @@ from ..application.whitespace_handler import is_whitespace_only_diff, normalize_
 # Configure logging
 logger = logging.getLogger(__name__)
 
+def calculate_fast_similarity(chunk_lines: List[str], file_slice: List[str]) -> float:
+    """
+    Fast similarity calculation using only the most efficient strategy.
+    Used for full file search optimization.
+    """
+    if len(chunk_lines) != len(file_slice):
+        return 0.0
+    
+    # Strategy: Content-only comparison (ignoring all whitespace)
+    chunk_content = ''.join(''.join(line.split()) for line in chunk_lines)
+    file_content = ''.join(''.join(line.split()) for line in file_slice)
+    
+    if not chunk_content or not file_content:
+        return 0.0
+    
+    if chunk_content == file_content:
+        return 1.0
+    
+    # Use a simple ratio for speed
+    return difflib.SequenceMatcher(None, chunk_content, file_content).ratio()
+
+
 def find_best_chunk_position(
     file_lines: List[str], 
     chunk_lines: List[str], 
@@ -238,38 +260,86 @@ def find_best_chunk_position(
     
     # Return None if confidence is too low, but first try full file search as fallback
     if best_ratio < effective_threshold and should_try_full_file_search:
-        logger.warning(f"Local search failed (ratio={best_ratio:.3f}, threshold={effective_threshold:.3f}). Trying full file search as fallback.")
+        logger.warning(f"Local search failed (ratio={best_ratio:.3f}, threshold={effective_threshold:.3f}). Trying optimized full file search as fallback.")
         
-        # Search the entire file as fallback
+        # OPTIMIZATION: Use a much more efficient full file search
+        # Instead of checking every position, use a smarter approach
         full_file_best_pos = None
         full_file_best_ratio = 0.0
         
-        for pos in range(0, len(file_lines)):
-            # Skip positions we already checked in the local search
-            if start_pos <= pos < end_pos:
-                continue
+        # Strategy 1: Quick content-based search for exact matches first
+        if chunk_lines:
+            # Look for the first non-empty line of the chunk
+            first_content_line = None
+            for line in chunk_lines:
+                stripped = line.strip()
+                if stripped and len(stripped) > 5:  # Ignore very short lines
+                    first_content_line = stripped
+                    break
+            
+            if first_content_line:
+                # Find all positions where this line appears
+                candidate_positions = []
+                for i, file_line in enumerate(file_lines):
+                    if file_line.strip() == first_content_line:
+                        candidate_positions.append(i)
                 
-            # Make sure we don't go out of bounds
-            if pos + len(chunk_lines) > len(file_lines):
-                continue
+                # Only check these candidate positions instead of the entire file
+                logger.debug(f"Found {len(candidate_positions)} candidate positions based on first content line")
+                
+                for pos in candidate_positions:
+                    # Skip positions we already checked in the local search
+                    if start_pos <= pos < end_pos:
+                        continue
+                        
+                    # Make sure we don't go out of bounds
+                    if pos + len(chunk_lines) > len(file_lines):
+                        continue
+                    
+                    # Get the slice of file_lines to compare
+                    file_slice = file_lines[pos:pos + len(chunk_lines)]
+                    
+                    # Use only the fastest similarity strategy for full file search
+                    similarity_ratio = calculate_fast_similarity(chunk_lines, file_slice)
+                    
+                    if similarity_ratio > full_file_best_ratio:
+                        full_file_best_ratio = similarity_ratio
+                        full_file_best_pos = pos
+                        
+                        # Early exit if we find a very good match
+                        if similarity_ratio > 0.9:
+                            break
+        
+        # Strategy 2: If no good candidates found, do a limited sampling search
+        if full_file_best_ratio < 0.5:
+            # Sample every 10th position instead of checking every position
+            sample_step = max(1, len(file_lines) // 100)  # Sample ~100 positions max
+            logger.debug(f"Doing sampled search with step size {sample_step}")
             
-            # Get the slice of file_lines to compare
-            file_slice = file_lines[pos:pos + len(chunk_lines)]
-            
-            # Calculate enhanced similarity ratio
-            ratio = calculate_enhanced_similarity(chunk_lines, file_slice)
-            
-            # Update best match if this is better
-            if ratio > full_file_best_ratio:
-                full_file_best_ratio = ratio
-                full_file_best_pos = pos
-                logger.debug(f"Full file search: Found better match at position {pos} with enhanced ratio {ratio:.3f}")
+            for pos in range(0, len(file_lines), sample_step):
+                # Skip positions we already checked
+                if start_pos <= pos < end_pos:
+                    continue
+                    
+                # Make sure we don't go out of bounds
+                if pos + len(chunk_lines) > len(file_lines):
+                    continue
+                
+                # Get the slice of file_lines to compare
+                file_slice = file_lines[pos:pos + len(chunk_lines)]
+                
+                # Use only the fastest similarity strategy
+                similarity_ratio = calculate_fast_similarity(chunk_lines, file_slice)
+                
+                if similarity_ratio > full_file_best_ratio:
+                    full_file_best_ratio = similarity_ratio
+                    full_file_best_pos = pos
         
         # If full file search found a better match, use it
         if full_file_best_ratio > best_ratio:
             best_ratio = full_file_best_ratio
             best_pos = full_file_best_pos
-            logger.info(f"Full file search found better match at position {best_pos} with ratio {best_ratio:.3f}")
+            logger.info(f"Optimized full file search found better match at position {best_pos} with ratio {best_ratio:.3f}")
             
             # Re-evaluate with the new best ratio
             if best_ratio >= effective_threshold:
