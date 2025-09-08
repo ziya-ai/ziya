@@ -42,6 +42,8 @@ class MCPManager:
         self._tools_cache: Optional[List[MCPTool]] = None
         self._tools_cache_timestamp: float = 0
         self._tools_cache_ttl: float = 300  # 5 minutes cache TTL
+        self._reconnection_attempts: Dict[str, float] = {}  # Track last reconnection attempt per server
+        self._failed_servers: set = set()  # Servers that have failed too many times
         
     def _get_builtin_server_definitions(self) -> Dict[str, Dict[str, Any]]:
         """Defines configurations for built-in MCP servers."""
@@ -241,6 +243,55 @@ class MCPManager:
             logger.error(f"Error initializing MCP manager: {str(e)}")
             return False
     
+    async def _ensure_client_healthy(self, client: 'MCPClient') -> bool:
+        """Ensure client is healthy, reconnect if necessary."""
+        server_name = getattr(client, 'server_name', client.server_config.get('name', 'unknown'))
+        
+        # Skip servers that have failed too many times
+        if server_name in self._failed_servers:
+            logger.debug(f"Server {server_name} is in failed state, skipping health check")
+            return False
+        
+        # Prevent rapid reconnection attempts (minimum 30 seconds between attempts)
+        last_attempt = self._reconnection_attempts.get(server_name, 0)
+        if time.time() - last_attempt < 30:
+            logger.debug(f"Skipping reconnection attempt for {server_name} - too recent ({time.time() - last_attempt:.1f}s ago)")
+            return False
+            
+        if not client.is_connected or (hasattr(client, '_is_process_healthy') and not client._is_process_healthy()):
+            logger.warning(f"Client {server_name} unhealthy, attempting reconnection")
+            
+            # Record this reconnection attempt
+            self._reconnection_attempts[server_name] = time.time()
+            
+            try:
+                await client.disconnect()
+                success = await client.connect()
+                if success:
+                    logger.info(f"Client {server_name} reconnection successful")
+                    # Invalidate tools cache to reload capabilities
+                    self.invalidate_tools_cache()
+                    # Reset failure count on successful reconnection
+                    if hasattr(self, '_reconnection_failures'):
+                        self._reconnection_failures.pop(server_name, None)
+                    return True
+                else:
+                    logger.error(f"Client {server_name} reconnection failed")
+                    
+                    # Track failed attempts - if too many, disable this server
+                    if not hasattr(self, '_reconnection_failures'):
+                        self._reconnection_failures = {}
+                    self._reconnection_failures[server_name] = self._reconnection_failures.get(server_name, 0) + 1
+                    
+                    if self._reconnection_failures[server_name] >= 3:
+                        logger.error(f"Server {server_name} failed {self._reconnection_failures[server_name]} times, disabling")
+                        self._failed_servers.add(server_name)
+                    return False
+            except Exception as e:
+                logger.error(f"Error during client reconnection for {server_name}: {e}")
+                return False
+        return True
+    
     async def shutdown(self):
         """Shutdown all MCP connections."""
         disconnect_tasks = []
@@ -419,6 +470,7 @@ class MCPManager:
         
         logger.info(f"🔍 MCP_MANAGER: call_tool called with tool_name='{tool_name}', arguments={arguments}, server_name={server_name}")
         print(f"🔍 MCP_MANAGER: call_tool called with tool_name='{tool_name}', arguments={arguments}, server_name={server_name}")
+        logger.error(f"🚨 MCP_MANAGER.call_tool: ENTRY POINT - {tool_name}")
         
         Args:
             tool_name: Name of the tool to call
@@ -436,6 +488,11 @@ class MCPManager:
         if server_name:
             client = self.clients.get(server_name)
             if client and client.is_connected:
+                # Ensure client is healthy before making the call
+                if hasattr(client, '_is_process_healthy') and not await self._ensure_client_healthy(client):
+                    logger.error(f"Client {server_name} is unhealthy, cannot execute tool")
+                    return None
+                    
                 return await client.call_tool(tool_name, arguments)
         else:
             # Try all connected servers
@@ -445,6 +502,11 @@ class MCPManager:
                     tool_names_to_try = [tool_name, internal_tool_name]
                     for name_to_try in tool_names_to_try:
                         if any(tool.name == name_to_try for tool in client.tools):
+                            # Ensure client is healthy before making the call
+                            if hasattr(client, '_is_process_healthy') and not await self._ensure_client_healthy(client):
+                                logger.warning(f"Client unhealthy, skipping tool execution")
+                                continue
+                                
                             logger.info(f"🔍 MCP_MANAGER: Found tool '{name_to_try}' in server, executing...")
                             logger.info(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
                             print(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")

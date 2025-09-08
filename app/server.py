@@ -736,8 +736,11 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
     from app.mcp.manager import get_mcp_manager
     import re
     
-    # Check if response contains tool calls
-    if TOOL_SENTINEL_OPEN not in full_response:
+    # Check if response contains tool calls (XML format or markdown format)
+    has_xml_tools = TOOL_SENTINEL_OPEN in full_response
+    has_markdown_tools = '```tool:' in full_response
+    
+    if not has_xml_tools and not has_markdown_tools:
         return full_response
     
     # Find all tool call blocks
@@ -1137,14 +1140,55 @@ async def stream_chunks(body):
         if messages:
             logger.debug(f"First message type: {messages[0].get('type', 'unknown')}")
             logger.debug(f"System message length: {len(messages[0].get('content', '')) if messages[0].get('type') == 'system' else 'N/A'}")
-        
         # Create DirectStreamingAgent and stream
         try:
             agent = DirectStreamingAgent()
+            # DEBUGGING: Track streaming metrics
+            chunk_count = 0
+            total_data_sent = 0
+            tool_results_attempted = 0
+            
             async for chunk in agent.stream_with_tools(messages, conversation_id=body.get('conversation_id')):
-                yield f"data: {json.dumps(chunk)}\n\n"
+                chunk_count += 1
+                
+                if chunk.get('type') == 'tool_execution':
+                    tool_results_attempted += 1
+                    logger.info(f"🔍 ATTEMPTING_TOOL_TRANSMISSION: #{tool_results_attempted} - {chunk.get('tool_name')}")
+                    
+                    # DEBUGGING: Test JSON serialization before transmission
+                    try:
+                        test_json = json.dumps(chunk)
+                        json_size = len(test_json)
+                        logger.info(f"🔍 JSON_SERIALIZATION: {chunk.get('tool_name')} serialized to {json_size} chars")
+                        
+                        if json_size > 100000:  # 100KB
+                            logger.warning(f"🔍 LARGE_JSON_PAYLOAD: {chunk.get('tool_name')} JSON is {json_size} chars")
+                            if json_size > 1000000:  # 1MB
+                                logger.error(f"🔍 JSON_TOO_LARGE: {chunk.get('tool_name')} JSON is {json_size} chars - may break transmission")
+                                
+                    except Exception as json_error:
+                        logger.error(f"🔍 JSON_SERIALIZATION_FAILED: {chunk.get('tool_name')} failed to serialize: {json_error}")
+                        continue  # Skip this chunk
+                
+                sse_data = f"data: {json.dumps(chunk)}\n\n"
+                chunk_size = len(sse_data)
+                total_data_sent += chunk_size
+                
+                # Log large chunks or tool results
+                if chunk.get('type') == 'tool_execution' or chunk_size > 1000:
+                    logger.info(f"🔍 CHUNK_TRANSMISSION: chunk #{chunk_count}, type={chunk.get('type')}, size={chunk_size}, total_sent={total_data_sent}")
+                    if chunk.get('type') == 'tool_execution':
+                        logger.info(f"🔍 TOOL_CHUNK: tool_name={chunk.get('tool_name')}, result_size={len(chunk.get('result', ''))}")
+                
+                yield sse_data
             
             yield "data: [DONE]\n\n"
+            return
+        except CredentialRetrievalError as e:
+            # Handle credential errors (including mwinit failures) with proper SSE error response
+            from app.utils.error_handlers import handle_streaming_error
+            async for error_chunk in handle_streaming_error(None, e):
+                yield error_chunk
             return
         except ValueError as e:
             if "OpenAI models should use LangChain path" in str(e):
@@ -1938,7 +1982,8 @@ async def stream_chunks(body):
                             tool_executed = True  # Mark as executed to prevent re-execution
                         
                             # Limit tool calls per round if needed
-                            max_tools_per_round = 2
+                            # Make this configurable via environment variable
+                            max_tools_per_round = int(os.environ.get("ZIYA_MAX_TOOLS_PER_ROUND", "5"))
                             if complete_tool_calls > max_tools_per_round:
                                 logger.info(f"🔍 STREAM: Limiting to {max_tools_per_round} tools per round")
                                 # Truncate to first N tool calls
@@ -3005,8 +3050,23 @@ async def get_folders_with_accurate_tokens():
         
         # Call stream_chunks directly to force direct streaming path
         logger.info("[INSTRUMENTATION] /api/chat calling stream_chunks directly for direct streaming")
+        
+        # DEBUGGING: Wrap the stream_chunks generator to monitor transmission
+        async def debug_stream_wrapper():
+            total_bytes_sent = 0
+            chunk_count = 0
+            async for chunk in stream_chunks(formatted_body):
+                chunk_count += 1
+                chunk_size = len(chunk.encode('utf-8'))
+                total_bytes_sent += chunk_size
+                
+                if chunk_count % 50 == 0:  # Log every 50th chunk
+                    logger.info(f"🔍 STREAM_PROGRESS: chunk #{chunk_count}, total_bytes={total_bytes_sent}")
+                    
+                yield chunk
+        
         return StreamingResponse(
-            stream_chunks(formatted_body),
+            debug_stream_wrapper(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -3015,21 +3075,6 @@ async def get_folders_with_accurate_tokens():
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "POST, OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type"
-            }
-        )
-    except Exception as e:
-        logger.error(f"Error in chat_endpoint: {str(e)}")
-        # Return error as streaming response
-        error_json = json.dumps({"error": str(e)})
-        return StreamingResponse(
-            (f"data: {error_json}\n\ndata: {json.dumps({'done': True})}\n\n" for _ in range(1)),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*",
-                "Content-Type": "text/event-stream"
             }
         )
 
@@ -3952,6 +3997,108 @@ async def abort_stream(request: Request):
             return JSONResponse(content={"status": "not_found", "message": "No active stream found for this conversation"})
     except Exception as e:
         logger.error(f"Error aborting stream: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post('/api/retry-throttled-request')
+async def retry_throttled_request(request: Request):
+    """Retry a request that was throttled, with fresh retry attempts."""
+    try:
+        body = await request.json()
+        
+        if not body.get("conversation_id"):
+            return JSONResponse(status_code=400, content={"error": "conversation_id is required"})
+            
+        logger.info(f"User retry requested for conversation: {body.get('conversation_id')}")
+        
+        # Forward to the main streaming endpoint with fresh retry attempts
+        return StreamingResponse(
+            stream_chunks(body),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error retrying throttled request: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get('/api/debug/mcp-state')
+async def debug_mcp_state():
+    """Debug endpoint to check MCP connection and tool execution state."""
+    try:
+        from app.mcp.manager import get_mcp_manager
+        from app.mcp.tools import _tool_execution_counter, _consecutive_timeouts, _conversation_tool_states
+        
+        mcp_manager = get_mcp_manager()
+        
+        # Check manager state
+        manager_state = {
+            "is_initialized": mcp_manager.is_initialized,
+            "client_count": len(mcp_manager.clients),
+            "clients": {}
+        }
+        
+        # Check each client's state
+        for server_name, client in mcp_manager.clients.items():
+            try:
+                # Check process health
+                process_healthy = client._is_process_healthy() if hasattr(client, '_is_process_healthy') else True
+                
+                manager_state["clients"][server_name] = {
+                    "is_connected": client.is_connected,
+                    "process_healthy": process_healthy,
+                    "process_running": client.process and client.process.poll() is None,
+                    "tools_count": len(client.tools),
+                    "last_successful_call": getattr(client, '_last_successful_call', 0)
+                }
+            except Exception as e:
+                manager_state["clients"][server_name] = {"error": str(e)}
+        
+        return {
+            "manager": manager_state,
+            "global_tool_counter": _tool_execution_counter,
+            "consecutive_timeouts": _consecutive_timeouts,
+            "conversation_states": _conversation_tool_states
+        }
+    except Exception as e:
+        logger.error(f"Error getting MCP debug state: {e}")
+        return {"error": str(e)}
+
+@app.post('/api/debug/reset-mcp')
+async def reset_mcp_state(request: Request):
+    """Reset MCP state to recover from stuck tool execution."""
+    try:
+        body = await request.json()
+        conversation_id = body.get("conversation_id")
+        
+        from app.mcp.manager import get_mcp_manager
+        from app.mcp.tools import _tool_execution_counter, _consecutive_timeouts, _conversation_tool_states, _reset_counter_async
+        
+        mcp_manager = get_mcp_manager()
+        
+        # Reset global state
+        await _reset_counter_async()
+        
+        # Reset conversation-specific state if provided
+        if conversation_id and conversation_id in _conversation_tool_states:
+            del _conversation_tool_states[conversation_id]
+            logger.info(f"Reset tool state for conversation: {conversation_id}")
+        
+        # Force reconnection to all MCP servers
+        for server_name, client in mcp_manager.clients.items():
+            if not client._is_process_healthy():
+                logger.info(f"Reconnecting unhealthy MCP server: {server_name}")
+                asyncio.create_task(mcp_manager._ensure_client_healthy(client))
+        
+        return {"status": "success", "message": "MCP state reset initiated"}
+        
+    except Exception as e:
+        logger.error(f"Error resetting MCP state: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post('/api/apply-changes')
