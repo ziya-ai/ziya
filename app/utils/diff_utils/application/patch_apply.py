@@ -826,7 +826,7 @@ def apply_diff_with_difflib_hybrid_forced(
                     "status": "error",
                     "type": "unexpected_duplicates",
                     "hunk": hunk_idx,
-                    "position": remove_pos,
+                    "position": insert_pos,
                     "duplicate_details": duplicate_details
                 }
                 hunk_failures.append((f"Unexpected duplicates detected for Hunk #{hunk_idx}", failure_info))
@@ -837,7 +837,34 @@ def apply_diff_with_difflib_hybrid_forced(
         # --- Apply the hunk with intelligent indentation adaptation ---
         # Handle systematic indentation loss and indentation mismatches from fuzzy matching
         
-        original_lines_to_replace = final_lines_with_endings[remove_pos:end_remove_pos]
+        original_lines_to_replace = final_lines_with_endings[insert_pos:end_remove_pos]
+        
+        # BOUNDARY VERIFICATION: Fix wrong offset insertion issue
+        # This must happen BEFORE indentation adaptation to ensure correct boundaries
+        expected_old_block = h['old_block']
+        boundary_corrected = False
+        if (insert_pos == end_remove_pos and len(expected_old_block) > 0 and 
+            len(h.get('removed_lines', [])) == 0 and len(h.get('added_lines', [])) > 0):
+            
+            # Search for the old_block content to find correct boundaries
+            for pos in range(len(final_lines_with_endings) - len(expected_old_block) + 1):
+                file_slice = final_lines_with_endings[pos:pos + len(expected_old_block)]
+                normalized_file_slice = [normalize_line_for_comparison(line) for line in file_slice]
+                normalized_old_block = [normalize_line_for_comparison(line) for line in expected_old_block]
+                
+                if normalized_file_slice == normalized_old_block:
+                    insert_pos = pos
+                    end_remove_pos = pos + len(expected_old_block)
+                    
+                    # Reconstruct new_lines_with_endings with full new_lines
+                    new_lines_with_endings = []
+                    for line in h['new_lines']:
+                        new_lines_with_endings.append(line + dominant_ending)
+                    boundary_corrected = True
+                    break
+        
+        # Update original_lines_to_replace AFTER boundary verification
+        original_lines_to_replace = final_lines_with_endings[insert_pos:end_remove_pos]
         
         # Check if we need indentation adaptation
         needs_indentation_adaptation = False
@@ -897,6 +924,7 @@ def apply_diff_with_difflib_hybrid_forced(
                     logger.info(f"Hunk #{hunk_idx}: Detected indentation mismatch - diff avg: {avg_new_indent:.1f}, target avg: {avg_orig_indent:.1f}")
         
         if needs_indentation_adaptation:
+            print(f"DEBUG: Indentation adaptation triggered, type={adaptation_type}")
             # Apply with indentation adaptation
             corrected_new_lines = []
             
@@ -1081,7 +1109,7 @@ def apply_diff_with_difflib_hybrid_forced(
                     # Use surgical application to preserve context lines
                     logger.info(f"Hunk #{hunk_idx}: Using surgical application due to fuzzy matching")
                     try:
-                        surgical_result = apply_surgical_changes(final_lines_with_endings, h, remove_pos)
+                        surgical_result = apply_surgical_changes(final_lines_with_endings, h, insert_pos)
                         # Check if surgical application actually made changes
                         if surgical_result != final_lines_with_endings:
                             final_lines_with_endings = surgical_result
@@ -1109,21 +1137,23 @@ def apply_diff_with_difflib_hybrid_forced(
                     final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
             else:
                 # Standard application
-                new_lines_with_endings = []
-                for line in new_lines_content:
-                    new_lines_with_endings.append(line + dominant_ending)
+                if not boundary_corrected:
+                    # Only reconstruct if boundary verification didn't already correct it
+                    new_lines_with_endings = []
+                    for line in new_lines_content:
+                        new_lines_with_endings.append(line + dominant_ending)
                 final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
 
         # --- Update Offset ---
         # The actual number of lines removed might be different from actual_remove_count
         # if the end_remove_pos was clamped due to file length constraints
-        actual_lines_removed = end_remove_pos - remove_pos
+        actual_lines_removed = end_remove_pos - insert_pos
         net_change = len(new_lines_with_endings) - actual_lines_removed
         offset += net_change
         
         # Track this hunk application for future reference
         # Store the hunk, position where it was applied, lines removed, and lines added
-        applied_hunks.append((h, remove_pos, actual_lines_removed, len(new_lines_with_endings)))
+        applied_hunks.append((h, insert_pos, actual_lines_removed, len(new_lines_with_endings)))
         
         logger.debug(f"Hunk #{hunk_idx}: Applied. Lines removed: {actual_lines_removed}, lines added: {len(new_lines_with_endings)}, net change: {net_change}, new offset: {offset}")
         

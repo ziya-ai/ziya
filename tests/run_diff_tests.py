@@ -679,6 +679,14 @@ class DiffRegressionTest(unittest.TestCase):
         """Test case for React Suspense wrapper that returns false 'already applied' indicator"""
         self.run_diff_test('MRE_react_suspense_false_already_applied')
 
+    def test_MRE_throttling_error_handling(self):
+        """Test case for adding throttling error handling with original request data and custom event dispatch"""
+        self.run_diff_test('MRE_throttling_error_handling')
+
+    def test_MRE_fuzzy_mismatch_wrong_lines(self):
+        """Test case where fuzzy matching fails due to incorrect line numbers in diff, causing no application at all"""
+        self.run_diff_test('MRE_fuzzy_mismatch_wrong_lines')
+
     def test_delete_end_block(self):
         """Test deletion of final codeblock"""
         self.run_diff_test("delete-end-block")
