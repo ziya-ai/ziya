@@ -1031,7 +1031,47 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 continue
             
             # Check if this specific hunk is already applied anywhere in the file
-            for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
+            # OPTIMIZATION: Use smarter search instead of checking every position
+            search_positions = []
+            
+            # Strategy 1: Check around the expected position first (most likely)
+            expected_line = hunk.get('old_start_line', 1) - 1  # Convert to 0-based
+            search_radius = 50  # Check within 50 lines of expected position
+            start_search = max(0, expected_line - search_radius)
+            end_search = min(len(original_lines), expected_line + search_radius)
+            search_positions.extend(range(start_search, end_search + 1))
+            
+            # Strategy 2: If hunk has distinctive content, search for that first
+            if 'new_lines' in hunk and hunk.get('new_lines'):
+                # Look for the first distinctive line to narrow down search
+                distinctive_line = None
+                for line in hunk['new_lines']:
+                    stripped = line.strip()
+                    if len(stripped) > 10 and not stripped.startswith(('if ', 'for ', 'while ', 'def ', 'class ')):
+                        distinctive_line = stripped
+                        break
+                
+                if distinctive_line:
+                    # Find positions where this distinctive line appears
+                    for i, file_line in enumerate(original_lines):
+                        if file_line.strip() == distinctive_line:
+                            # Add positions around this match
+                            for offset in range(-5, 6):  # Check 5 lines before/after
+                                pos = i + offset
+                                if 0 <= pos <= len(original_lines) and pos not in search_positions:
+                                    search_positions.append(pos)
+            
+            # Strategy 3: Only do full file search as last resort and with sampling
+            if not search_positions:
+                # Sample every 10th position instead of checking every position
+                sample_step = max(1, len(original_lines) // 100)
+                search_positions = list(range(0, len(original_lines) + 1, sample_step))
+            
+            # Remove duplicates and sort
+            search_positions = sorted(set(search_positions))
+            logger.debug(f"Optimized already-applied check: searching {len(search_positions)} positions instead of {len(original_lines) + 1}")
+            
+            for pos in search_positions:
                 # CRITICAL FIX: First check if the target state (new_lines) is already present in the file
                 # This is the most important check - if the target state is already there, we can mark it as already applied
                 if 'new_lines' in hunk and pos + len(hunk.get('new_lines', [])) <= len(original_lines):
