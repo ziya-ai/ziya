@@ -1059,10 +1059,18 @@ class RetryingChatBedrock(Runnable):
                     # Format error message for throttling
                     error_message = {
                         "error": "throttling_error",
-                        "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
+                        "detail": "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.",
                         "status_code": 429,
                         "stream_id": stream_id,
-                        "retry_after": "5"
+                        "retry_after": "60",
+                        "throttle_info": {
+                            "auto_attempts_exhausted": True,
+                            "total_auto_attempts": max_retries,
+                            "can_user_retry": True,
+                            "backoff_used": [5, 10, 20, 40][:attempt + 1]
+                        },
+                        "ui_action": "show_retry_button",
+                        "user_message": "Click 'Retry' to attempt again, or wait a few minutes for better success rate."
                     }
                     
                     # Include pre-streaming work in preservation
@@ -1379,6 +1387,22 @@ class RetryingChatBedrock(Runnable):
                         logger.info(f"Throttling detected, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
                         time.sleep(retry_delay)
                         continue
+                    else:
+                        # Final attempt failed - enhance error response for frontend
+                        error_message = {
+                            "error": "throttling_error",
+                            "detail": "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.",
+                            "status_code": 429,
+                            "throttle_info": {
+                                "auto_attempts_exhausted": True,
+                                "total_auto_attempts": max_retries,
+                                "can_user_retry": True,
+                                "backoff_used": [5.0, 10.0, 20.0, 40.0][:attempt + 1]
+                            },
+                            "ui_action": "show_retry_button",
+                            "user_message": "Click 'Retry' to attempt again, or wait a few minutes for better success rate."
+                        }
+                        # Let this fall through to the final error handling
 
                 if attempt < max_retries - 1:
                     # For non-throttling errors, use shorter backoff

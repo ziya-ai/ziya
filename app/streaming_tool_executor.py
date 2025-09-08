@@ -56,6 +56,7 @@ class StreamingToolExecutor:
         # State management for tool execution
         self.active_tools: Dict[str, Dict[str, Any]] = {}
         self.completed_tools: set = set()
+        self.conversation_id: Optional[str] = None
         
         # Configuration - don't cache max_tokens, check dynamically
         self.max_output_length = 10000  # Increased from 2000 to show more complete results
@@ -96,11 +97,31 @@ class StreamingToolExecutor:
         except Exception as e:
             logger.warning(f"Could not get model config max_tokens: {e}, using fallback")
             return 4096  # Fallback only if config lookup fails
-        
+
     def reset_state(self):
         """Reset tool execution state for new streaming request"""
+        logger.debug(f"Resetting StreamingToolExecutor state for conversation: {self.conversation_id}")
         self.active_tools.clear()
         self.completed_tools.clear()
+        
+        # Also attempt to recover any stuck MCP connections
+        if self.conversation_id:
+            asyncio.create_task(self._recover_mcp_connections())
+    
+    async def _recover_mcp_connections(self):
+        """Attempt to recover stuck MCP connections for this conversation."""
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            
+            # Check each client's health
+            for server_name, client in mcp_manager.clients.items():
+                if not client._is_process_healthy():
+                    logger.warning(f"Detected unhealthy MCP client '{server_name}', scheduling reconnection")
+                    asyncio.create_task(mcp_manager._ensure_client_healthy(client))
+                    
+        except Exception as e:
+            logger.debug(f"Error during MCP connection recovery: {e}")
     
     async def stream_with_tools(self, messages: List[Dict[str, Any]], 
                                tools: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[Dict[str, Any], None]:
@@ -318,6 +339,8 @@ class StreamingToolExecutor:
                     )
                 except Exception as e:
                     error_message = str(e)
+                    logger.error(f"Streaming error in round {round_num + 1}: {error_message}")
+                    
                     # Check if it's a context limit error and model supports extended context
                     if "Input is too long" in error_message:
                         from app.agents.models import ModelManager
@@ -330,19 +353,39 @@ class StreamingToolExecutor:
                             if header_value:
                                 body['anthropic_beta'] = [header_value]
                                 
-                                response = self.bedrock.invoke_model_with_response_stream(
-                                    modelId=current_model_id,
-                                    body=json.dumps(body)
-                                )
-                                logger.debug("STREAMING_EXTENDED_CONTEXT: Extended context retry successful")
+                                try:
+                                    response = self.bedrock.invoke_model_with_response_stream(
+                                        modelId=current_model_id,
+                                        body=json.dumps(body)
+                                    )
+                                    logger.debug("STREAMING_EXTENDED_CONTEXT: Extended context retry successful")
+                                except Exception as retry_error:
+                                    logger.error(f"Extended context retry failed: {str(retry_error)}")
+                                    # Send proper validation error to frontend
+                                    yield {
+                                        'type': 'error',
+                                        'error': {'type': 'validation_error', 'detail': 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.'},
+                                        'status_code': 413
+                                    }
+                                    return
                             else:
-                                logger.debug(f"Round {round_num + 1} error: {e}")
-                                raise
+                                # No extended context header available, send validation error
+                                yield {
+                                    'type': 'error', 
+                                    'error': {'type': 'validation_error', 'detail': 'The selected content is too large for this model. Please reduce the number of files.'},
+                                    'status_code': 413
+                                }
+                                return
                         else:
-                            logger.debug(f"Round {round_num + 1} error: {e}")
-                            raise
+                            # Model doesn't support extended context, send validation error
+                            yield {
+                                'type': 'error',
+                                'error': {'type': 'validation_error', 'detail': 'The selected content is too large for this model. Please reduce the number of files.'},
+                                'status_code': 413
+                            }
+                            return
                     else:
-                        logger.debug(f"Round {round_num + 1} error: {e}")
+                        # Other errors, re-raise to be handled by outer exception handler
                         raise
                 
                 logger.debug(f"Got response type: {type(response)}")
@@ -410,15 +453,36 @@ class StreamingToolExecutor:
                             if delta.get('type') == 'text_delta':
                                 text = delta.get('text', '')
                                 round_text += text
+                                
+                                # Check for complete markdown tool calls in the accumulated text
+                                if '```tool:' in round_text and '```' in round_text:
+                                    import re
+                                    # Look for complete markdown tool calls
+                                    complete_pattern = r'```tool:(\w+)\s*\n(.*?)\n```'
+                                    if re.search(complete_pattern, round_text, re.DOTALL):
+                                        logger.info("🔍 INTERCEPTING_MARKDOWN_TOOL: Found complete markdown tool call during streaming")
+                                        # Don't yield this text, execute the tool instead
+                                        continue
+                                
                                 yield {'type': 'text', 'content': text}
                     
                     # Handle tool execution during streaming (only for Claude, not for Deepseek or Nova Pro)
                     if not (current_model_id and ('deepseek' in current_model_id.lower() or 'nova-pro' in current_model_id.lower())):
                         async for tool_result in self._handle_tool_chunk(chunk):
+                            # DEBUGGING: Test generator health before yielding tool results
                             has_tool_calls = True
-                            if tool_result.get('type') == 'tool_execution':
-                                round_tool_results.append(tool_result)
-                            yield tool_result
+                            try:
+                                logger.info(f"🔍 ABOUT_TO_YIELD_TOOL: {tool_result.get('tool_name')} size={len(str(tool_result))}")
+                                if tool_result.get('type') == 'tool_execution':
+                                    round_tool_results.append(tool_result)
+                                    logger.info(f"🔍 YIELDING_TOOL_EXECUTION: {tool_result.get('tool_name')}")
+                                    yield tool_result
+                                    logger.info(f"🔍 TOOL_EXECUTION_YIELDED: {tool_result.get('tool_name')} - SUCCESS")
+                            except Exception as yield_error:
+                                logger.error(f"🔍 TOOL_YIELD_FAILED: {tool_result.get('tool_name')} failed to yield: {yield_error}")
+                                # Mark that tool results are no longer transmitting
+                                logger.error(f"🔍 GENERATOR_BROKEN: AsyncGenerator appears broken for tool results")
+                                # Continue processing but tool results won't reach client
                 
                 logger.info(f"🔄 ROUND {round_num + 1} COMPLETE: {len(round_text)} chars, {len(round_tool_results)} tools")
                 if round_text.strip():
@@ -426,10 +490,54 @@ class StreamingToolExecutor:
                 if round_tool_results:
                     logger.info(f"🔧 TOOLS EXECUTED: {[r.get('tool_name', 'unknown') for r in round_tool_results]}")
                 
-                # If no tool calls were made, we're done
+                # If no tool calls were made, check for text-based tool calls (markdown format)
+                if not has_tool_calls and '```tool:' in round_text:
+                    logger.info("🔍 DETECTING_TEXT_TOOLS: Found markdown tool calls, parsing...")
+                    from app.mcp.tools import parse_tool_call
+                    
+                    # Extract markdown tool calls
+                    import re
+                    markdown_pattern = r'```tool:(\w+)\s*\n(.*?)\n```'
+                    tool_matches = re.findall(markdown_pattern, round_text, re.DOTALL)
+                    
+                    for tool_name, command in tool_matches:
+                        # Clean up command - remove shell prompt indicators that model copied from context
+                        command = command.strip()
+                        if command.startswith('$ '):
+                            command = command[2:]  # Remove '$ ' prefix
+                        
+                        logger.info(f"🔍 EXECUTING_TEXT_TOOL: {tool_name} with cleaned command: {command[:100]}...")
+                        
+                        # Execute the tool
+                        if tool_name == 'mcp_run_shell_command':
+                            result = await self._execute_mcp_tool(tool_name, {'command': command})
+                        else:
+                            result = await self._execute_mcp_tool(tool_name, {'input': command})
+                        
+                        # Yield tool result
+                        tool_result = {
+                            'type': 'tool_execution',
+                            'tool_id': f'text_{tool_name}_{len(round_tool_results)}',
+                            'tool_name': tool_name,
+                            'result': result
+                        }
+                        round_tool_results.append(tool_result)
+                        has_tool_calls = True
+                        yield tool_result
+                        logger.info(f"🔍 TEXT_TOOL_EXECUTED: {tool_name}")
+                
                 if not has_tool_calls:
-                    logger.debug(f"No more tool calls, ending after round {round_num + 1}")
-                    break
+                    # Give the model a few seconds to generate more content
+                    logger.debug(f"No tool calls in round {round_num + 1}, waiting 3 seconds for more content...")
+                    await asyncio.sleep(3)
+                    
+                    # Check if model is still generating by trying another round
+                    # If it generates empty content, then we're truly done
+                    if len(round_text.strip()) == 0:
+                        logger.debug(f"Empty response after timeout, ending after round {round_num + 1}")
+                        break
+                    else:
+                        logger.debug(f"Model generated text, continuing to next round...")
                 
                 # Add assistant response to conversation
                 if round_text.strip():
@@ -505,6 +613,14 @@ class StreamingToolExecutor:
                         tool_name = self.active_tools[tool_id]['name']
                         logger.info(f"🔧 TOOL RESULT: {tool_name} -> {result[:200]}...")
                         
+                        # DEBUGGING: Track tool result transmission
+                        result_size = len(result) if result else 0
+                        logger.info(f"🔍 TRANSMITTING_TOOL_RESULT: {tool_name} size={result_size}, about to yield to client")
+                        
+                        # Check if we're about to send a large result
+                        if result_size > 5000:
+                            logger.warning(f"🔍 LARGE_RESULT_TRANSMISSION: Sending large result ({result_size} chars) for {tool_name}")
+                        
                         # Convert tool name to frontend format and detect special cases
                         display_name = tool_name
                         if tool_name in ['execute_shell_command', 'run_shell_command']:
@@ -524,6 +640,8 @@ class StreamingToolExecutor:
                             'type': 'tool_execution', 
                             'tool_id': tool_id,
                             'tool_name': display_name,
+                            # DEBUGGING: Add size info to payload
+                            '_debug_size': result_size,
                             'result': result
                         }
         
@@ -581,6 +699,10 @@ class StreamingToolExecutor:
             tool_name = self.active_tools[tool_id]['name']
             logger.info(f"🔧 TOOL EXECUTION: '{tool_name}' with args: {args}")
             
+            # DEBUGGING: Log tool execution attempt
+            args_size = len(str(args))
+            logger.info(f"🔍 TOOL_EXEC_START: {tool_name} with {args_size} chars of arguments")
+            
             # Handle all tools through MCP
             if tool_name.startswith('mcp_') or tool_name in ['get_current_time', 'execute_shell_command', 'run_shell_command']:
                 # Handle MCP tools - convert name to mcp_ format for frontend
@@ -588,6 +710,7 @@ class StreamingToolExecutor:
                 logger.debug(f"Calling MCP tool: {tool_name} -> {mcp_tool_name}")
                 result = await self._execute_mcp_tool(tool_name, args)
                 self.completed_tools.add(tool_id)
+                logger.info(f"🔍 TOOL_EXEC_COMPLETE: {tool_name} completed, result size={len(str(result)) if result else 0}")
                 return result
             else:
                 logger.debug(f"Unknown tool type: {tool_name}")
@@ -607,6 +730,14 @@ class StreamingToolExecutor:
     async def _execute_mcp_tool(self, tool_name: str, args: dict) -> str:
         """Execute MCP tool by calling the MCP manager"""
         try:
+            # Check if this tool has been failing for this conversation
+            conversation_id = self.conversation_id or 'default'
+            from app.mcp.tools import _conversation_tool_states
+            
+            conv_state = _conversation_tool_states.get(conversation_id, {})
+            if tool_name in conv_state.get('failed_tools', set()):
+                logger.warning(f"Tool {tool_name} has been failing in conversation {conversation_id}, attempting recovery")
+            
             logger.debug(f"_execute_mcp_tool called with tool_name='{tool_name}', args={args}")
             
             # Import MCP manager
@@ -634,6 +765,10 @@ class StreamingToolExecutor:
             
             logger.info(f"🔧 MCP RESULT: {result}")
             
+            # Enforce explicit error on tool failure to prevent model hallucination
+            if result is None:
+                return f"🚨 TOOL EXECUTION FAILED: MCP server '{actual_tool_name}' is unavailable or unresponsive. Cannot proceed without tool result."
+            
             if isinstance(result, dict) and 'content' in result:
                 content = result['content']
                 if isinstance(content, list) and len(content) > 0:
@@ -647,6 +782,16 @@ class StreamingToolExecutor:
             else:
                 return str(result)
                 
+        except Exception as e:
+            # Track failed tools per conversation
+            conversation_id = self.conversation_id or 'default'
+            if conversation_id not in _conversation_tool_states:
+                _conversation_tool_states[conversation_id] = {'failed_tools': set(), 'last_reset': time.time()}
+            
+            _conversation_tool_states[conversation_id]['failed_tools'].add(tool_name)
+            logger.warning(f"Added {tool_name} to failed tools for conversation {conversation_id}")
+            
+            # Return the existing error handling...
         except ConnectionError as e:
             logger.debug(f"MCP connection error: {str(e)}")
             return f"MCP server connection failed for tool '{tool_name}'. Server may be unavailable."

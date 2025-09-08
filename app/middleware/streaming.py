@@ -136,6 +136,11 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 json_obj = json.loads(chunk)
                                 # If it's valid JSON, pass it through as properly serialized JSON
                                 chunk_content = json.dumps(json_obj)
+                                
+                                # DEBUGGING: Check if JSON serialization changed size
+                                if len(chunk_content) != chunk_size and json_obj.get('type') == 'tool_execution':
+                                    logger.warning(f"🔍 JSON_SIZE_CHANGE: Original {chunk_size} -> Serialized {len(chunk_content)} chars")
+                                
                                 yield f"data: {json.dumps(json_obj)}\n\n"
                             except json.JSONDecodeError:
                                 # If it's not valid JSON, just pass it as a string
@@ -343,6 +348,15 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         if chunk.startswith('data:'):
                             yield chunk
                         else:
+                            # DEBUGGING: Check for large chunks that might get dropped
+                            chunk_size = len(chunk)
+                            if chunk_size > 10000:
+                                logger.warning(f"🔍 LARGE_CHUNK_DETECTED: {chunk_size} chars - monitoring for truncation")
+                            
+                            # Check if this is a tool result chunk
+                            if "tool_execution" in chunk or "tool_result" in chunk:
+                                logger.info(f"🔍 TOOL_RESULT_CHUNK: size={chunk_size}, content preview: {chunk[:100]}...")
+                            
                             # Check if it might be JSON
                             try:
                                 # Try to parse as JSON to validate
@@ -350,6 +364,15 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 # If it's valid JSON, pass it through as properly serialized JSON
                                 chunk_content = json.dumps(json_obj)
                                 yield f"data: {json.dumps(json_obj)}\n\n"
+                                
+                                # DEBUGGING: Track large JSON objects
+                                if len(chunk_content) > 5000:
+                                    logger.warning(f"🔍 MIDDLEWARE_LARGE_JSON: {len(chunk_content)} chars, type={json_obj.get('type')}")
+                                    if json_obj.get('type') == 'tool_execution':
+                                        result_size = len(json_obj.get('result', ''))
+                                        logger.warning(f"🔍 MIDDLEWARE_TOOL_RESULT: tool={json_obj.get('tool_name')}, result_size={result_size}")
+                                        if result_size == 0:
+                                            logger.error(f"🔍 MIDDLEWARE_EMPTY_RESULT: Tool result is empty after JSON processing!")
                             except json.JSONDecodeError:
                                 # If it's not valid JSON, just pass it as a string
                                 yield f"data: {chunk}\n\n"

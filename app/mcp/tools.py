@@ -23,6 +23,7 @@ from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 # Global counter for tracking tool execution order and implementing progressive delays
 _tool_execution_counter = 0
 _tool_execution_lock = asyncio.Lock()
+_conversation_tool_states = {}  # Track state per conversation
 # Global timeout tracking for consecutive timeouts
 _consecutive_timeouts = {}
 _timeout_lock = asyncio.Lock()
@@ -32,17 +33,32 @@ _timeout_lock = asyncio.Lock()
 BASE_DELAY_SECONDS = int(os.environ.get("MCP_TOOL_DELAY_SECONDS", "5"))
 
 # Maximum number of sequential MCP commands per request cycle
-MAX_SEQUENTIAL_TOOLS = int(os.environ.get("MCP_MAX_SEQUENTIAL_TOOLS", "10"))
+MAX_SEQUENTIAL_TOOLS = int(os.environ.get("MCP_MAX_SEQUENTIAL_TOOLS", "20"))  # Increase default from 10 to 20
 
 # Maximum size for tool output (in characters)
 MAX_TOOL_OUTPUT_SIZE = int(os.environ.get("MCP_MAX_TOOL_OUTPUT_SIZE", "10000"))
 
+def _get_conversation_id() -> str:
+    """Get current conversation ID from global state."""
+    try:
+        import app.utils.custom_bedrock as custom_bedrock_module
+        return getattr(custom_bedrock_module, '_current_conversation_id', 'default')
+    except:
+        return 'default'
+
 async def _reset_counter_async():
     """Reset the tool execution counter asynchronously."""
     global _tool_execution_counter
+    conversation_id = _get_conversation_id()
     async with _tool_execution_lock:
         _tool_execution_counter = 0
         _consecutive_timeouts.clear()  # Reset timeout tracking on new request cycle
+        # Reset conversation-specific state
+        if conversation_id in _conversation_tool_states:
+            _conversation_tool_states[conversation_id] = {
+                'failed_tools': set(),
+                'last_reset': time.time()
+            }
         logger.info("🔄 MCP Tool counter reset for new request cycle")
 
 def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
@@ -56,6 +72,8 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     Returns:
         Dict with tool_name and arguments, or None if no valid tool call found
     """
+    logger.error(f"🚨 PARSE_TOOL_CALL: Attempting to parse content length={len(content)}")
+    logger.error(f"🚨 PARSE_TOOL_CALL: Content preview: {content[:200]}...")
     import json
     
     logger.debug(f"🔍 PARSE: Parsing tool call from content: {content[:200]}...")
@@ -475,6 +493,7 @@ class MCPTool(BaseTool):
         async with _tool_execution_lock:
             # Check if we've hit the sequential tool limit
             if _tool_execution_counter >= MAX_SEQUENTIAL_TOOLS:
+                logger.warning(f"🚫 TOOL LIMIT: Hit sequential limit of {MAX_SEQUENTIAL_TOOLS} tools, blocking '{self.mcp_tool_name}' (counter={_tool_execution_counter})")
                 return f"⚠️ **Tool Execution Limit Reached**: Maximum of {MAX_SEQUENTIAL_TOOLS} sequential tools per request cycle. Tool '{self.mcp_tool_name}' was not executed to prevent system overload."
             
             current_execution_order = _tool_execution_counter

@@ -67,6 +67,7 @@ class MCPClient:
         self.resources: List[MCPResource] = []
         self.tools: List[MCPTool] = []
         self.prompts: List[MCPPrompt] = []
+        self._last_successful_call = time.time()
         
     async def connect(self) -> bool:
         """
@@ -174,6 +175,9 @@ class MCPClient:
                 self.capabilities = init_result.get("capabilities", {})
                 self.is_connected = True
                 
+                # Initialize successful call timestamp on connection
+                self._last_successful_call = time.time()
+                
                 # Send initialized notification
                 await self._send_notification("notifications/initialized")
                 
@@ -217,12 +221,44 @@ class MCPClient:
                 self.process = None
                 self.is_connected = False
     
+    def _is_process_healthy(self) -> bool:
+        """Check if the MCP server process is still healthy."""
+        if not self.process:
+            return False
+        
+        # Check if process is still running
+        if self.process.poll() is not None:
+            logger.warning(f"MCP server process has terminated with code: {self.process.returncode}")
+            self.is_connected = False
+            return False
+        
+        # Only check call timeout if we've actually made calls
+        # Skip the check if _last_successful_call is 0 (never initialized) or very recent connection
+        if (self._last_successful_call > 0 and 
+            time.time() - self._last_successful_call > 300 and
+            time.time() - self._last_successful_call > 60):  # Give at least 1 minute grace period
+            
+            logger.warning("MCP server hasn't responded successfully in 5 minutes, marking as unhealthy")
+            self.is_connected = False
+            return False
+            
+        return True
+    
     async def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None, _retry_count: int = 0) -> Optional[Dict[str, Any]]:
         """Send a JSON-RPC request to the MCP server."""
         max_retries = 3
         
         if not self.process or not self.process.stdin:
             return None
+            
+        # Check process health before sending request
+        if not self._is_process_healthy():
+            logger.warning("Process unhealthy, attempting reconnection")
+            if await self.connect():
+                logger.info("Reconnection successful, retrying request")
+            else:
+                logger.error("Reconnection failed")
+                return None
             
         self.request_id += 1
         request = {
@@ -291,6 +327,8 @@ class MCPClient:
                     "code": error_code
                 }
                 
+            # Update successful call timestamp
+            self._last_successful_call = time.time()
             return response.get("result")
             
         except Exception as e:
