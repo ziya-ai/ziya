@@ -134,14 +134,25 @@ class DirectStreamingAgent:
                 
                 logger.info(f"[DIRECT_STREAMING] Starting Bedrock stream with {len(openai_messages)} messages")
                 
+                # DEBUGGING: Track streaming metrics
                 chunk_count = 0
+                tool_results_sent = 0
+                largest_chunk = 0
                 async for chunk in self.executor.stream_with_tools(openai_messages, tools):
                     chunk_count += 1
+                    chunk_size = len(str(chunk))
+                    largest_chunk = max(largest_chunk, chunk_size)
+                    
+                    if chunk.get('type') == 'tool_execution':
+                        tool_results_sent += 1
+                        logger.info(f"🔍 STREAMING_TOOL_RESULT: #{tool_results_sent}, tool={chunk.get('tool_name')}, size={chunk_size}")
+                    
                     if chunk_count <= 3:
                         logger.debug(f"DIRECT_STREAMING: Got Bedrock chunk {chunk_count}: {chunk.get('type', 'unknown')}")
                     yield chunk
             
                 logger.debug(f"DIRECT_STREAMING: Finished Bedrock streaming, total chunks: {chunk_count}")
+                logger.info(f"🔍 STREAMING_SUMMARY: total_chunks={chunk_count}, tool_results_sent={tool_results_sent}, largest_chunk={largest_chunk}")
                 
             else:
                 # Use DirectGoogleModel for Google models
@@ -181,7 +192,21 @@ class DirectStreamingAgent:
             import traceback
             traceback.print_exc()
             logger.error(f"[DIRECT_STREAMING] Error: {str(e)}")
-            yield {'type': 'error', 'content': f"Direct streaming error: {str(e)}"}
+            
+            # Check if this is a throttling error
+            error_str = str(e)
+            if any(indicator in error_str for indicator in [
+                "ThrottlingException", "Too many requests", "Rate exceeded", 
+                "Throttling", "throttling", "TooManyRequestsException"
+            ]):
+                yield {
+                    'type': 'error',
+                    'error': 'throttling_error',
+                    'detail': 'Too many requests to AWS Bedrock. Please wait a moment before trying again.',
+                    'status_code': 429
+                }
+            else:
+                yield {'type': 'error', 'content': f"Direct streaming error: {str(e)}"}
 
 def get_shell_tool_schema() -> Dict[str, Any]:
     """Get shell tool schema for Bedrock"""

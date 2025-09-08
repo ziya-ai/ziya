@@ -182,8 +182,17 @@ class CustomBedrockClient:
             logger.info(f"🚀 EXTENDED_CONTEXT: Streaming retry completed successfully")
             return result
         except Exception as retry_error:
+            retry_error_str = str(retry_error)
             logger.error(f"🚀 EXTENDED_CONTEXT: Retry failed with error: {retry_error}")
-            raise retry_error
+            
+            # If it's still a validation error or connection error, convert to a user-friendly message
+            if ("Input is too long" in retry_error_str or 
+                "Connection was closed" in retry_error_str or
+                "ValidationException" in retry_error_str):
+                logger.error("Extended context retry failed - content may be too large even for extended context")
+                raise Exception("The selected content is too large even for extended context. Please reduce the number of files or select smaller files.")
+            else:
+                raise retry_error
     
     def _create_custom_invoke_streaming(self):
         """Create a custom implementation of invoke_model_with_response_stream."""
