@@ -48,6 +48,9 @@ def find_best_chunk_position(
     start_pos = max(0, expected_pos - search_radius) if expected_pos is not None else 0
     end_pos = min(len(file_lines), expected_pos + search_radius) if expected_pos is not None else len(file_lines)
     
+    # Track if we need to do a full file search as fallback
+    should_try_full_file_search = True
+    
     best_pos = expected_pos
     best_ratio = 0.0
     
@@ -233,7 +236,47 @@ def find_best_chunk_position(
         effective_threshold = confidence_threshold * 0.8
         logger.debug(f"Using lenient threshold {effective_threshold:.3f} for near-threshold match")
     
-    # Return None if confidence is too low
+    # Return None if confidence is too low, but first try full file search as fallback
+    if best_ratio < effective_threshold and should_try_full_file_search:
+        logger.warning(f"Local search failed (ratio={best_ratio:.3f}, threshold={effective_threshold:.3f}). Trying full file search as fallback.")
+        
+        # Search the entire file as fallback
+        full_file_best_pos = None
+        full_file_best_ratio = 0.0
+        
+        for pos in range(0, len(file_lines)):
+            # Skip positions we already checked in the local search
+            if start_pos <= pos < end_pos:
+                continue
+                
+            # Make sure we don't go out of bounds
+            if pos + len(chunk_lines) > len(file_lines):
+                continue
+            
+            # Get the slice of file_lines to compare
+            file_slice = file_lines[pos:pos + len(chunk_lines)]
+            
+            # Calculate enhanced similarity ratio
+            ratio = calculate_enhanced_similarity(chunk_lines, file_slice)
+            
+            # Update best match if this is better
+            if ratio > full_file_best_ratio:
+                full_file_best_ratio = ratio
+                full_file_best_pos = pos
+                logger.debug(f"Full file search: Found better match at position {pos} with enhanced ratio {ratio:.3f}")
+        
+        # If full file search found a better match, use it
+        if full_file_best_ratio > best_ratio:
+            best_ratio = full_file_best_ratio
+            best_pos = full_file_best_pos
+            logger.info(f"Full file search found better match at position {best_pos} with ratio {best_ratio:.3f}")
+            
+            # Re-evaluate with the new best ratio
+            if best_ratio >= effective_threshold:
+                logger.info(f"Full file search found acceptable match at position {best_pos} with ratio {best_ratio:.3f}")
+                return best_pos, best_ratio
+    
+    # Final check: return None if confidence is still too low
     if best_ratio < effective_threshold:
         logger.error(f"Best match has low confidence (ratio={best_ratio:.3f}, threshold={effective_threshold:.3f}) near {expected_pos}, skipping.")
         return None, best_ratio
