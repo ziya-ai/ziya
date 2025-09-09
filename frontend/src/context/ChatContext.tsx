@@ -142,6 +142,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setStreamingConversations(prev => {
             const next = new Set(prev);
             next.delete(id);
+            // Update global streaming state based on remaining conversations
+            const stillStreaming = next.size > 0;
+            setIsStreamingAny(stillStreaming);
+            // Only update isStreaming if this was the current conversation
+            if (id === currentConversationId) {
+                setIsStreaming(false);
+            }
             return next;
         });
 
@@ -151,15 +158,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return next;
         });
 
-        // Only set isStreamingAny to false if no conversations are streaming
-        setStreamingConversations(prev => {
-            setIsStreamingAny(prev.size > 1);
-            return prev;
-        });
-
         // Auto-reset processing state when streaming ends
         updateProcessingState(id, 'idle');
-    }, [streamingConversations]);
+    }, [streamingConversations, currentConversationId]);
 
     const updateProcessingState = useCallback((conversationId: string, state: ProcessingState) => {
         setProcessingStates(prev => {
@@ -788,6 +789,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setDynamicTitleLength,
         setStreamedContentMap,
         setReasoningContentMap,
+        // Group conversation-specific state to reduce re-renders
+        currentConversationState: {
+            currentMessages,
+            editingMessageIndex,
+            isLoadingConversation,
+            isStreaming: streamingConversations.has(currentConversationId),
+            hasStreamedContent: streamedContentMap.has(currentConversationId),
+        },
+        // Group global state
+        globalState: {
+            conversations,
+            folders,
+            isStreamingAny,
+        },
         getProcessingState,
         updateProcessingState,
         isStreaming,
@@ -827,6 +842,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setEditingMessageIndex,
     }), [
         streamedContentMap,
+        currentMessages,
+        editingMessageIndex,
         dynamicTitleLength,
         setDynamicTitleLength,
         setStreamedContentMap,

@@ -7,20 +7,43 @@ import { useTheme } from '../context/ThemeContext';
 import { ModelSettings } from './ModelConfigModal';
 import { useChatContext } from "../context/ChatContext";
 
+// Global request deduplication cache
+const activeRequests = new Map<string, Promise<any>>();
+
 const getTokenCount = async (text: string): Promise<number> => {
+    // Create a cache key based on the text content
+    const cacheKey = `token-count-${text.length}-${text.substring(0, 100)}`;
+    
+    // If there's already an active request for this text, return the same promise
+    if (activeRequests.has(cacheKey)) {
+        console.debug('Reusing existing token count request');
+        return activeRequests.get(cacheKey);
+    }
+    
     try {
-        const response = await fetch('/api/token-count', {
+        const requestPromise = fetch('/api/token-count', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text }),
+        }).then(async (response) => {
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Token count request failed');
+            }
+            const data = await response.json();
+            return data.token_count;
         });
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.detail || 'Token count request failed');
-        }
-        const data = await response.json();
-        return data.token_count;
+        
+        // Cache the promise
+        activeRequests.set(cacheKey, requestPromise);
+        
+        // Clean up cache when request completes
+        requestPromise.finally(() => activeRequests.delete(cacheKey));
+        
+        return requestPromise;
     } catch (error) {
+        // Clean up cache on error
+        activeRequests.delete(cacheKey);
         message.error({
             content: error instanceof Error ? error.message : 'An unknown error occurred',
             duration: 5
@@ -234,6 +257,7 @@ export const TokenCountDisplay = memo(() => {
     // One-time fetch of model capabilities
     useEffect(() => {
         // Use a ref to track if this component is mounted
+        const abortController = new AbortController();
         const isMounted = { current: true };
 
         const fetchModelCapabilities = async () => {
@@ -241,7 +265,10 @@ export const TokenCountDisplay = memo(() => {
             fetchAttemptedRef.current = true;
 
             try {
-                const response = await fetch('/api/current-model');
+                const response = await fetch('/api/current-model', {
+                    signal: abortController.signal
+                });
+                
                 if (!response.ok) {
                     throw new Error('Failed to fetch current model settings');
                 }
@@ -262,6 +289,10 @@ export const TokenCountDisplay = memo(() => {
 
                 console.debug('Model limits updated:', { capabilities, settings });
             } catch (error) {
+                if (error instanceof Error && error.name === 'AbortError') {
+                    console.debug('Model capabilities fetch aborted');
+                    return;
+                }
                 console.error('Failed to load model capabilities:', error);
             }
         };
@@ -272,6 +303,7 @@ export const TokenCountDisplay = memo(() => {
         // Cleanup function to prevent state updates after unmount
         return () => {
             isMounted.current = false;
+            abortController.abort();
         };
     }, []);
 
