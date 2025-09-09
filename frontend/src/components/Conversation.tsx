@@ -8,6 +8,7 @@ import { sendPayload } from "../apis/chatApi";
 import ModelChangeNotification from './ModelChangeNotification';
 import { convertKeysToStrings } from "../utils/types";
 import { useQuestionContext } from '../context/QuestionContext';
+import { useFolderContext } from '../context/FolderContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 
 // Lazy load the MarkdownRenderer
@@ -37,10 +38,20 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         toggleMessageMute,
     } = useChatContext();
 
-    // Get checked keys from chat context instead of blocking on folder context
-    const checkedKeys: string[] = [];
+    const { checkedKeys } = useFolderContext();
     const { setQuestion } = useQuestionContext();
     const visibilityRef = useRef<boolean>(true);
+    // Memoize conversation-specific streaming state to prevent unnecessary re-renders
+    const conversationStreamingState = useMemo(() => ({
+        isCurrentlyStreaming: streamingConversations.has(currentConversationId),
+        hasStreamedContent: streamedContentMap.has(currentConversationId) && 
+                           streamedContentMap.get(currentConversationId) !== '',
+        streamedContent: streamedContentMap.get(currentConversationId) || ''
+    }), [streamingConversations, streamedContentMap, currentConversationId]);
+    
+    // Use memoized state instead of direct context access
+    const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
+    
     // Sort messages to maintain order
     const displayMessages = isTopToBottom ? currentMessages : [...currentMessages].reverse();
 
@@ -149,8 +160,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         const nextIndex = index + 1;
         const nextMessage = nextIndex < currentMessages.length ? currentMessages[nextIndex] : null;
         const hasNextMessage = nextIndex < currentMessages.length;
-        const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
-        const hasStreamingContent = conversationHasStreamedContent(currentConversationId);
 
         // Show retry if this is a human message and either:
         // 1. It's the last message, or
@@ -158,7 +167,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         // But don't show if we're currently streaming or have streaming content for this conversation
         return message?.role === 'human' &&
             !isCurrentlyStreaming &&
-            !hasStreamingContent &&
+            !hasStreamedContent &&
             (isLastMessage ||
                 (hasNextMessage && nextMessage?.role !== 'assistant'));
     };
@@ -256,7 +265,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         if (!message || message.role !== 'human') return null;
 
         // Don't show resubmit button if we're currently streaming
-        const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
         if (isCurrentlyStreaming) return null;
 
         return (
@@ -365,17 +373,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                 {displayMessages.map((msg, index) => {
                     // Convert display index to actual index for bottom-up mode
                     const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
-                    const nextActualIndex = actualIndex + 1;
-                    const hasNextMessage = nextActualIndex < currentMessages.length;
-                    const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
-                    const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
-                    const hasStreamingContent = conversationHasStreamedContent(currentConversationId);
+        const nextActualIndex = actualIndex + 1;
+        const hasNextMessage = nextActualIndex < currentMessages.length;
+        const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
 
-                    const needsResponse = msg.role === 'human' &&
-                        !isCurrentlyStreaming &&
-                        !hasStreamingContent &&
-                        (actualIndex === currentMessages.length - 1 ||
-                            (hasNextMessage && nextMessage?.role !== 'assistant'));
+        const needsResponse = msg.role === 'human' &&
+            !isCurrentlyStreaming &&
+            !hasStreamedContent &&
+            (actualIndex === currentMessages.length - 1 ||
+                (hasNextMessage && nextMessage?.role !== 'assistant'));
 
                     // Create a unique key for system messages to prevent duplicate logging
                     const systemMessageKey = msg.role === 'system' && msg.modelChange ?
@@ -470,6 +476,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
             </div>
         </div>
     );
+}, (prevProps, nextProps) => {
+    // Custom comparison to prevent re-renders on unrelated changes
+    return prevProps.enableCodeApply === nextProps.enableCodeApply;
 });
+
+// Set display name for debugging
+Conversation.displayName = 'Conversation';
 
 export default Conversation;

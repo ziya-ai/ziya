@@ -68,6 +68,7 @@ class MCPClient:
         self.tools: List[MCPTool] = []
         self.prompts: List[MCPPrompt] = []
         self._last_successful_call = time.time()
+        self._last_reconnect_attempt = 0  # Rate limit reconnections
         
     async def connect(self) -> bool:
         """
@@ -232,16 +233,8 @@ class MCPClient:
             self.is_connected = False
             return False
         
-        # Only check call timeout if we've actually made calls
-        # Skip the check if _last_successful_call is 0 (never initialized) or very recent connection
-        if (self._last_successful_call > 0 and 
-            time.time() - self._last_successful_call > 300 and
-            time.time() - self._last_successful_call > 60):  # Give at least 1 minute grace period
-            
-            logger.warning("MCP server hasn't responded successfully in 5 minutes, marking as unhealthy")
-            self.is_connected = False
-            return False
-            
+        # Only check if process is actually running, not based on call timeouts
+        # A server shouldn't be marked unhealthy just because it hasn't been used recently
         return True
     
     async def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None, _retry_count: int = 0) -> Optional[Dict[str, Any]]:
@@ -253,7 +246,14 @@ class MCPClient:
             
         # Check process health before sending request
         if not self._is_process_healthy():
+            # Rate limit reconnection attempts to prevent runaway processes
+            now = time.time()
+            if now - self._last_reconnect_attempt < 30:  # Wait 30 seconds between attempts
+                logger.warning("Process unhealthy, but reconnection rate limited")
+                return None
+                
             logger.warning("Process unhealthy, attempting reconnection")
+            self._last_reconnect_attempt = now
             if await self.connect():
                 logger.info("Reconnection successful, retrying request")
             else:
