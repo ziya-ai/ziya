@@ -86,6 +86,15 @@ export const MUIFileExplorer = () => {
   // Track if we have any data loaded (either cached or fresh)
   const [hasLoadedData, setHasLoadedData] = useState(false);
 
+  // CRITICAL FIX: Ensure component initializes immediately when folder data is available
+  // This prevents the issue where users starting on chat history have no file context
+  useEffect(() => {
+    if (folders && Object.keys(folders).length > 0 && !hasLoadedData) {
+      setHasLoadedData(true);
+      setIsInitialLoad(false);
+    }
+  }, [folders, hasLoadedData]);
+
   // Force recalculation when accurate token counts change
   // Helper function to determine if a node has children
   const nodeHasChildren = (node: any): boolean => {

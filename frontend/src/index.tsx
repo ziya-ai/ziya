@@ -30,7 +30,8 @@ const root = ReactDOM.createRoot(
     document.getElementById('root') as HTMLElement
 );
 root.render(
-    <React.StrictMode>
+    // StrictMode temporarily disabled to eliminate duplicate API calls in development
+    // <React.StrictMode>
         <ThemeProvider>
             <ChatProvider>
                 <FolderProvider>
@@ -48,5 +49,5 @@ root.render(
                 </FolderProvider>
             </ChatProvider>
         </ThemeProvider>
-    </React.StrictMode>
+    // </React.StrictMode>
 );

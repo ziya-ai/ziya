@@ -7,6 +7,7 @@ import { useFolderContext } from "../context/FolderContext";
 import { Button, Input, message } from 'antd';
 import { SendOutlined } from "@ant-design/icons";
 import { useQuestionContext } from '../context/QuestionContext';
+import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 
 const { TextArea } = Input;
 
@@ -40,6 +41,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     const textareaRef = useRef<any>(null);
     const inputChangeTimeoutRef = useRef<NodeJS.Timeout>();
     const [isProcessing, setIsProcessing] = useState(false);
+    const [throttlingError, setThrottlingError] = useState<any>(null);
 
     const { question, setQuestion } = useQuestionContext();
 
@@ -82,6 +84,19 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             if (inputChangeTimeoutRef.current) {
                 clearTimeout(inputChangeTimeoutRef.current);
             }
+        };
+    }, []);
+
+    // Listen for throttling errors from chatApi
+    useEffect(() => {
+        const handleThrottlingError = (event: CustomEvent) => {
+            console.log('Throttling error received:', event.detail);
+            setThrottlingError(event.detail);
+        };
+        
+        document.addEventListener('throttlingError', handleThrottlingError as EventListener);
+        return () => {
+            document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
         };
     }, []);
 
@@ -233,6 +248,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
     return (
         <div className={`input-container ${empty ? 'empty-state' : ''} ${isProcessing || streamingConversations.has(currentConversationId) ? 'sending' : ''}`}>
+            {/* Display throttling error */}
+            {throttlingError && (
+                <ThrottlingErrorDisplay
+                    error={throttlingError}
+                    onDismiss={() => setThrottlingError(null)}
+                />
+            )}
+            
             <TextArea
                 ref={textareaRef}
                 value={question}

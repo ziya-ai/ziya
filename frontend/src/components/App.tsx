@@ -91,6 +91,7 @@ const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
 export const App: React.FC = () => {
     const { streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap } = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
+    const [astEnabled, setAstEnabled] = useState(false);
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(() => {
         const saved = localStorage.getItem(PANEL_COLLAPSED_KEY);
         return saved ? JSON.parse(saved) : false;
@@ -143,6 +144,23 @@ export const App: React.FC = () => {
         };
         checkMCPStatus();
     }, []);
+
+    // Check AST status on mount
+    useEffect(() => {
+        const checkASTStatus = async () => {
+            try {
+                const response = await fetch('/api/ast/status');
+                if (response.ok) {
+                    const data = await response.json();
+                    setAstEnabled(data.enabled === true);
+                }
+            } catch (error) {
+                setAstEnabled(false);
+            }
+        };
+        checkASTStatus();
+    }, []);
+
     // Reduce logging frequency to improve performance
     // console.log('Current mcpEnabled state:', mcpEnabled);
     // Add scroll event listener to detect manual scrolling
@@ -179,27 +197,27 @@ export const App: React.FC = () => {
             message.error('Failed to create new chat');
             console.error('Error creating new chat:', error);
         }
-  };
+    };
 
-  const handlePanelResize = (newWidth: number) => {
-    const minWidth = 200;
-    const maxWidth = Math.min(800, window.innerWidth - 350); // Leave at least 350px for chat
-    const constrainedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
+    const handlePanelResize = (newWidth: number) => {
+        const minWidth = 200;
+        const maxWidth = Math.min(800, window.innerWidth - 350); // Leave at least 350px for chat
+        const constrainedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
 
-    // Only update if width actually changed significantly (avoid micro-updates)
-    if (Math.abs(constrainedWidth - panelWidth) > 2) {
-      setPanelWidth(getValidPanelWidth(constrainedWidth));
-      localStorage.setItem(PANEL_WIDTH_KEY, constrainedWidth.toString());
+        // Only update if width actually changed significantly (avoid micro-updates)
+        if (Math.abs(constrainedWidth - panelWidth) > 2) {
+            setPanelWidth(getValidPanelWidth(constrainedWidth));
+            localStorage.setItem(PANEL_WIDTH_KEY, constrainedWidth.toString());
 
-      // Update CSS variable immediately
-      document.documentElement.style.setProperty('--folder-panel-width', `${constrainedWidth}px`);
-      
-      // Remove the forced window resize event - it's not needed and causes performance issues
-      // The CSS variable update is sufficient for layout changes
-    }
-  };
+            // Update CSS variable immediately
+            document.documentElement.style.setProperty('--folder-panel-width', `${constrainedWidth}px`);
 
-  // Sync panelWidth state with CSS variable
+            // Remove the forced window resize event - it's not needed and causes performance issues
+            // The CSS variable update is sufficient for layout changes
+        }
+    };
+
+    // Sync panelWidth state with CSS variable
     useEffect(() => {
         document.documentElement.style.setProperty('--folder-panel-width', `${panelWidth}px`);
     }, [panelWidth]);
@@ -268,7 +286,7 @@ export const App: React.FC = () => {
             const newState = !isPanelCollapsed;
             setIsPanelCollapsed(newState);
             localStorage.setItem(PANEL_COLLAPSED_KEY, JSON.stringify(newState));
-            
+
             // Update CSS variable to match panel state
             const newWidth = newState ? 0 : panelWidth;
             document.documentElement.style.setProperty('--folder-panel-width', `${newWidth}px`);
@@ -452,9 +470,11 @@ export const App: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                    <Suspense fallback={null}>
-                        <AstStatusIndicator />
-                    </Suspense>
+                    {astEnabled && (
+                        <Suspense fallback={null}>
+                            <AstStatusIndicator />
+                        </Suspense>
+                    )}
 
                     <Suspense fallback={null}>
                         {mcpEnabled && (
@@ -473,6 +493,6 @@ export const App: React.FC = () => {
 
                 </ConfigProvider>
             </ProfilerWrapper>
-        </ExtensionErrorBoundary>
+        </ExtensionErrorBoundary >
     );
 };
