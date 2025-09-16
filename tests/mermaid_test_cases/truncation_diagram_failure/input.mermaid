@@ -1,0 +1,14 @@
+graph TD
+    A[Your Request] --> B{My "Brain" (Gemini LLM)};
+    C[System Prompt] --> B;
+    B --> D[My Full, Correct Response];
+    D --> E{Response Delivery System};
+    E -- X The truncation happened here! --> F[Truncated Response Sent to You];
+
+    subgraph "What the System Prompt Controls"
+        B
+    end
+
+    subgraph "What Caused the Truncation (External System)"
+        E
+    end

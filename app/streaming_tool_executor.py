@@ -154,7 +154,6 @@ class StreamingToolExecutor:
 
         current_messages = messages.copy()
         max_rounds = 100  # Support hundreds of tool calls
-        intercepted_tools = set()  # Track intercepted markdown tools to avoid duplicates
         
         for round_num in range(max_rounds):
             logger.debug(f"Starting tool round {round_num + 1}")
@@ -285,10 +284,8 @@ class StreamingToolExecutor:
                                 delta = event['contentBlockDelta']['delta']
                                 if 'text' in delta and delta['text']:
                                     text = delta['text']
-                                    # Filter out hallucinated tool responses
-                                    if not (text.strip().startswith('Human:') and 'Tool' in text and 'returned:' in text):
-                                        round_text += text
-                                        yield {'type': 'text', 'content': text}
+                                    round_text += text
+                                    yield {'type': 'text', 'content': text}
                                 elif 'reasoningContent' in delta and delta['reasoningContent'].get('text'):
                                     # Handle DeepSeek R1 reasoning content as thinking type
                                     reasoning_text = delta['reasoningContent']['text']
@@ -418,10 +415,8 @@ class StreamingToolExecutor:
                                 # Handle content
                                 if message.get('content'):
                                     text = message['content']
-                                    # Filter out hallucinated tool responses
-                                    if not (text.strip().startswith('Human:') and 'Tool' in text and 'returned:' in text):
-                                        round_text += text
-                                        yield {'type': 'text', 'content': text}
+                                    round_text += text
+                                    yield {'type': 'text', 'content': text}
                                 # Handle reasoning content (Deepseek R1 specific)
                                 elif message.get('reasoning_content'):
                                     text = message['reasoning_content']
@@ -459,39 +454,15 @@ class StreamingToolExecutor:
                                 text = delta.get('text', '')
                                 round_text += text
                                 
-                                # Check for complete markdown tool calls and execute them immediately
-                                if '```tool:' in round_text and round_text.count('```') >= 2:
+                                # Check for complete markdown tool calls in the accumulated text
+                                if '```tool:' in round_text and '```' in round_text:
                                     import re
+                                    # Look for complete markdown tool calls
                                     complete_pattern = r'```tool:(\w+)\s*\n(.*?)\n```'
-                                    matches = re.findall(complete_pattern, round_text, re.DOTALL)
-                                    
-                                    for tool_name, command in matches:
-                                        tool_key = f"{tool_name}:{command[:50]}"
-                                        if tool_key not in intercepted_tools:
-                                            intercepted_tools.add(tool_key)
-                                            logger.info(f"🔍 EXECUTING_INLINE_TOOL: {tool_name}")
-                                            
-                                            # Execute immediately
-                                            if command.startswith('$ '):
-                                                command = command[2:]
-                                            
-                                            if tool_name == 'mcp_run_shell_command':
-                                                result = await self._execute_mcp_tool(tool_name, {'command': command})
-                                            else:
-                                                result = await self._execute_mcp_tool(tool_name, {'input': command})
-                                            
-                                            # Yield tool result immediately
-                                            tool_result = {
-                                                'type': 'tool_execution',
-                                                'tool_id': f'inline_{tool_name}_{len(intercepted_tools)}',
-                                                'tool_name': tool_name,
-                                                'result': result
-                                            }
-                                            has_tool_calls = True
-                                            yield tool_result
-                                            
-                                            # Don't yield the markdown text
-                                            continue
+                                    if re.search(complete_pattern, round_text, re.DOTALL):
+                                        logger.info("🔍 INTERCEPTING_MARKDOWN_TOOL: Found complete markdown tool call during streaming")
+                                        # Don't yield this text, execute the tool instead
+                                        continue
                                 
                                 yield {'type': 'text', 'content': text}
                     

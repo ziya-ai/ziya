@@ -1,0 +1,14 @@
+diff --git a/frontend/src/components/SendChatContainer.tsx b/frontend/src/components/SendChatContainer.tsx
+--- a/frontend/src/components/SendChatContainer.tsx
++++ b/frontend/src/components/SendChatContainer.tsx
+@@ -24,7 +24,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixe
+         addStreamingConversation,
+         removeStreamingConversation,
+         updateProcessingState,
+-        setUserHasScrolled
++        setUserHasScrolled,
++        getProcessingState
+     } = useChatContext();
+ 
+     const { checkedKeys } = useFolderContext();
+ 
