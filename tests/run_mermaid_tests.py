@@ -151,88 +151,22 @@ class MermaidRenderingTest(unittest.TestCase):
     
     def _preprocess_with_enhancer(self, definition: str, diagram_type: str) -> str:
         """Preprocess definition using the actual MermaidEnhancer logic from the D3 plugin"""
-        # Import the actual enhancer logic from the frontend D3 plugin
-        enhancer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
-                                   'frontend', 'src', 'plugins', 'd3', 'mermaidEnhancer.ts')
+        # Use the dedicated enhancer test script
+        enhancer_script = os.path.join(os.path.dirname(__file__), 'mermaid_validator', 'enhancer_test.cjs')
         
-        if not os.path.exists(enhancer_path):
-            logger.warning("MermaidEnhancer not found, using basic preprocessing")
+        if not os.path.exists(enhancer_script):
+            logger.warning("Enhancer test script not found, using basic preprocessing")
             return self._basic_preprocess(definition, diagram_type)
-        
-        # Create a Node.js script that implements the key preprocessing logic from mermaidEnhancer.ts
-        script_path = os.path.join(self.temp_dir, 'enhancer.js')
-        
-        # Extract the core preprocessing logic from the TypeScript file
-        definition_escaped = definition.replace('`', '\\`').replace('\\', '\\\\')
-        script_content = f'''
-const definition = `{definition_escaped}`;
-const diagramType = '{diagram_type}';
-
-// Core preprocessing logic extracted from mermaidEnhancer.ts
-function preprocessDefinition(def, type) {{
-    let processed = def;
-    
-    // Replace bullet characters with hyphens (highest priority)
-    processed = processed.replace(/•/g, '-');
-    processed = processed.replace(/[\\u2022\\u2023\\u2043]/g, '-'); // Various bullet chars
-    processed = processed.replace(/[\\u2013\\u2014]/g, '-'); // En dash, Em dash
-    processed = processed.replace(/[\\u201C\\u201D]/g, '"'); // Smart quotes
-    processed = processed.replace(/[\\u2018\\u2019]/g, "'"); // Smart single quotes
-    
-    // Fix class diagram cardinality issues (highest priority)
-    if (type === 'classdiagram' || processed.trim().startsWith('classDiagram')) {{
-        processed = processed.replace(/\\|\\|--\\|\\|/g, '-->');
-        processed = processed.replace(/\\|\\|--o\\{{/g, '-->');
-        processed = processed.replace(/\\}}\\|--\\|\\|/g, '-->');
-        // Fix other invalid relationship patterns
-        processed = processed.replace(/\\|\\|-->/g, '-->');
-        processed = processed.replace(/--\\|\\|/g, '-->');
-        processed = processed.replace(/<\\|\\|--\\|\\|>/g, '<-->');
-    }}
-    
-    // Fix sequence diagram issues
-    if (type === 'sequencediagram' || processed.trim().startsWith('sequenceDiagram')) {{
-        // Remove invalid option statements from alt blocks
-        processed = processed.replace(/(alt[\\s\\S]*?)option\\s+[^\\n]*\\n/g, '$1');
-        // Fix bullet characters in sequence diagrams
-        processed = processed.replace(/•/g, '-');
-    }}
-    
-    // Quote link labels that contain special characters
-    processed = processed.replace(/(-->|---|-.->|--[xo]>)\\s*\\|([^|]*?)\\|/g, (match, arrow, label) => {{
-        const processedLabel = label.trim().replace(/"/g, '#quot;');
-        if (!processedLabel) return arrow;
-        return `${{arrow}}|"${{processedLabel}}"|`;
-    }});
-    
-    // Fix incomplete connections that end abruptly
-    const lines = processed.split('\\n');
-    const fixedLines = lines.map(line => {{
-        // Check for lines that end with arrows pointing nowhere
-        if (line.trim().match(/-->\\s*$|---\\s*$|\\|\\s*$/) && !line.includes('subgraph')) {{
-            return ''; // Remove incomplete connections
-        }}
-        return line;
-    }}).filter(line => line !== '');
-    
-    processed = fixedLines.join('\\n');
-    
-    return processed;
-}}
-
-console.log(preprocessDefinition(definition, diagramType));
-'''
-        
-        with open(script_path, 'w') as f:
-            f.write(script_content)
         
         try:
             result = subprocess.run([
-                'node', script_path
+                'node', enhancer_script,
+                '--definition', definition,
+                '--type', diagram_type
             ], capture_output=True, text=True, timeout=30)
             
             if result.returncode == 0:
-                return result.stdout.strip()
+                return result.stdout.rstrip('\n') + '\n'  # Normalize to exactly one trailing newline
             else:
                 logger.warning(f"Enhancer preprocessing failed: {result.stderr}")
                 return self._basic_preprocess(definition, diagram_type)
