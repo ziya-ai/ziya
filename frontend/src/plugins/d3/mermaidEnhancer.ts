@@ -321,6 +321,45 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
 
+  // Add a preprocessor to fix quotes and parentheses in node labels - HIGHEST PRIORITY
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 NODE-QUOTE-FIX: Processing node labels with quotes and parentheses');
+
+      // Fix node labels that contain quotes and parentheses that cause parsing errors
+      // Pattern: B{My "Brain" (Gemini LLM)} -> B{My Brain - Gemini LLM}
+      let result = definition.replace(/(\w+)(\{|\[)([^}\]]*?)(\}|\])/g, (match, nodeId, openBracket, content, closeBracket) => {
+        let processedContent = content;
+        
+        // Remove quotes and replace with safe alternatives
+        processedContent = processedContent.replace(/"/g, '');
+        
+        // Replace parentheses with dashes for better readability
+        processedContent = processedContent.replace(/\(/g, '- ').replace(/\)/g, '');
+        
+        // Clean up extra spaces
+        processedContent = processedContent.replace(/\s+/g, ' ').trim();
+        
+        console.log(`🔍 NODE-QUOTE-FIX: Fixed node ${nodeId}: "${content}" -> "${processedContent}"`);
+        return `${nodeId}${openBracket}${processedContent}${closeBracket}`;
+      });
+
+      // Also remove semicolons at the end of lines that cause parsing issues
+      result = result.replace(/;(\s*$)/gm, '$1');
+
+      console.log('🔍 NODE-QUOTE-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'node-quote-parentheses-fix',
+    priority: 600, // Very high priority to run before other fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
   // CRITICAL: Fix sankey diagram format - HIGHEST PRIORITY  
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
