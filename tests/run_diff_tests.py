@@ -785,6 +785,10 @@ class DiffRegressionTest(unittest.TestCase):
                 self.assertTrue(len(result_dict['details']['already_applied']) > 0, 
                                f"No hunks reported as already_applied for {case_name}")
         
+    def test_simple_comma_addition(self):
+        """Test adding comma in destructuring assignment should not trigger duplicate detection"""
+        self.run_diff_test('simple_comma_addition')
+
     def test_apply_state_consistency(self):
         """
         Test that the apply state reporting is consistent when applying the same diff twice.
@@ -842,6 +846,10 @@ class DiffRegressionTest(unittest.TestCase):
                                 f"Second application should have changes_written=False for {case_name}")
                 self.assertTrue(len(second_result['details']['already_applied']) > 0, 
                                f"Second application should report hunks as already_applied for {case_name}")
+
+    def test_google_direct_malformed_method(self):
+        """Test case for malformed diff application where method body is pasted without method declaration"""
+        self.run_diff_test('google_direct_malformed_method')
 
 
 class PrettyTestResult(unittest.TestResult):
