@@ -12,7 +12,7 @@ import { isDebugMode } from './envSetup';
  * 2. ZIYA_LOG_LEVEL is set to 'DEBUG'
  */
 export const isDebugLoggingEnabled = (): boolean => {
-  return isDebugMode();
+  return false; // Temporarily disabled to clean up console
 };
 
 /**

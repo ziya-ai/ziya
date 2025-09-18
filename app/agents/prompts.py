@@ -248,14 +248,11 @@ Do not include any explanatory text within the diff blocks. If you need to provi
 AVAILABLE TOOLS:
 You have access to the following tools:
 
-{tools}
-
-To use a tool, format your request as:
-{TOOL_SENTINEL_OPEN}<name>tool_name</name><arguments>{{"key": "value"}}</arguments>{TOOL_SENTINEL_CLOSE}
+MCP tools available
 
 The codebase is provided at the end of this prompt in a specific format. 
 The code that the user has given to you for context is in the format like below where first line has the File path and then the content follows.
-Each file starts with "File: <filepath>" followed by its content on subsequent lines. 
+Each file starts with "File: <filepath>" followed by its content on subsequent lines.
 
 <!-- TEMPLATE EXAMPLE START -->
 File: <filepath>

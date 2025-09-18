@@ -560,6 +560,7 @@ class RetryingChatBedrock(Runnable):
 
     async def astream(self, input: Any, config: Optional[Dict] = None, **kwargs):
         """Stream responses with retries and proper message formatting."""
+        logger.error(f"🔍 AGENT_ASTREAM: Starting astream with input type: {type(input)}")
         # Reset MCP tool execution counter for new request cycle
         try:
             from app.mcp.tools import _reset_counter_async
@@ -821,6 +822,7 @@ class RetryingChatBedrock(Runnable):
                     model_config["conversation_id"] = conversation_id
                     
                 async for chunk in self.model.astream(messages, model_config, **kwargs):
+                    logger.error(f"🔍 AGENT_MODEL_ASTREAM: Received chunk type: {type(chunk)}, content: {getattr(chunk, 'content', str(chunk))[:100]}")
                     # Check if this is an error chunk that should terminate this specific stream
                     # If we reach here, we've successfully started streaming
                     
@@ -955,8 +957,12 @@ class RetryingChatBedrock(Runnable):
                 error_str = str(e)
                 logger.warning(f"Bedrock client error: {error_str}")
                 
+                # Check for token-based throttling (different from rate throttling)
+                is_token_throttling = ("Too many tokens" in error_str and 
+                                     "ThrottlingException" in error_str)
+                
                 # Handle throttling with proper backoff
-                if "ThrottlingException" in error_str or "Too many requests" in error_str or "Too many tokens" in error_str:
+                if "ThrottlingException" in error_str or "Too many requests" in error_str:
                     if attempt < max_retries - 1:
                         # Throttling-specific backoff: 5s, 10s, 20s, 40s
                         if attempt == 0:
@@ -970,6 +976,24 @@ class RetryingChatBedrock(Runnable):
                         
                         logger.info(f"Throttling detected, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
                         await asyncio.sleep(retry_delay)
+                        continue
+                
+                # Handle token throttling with fresh connection retry
+                if is_token_throttling and attempt < max_retries - 1:
+                    logger.info(f"Token throttling detected, creating fresh connection after 20s wait (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(20)  # Wait 20 seconds as you suggested
+                    
+                    # Force a fresh connection by reinitializing the model
+                    try:
+                        from app.agents.models import ModelManager
+                        fresh_model = ModelManager.initialize_model(force_reinit=True)
+                        if fresh_model:
+                            self.model = fresh_model
+                            logger.info("Successfully created fresh model connection for token throttling retry")
+                            continue
+                    except Exception as reinit_error:
+                        logger.warning(f"Failed to reinitialize model for token throttling retry: {reinit_error}")
+                        # Continue with original model if reinit fails
                         continue
                 
                 # Check for validation errors first (these are more important than throttling)
@@ -1950,11 +1974,13 @@ def create_agent_chain(chat_model: BaseChatModel):
     mcp_context = {
          "mcp_tools_available": len(mcp_tools) > 0,
          "available_mcp_tools": [tool.name for tool in mcp_tools],
-         "model_id": model_id
+     "model_id": model_id,
+     "endpoint": endpoint
     }
-    
+    logger.info(f"AGENT_DEBUG: Passing mcp_context to get_extended_prompt: {mcp_context}")
+ 
     prompt_template = get_extended_prompt(
-        model_name=model_name,
+     model_name=model_name,
         model_family=model_family,
         endpoint=endpoint,
         context=mcp_context
