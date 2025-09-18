@@ -1,0 +1,12 @@
+--- a/frontend/src/context/FolderContext.tsx
++++ b/frontend/src/context/FolderContext.tsx
+@@ -428,7 +428,8 @@ export const FolderProvider: React.FC<{ children: React.ReactNode }> = ({ child
+       } else {
+         // Fallback for browsers without requestIdleCallback
+         setTimeout(() => {
+           fetchFolders();
+         }, 100);
++      }
++    };
+   );
+ };
