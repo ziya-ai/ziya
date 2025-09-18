@@ -37,6 +37,11 @@ def get_extended_prompt(model_name: Optional[str] = None,
         context = {}
     logger.error(f"🔍 EXECUTION_TRACE: get_extended_prompt() called for model: {model_name}")
     
+    logger.info("PROMPT_DEBUG: get_extended_prompt called with:")
+    logger.info(f"PROMPT_DEBUG:   model_name='{model_name}'")
+    logger.info(f"PROMPT_DEBUG:   model_family='{model_family}'")
+    logger.info(f"PROMPT_DEBUG:   endpoint='{endpoint}'")
+    logger.info(f"PROMPT_DEBUG:   context keys='{list(context.keys()) if context else 'None'}'")
     # Create cache key from parameters
     cache_data = {
         'model_name': model_name,

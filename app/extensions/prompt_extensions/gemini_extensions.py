@@ -13,7 +13,7 @@ from app.utils.logging_utils import logger
     target="gemini-pro",
     config={
         "enabled": True,
-        "priority": 5
+        "priority": 20
     }
 )
 def gemini_pro_family_extension(prompt: str, context: dict) -> str:
@@ -27,6 +27,7 @@ def gemini_pro_family_extension(prompt: str, context: dict) -> str:
     Returns:
         str: Modified prompt
     """
+    import re
     from app.utils.logging_utils import logger
     logger.info(f"GEMINI_EXTENSION: Called with prompt length: {len(prompt)}")
     logger.info(f"GEMINI_EXTENSION: Context: {context}")
@@ -34,31 +35,20 @@ def gemini_pro_family_extension(prompt: str, context: dict) -> str:
     if not context.get("config", {}).get("enabled", True):
         logger.info("GEMINI_EXTENSION: Extension disabled, returning original prompt")
         return prompt
+
+    # Aggressively remove any XML-based tool instructions to prevent conflicts with native function calling.
+    # This is a safeguard against other extensions incorrectly adding these instructions.
+    cleaned_prompt = re.sub(r'\n\n## MCP Tool Usage - CRITICAL INSTRUCTIONS.*', '', prompt, flags=re.DOTALL)
     
-    # For Google models, use a much simpler prompt to avoid safety filter issues
-    # Keep the template variables so they get replaced properly
-    simplified_prompt = """You are a helpful AI assistant that can analyze code and use tools when requested.
+    if len(cleaned_prompt) < len(prompt):
+        logger.info("GEMINI_EXTENSION: Removed conflicting XML tool instructions from the prompt.")
+    else:
+        logger.info("GEMINI_EXTENSION: No conflicting XML tool instructions found to remove.")
 
-TOOL USAGE:
-To use a tool, format your request as:
-<TOOL_SENTINEL><name>tool_name</name><arguments>{{"key": "value"}}</arguments></TOOL_SENTINEL>
-
-Available tools:
-- mcp_get_current_time: Get the current date and time
-- mcp_run_shell_command: Execute shell commands (pwd, ls, etc.)
-
-When the user asks you to use a tool, respond with the appropriate tool call format.
-
-{codebase}
-
-Remember to strictly adhere to the Git diff format guidelines when suggesting code changes.
-"""
-    
-    logger.info(f"GEMINI_EXTENSION: Returning simplified prompt with length: {len(simplified_prompt)}")
-    return simplified_prompt
+    return cleaned_prompt
 
 @prompt_extension(
-    name="gemini_flash_family_extension", 
+name="gemini_flash_family_extension",
     extension_type="family",
     target="gemini-flash",
     config={
