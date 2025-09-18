@@ -512,13 +512,16 @@ class StreamingToolExecutor:
                                 text = delta.get('text', '')
                                 round_text += text
                                 
-                                # Check for complete markdown tool calls in the accumulated text
-                                if '```tool:' in round_text and '```' in round_text:
+                                # Check if we're in the middle of a potential tool block
+                                if '```tool:' in round_text:
+                                    # Check for complete markdown tool calls in the accumulated text
                                     import re
-                                    # Look for complete markdown tool calls
                                     complete_pattern = r'```tool:(\w+)\s*\n(.*?)\n```'
                                     if re.search(complete_pattern, round_text, re.DOTALL):
                                         # Don't yield this text, execute the tool instead
+                                        continue
+                                    elif '```tool:' in text or round_text.endswith('```'):
+                                        # We're potentially in a tool block, don't yield partial content
                                         continue
                                 
                                 yield {'type': 'text', 'content': text}
