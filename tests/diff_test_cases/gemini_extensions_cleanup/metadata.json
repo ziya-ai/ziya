@@ -1,0 +1,7 @@
+{
+    "description": "Test case for cleaning up gemini extensions by removing gemini-specific instructions",
+    "file_type": "python",
+    "target_file": "gemini_extensions.py",
+    "expected_hunks": 1,
+    "complexity": "medium"
+}

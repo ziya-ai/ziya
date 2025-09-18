@@ -106,9 +106,6 @@ class MCPClient:
 
             # Resolve command paths
             resolved_command = []
-            # This flag tracks if we've found any script to potentially update working_dir
-            # based on the first script encountered.
-            initial_script_found_for_working_dir_update = False
 
             for part in command:
                 if part.endswith('.py') and not os.path.isabs(part):
@@ -120,9 +117,6 @@ class MCPClient:
                         potential_path = os.path.join(root, part)
                         if os.path.exists(potential_path):
                             current_part_resolved_path = potential_path
-                            if not initial_script_found_for_working_dir_update: # Set working_dir based on the first script found
-                                working_dir = root # This updates working_dir for Popen
-                                initial_script_found_for_working_dir_update = True
                             found_this_part_in_roots = True
                             logger.info(f"Found MCP server script '{part}' at: {current_part_resolved_path}")
                             break # Found the script for this part
