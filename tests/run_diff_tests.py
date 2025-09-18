@@ -247,6 +247,10 @@ class DiffRegressionTest(unittest.TestCase):
     def test_import_line_order(self):
         """Test inserting an import line between existing imports"""
         self.run_diff_test('import_line_order')
+
+    def test_folder_context_fix(self):
+        """Test applying a diff to fix missing closing braces in FolderContext.tsx"""
+        self.run_diff_test('folder_context_fix')
         
     def test_duplicate_state_declaration(self):
         """Test handling of duplicate state declarations in React components"""
