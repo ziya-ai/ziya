@@ -177,20 +177,19 @@ def extract_diff_changes(hunk: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     # First try to extract from old_block and new_block (preferred format)
     if 'old_block' in hunk and 'new_block' in hunk:
         for line in hunk.get('old_block', []):
-            if line.startswith('-'):
+            if line.startswith('-') and not line.startswith('--- '):
                 removed_lines.append(line[1:])
         for line in hunk.get('new_block', []):
-            if line.startswith('+'):
+            if line.startswith('+') and not line.startswith('+++ '):
                 added_lines.append(line[1:])
     # Fall back to lines if old_block/new_block not available
     elif 'lines' in hunk:
         for line in hunk.get('lines', []):
-            if line.startswith('-'):
+            if line.startswith('-') and not line.startswith('--- '):
                 removed_lines.append(line[1:])
-            elif line.startswith('+'):
+            elif line.startswith('+') and not line.startswith('+++ '):
                 added_lines.append(line[1:])
     
-    return removed_lines, added_lines
     return removed_lines, added_lines
 
 def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
@@ -324,6 +323,16 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     # This is more precise than checking individual lines scattered throughout
     if not added_lines:
         return True
+    
+    # CRITICAL FIX: For very common patterns like closing braces, be more conservative
+    # Don't mark as already applied if the added content consists only of common syntax elements
+    normalized_added = [normalize_line_for_comparison(line).strip() for line in added_lines]
+    
+    # Check if all added lines are just common syntax elements (braces, semicolons, etc.)
+    common_syntax_patterns = {'}', '};', '{', ')', '(', ']', '[', ',', ';'}
+    if all(line in common_syntax_patterns for line in normalized_added):
+        logger.debug("Added lines contain only common syntax elements, being conservative")
+        return False
     
     added_block = [normalize_line_for_comparison(line) for line in added_lines]
     
