@@ -84,9 +84,13 @@ class MCPClient:
                 logger.error(f"No command specified for MCP server: {self.server_config.get('name', 'unknown')}")
                 return False
             
-            # Use the current working directory where the program was started
-            # This is more intuitive for users - commands execute where they launched the program
-            working_dir = os.getcwd()
+            # Use the preserved user codebase directory instead of current working directory
+            # The current working directory may have changed during module imports
+            working_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            if not working_dir:
+                working_dir = os.getcwd()
+                logger.warning(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {working_dir}")
+            
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             project_root = os.path.dirname(app_dir)
             

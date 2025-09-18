@@ -34,7 +34,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         addStreamingConversation,
         removeStreamingConversation,
         updateProcessingState,
-        setUserHasScrolled
+        setUserHasScrolled,
+        getProcessingState
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();

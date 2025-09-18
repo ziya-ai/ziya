@@ -9,12 +9,14 @@ import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import ReasoningDisplay from './ReasoningDisplay';
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
-export const StreamedContent: React.FC = () => {
+export const StreamedContent: React.FC<{}> = () => {
     const [error, setError] = useState<string | null>(null);
     const [connectionLost, setConnectionLost] = useState<boolean>(false);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const contentRef = useRef<HTMLDivElement>(null);
     const isAutoScrollingRef = useRef<boolean>(false);
+    const [showThinkingIndicator, setShowThinkingIndicator] = useState<boolean>(false);
+    const lastContentUpdateRef = useRef<number>(Date.now());
     const [isPendingResponse, setIsPendingResponse] = useState<boolean>(false);
     const [hasShownContent, setHasShownContent] = useState<boolean>(false);
     const lastScrollPositionRef = useRef<number>(0);
@@ -39,6 +41,7 @@ export const StreamedContent: React.FC = () => {
     const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) ?? '', [streamedContentMap, currentConversationId]);
     const streamedContentRef = useRef<string>(streamedContent);
     const currentConversationRef = useRef<string>(currentConversationId);
+    const thinkingTimeoutRef = useRef<NodeJS.Timeout>();
 
     // Get processing state for current conversation
     const processingState = getProcessingState(currentConversationId);
@@ -46,6 +49,49 @@ export const StreamedContent: React.FC = () => {
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
         streamedContentMap.get(currentConversationId) !== '';
+
+    // Enhanced thinking indicator logic
+    useEffect(() => {
+        const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+
+        if (thinkingTimeoutRef.current) {
+            clearTimeout(thinkingTimeoutRef.current);
+            thinkingTimeoutRef.current = undefined;
+        }
+
+        if (isCurrentlyStreaming) {
+            lastContentUpdateRef.current = Date.now();
+            setShowThinkingIndicator(false);
+
+            thinkingTimeoutRef.current = setTimeout(() => {
+                const timeSinceLastUpdate = Date.now() - lastContentUpdateRef.current;
+                if (timeSinceLastUpdate >= 1000 && streamingConversations.has(currentConversationId)) {
+                    setShowThinkingIndicator(true);
+                }
+            }, 1000);
+        } else {
+            setShowThinkingIndicator(false);
+        }
+
+        return () => {
+            if (thinkingTimeoutRef.current) {
+                clearTimeout(thinkingTimeoutRef.current);
+            }
+        };
+    }, [streamedContent, currentConversationId, streamingConversations]);
+
+    // Reset thinking indicator when content updates
+    useEffect(() => {
+        if (streamedContent !== streamedContentRef.current) {
+            lastContentUpdateRef.current = Date.now();
+            setShowThinkingIndicator(false);
+
+            if (thinkingTimeoutRef.current) {
+                clearTimeout(thinkingTimeoutRef.current);
+            }
+        }
+        streamedContentRef.current = streamedContent;
+    }, [streamedContent]);
 
     // Function to detect processing state from content
     const detectProcessingState = useCallback((content: string): ProcessingState => {
@@ -325,7 +371,7 @@ export const StreamedContent: React.FC = () => {
     useEffect(() => {
         const handlePreservedContent = (event: CustomEvent) => {
             // Create a unique key for this event to prevent duplicates
-            const eventKey = `<span class="math-inline-span">MATH_INLINE:{event.detail.error_detail || 'unknown'}_</span>{Date.now()}`;
+            const eventKey = `${event.detail.error_detail || 'unknown'}_${event.detail.conversation_id || 'unknown'}_${event.detail.preservation_timestamp || Date.now()}`;
             if (processedPreservedEvents.current.has(eventKey)) {
                 console.log('Skipping duplicate preserved content event:', eventKey);
                 return;

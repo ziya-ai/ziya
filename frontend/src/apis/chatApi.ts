@@ -69,9 +69,35 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             // Check for direct error format
             if (parsed.error || parsed.detail) {
                 return {
-                    error: parsed.error || 'Unknown error',
-                    detail: parsed.detail || parsed.error || 'An error occurred',
+                    error: parsed.error || 'unknown_error',
+                    detail: parsed.detail || parsed.error || 'An unknown error occurred',
                     status_code: parsed.status_code
+                };
+            }
+
+            // Check for error content in JSON format (like the tool names error)
+            if (parsed.type === 'error' && parsed.content) {
+                // Check if it's a ValidationException
+                if (parsed.content.includes('ValidationException')) {
+                    if (parsed.content.includes('Input is too long')) {
+                        return {
+                            error: 'context_size_error',
+                            detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                            status_code: 413
+                        };
+                    } else {
+                        return {
+                            error: 'validation_error',
+                            detail: parsed.content,
+                            status_code: 400
+                        };
+                    }
+                }
+                // Handle other error types
+                return {
+                    error: 'unknown_error',
+                    detail: parsed.content,
+                    status_code: 500
                 };
             }
 
@@ -83,17 +109,27 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             // But only if it looks like an actual error message, not tool output
 
             // Check for validation errors - but only in error-formatted messages
-            if (dataContent.includes('ValidationException') && dataContent.includes('Input is too long')) {
+            if (dataContent.includes('ValidationException')) {
                 // Make sure this isn't part of tool execution output
                 if (!dataContent.includes('tool_execution') && 
                     !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
                     !dataContent.includes('```') && // Not in code block
                     dataContent.includes('error')) { // Must have error context
-                    return {
-                        error: 'context_size_error',
-                        detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
-                        status_code: 413
-                    };
+                    
+                    if (dataContent.includes('Input is too long')) {
+                        return {
+                            error: 'context_size_error',
+                            detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                            status_code: 413
+                        };
+                    } else {
+                        // Handle other ValidationExceptions with a generic message
+                        return {
+                            error: 'validation_error',
+                            detail: 'Model parameter error: ' + dataContent.replace(/^data:\s*/, '').trim(),
+                            status_code: 400
+                        };
+                    }
                 }
             }
 
@@ -128,6 +164,18 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
                 };
             }
 
+            // Catch-all for any other error-like content that wasn't handled above
+            if (dataContent.includes('Exception') && dataContent.includes('error') &&
+                !dataContent.includes('tool_execution') && 
+                !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
+                !dataContent.includes('```')) {
+                return {
+                    error: 'unknown_error',
+                    detail: dataContent.replace(/^data:\s*/, '').trim(),
+                    status_code: 500
+                };
+            }
+
             return null;
         }
     } catch (error) {
@@ -145,12 +193,21 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
         // Try to find JSON objects in the chunk
 
         // First check for validation errors in plain text
-        if (chunk.includes('ValidationException') && chunk.includes('Input is too long')) {
-            return {
-                error: 'context_size_error',
-                detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
-                status_code: 413
-            };
+        if (chunk.includes('ValidationException')) {
+            if (chunk.includes('Input is too long')) {
+                return {
+                    error: 'context_size_error',
+                    detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                    status_code: 413
+                };
+            } else {
+                // Handle other ValidationExceptions with a generic message
+                return {
+                    error: 'validation_error',
+                    detail: 'Model parameter error: ' + chunk.replace(/^data:\s*/, '').trim(),
+                    status_code: 400
+                };
+            }
         }
 
         const jsonMatches = chunk.match(/(\{.*?\})/g);
@@ -163,8 +220,8 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                 // Check for direct error properties
                 if (data.error || data.detail) {
                     return {
-                        error: data.error || 'Unknown error',
-                        detail: data.detail || data.error || 'An error occurred',
+                        error: data.error || 'unknown_error',
+                        detail: data.detail || data.error || 'An unknown error occurred',
                         status_code: data.status_code
                     };
                 }
@@ -176,8 +233,8 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                             // Check for error in value
                             if (op.value.error || op.value.detail) {
                                 return {
-                                    error: op.value.error || 'Unknown error',
-                                    detail: op.value.detail || op.value.error || 'An error occurred',
+                                    error: op.value.error || 'unknown_error',
+                                    detail: op.value.detail || op.value.error || 'An unknown error occurred',
                                     status_code: op.value.status_code
                                 };
                             }
@@ -187,9 +244,13 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                                 for (const msg of op.value.messages) {
                                     // Check for validation errors in message content
                                     if (msg.content && typeof msg.content === 'string' &&
-                                        msg.content.includes('ValidationException') &&
-                                        msg.content.includes('Input is too long')) {
-                                        return { error: 'context_size_error', detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.', status_code: 413 };
+                                        msg.content.includes('ValidationException')) {
+                                        if (msg.content.includes('Input is too long')) {
+                                            return { error: 'context_size_error', detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.', status_code: 413 };
+                                        } else {
+                                            // Handle other ValidationExceptions with a generic message
+                                            return { error: 'validation_error', detail: 'Model parameter error: ' + msg.content.replace(/^data:\s*/, '').trim(), status_code: 400 };
+                                        }
                                     }
 
                                     if (msg.content && typeof msg.content === 'string') {
@@ -208,6 +269,18 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
             } catch (e) {
                 // Not valid JSON, try next match
             }
+        }
+
+        // Catch-all for any Exception patterns that weren't handled above
+        if (chunk.includes('Exception') && 
+            !chunk.includes('tool_execution') && 
+            !chunk.includes('```') &&
+            chunk.includes('error')) {
+            return {
+                error: 'unknown_error',
+                detail: chunk.replace(/^data:\s*/, '').trim(),
+                status_code: 500
+            };
         }
 
         return null;
@@ -488,6 +561,9 @@ export const sendPayload = async (
                     try {
                         const jsonData = JSON.parse(data);
 
+                        // Debug: Log all JSON data types
+                        console.log('🔍 JSON_DATA_TYPE:', jsonData.type, 'Full data:', jsonData);
+
                         // Handle throttling status messages
                         if (jsonData.type === 'throttling_status') {
                             console.log('Throttling status:', jsonData.message);
@@ -592,8 +668,44 @@ if (jsonData.type === 'text' && jsonData.content) {
         next.set(conversationId, currentContent);
         return next;
     });
+} else if (jsonData.type === 'tool_start') {
+    // Handle tool start events - show that a tool is starting
+    console.log('🔧 TOOL_START received:', jsonData);
+    
+    // Normalize tool name - ensure single mcp_ prefix
+    let toolName = jsonData.tool_name;
+    if (!toolName.startsWith('mcp_')) {
+        toolName = `mcp_${toolName}`;
+    }
+    // Remove any double prefixes
+    toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
+
+    // Format input for display
+    let inputDisplay = '';
+    if (jsonData.input && Object.keys(jsonData.input).length > 0) {
+        if (jsonData.input.command) {
+            inputDisplay = jsonData.input.command;
+        } else if (jsonData.input.tool_input) {
+            inputDisplay = jsonData.input.tool_input;
+        } else {
+            inputDisplay = JSON.stringify(jsonData.input);
+        }
+    }
+
+    // Format as tool block that shows the tool is starting
+    const toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: ${inputDisplay}\n\`\`\`\n\n`;
+    
+    console.log('🔧 TOOL_START formatted:', toolStartDisplay);
+    currentContent += toolStartDisplay;
+    console.log('🔧 CURRENT_CONTENT after tool_start:', currentContent.slice(-200));
+    setStreamedContentMap((prev: Map<string, string>) => {
+        const next = new Map(prev);
+        next.set(conversationId, currentContent);
+        return next;
+    });
 } else if (jsonData.type === 'tool_execution') {
     // Handle structured tool execution using existing ToolBlock syntax
+    console.log('🔧 TOOL_EXECUTION received:', jsonData);
     const signedIndicator = jsonData.signed ? ' 🔒' : '';
 
     // Normalize tool name - ensure single mcp_ prefix
@@ -604,10 +716,35 @@ if (jsonData.type === 'text' && jsonData.content) {
     // Remove any double prefixes
     toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
 
-    // Format as tool block that the MarkdownRenderer will recognize and style properly
-    const toolDisplay = `\n\`\`\`tool:${toolName}${signedIndicator}\n${jsonData.result}\n\`\`\`\n\n`;
+    // Extract result - handle both string and object formats
+    let result = jsonData.result;
+    if (typeof result === 'string' && result.startsWith('{')) {
+        try {
+            const parsed = JSON.parse(result);
+            if (parsed.error && parsed.message) {
+                result = parsed.message;
+            }
+        } catch (e) {
+            // Keep original result if parsing fails
+        }
+    }
 
-    currentContent += toolDisplay;
+    // Format as tool block that the MarkdownRenderer will recognize and style properly
+    const toolDisplay = `\n\`\`\`tool:${toolName}${signedIndicator}\n${result}\n\`\`\`\n\n`;
+    
+    console.log('🔧 TOOL_DISPLAY formatted:', toolDisplay);
+    
+    // Replace the corresponding tool_start block if it exists
+    const toolStartPattern = new RegExp(`\\n\`\`\`tool:${toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n⏳ Running:.*?\\n\`\`\`\\n\\n`, 'g');
+    if (toolStartPattern.test(currentContent)) {
+        currentContent = currentContent.replace(toolStartPattern, toolDisplay);
+        console.log('🔧 TOOL_EXECUTION: Replaced tool_start block with result');
+    } else {
+        currentContent += toolDisplay;
+        console.log('🔧 TOOL_EXECUTION: Added new tool block (no matching tool_start found)');
+    }
+    
+    console.log('🔧 CURRENT_CONTENT after tool:', currentContent.slice(-200));
     setStreamedContentMap((prev: Map<string, string>) => {
         const next = new Map(prev);
         next.set(conversationId, currentContent);

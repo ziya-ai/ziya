@@ -225,26 +225,28 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
         old_content_exists_normalized = removed_content_normalized in file_content_normalized
         new_content_exists_normalized = added_content_normalized in file_content_normalized
         
-        # Malformed pattern 1: trying to add existing content while removing non-existent content (normalized)
-        # BUT: Be more lenient - only flag as malformed if this is clearly a duplication case
-        if new_content_exists_normalized and not old_content_exists_normalized:
-            # Additional check: if the new content is very short (like a single line change), 
-            # it might be a legitimate case where the change is already applied
-            if len(added_lines) <= 2 and len(removed_lines) <= 2:
-                return False  # Don't flag short changes as malformed
-            return True
-        
-        # Malformed pattern 2: both old and new content exist exactly (indicates duplication)
+        # Malformed pattern 1: both old and new content exist exactly (clear duplication)
         if old_content_exists_exact and new_content_exists_exact:
             return True
         
-        # Malformed pattern 3: both old and new content exist in normalized form, but not exactly
-        # This catches cases where content is duplicated but with slight variations
-        if (old_content_exists_normalized and new_content_exists_normalized and 
-            not (old_content_exists_exact and new_content_exists_exact)):
-            # Additional check: if the contents are very similar (whitespace-only changes), don't flag as malformed
-            if removed_content_exact.replace('\t', '    ') == added_content_exact.replace('\t', '    '):
-                return False  # This is likely a legitimate whitespace change
+        # Malformed pattern 2: both old and new content exist in normalized form (duplication with variations)
+        if old_content_exists_normalized and new_content_exists_normalized:
+            # Exception: if this is a whitespace-only change, don't flag as malformed
+            if removed_content_exact.replace('\t', '    ').replace(' ', '') == added_content_exact.replace('\t', '    ').replace(' ', ''):
+                return False  # This is a legitimate whitespace change
+            
+            # Exception: if the new content is a subset of the old content being removed, this is likely a legitimate simplification
+            # Check if all added lines are substrings of the removed content
+            if all(normalize_line_for_comparison(added_line) in removed_content_normalized for added_line in added_lines):
+                return False  # This is likely a legitimate simplification (e.g., "return a + b" -> "return a")
+            
+            return True
+        
+        # Malformed pattern 3: new content exists but old doesn't (trying to add existing content)
+        # Be more lenient for very short changes (≤2 lines)
+        if new_content_exists_normalized and not old_content_exists_normalized:
+            if len(added_lines) <= 2 and len(removed_lines) <= 2:
+                return False  # Don't flag short changes as malformed
             return True
     
     # 2. Pure removals: trying to remove content that doesn't exist

@@ -29,9 +29,14 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         
     Returns:
         str: Modified prompt with MCP guidelines
-    """
+     """
     logger.info("MCP_GUIDELINES: @prompt_extension decorator applied to mcp_usage_guidelines")
     logger.info("MCP_GUIDELINES: mcp_usage_guidelines function called")
+    import os
+    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    logger.info(f"MCP_DEBUG: Checking endpoint from environment: '{endpoint}'")
+    is_google_endpoint = endpoint == "google"
+ 
     if not context.get("config", {}).get("enabled", True):
         logger.info("MCP_GUIDELINES: Extension disabled by config, returning original prompt")
         return prompt
@@ -66,30 +71,14 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     if not available_tools:
         logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.")
         return prompt
-    
-    # Check if we're in direct streaming mode (no XML format needed)
-    import os
-    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'false').lower() == 'true'
-    
-    if use_direct_streaming:
-        mcp_guidelines = """
-
-## MCP Tool Usage - CRITICAL INSTRUCTIONS
-**EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**
-
-**Available Tools:**
-""" + _get_tool_descriptions_from_mcp(available_tools) + """
-
-**Usage Rules:**
-0. **Prefer local context and AST over tools when either can provide similar information**
-1. **Always use actual tool results** - Never fabricate output
-2. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
-3. **Time queries**: Always use tool rather than guessing current time
-4. **Error handling**: Show actual errors and try alternatives
-5. **Verification**: Use tools to verify system state rather than making assumptions
-6. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
-"""
+ 
+    # For Google models, native function calling is used. Do not add XML tool instructions.
+    if is_google_endpoint:
+        logger.info("MCP_GUIDELINES: Google model detected. Skipping XML tool instructions in prompt.")
+        return prompt
     else:
+        logger.info("MCP_DEBUG: Not a Google endpoint, adding XML tool instructions.")
+        # For other models (Bedrock, etc.), provide XML-based tool instructions
         mcp_guidelines = """
 
 ## MCP Tool Usage - CRITICAL INSTRUCTIONS
@@ -110,11 +99,11 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
 6. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
 """
 
-    logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}") # ADD THIS
-    logger.info(f"MCP_GUIDELINES: Appending guidelines. Available tools: {available_tools}") # ADD THIS
+    logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}")
+    logger.info(f"MCP_GUIDELINES: Appending guidelines. Available tools: {available_tools}")
     modified_prompt = prompt + mcp_guidelines
-    logger.info(f"MCP_GUIDELINES: Modified prompt length: {len(modified_prompt)}") # ADD THIS
-    logger.info(f"MCP_GUIDELINES: Last 500 chars of modified prompt: ...{modified_prompt[-500:]}") # ADD THIS
+    logger.info(f"MCP_GUIDELINES: Modified prompt length: {len(modified_prompt)}")
+    logger.info(f"MCP_GUIDELINES: Last 500 chars of modified prompt: ...{modified_prompt[-500:]}")
     return modified_prompt
 
 def _get_tool_description(tool_name: str) -> str:

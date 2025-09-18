@@ -123,6 +123,53 @@ class StreamingToolExecutor:
         except Exception as e:
             logger.debug(f"Error during MCP connection recovery: {e}")
     
+    def _convert_tool_schema(self, tool):
+        """Convert tool schema to JSON-serializable format"""
+        if isinstance(tool, dict):
+            # Already a dict, but check input_schema
+            result = tool.copy()
+            input_schema = result.get('input_schema')
+            if hasattr(input_schema, 'model_json_schema'):
+                # Pydantic class - convert to JSON schema
+                result['input_schema'] = input_schema.model_json_schema()
+            elif hasattr(input_schema, '__dict__') and not isinstance(input_schema, dict):
+                # Some other class object - try to convert
+                try:
+                    result['input_schema'] = input_schema.model_json_schema()
+                except:
+                    # Fallback to basic schema
+                    result['input_schema'] = {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"]
+                    }
+            return result
+        else:
+            # Tool object - extract properties
+            name = getattr(tool, 'name', 'unknown')
+            description = getattr(tool, 'description', 'No description')
+            input_schema = getattr(tool, 'input_schema', getattr(tool, 'inputSchema', {}))
+            
+            # Convert input_schema if it's a Pydantic class
+            if hasattr(input_schema, 'model_json_schema'):
+                input_schema = input_schema.model_json_schema()
+            elif hasattr(input_schema, '__dict__') and not isinstance(input_schema, dict):
+                # Some other class object
+                try:
+                    input_schema = input_schema.model_json_schema()
+                except:
+                    input_schema = {
+                        "type": "object", 
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"]
+                    }
+            
+            return {
+                'name': name,
+                'description': description,
+                'input_schema': input_schema
+            }
+
     async def stream_with_tools(self, messages: List[Dict[str, Any]], 
                                tools: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """
@@ -146,7 +193,7 @@ class StreamingToolExecutor:
             else:
                 tools = self._get_available_tools()
         else:
-            logger.debug(f"Using provided tools: {[t.get('name', 'unknown') for t in tools]}")
+            logger.debug(f"Using provided tools: {[getattr(t, 'name', t.get('name', 'unknown') if hasattr(t, 'get') else 'unknown') for t in tools]}")
             # Check if model supports tools and disable if needed
             if self.model_id and ('deepseek' in self.model_id.lower() or 'openai' in self.model_id.lower()):
                 print(f"🔧 DEBUG: Model {self.model_id} detected, disabling provided tools (uses LangChain path)")
@@ -212,13 +259,24 @@ class StreamingToolExecutor:
             
             # Only add tools if model supports them
             if model_supports_tools and tools:
+                # Convert tools to JSON-serializable format and deduplicate by name
+                converted_tools = [self._convert_tool_schema(tool) for tool in tools]
+                # Deduplicate tools by name (keep first occurrence)
+                seen_names = set()
+                unique_tools = []
+                for tool in converted_tools:
+                    tool_name = tool.get('name', 'unknown')
+                    if tool_name not in seen_names:
+                        seen_names.add(tool_name)
+                        unique_tools.append(tool)
+                
                 body.update({
-                    "tools": tools,
+                    "tools": unique_tools,
                     "tool_choice": {"type": "auto"}  # Force native tool calling
                 })
             
             # Debug: Print tools being sent to Bedrock
-            logger.debug(f"Sending {len(tools)} tools to Bedrock: {[t.get('name', 'unnamed') for t in tools]}")
+            logger.debug(f"Sending {len(tools)} tools to Bedrock: {[getattr(t, 'name', t.get('name', 'unnamed') if hasattr(t, 'get') else 'unnamed') for t in tools]}")
             logger.debug(f"First tool schema: {tools[0] if tools else 'No tools'}")
             
             if system_content:
@@ -460,7 +518,6 @@ class StreamingToolExecutor:
                                     # Look for complete markdown tool calls
                                     complete_pattern = r'```tool:(\w+)\s*\n(.*?)\n```'
                                     if re.search(complete_pattern, round_text, re.DOTALL):
-                                        logger.info("🔍 INTERCEPTING_MARKDOWN_TOOL: Found complete markdown tool call during streaming")
                                         # Don't yield this text, execute the tool instead
                                         continue
                                 
@@ -473,7 +530,11 @@ class StreamingToolExecutor:
                             has_tool_calls = True
                             try:
                                 logger.info(f"🔍 ABOUT_TO_YIELD_TOOL: {tool_result.get('tool_name')} size={len(str(tool_result))}")
-                                if tool_result.get('type') == 'tool_execution':
+                                if tool_result.get('type') == 'tool_start':
+                                    logger.info(f"🔍 YIELDING_TOOL_START: {tool_result.get('tool_name')}")
+                                    yield tool_result
+                                    logger.info(f"🔍 TOOL_START_YIELDED: {tool_result.get('tool_name')} - SUCCESS")
+                                elif tool_result.get('type') == 'tool_execution':
                                     round_tool_results.append(tool_result)
                                     logger.info(f"🔍 YIELDING_TOOL_EXECUTION: {tool_result.get('tool_name')}")
                                     yield tool_result
@@ -506,6 +567,10 @@ class StreamingToolExecutor:
                         if command.startswith('$ '):
                             command = command[2:]  # Remove '$ ' prefix
                         
+                        # For shell commands, only use the first line (ignore any example output)
+                        if tool_name == 'mcp_run_shell_command' and '\n' in command:
+                            command = command.split('\n')[0].strip()
+                        
                         logger.info(f"🔍 EXECUTING_TEXT_TOOL: {tool_name} with cleaned command: {command[:100]}...")
                         
                         # Execute the tool
@@ -527,17 +592,25 @@ class StreamingToolExecutor:
                         logger.info(f"🔍 TEXT_TOOL_EXECUTED: {tool_name}")
                 
                 if not has_tool_calls:
-                    # Give the model a few seconds to generate more content
-                    logger.debug(f"No tool calls in round {round_num + 1}, waiting 3 seconds for more content...")
-                    await asyncio.sleep(3)
+                    # Check if we have meaningful content and no tools - likely completion
+                    if round_text.strip() and len(round_text.strip()) > 10:
+                        logger.info(f"🔄 ROUND {round_num + 1} COMPLETE: {len(round_text)} chars, {len(round_tool_results)} tools")
+                        logger.info(f"📝 SERVER RESPONSE: {round_text[:100]}{'...' if len(round_text) > 100 else ''}")
+                        logger.info(f"🔧 TOOLS EXECUTED: {[t['tool_name'] for t in round_tool_results]}")
+                        
+                        # If this is round 2+ and we have no new tools, likely done
+                        if round_num > 0:
+                            logger.debug(f"Round {round_num + 1}: No tools, meaningful content, ending")
+                            break
                     
-                    # Check if model is still generating by trying another round
-                    # If it generates empty content, then we're truly done
+                    # For round 1 or empty content, wait briefly then check
+                    logger.debug(f"No tool calls in round {round_num + 1}, checking for completion...")
+                    await asyncio.sleep(1)  # Reduced from 3 seconds
+                    
+                    # If we have no content at all, we're done
                     if len(round_text.strip()) == 0:
-                        logger.debug(f"Empty response after timeout, ending after round {round_num + 1}")
+                        logger.debug(f"Empty response, ending after round {round_num + 1}")
                         break
-                    else:
-                        logger.debug(f"Model generated text, continuing to next round...")
                 
                 # Add assistant response to conversation
                 if round_text.strip():
@@ -592,9 +665,33 @@ class StreamingToolExecutor:
                     self.active_tools[tool_id] = {
                         'name': tool_name,
                         'partial_json': '',
-                        'index': chunk.get('index')
+                        'index': chunk.get('index'),
+                        'input': content_block.get('input', {}),  # Store initial input if available
+                        'tool_start_sent': False  # Initialize the flag
                     }
                     logger.debug(f"Registered tool: {self.active_tools[tool_id]}")
+                    
+                    # Convert tool name to frontend format
+                    display_name = tool_name
+                    if tool_name in ['execute_shell_command', 'run_shell_command']:
+                        display_name = 'mcp_run_shell_command'
+                    elif tool_name == 'get_current_time':
+                        display_name = 'mcp_get_current_time'
+                    elif not tool_name.startswith('mcp_') and tool_name not in ['execute_shell_command', 'run_shell_command', 'get_current_time']:
+                        display_name = f'mcp_{tool_name}'
+                    
+                    # Emit tool_start immediately with tool name and initial input
+                    initial_input = content_block.get('input', {})
+                    yield {
+                        'type': 'tool_start',
+                        'tool_id': tool_id,
+                        'tool_name': display_name,
+                        'input': initial_input
+                    }
+                    
+                    # Mark that we've sent tool_start for this tool
+                    self.active_tools[tool_id]['tool_start_sent'] = True
+                    logger.info(f"🔧 TOOL_START: Emitted immediate tool_start for {display_name}")
         
         elif chunk['type'] == 'content_block_delta':
             delta = chunk.get('delta', {})
@@ -606,6 +703,11 @@ class StreamingToolExecutor:
                     # Accumulate partial JSON
                     partial_json = delta.get('partial_json', '')
                     self.active_tools[tool_id]['partial_json'] += partial_json
+                    
+                    # Check if we can parse complete JSON and haven't sent tool_start yet
+                    if not self.active_tools[tool_id].get('tool_start_sent', False):
+                        # This shouldn't happen since we emit tool_start immediately now
+                        logger.warning(f"🔧 TOOL_START: tool_start_sent=False for {tool_id}, this shouldn't happen")
                     
                     # Try to execute when JSON is complete
                     result = await self._try_execute_tool(tool_id)
@@ -653,6 +755,7 @@ class StreamingToolExecutor:
             logger.debug(f"Content block stop - index: {index}, tool_id: {tool_id}")
             
             if tool_id and tool_id not in self.completed_tools:
+                # tool_start should already be sent, just execute the tool
                 result = await self._try_execute_tool(tool_id)
                 if result:
                     tool_name = self.active_tools[tool_id]['name']
@@ -748,11 +851,17 @@ class StreamingToolExecutor:
             logger.debug(f"Actual tool name: '{actual_tool_name}'")
             
             mcp_manager = get_mcp_manager()
+            
+            # Ensure MCP manager is initialized
+            if not mcp_manager.is_initialized:
+                logger.info("🔧 MCP_MANAGER: Initializing MCP manager for tool execution")
+                await mcp_manager.initialize()
+            
             logger.debug(f"Got MCP manager: {mcp_manager}")
             
             # Execute the MCP tool - let the manager find the right server
             if actual_tool_name == 'run_shell_command':
-                command = args.get('command', args.get('input', ''))
+                command = args.get('command', args.get('input', args.get('tool_input', '')))
                 logger.info(f"🔧 SHELL COMMAND: '{command}'")
                 result = await mcp_manager.call_tool('run_shell_command', {'command': command})
             elif actual_tool_name == 'get_current_time':

@@ -101,18 +101,19 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     # Get model_id for MCP guidelines exclusion
     from app.agents.models import ModelManager
     model_id = ModelManager.get_model_id()
-    
-    # Get MCP context
-    mcp_context = {"model_id": model_id}
+
+    # Get MCP context, including endpoint and model_id for extensions
+    mcp_context = {
+        "model_id": model_id,
+        "endpoint": model_info["endpoint"]
+    }
     try:
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
         if mcp_manager.is_initialized:
             available_tools = [tool.name for tool in mcp_manager.get_all_tools()]
-            mcp_context = {
-                "mcp_tools_available": len(available_tools) > 0,
-                "available_mcp_tools": available_tools
-            }
+            mcp_context["mcp_tools_available"] = len(available_tools) > 0
+            mcp_context["available_mcp_tools"] = available_tools
     except Exception as e:
         logger.warning(f"Could not get MCP tools: {e}")
     
@@ -265,6 +266,7 @@ async def chat_endpoint(request: Request):
     
     try:
         body = await request.json()
+        logger.info(f"🔍 CHAT_ENDPOINT: Request body keys: {list(body.keys())}")
         
         # Extract data from the request
         messages = body.get('messages', [])
@@ -272,9 +274,12 @@ async def chat_endpoint(request: Request):
         files = body.get('files', [])
         conversation_id = body.get('conversation_id')
         
+        logger.info(f"🔍 CHAT_ENDPOINT: question='{question[:50]}...', messages={len(messages)}, files={len(files)}")
+        
         # Check current model to determine routing
         from app.agents.models import ModelManager
         current_model = ModelManager.get_model_alias()
+        logger.info(f"🔍 CHAT_ENDPOINT: current_model={current_model}")
         is_bedrock_claude = current_model and ('claude' in current_model.lower() or 'sonnet' in current_model.lower() or 'opus' in current_model.lower() or 'haiku' in current_model.lower())
         is_bedrock_nova = current_model and 'nova' in current_model.lower()
         is_bedrock_deepseek = current_model and 'deepseek' in current_model.lower()
@@ -1079,10 +1084,28 @@ async def stream_chunks(body):
         
         # Get model info for prompt extensions
         model_info = get_model_info_from_config()
+        
+        # Get MCP context, including endpoint and model_id for extensions
+        from app.agents.models import ModelManager
+        mcp_context = {
+            "model_id": ModelManager.get_model_id(),
+            "endpoint": model_info["endpoint"]
+        }
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            if mcp_manager.is_initialized:
+                available_tools = [tool.name for tool in mcp_manager.get_all_tools()]
+                mcp_context["mcp_tools_available"] = len(available_tools) > 0
+                mcp_context["available_mcp_tools"] = available_tools
+        except Exception as e:
+            logger.warning(f"Could not get MCP tools for stream_chunks: {e}")
+
         extended_prompt = get_extended_prompt(
             model_name=model_info["model_name"],
             model_family=model_info["model_family"],
-            endpoint=model_info["endpoint"]
+            endpoint=model_info["endpoint"],
+            context=mcp_context
         )
         
         # Extract system content from the extended prompt
@@ -1143,12 +1166,17 @@ async def stream_chunks(body):
         # Create DirectStreamingAgent and stream
         try:
             agent = DirectStreamingAgent()
-            # DEBUGGING: Track streaming metrics
-            chunk_count = 0
-            total_data_sent = 0
-            tool_results_attempted = 0
             
-            async for chunk in agent.stream_with_tools(messages, conversation_id=body.get('conversation_id')):
+            chunk_count = 0
+            tool_results_attempted = 0
+            total_data_sent = 0
+            
+            # Get available tools to pass to the agent
+            from app.mcp.enhanced_tools import create_secure_mcp_tools
+            mcp_tools = create_secure_mcp_tools()
+            logger.info(f"🚀 DIRECT_STREAMING: Passing {len(mcp_tools)} tools to DirectStreamingAgent")
+            
+            async for chunk in agent.stream_with_tools(messages, tools=mcp_tools, conversation_id=body.get('conversation_id')):
                 chunk_count += 1
                 
                 if chunk.get('type') == 'tool_execution':
@@ -1345,6 +1373,11 @@ async def stream_chunks(body):
                         
                         # Stream with proper tool execution
                         async for chunk in executor.stream_with_tools(messages, tools):
+                            # Debug: Log all chunks being yielded
+                            if chunk.get('type') == 'tool_start':
+                                logger.info(f"🔧 SERVER: Yielding tool_start chunk: {chunk}")
+                            elif chunk.get('type') == 'tool_execution':
+                                logger.info(f"🔧 SERVER: Yielding tool_execution chunk: {chunk.get('tool_name')}")
                             yield f"data: {json.dumps(chunk)}\n\n"
                         
                         # Return after successful streaming
@@ -1429,6 +1462,11 @@ async def stream_chunks(body):
                     
                     # Use StreamingToolExecutor for Nova
                     async for chunk in executor.stream_with_tools(messages):
+                        # Debug: Log all chunks being yielded
+                        if chunk.get('type') == 'tool_start':
+                            logger.info(f"🔧 SERVER_NOVA: Yielding tool_start chunk: {chunk}")
+                        elif chunk.get('type') == 'tool_execution':
+                            logger.info(f"🔧 SERVER_NOVA: Yielding tool_execution chunk: {chunk.get('tool_name')}")
                         yield f"data: {json.dumps(chunk)}\n\n"
                     
                     yield f"data: {json.dumps({'done': True})}\n\n"
@@ -1657,6 +1695,9 @@ async def stream_chunks(body):
         
         processed_tool_calls = set()  # Track which tool calls we've already processed
         # Create a background task for cleanup when the stream ends
+
+        token_throttling_retries = 0
+        max_token_throttling_retries = 2  # Allow 2 fresh connection attempts
 
         # Context overflow detection state
         overflow_checked = False
@@ -2285,6 +2326,36 @@ async def stream_chunks(body):
             except Exception as e:
                 logger.error(f"Error in agent iteration {iteration}: {str(e)}", exc_info=True)
                 processed_response = current_response  # Initialize before use
+
+                
+                # Check for token-based throttling specifically
+                error_str = str(e)
+                is_token_throttling = ("Too many tokens" in error_str and 
+                                     "ThrottlingException" in error_str and
+                                     "reached max retries" in error_str)
+                
+                if is_token_throttling and token_throttling_retries < max_token_throttling_retries:
+                    token_throttling_retries += 1
+                    logger.info(f"🔄 TOKEN_THROTTLING: Detected token throttling in multi-round session, attempt {token_throttling_retries}/{max_token_throttling_retries}")
+                    
+                    # Send status update to frontend
+                    status_update = {
+                        "type": "token_throttling_retry",
+                        "message": f"Token limit reached, retrying with fresh connection in 20s (attempt {token_throttling_retries}/{max_token_throttling_retries})",
+                        "retry_attempt": token_throttling_retries,
+                        "wait_time": 20
+                    }
+                    ops = [{"op": "add", "path": "/streamed_output_str/-", "value": f"\n🔄 Retrying with fresh connection... (attempt {token_throttling_retries}/{max_token_throttling_retries})\n"}]
+                    yield f"data: {json.dumps({'ops': ops})}\n\n"
+                    
+                    # Wait 20 seconds and retry with fresh connection
+                    await asyncio.sleep(20)
+                    
+                    # Reset iteration counter to retry the current iteration
+                    iteration -= 1
+                    if iteration < 1:
+                        iteration = 1
+                    continue
                 
                 # Preserve any accumulated response content before handling the error
                 if current_response and len(current_response.strip()) > 0:
@@ -3340,15 +3411,18 @@ async def set_model(request: SetModelRequest):
 
         logger.info(f"Current state - Endpoint: {endpoint}, Model: {current_model}")
 
-        # Handle both string and dictionary model IDs
         found_alias = None
+        found_endpoint = None
         
-        # First, try direct match by alias
-        if isinstance(model_id, str) and model_id in ModelManager.MODEL_CONFIGS[endpoint]:
-            found_alias = model_id
-        else:
-            # Search through all model configurations
-            for alias, model_config_item in ModelManager.MODEL_CONFIGS[endpoint].items():
+        # Search through all endpoints and models to find the matching alias and its endpoint
+        for ep, models in ModelManager.MODEL_CONFIGS.items():
+            # Direct match by alias
+            if model_id in models:
+                found_alias = model_id
+                found_endpoint = ep
+                break
+            # Search by model_id value
+            for alias, model_config_item in models.items():
                 config_model_id = model_config_item.get('model_id')
                 
                 # Case 1: Both are dictionaries - check if they match
@@ -3356,6 +3430,8 @@ async def set_model(request: SetModelRequest):
                     # Check if dictionaries have the same structure and values
                     if model_id == config_model_id:
                         found_alias = alias
+                        found_endpoint = ep
+                        found_endpoint = ep
                         break
                     
                     # Check if any region-specific IDs match
@@ -3371,6 +3447,7 @@ async def set_model(request: SetModelRequest):
                         for region in model_id
                     ):
                         found_alias = alias
+                        found_endpoint = ep
                         break
                 
                 # Case 2: Direct string comparison
@@ -3437,6 +3514,8 @@ async def set_model(request: SetModelRequest):
 
             # Set the new model in environment
             os.environ["ZIYA_MODEL"] = found_alias
+            os.environ["ZIYA_ENDPOINT"] = found_endpoint
+            logger.info(f"Set ZIYA_ENDPOINT environment variable to: {found_endpoint}")
             logger.info(f"Set ZIYA_MODEL environment variable to: {found_alias}")
 
             # Reinitialize with agent

@@ -26,6 +26,11 @@ class DirectStreamingAgent:
     def __init__(self, profile_name: Optional[str] = None, region: str = 'us-east-1'):
         from app.agents.models import ModelManager
         
+        # Initialize all attributes first to prevent AttributeError
+        self.google_model = None
+        self.executor = None
+        self.is_bedrock = False
+        
         # Get current model info to determine which streaming approach to use
         try:
             state = ModelManager.get_state()
@@ -40,7 +45,6 @@ class DirectStreamingAgent:
             if current_model.startswith('gemini') or current_model.startswith('google'):
                 # Use DirectGoogleModel for Google models
                 self.google_model = DirectGoogleModel(model_name=current_model)
-                self.executor = None
                 self.is_bedrock = False
             elif 'openai' in current_model.lower():
                 # OpenAI models on Bedrock should use LangChain path, not direct streaming
@@ -51,19 +55,18 @@ class DirectStreamingAgent:
                 profile_name = state.get('aws_profile', profile_name)
                 region = state.get('aws_region', region)
                 self.executor = StreamingToolExecutor(profile_name=profile_name, region=region)
-                self.google_model = None
                 self.is_bedrock = True
                 
         except ValueError as e:
             if "OpenAI models should use LangChain path" in str(e):
                 # Re-raise this specific error so server.py can handle it
                 raise
-            else:
-                # Other ValueErrors should fall back to Bedrock
-                logger.warning(f"Could not determine model type, defaulting to Bedrock: {e}")
-                self.executor = StreamingToolExecutor(profile_name=profile_name, region=region)
-                self.google_model = None
-                self.is_bedrock = True
+        except Exception as e:
+            # For any other exception, log it but don't leave object in incomplete state
+            logger.error(f"Error initializing DirectStreamingAgent: {e}")
+            # Default to Bedrock mode if initialization fails
+            self.executor = StreamingToolExecutor(profile_name=profile_name, region=region)
+            self.is_bedrock = True
         except Exception as e:
             # Fallback to Bedrock if we can't determine the model type
             logger.warning(f"Could not determine model type, defaulting to Bedrock: {e}")
@@ -94,20 +97,20 @@ class DirectStreamingAgent:
                     openai_messages.append({"role": "assistant", "content": msg.get('content', '')})
                 elif msg.get('type') == 'system':
                     openai_messages.append({"role": "system", "content": msg.get('content', '')})
-        
-        return openai_messages
     
-    async def stream_with_tools(self, messages: List[Any], tools: Optional[List[Dict[str, Any]]] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        return openai_messages
+
+    async def stream_with_tools(self, messages: List[Any], tools: Optional[List[Any]] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Stream response with real-time tool execution
-        
-        Args:
-            messages: Conversation history (LangChain or OpenAI format)
-            tools: Tool definitions (optional)
-            conversation_id: Conversation ID for extended context support
             
-        Yields:
-            Dict with 'type' field indicating 'text', 'tool_result', or 'error'
+            Args:
+                messages: Conversation history (LangChain or OpenAI format)
+                tools: Tool definitions (optional)
+                conversation_id: Conversation ID for extended context support
+                
+            Yields:
+                Dict with 'type' field indicating 'text', 'tool_result', or 'error'
         """
         try:
             logger.debug(f"DirectStreamingAgent received {len(messages)} messages")
@@ -153,40 +156,30 @@ class DirectStreamingAgent:
             
                 logger.debug(f"DIRECT_STREAMING: Finished Bedrock streaming, total chunks: {chunk_count}")
                 logger.info(f"🔍 STREAMING_SUMMARY: total_chunks={chunk_count}, tool_results_sent={tool_results_sent}, largest_chunk={largest_chunk}")
-                
+
             else:
-                # Use DirectGoogleModel for Google models
+                # Use the new DirectGoogleModel for Google models, which handles native tool calling
                 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
                 
-                # Convert dict messages to LangChain format for Google model
+                # Convert dict messages to LangChain format for the Google model wrapper
                 langchain_messages = []
                 for msg in messages:
                     if isinstance(msg, dict):
-                        if msg.get('type') == 'system':
-                            langchain_messages.append(SystemMessage(content=msg.get('content', '')))
-                        elif msg.get('type') == 'human':
-                            langchain_messages.append(HumanMessage(content=msg.get('content', '')))
-                        elif msg.get('type') == 'ai':
-                            langchain_messages.append(AIMessage(content=msg.get('content', '')))
-                    else:
-                        langchain_messages.append(msg)
-                
+                        role = msg.get('type', msg.get('role', 'user'))
+                    content = msg.get('content', '')
+                    if role in ['system']:
+                        langchain_messages.append(SystemMessage(content=content))
+                    elif role in ['human', 'user']:
+                        langchain_messages.append(HumanMessage(content=content))
+                    elif role in ['ai', 'assistant']:
+                        langchain_messages.append(AIMessage(content=content))
+            
                 logger.info(f"[DIRECT_STREAMING] Starting Google stream with {len(langchain_messages)} messages")
                 
-                chunk_count = 0
-                async for chunk in self.google_model.astream(langchain_messages):
-                    chunk_count += 1
-                    if chunk_count <= 3:
-                        logger.debug(f"DIRECT_STREAMING: Got Google chunk {chunk_count}")
-                
-                    # Convert Google response to our standard format
-                    if hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
-                        content = chunk.message.content
-                        if content:
-                            yield {"type": "text", "content": content}
-            
-                logger.debug(f"DIRECT_STREAMING: Finished Google streaming, total chunks: {chunk_count}")
-            
+                # The new google_model.astream will yield dicts in our standard format
+                async for chunk in self.google_model.astream(langchain_messages, tools=tools):
+                    yield chunk
+
         except Exception as e:
             logger.debug(f"DirectStreamingAgent exception: {str(e)}")
             import traceback

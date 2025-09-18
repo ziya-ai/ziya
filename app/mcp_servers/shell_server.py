@@ -100,6 +100,9 @@ class ShellServer:
         
         command = command.strip()
         
+        # Clean command - remove any output that got included (take only first line)
+        command = command.split('\n')[0].strip()
+        
         # Check against all allowed patterns
         for pattern_name, pattern in self.safe_command_patterns.items():
             try:
@@ -128,7 +131,8 @@ class ShellServer:
                 patterns[cmd] = self.default_command_pattern.format(cmd=re.escape(cmd))
         
         # Add patterns for complex shell constructs that use allowed commands
-        patterns['piped_commands'] = r'^(' + '|'.join([re.escape(cmd) for cmd in self.allowed_commands if not cmd.startswith('git ')]) + r')(\s+[^|]*)?(\s*\|\s*(' + '|'.join([re.escape(cmd) for cmd in self.allowed_commands if not cmd.startswith('git ')]) + r')(\s+.*)?)*$'
+        allowed_cmd_pattern = '|'.join([re.escape(cmd) for cmd in self.allowed_commands if not cmd.startswith('git ')])
+        patterns['piped_commands'] = f'^({allowed_cmd_pattern})(\\s+.*?)?(\\s*\\|\\s*({allowed_cmd_pattern})(\\s+.*?)?)*$'
         
         # Allow find with -exec using allowed commands
         patterns['find_exec'] = r'^find\s+.*-exec\s+(' + '|'.join([re.escape(cmd) for cmd in self.allowed_commands if not cmd.startswith('git ')]) + r')\s+.*$'
