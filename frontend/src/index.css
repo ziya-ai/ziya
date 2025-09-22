@@ -384,6 +384,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 .message .message-content {
   padding: 4px 11px;
+  white-space: pre-wrap;
 }
 
 .dark .message.human {
