@@ -10,6 +10,7 @@ import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
 import { parseThinkingContent, removeThinkingTags } from '../utils/thinkingParser';
+import { useFolderContext } from '../context/FolderContext';
 import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
@@ -22,13 +23,14 @@ import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/f
 import { FileOperationRenderer } from './FileOperationRenderer';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
+import { restartStreamWithEnhancedContext } from '../apis/chatApi';
 
 // Thinking component for DeepSeek reasoning content
 const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; isStreaming?: boolean }> = ({ children, isDarkMode, isStreaming = false }) => {
     // Start expanded during streaming, collapsed when done
     const [isExpanded, setIsExpanded] = useState(isStreaming);
     const thinkingRenderedRef = useRef(false);
-    
+
     return (
         <div className={`thinking-block ${isDarkMode ? 'dark' : 'light'}`} style={{
             border: `1px solid ${isDarkMode ? '#444' : '#ddd'}`,
@@ -36,7 +38,7 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
             margin: '12px 0',
             backgroundColor: isDarkMode ? '#1a1a1a' : '#f8f9fa'
         }}>
-            <div 
+            <div
                 onClick={() => setIsExpanded(!isExpanded)}
                 style={{
                     padding: '8px 12px',
@@ -96,6 +98,7 @@ interface ApplyChangesButtonProps {
     fileIndex: number;
     diffElementId: string;
     enabled: boolean;
+    isStreaming?: boolean;
     setHunkStatuses?: (updater: (prev: Map<string, HunkStatus>) => Map<string, HunkStatus>) => void;
 }
 
@@ -461,6 +464,67 @@ const DiffControls = memo(({
         </div>
     );
 });
+
+// Helper function to extract all file paths from a diff
+const extractAllFilesFromDiff = (diffContent: string): string[] => {
+    const files: string[] = [];
+    const lines = diffContent.split('\n');
+
+    for (const line of lines) {
+        // Extract from git diff headers
+        const gitMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+        if (gitMatch) {
+            const newPath = gitMatch[2];
+            const oldPath = gitMatch[1];
+            if (newPath !== '/dev/null') files.push(newPath);
+            if (oldPath !== '/dev/null' && oldPath !== newPath) files.push(oldPath);
+        }
+
+        // Extract from unified diff headers as backup
+        const minusMatch = line.match(/^--- a\/(.+)$/);
+        if (minusMatch && !minusMatch[1].includes('/dev/null')) {
+            files.push(minusMatch[1]);
+        }
+
+        const plusMatch = line.match(/^\+\+\+ b\/(.+)$/);
+        if (plusMatch && !plusMatch[1].includes('/dev/null')) {
+            files.push(plusMatch[1]);
+        }
+    }
+
+    return [...new Set(files)]; // Remove duplicates
+};
+
+// Function to check if files are in current context - do this locally!
+const checkFilesInContext = (filePaths: string[], currentFiles: string[] = []): { missingFiles: string[], availableFiles: string[] } => {
+    const missingFiles: string[] = [];
+    const availableFiles: string[] = [];
+    
+    for (const filePath of filePaths) {
+        // Clean up the file path (remove a/ or b/ prefixes from git diffs)
+        let cleanPath = filePath.trim();
+        if (cleanPath.startsWith('a/') || cleanPath.startsWith('b/')) {
+            cleanPath = cleanPath.substring(2);
+        }
+        
+        // Check if the file is in the current selected context
+        const isInContext = currentFiles.some(currentFile => 
+            currentFile === cleanPath || 
+            cleanPath.startsWith(currentFile + '/') ||
+            (currentFile.endsWith('/') && cleanPath.startsWith(currentFile))
+        );
+        
+        if (isInContext) {
+            availableFiles.push(cleanPath);
+        } else {
+            missingFiles.push(cleanPath);
+        }
+    }
+    
+    console.log('🔄 CONTEXT_ENHANCEMENT: Local check result:', { filePaths, currentFiles: currentFiles.slice(0, 5), missingFiles, availableFiles });
+    return { missingFiles, availableFiles };
+};
+
 DiffControls.displayName = 'DiffControls';
 
 const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
@@ -1011,30 +1075,19 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     useEffect(() => {
         const parseAndSetFiles = () => {
             try {
-                console.log('🔍 DiffView - Parsing diff content:', diff.substring(0, 200) + '...');
                 const normalizedDiff = normalizeGitDiff(diff);
-                console.log('🔧 DiffView - Normalized diff:', normalizedDiff.substring(0, 200) + '...');
-
                 let parsedFiles = parseDiff(normalizedDiff);
-                console.log('📊 DiffView - ParseDiff result:', {
-                    filesCount: parsedFiles?.length || 0,
-                    firstFileHunks: parsedFiles?.[0]?.hunks?.length || 0,
-                    firstFile: parsedFiles?.[0] ? {
-                        oldPath: parsedFiles[0].oldPath,
-                        newPath: parsedFiles[0].newPath,
-                        type: parsedFiles[0].type
-                    } : null
-                });
 
                 // After all parsing attempts, check if we have valid, renderable files/hunks
                 if (!parsedFiles || parsedFiles.length === 0 ||
                     !parsedFiles[0].hunks || parsedFiles[0].hunks.length === 0) {
                     // If not, it's effectively a parse error for rich rendering purposes
-                    console.warn('❌ DiffView - Parse failed: No valid files/hunks found');
+                    if (process.env.NODE_ENV === 'development') {
+                        console.warn('DiffView - Parse failed: No valid files/hunks found');
+                    }
                     setParseError(true);
                     parsedFilesRef.current = []; // Ensure ref is also empty
                 } else {
-                    console.log('✅ DiffView - Parse successful');
                     parsedFilesRef.current = parsedFiles;
                     setParseError(false);
                 }
@@ -1109,8 +1162,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     parsedFilesRef.current = [];
                 }
             } catch (error) {
-                console.error('❌ DiffView - ParseDiff threw error:', error);
-                console.error('❌ DiffView - Failed diff content:', diff.substring(0, 500));
+                if (process.env.NODE_ENV === 'development') {
+                    console.error('DiffView - ParseDiff error:', error);
+                    console.error('DiffView - Failed diff content:', diff.substring(0, 200) + '...');
+                }
                 setErrorMessage(error instanceof Error ? error.message : String(error));
                 console.error('Error parsing diff:', error);
 
@@ -1317,7 +1372,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
     // Handle parse error case
     if (parseError) {
-        console.log('🚨 DiffView - Rendering fallback due to parse error');
+        if (process.env.NODE_ENV === 'development') {
+            console.warn('DiffView - Rendering fallback due to parse error');
+        }
         return (
             <div>
                 <div style={{
@@ -1638,6 +1695,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     fileIndex={fileIndex}
                                     diffElementId={elementId}
                                     filePath={file.newPath || file.oldPath}
+                                    isStreaming={isGlobalStreaming}
                                     setHunkStatuses={setInstanceHunkStatusMap}
                                     enabled={window.enableCodeApply === 'true'}
                                 />
@@ -1790,7 +1848,37 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     );
 };
 
-const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, fileIndex, diffElementId, enabled, setHunkStatuses }) => {
+/**
+ * Check if a diff is complete and ready for application
+ */
+const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
+    if (!diffContent || !diffContent.trim()) return false;
+
+    // If not streaming, assume diff is complete
+    if (!isStreaming) return true;
+
+    // For streaming diffs, check if they have the essential structure
+    const lines = diffContent.split('\n');
+    const hasGitHeader = lines.some(line => line.startsWith('diff --git'));
+    const hasFileHeaders = lines.some(line => line.startsWith('---')) &&
+        lines.some(line => line.startsWith('+++'));
+    const hasHunkHeader = lines.some(line => line.match(/^@@\s+-\d+/));
+    const hasContent = lines.some(line => line.match(/^[+-\s]/));
+
+    // Check if the diff ends properly (not cut off mid-hunk)
+    const lastNonEmptyLine = lines.filter(line => line.trim()).pop() || '';
+    const endsAbruptly = lastNonEmptyLine.startsWith('@@') ||
+        lastNonEmptyLine.match(/^[+-]/) &&
+        !lines.slice(-3).some(line => line.trim() === '');
+
+    // A complete diff should have header structure and not end abruptly
+    const hasMinimalStructure = hasGitHeader && hasFileHeaders && hasHunkHeader && hasContent;
+    const isStructurallyComplete = hasMinimalStructure && !endsAbruptly;
+
+    return isStructurallyComplete;
+};
+
+const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, fileIndex, diffElementId, enabled, isStreaming = false, setHunkStatuses }) => {
     const [isApplied, setIsApplied] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
@@ -1802,6 +1890,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     // Track processed request IDs to prevent infinite update loops
     const processedRequestIds = useRef(new Set<string>());
 
+    // Check if the diff is complete and ready for application
+    const diffComplete = useMemo(() => {
+        return isDiffComplete(diff, isStreaming);
+    }, [diff, isStreaming]);
+
+    const shouldDisableButton = isApplied || isProcessing || (isStreaming && !diffComplete);
     const buttonId = useId();
     // Define a function to trigger diff updates
     const triggerDiffUpdate = (hunkStatuses: Record<string, any> | null = null, requestId: string | null = null, diffElementId: string | null = null) => {
@@ -2439,7 +2533,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     return enabled ? (
         <Button
             onClick={handleApplyChanges}
-            disabled={isApplied || isProcessing}
+            disabled={shouldDisableButton}
             loading={isProcessing}
             type={isApplied ? "default" : "primary"}
             style={{ marginLeft: '8px' }} id={`apply-changes-${buttonId}`}
@@ -2467,11 +2561,178 @@ interface DiffTokenProps {
 }
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
-    const { isStreaming } = useChatContext();
+    const { isStreaming, streamingConversations, currentConversationId,
+        currentMessages, addMessageToConversation, setStreamedContentMap,
+        removeStreamingConversation, setIsStreaming } = useChatContext();
+    const { checkedKeys, addFilesToContext } = useFolderContext();
     // Generate a unique ID once when the component mounts
     const [diffId] = useState(() =>
         `diff-${Math.random().toString(36).substring(2, 9)}-${Date.now()}`);
     const contentRef = useRef<string | null>(null);
+    const [isCheckingFiles, setIsCheckingFiles] = useState(false);
+    const hasCheckedFilesRef = useRef(false);
+    const checkTimeoutRef = useRef<NodeJS.Timeout>();
+    const [needsContextEnhancement, setNeedsContextEnhancement] = useState(false);
+    const [missingFilesList, setMissingFilesList] = useState<string[]>([]);
+    const lastTokenLengthRef = useRef(0);
+    const hasCheckedAfterStreamingRef = useRef(false);
+
+    // Check for missing files after streaming completes if we haven't checked yet
+    useEffect(() => {
+        if (!streamingConversations.has(currentConversationId) &&
+            !hasCheckedAfterStreamingRef.current &&
+            !hasCheckedFilesRef.current &&
+            token.text.includes('diff --git')) {
+
+            console.log('🔄 CONTEXT_ENHANCEMENT: Checking after streaming completed');
+            hasCheckedAfterStreamingRef.current = true;
+
+            const checkAfterStreaming = async () => {
+                const referencedFiles = extractAllFilesFromDiff(token.text);
+                console.log('🔄 CONTEXT_ENHANCEMENT: Files extracted from diff:', referencedFiles);
+                if (referencedFiles.length > 0) {
+                    const currentFiles = Array.from(checkedKeys).map(String);
+                    const response = checkFilesInContext(referencedFiles, currentFiles);
+                    console.log('🔄 CONTEXT_ENHANCEMENT: API response after streaming for files', referencedFiles, ':', response);
+                    if (response.missingFiles.length > 0) {
+                        await addFilesToContext(response.missingFiles);
+                        setMissingFilesList(response.missingFiles);
+                        setNeedsContextEnhancement(true);
+                        console.log('🔄 CONTEXT_ENHANCEMENT: Set overlay after streaming for missing files:', response.missingFiles);
+                    }
+                }
+            };
+
+            checkAfterStreaming();
+        }
+    }, [streamingConversations, currentConversationId, token.text, addFilesToContext]);
+
+    // Debounced check function
+    const debouncedCheck = useCallback((checkFn: () => Promise<void>) => {
+        if (checkTimeoutRef.current) clearTimeout(checkTimeoutRef.current);
+        checkTimeoutRef.current = setTimeout(checkFn, 500); // Wait 500ms for diff to stabilize
+    }, []);
+
+    // Check if referenced files are in context when diff is rendered during streaming
+    useEffect(() => {
+        const checkMissingFiles = async () => {
+            if (!token.text || hasCheckedFilesRef.current || isCheckingFiles) return;
+
+            // Check streaming state more comprehensively
+            const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+
+            // Only log when we actually find something interesting
+            if (!isCurrentlyStreaming) return;
+
+            // Only check during active streaming to avoid interrupting completed responses
+            if (!isCurrentlyStreaming) {
+                return;
+            }
+
+            const referencedFiles = extractAllFilesFromDiff(token.text);
+            if (referencedFiles.length === 0) return;
+
+            console.log('🔄 CONTEXT_ENHANCEMENT: Checking files in diff:', referencedFiles);
+
+            // Mark as checked BEFORE doing the work to prevent race conditions
+            hasCheckedFilesRef.current = true;
+            setIsCheckingFiles(true);
+            
+            try {
+                const currentFiles = Array.from(checkedKeys).map(String);
+                const response = checkFilesInContext(referencedFiles, currentFiles);
+                console.log('🔄 CONTEXT_ENHANCEMENT: API response:', response);
+                const { missingFiles } = response;
+
+                if (missingFiles.length > 0) {
+                    console.log('🔄 CONTEXT_ENHANCEMENT: Missing files detected:', missingFiles);
+
+                    // Add files to context using the proper context method
+                    await addFilesToContext(missingFiles);
+
+                    // Instead of interrupting, show enhancement overlay
+                    setMissingFilesList(missingFiles);
+                    setNeedsContextEnhancement(true);
+                } else {
+                    console.log('🔄 CONTEXT_ENHANCEMENT: No missing files found, all referenced files are already in context');
+                }
+            } catch (error) {
+                console.error('Error checking missing files:', error);
+            } finally {
+                setIsCheckingFiles(false);
+            }
+        };
+
+        // Only trigger if token content has significantly grown (to avoid spam)
+        const currentLength = token.text.length;
+        const lengthGrowth = currentLength - lastTokenLengthRef.current;
+        lastTokenLengthRef.current = currentLength;
+
+        // Only check if content has grown significantly or if streaming completed
+        if (lengthGrowth > 200 || !streamingConversations.has(currentConversationId)) {
+            if (streamingConversations.has(currentConversationId)) {
+                debouncedCheck(checkMissingFiles);
+            } else if (!hasCheckedFilesRef.current) {
+            } else if (!hasCheckedFilesRef.current) {
+                checkMissingFiles();
+            }
+        }
+    }, [token.text.length, currentConversationId, streamingConversations, isCheckingFiles]);
+
+    // Restart stream with enhanced context
+    const restartStreamWithFiles = async (addedFiles: string[]) => {
+        try {
+            console.log('🔄 CONTEXT_ENHANCEMENT: Starting stream restart process');
+
+            // First, explicitly abort the current stream
+            document.dispatchEvent(new CustomEvent('abortStream', {
+                detail: { conversationId: currentConversationId }
+            }));
+
+            // Wait a moment for the stream to be aborted
+            await new Promise(resolve => setTimeout(resolve, 200));
+
+            // Use the imported function
+            const allCurrentFiles = Array.from(checkedKeys).map(String);
+            console.log('🔄 CONTEXT_ENHANCEMENT: Restarting with files:', { added: addedFiles, total: allCurrentFiles.length });
+            await restartStreamWithEnhancedContext(currentConversationId, addedFiles, allCurrentFiles);
+
+            // Show subtle notification
+            message.info({
+                content: `Added missing files: ${addedFiles.join(', ')}. Restarting with enhanced context...`,
+                duration: 3,
+                key: `context-enhanced-${currentConversationId}`
+            });
+        } catch (error) {
+            console.error('Error restarting stream with enhanced context:', error);
+            console.error('🔄 CONTEXT_ENHANCEMENT: Failed to restart stream:', error);
+
+            // Show fallback message
+            message.warning({
+                content: `Added files to context: ${addedFiles.join(', ')}. Please retry your request to use the enhanced context.`,
+                duration: 8,
+                key: `context-enhanced-fallback-${currentConversationId}`
+            });
+
+            // Reset the checking state so the diff can render normally
+            setIsCheckingFiles(false);
+        }
+    };
+
+    // Reset check flag when conversation changes
+    useEffect(() => {
+        hasCheckedFilesRef.current = false;
+        hasCheckedAfterStreamingRef.current = false;
+        setNeedsContextEnhancement(false);
+        setMissingFilesList([]);
+        // Clear any pending timeouts
+        if (checkTimeoutRef.current) {
+            clearTimeout(checkTimeoutRef.current);
+        }
+        return () => {
+            if (checkTimeoutRef.current) clearTimeout(checkTimeoutRef.current);
+        };
+    }, [currentConversationId]);
 
     // Clean up any MATH_INLINE expansions that might have slipped through
     const cleanedText = useMemo(() => {
@@ -2485,16 +2746,67 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         if (!contentRef.current || contentRef.current !== cleanedText) {
             contentRef.current = cleanedText;
         }
-    }, [cleanedText]);
+    }, [currentConversationId]);
+
+    // Function to retry with enhanced context
+    const retryWithEnhancedContext = async () => {
+        setNeedsContextEnhancement(false);
+        try {
+            const allCurrentFiles = Array.from(checkedKeys).map(String);
+            await restartStreamWithEnhancedContext(currentConversationId, missingFilesList, allCurrentFiles);
+
+            message.success({
+                content: `Retrying with enhanced context including: ${missingFilesList.join(', ')}`,
+                duration: 3,
+                key: `context-retry-${currentConversationId}`
+            });
+        } catch (error) {
+            console.error('Error retrying with enhanced context:', error);
+            message.error('Failed to retry with enhanced context. Please try your request again.');
+        }
+    };
+
+    // Show context enhancement overlay when files are missing
+    const contextEnhancementOverlay = (isCheckingFiles || needsContextEnhancement) ? (
+        <div style={{
+            position: 'relative', width: '100%', 
+            backgroundColor: needsContextEnhancement ? 'rgba(255,193,7,0.9)' : 'rgba(0,0,0,0.7)', 
+            color: needsContextEnhancement ? '#000' : 'white',
+            padding: '12px', textAlign: 'center',
+            borderRadius: '4px'
+        }}>
+            {isCheckingFiles ? (
+                '🔄 Checking context...'
+            ) : needsContextEnhancement ? (
+                <div>
+                    <div style={{ marginBottom: '8px' }}>
+                        ⚠️ This diff references files not in context: <strong>{missingFilesList.join(', ')}</strong>
+                    </div>
+                    <Button 
+                        type="primary" 
+                        size="small" 
+                        onClick={retryWithEnhancedContext}
+                        style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
+                    >
+                        Retry with Enhanced Context
+                    </Button>
+                </div>
+            ) : null}
+        </div>
+    ) : null;
+
 
     return (
-        <DiffViewWrapper
-            token={{ ...token, text: cleanedText }}
-            index={index}
-            elementId={diffId}
-            enableCodeApply={enableCodeApply}
-            isStreaming={isStreaming}
-        />
+        <div>
+            {contextEnhancementOverlay}
+            <DiffViewWrapper
+                token={{ ...token, text: cleanedText }}
+                index={index}
+                elementId={diffId}
+                enableCodeApply={enableCodeApply}
+                isStreaming={isStreaming}
+            />
+        </div>
     );
 });
 
@@ -3884,7 +4196,7 @@ const normalizeIndentedDiffs = (content: string): string => {
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
-    
+
     // All refs declared at the top to ensure they're in scope for useMemo
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
     const parseTimeoutRef = useRef<NodeJS.Timeout>();
@@ -3892,7 +4204,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     const thinkingRenderedRef = useRef(false);
     const thinkingContentRef = useRef<string>('');
     const [forceRenderKey, setForceRenderKey] = useState(0);
-    
+
     // State for the tokens that are currently displayed with stable reference
     const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
     const isStreamingState = isStreaming;

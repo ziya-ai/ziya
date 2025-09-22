@@ -468,16 +468,13 @@ class MCPManager:
         """
         Call an MCP tool.
         
-        logger.info(f"🔍 MCP_MANAGER: call_tool called with tool_name='{tool_name}', arguments={arguments}, server_name={server_name}")
-        print(f"🔍 MCP_MANAGER: call_tool called with tool_name='{tool_name}', arguments={arguments}, server_name={server_name}")
-        logger.error(f"🚨 MCP_MANAGER.call_tool: ENTRY POINT - {tool_name}")
-        
         Args:
             tool_name: Name of the tool to call
             arguments: Tool arguments
             server_name: Specific server to use (if None, tries all servers)
             
         Returns:
+            Tool execution result or None if not found
         """
         # Remove mcp_ prefix if present for internal tool lookup
         internal_tool_name = tool_name

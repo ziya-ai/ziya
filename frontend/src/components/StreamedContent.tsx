@@ -33,6 +33,7 @@ export const StreamedContent: React.FC<{}> = () => {
         currentMessages,
         userHasScrolled,
         isTopToBottom,
+        setUserHasScrolled,
         removeStreamingConversation,
     } = useChatContext();
 
@@ -89,9 +90,10 @@ export const StreamedContent: React.FC<{}> = () => {
             if (thinkingTimeoutRef.current) {
                 clearTimeout(thinkingTimeoutRef.current);
             }
+
         }
         streamedContentRef.current = streamedContent;
-    }, [streamedContent]);
+    }, [streamedContent, isTopToBottom, userHasScrolled, streamingConversations, currentConversationId]);
 
     // Function to detect processing state from content
     const detectProcessingState = useCallback((content: string): ProcessingState => {
@@ -329,43 +331,89 @@ export const StreamedContent: React.FC<{}> = () => {
 
 
     // Function to smoothly scroll to keep the streaming content in view
-    const scrollToKeepInView = () => {
-        // Only auto-scroll during active streaming and if user hasn't manually scrolled away
-        if (!contentRef.current || !isAutoScrollingRef.current || userHasScrolled) return;
+    const scrollToKeepInView = useCallback(() => {
+        if (!contentRef.current) return;
 
-        // Only auto-scroll if we're currently streaming to this conversation
+        // Only auto-scroll if we're currently streaming
         if (!streamingConversations.has(currentConversationId)) return;
+        if (userHasScrolled) {
+            console.log('📜 StreamedContent: Skipping auto-scroll - user has manually scrolled');
+            return;
+        }
 
         const container = contentRef.current.closest('.chat-container');
         if (!container) return;
 
-        // Store current scroll position
-        lastScrollPositionRef.current = container.scrollTop;
+        if (isTopToBottom) {
+            // In top-down mode, scroll to bottom to follow new content
+            const { scrollTop, scrollHeight, clientHeight } = container;
+            const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 50;
 
-        if (!isTopToBottom) {
+            if (!isAtBottom) {
+                console.log('📜 StreamedContent: Auto-scrolling to bottom in top-down mode');
+                container.scrollTo({
+                    top: container.scrollHeight,
+                    behavior: 'smooth'
+                });
+            }
+        } else {
             // In bottom-up mode, scroll to keep the top of the content visible
             const contentRect = contentRef.current.getBoundingClientRect();
             const containerRect = container.getBoundingClientRect();
 
             if (contentRect.top < containerRect.top) {
+                console.log('📜 StreamedContent: Adjusting scroll in bottom-up mode');
                 container.scrollBy({
                     top: contentRect.top - containerRect.top,
                     behavior: 'smooth'
                 });
             }
-        } else {
-            // In top-down mode, check if we were already at the bottom
-            const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
-
-            // Only auto-scroll if we were already at the bottom AND we're actively streaming
-            if (isAtBottom && streamingConversations.has(currentConversationId)) {
-                container.scrollTo({
-                    top: container.scrollHeight,
-                    behavior: 'auto'
-                });
-            }
         }
-    };
+
+        // Update last scroll position
+        lastScrollPositionRef.current = container.scrollTop;
+    }, [currentConversationId, streamingConversations, userHasScrolled, isTopToBottom]);
+
+    // Trigger scroll when streamed content updates
+    useEffect(() => {
+        // Only scroll during active streaming when content changes
+        if (!streamingConversations.has(currentConversationId)) return;
+        if (userHasScrolled) return;
+        if (!streamedContent || !streamedContent.trim()) return;
+
+        // Trigger auto-scroll when content updates
+        const scrollTimeout = setTimeout(() => {
+            scrollToKeepInView();
+        }, 50); // Small delay to ensure DOM updates
+
+        return () => clearTimeout(scrollTimeout);
+    }, [streamedContent, currentConversationId, streamingConversations, userHasScrolled, scrollToKeepInView]);
+
+    // Enhanced scroll position monitoring
+    useEffect(() => {
+        const container = contentRef.current?.closest('.chat-container') as HTMLElement;
+        if (!container) return;
+
+        let scrollCheckInterval: NodeJS.Timeout;
+
+        // Periodically check if user has scrolled back to bottom during streaming
+        if (streamingConversations.has(currentConversationId) && userHasScrolled) {
+            scrollCheckInterval = setInterval(() => {
+                const { scrollTop, scrollHeight, clientHeight } = container;
+                const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
+
+                if (isAtBottom && userHasScrolled) {
+                    console.log('📜 StreamedContent: User scrolled back to bottom during streaming - resuming auto-scroll');
+                    setUserHasScrolled(false);
+                    clearInterval(scrollCheckInterval);
+                }
+            }, 500); // Check every 500ms
+        }
+
+        return () => {
+            if (scrollCheckInterval) clearInterval(scrollCheckInterval);
+        };
+    }, [currentConversationId, streamingConversations, userHasScrolled, setUserHasScrolled]);
 
     // Listen for preserved content events from streaming errors
     useEffect(() => {
@@ -459,7 +507,7 @@ export const StreamedContent: React.FC<{}> = () => {
                 console.log('Creating preserved message with content length:', preservedContent.length);
                 console.log('First 200 chars:', preservedContent.substring(0, 200));
                 console.log('Contains existing streamed content:', !!existing_streamed_content);
-                
+
                 const preservedMessage = {
                     id: uuidv4(),
                     role: 'assistant' as const,
@@ -550,119 +598,127 @@ export const StreamedContent: React.FC<{}> = () => {
     useEffect(() => {
         if (!streamingConversations.has(currentConversationId)) return;
 
-        // Only enable auto-scrolling if user hasn't manually scrolled
-        isAutoScrollingRef.current = !userHasScrolled;
-    }, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
+        // Enable auto-scrolling for the current streaming conversation
+        const shouldAutoScroll = !userHasScrolled && streamingConversations.has(currentConversationId);
+    isAutoScrollingRef.current = shouldAutoScroll;
 
-    // Add a separate effect to handle scroll position restoration
-    useEffect(() => {
-        if (!streamingConversations.has(currentConversationId)) return;
-    }, [currentConversationId, streamingConversations]);
+    console.log('📜 StreamedContent: Auto-scroll state updated', {
+        conversationId: currentConversationId,
+        isStreaming: streamingConversations.has(currentConversationId),
+        userHasScrolled,
+        shouldAutoScroll,
+        contentLength: streamedContent?.length || 0
+    });
+}, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
+// Add a separate effect to handle scroll position restoration
+useEffect(() => {
+    if (!streamingConversations.has(currentConversationId)) return;
+}, [currentConversationId, streamingConversations]);
 
-    // Update loading state based on streaming status
-    useEffect(() => {
-        if (!isStreaming) {
-            setIsLoading(false);
-        }
-    }, [isStreaming]);
+// Update loading state based on streaming status
+useEffect(() => {
+    if (!isStreaming) {
+        setIsLoading(false);
+    }
+}, [isStreaming]);
 
-    const enableCodeApply = window.enableCodeApply === 'true';
-    return (
-        <div style={{
-            display: 'flex',
-            // In bottom-up view, reverse the order of elements  
-            flexDirection: isTopToBottom ? 'column' : 'column-reverse',
-        }}>
-            {streamingConversations.has(currentConversationId) &&
-                !currentMessages.some(msg => msg.role === 'assistant' &&
-                    msg.content === streamedContentMap.get(currentConversationId)) &&
-                (hasStreamedContent || !hasShownContent) && (
-                    <div className="message assistant">
-                        {connectionLost && (
-                            <ConnectionLostAlert />
+const enableCodeApply = window.enableCodeApply === 'true';
+return (
+    <div style={{
+        display: 'flex',
+        // In bottom-up view, reverse the order of elements  
+        flexDirection: isTopToBottom ? 'column' : 'column-reverse',
+    }}>
+        {streamingConversations.has(currentConversationId) &&
+            !currentMessages.some(msg => msg.role === 'assistant' &&
+                msg.content === streamedContentMap.get(currentConversationId)) &&
+            (hasStreamedContent || !hasShownContent) && (
+                <div className="message assistant">
+                    {connectionLost && (
+                        <ConnectionLostAlert />
+                    )}
+                    <div className="message-sender" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span>AI:</span>
+                        {/* Only show stop button here once we have content */}
+                        {streamingConversations.has(currentConversationId) && hasStreamedContent && (
+                            <StopStreamButton
+                                conversationId={currentConversationId}
+                                // Pass direct stop function as a prop
+                                onStop={stopStreaming}
+                                style={{ marginLeft: 'auto' }}
+                            />
                         )}
-                        <div className="message-sender" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <span>AI:</span>
-                            {/* Only show stop button here once we have content */}
-                            {streamingConversations.has(currentConversationId) && hasStreamedContent && (
-                                <StopStreamButton
-                                    conversationId={currentConversationId}
-                                    // Pass direct stop function as a prop
-                                    onStop={stopStreaming}
-                                    style={{ marginLeft: 'auto' }}
+                    </div>
+                    <Suspense fallback={<div>Loading content...</div>}>
+                        <>
+                            {/* Show reasoning content for OpenAI models */}
+                            <ReasoningDisplay conversationId={currentConversationId} />
+
+                            {/* Only render if we have actual content */}
+                            {error && <><ErrorDisplay message={error} /><br /></>}
+                            {!error && streamedContent && streamedContent.trim() && (
+                                <div className="message-content">
+                                    {/* Show preservation notice if this content was preserved */}
+                                    {streamedContent.includes('Successful Tool Executions Before Error:') && (
+                                        <Alert
+                                            message="⚠️ Partial Response Preserved"
+                                            description="Some tool executions completed successfully before an error occurred. Results are shown below."
+                                            type="warning"
+                                            showIcon
+                                            style={{ marginBottom: '16px' }}
+                                        />
+                                    )}
+                                    <MarkdownRenderer
+                                        key={`stream-${currentConversationId}`}
+                                        markdown={streamedContent}
+                                        forceRender={streamingConversations.has(currentConversationId)}
+                                        isStreaming={streamingConversations.has(currentConversationId)}
+                                        enableCodeApply={enableCodeApply}
+                                    />
+                                </div>
+                            )}
+                            {/* Show preservation notice for any preserved content */}
+                            {streamedContent.includes('Response was interrupted by an error') && (
+                                <Alert
+                                    message="⚠️ Partial Response Preserved"
+                                    description="The response was interrupted by an error, but the content generated before the error has been preserved."
+                                    type="warning"
+                                    showIcon
+                                    style={{ marginBottom: '16px' }}
+                                    action={
+                                        <span style={{ fontSize: '12px', opacity: 0.7 }}>
+                                            You can continue the conversation or regenerate the response.
+                                        </span>
+                                    }
                                 />
                             )}
-                        </div>
-                        <Suspense fallback={<div>Loading content...</div>}>
-                            <>
-                                {/* Show reasoning content for OpenAI models */}
-                                <ReasoningDisplay conversationId={currentConversationId} />
-                                
-                                {/* Only render if we have actual content */}
-                                {error && <><ErrorDisplay message={error} /><br /></>}
-                                {!error && streamedContent && streamedContent.trim() && (
-                                    <div className="message-content">
-                                        {/* Show preservation notice if this content was preserved */}
-                                        {streamedContent.includes('Successful Tool Executions Before Error:') && (
-                                            <Alert
-                                                message="⚠️ Partial Response Preserved" 
-                                                description="Some tool executions completed successfully before an error occurred. Results are shown below."
-                                                type="warning"
-                                                showIcon
-                                                style={{ marginBottom: '16px' }}
-                                            />
-                                        )}
-                                        <MarkdownRenderer
-                                            key={`stream-${currentConversationId}`}
-                                            markdown={streamedContent}
-                                            forceRender={streamingConversations.has(currentConversationId)}
-                                            isStreaming={streamingConversations.has(currentConversationId)}
-                                            enableCodeApply={enableCodeApply}
-                                        />
-                                    </div>
-                                )}
-                                {/* Show preservation notice for any preserved content */}
-                                {streamedContent.includes('Response was interrupted by an error') && (
-                                    <Alert
-                                        message="⚠️ Partial Response Preserved"
-                                        description="The response was interrupted by an error, but the content generated before the error has been preserved."
-                                        type="warning"
-                                        showIcon
-                                        style={{ marginBottom: '16px' }}
-                                        action={
-                                            <span style={{ fontSize: '12px', opacity: 0.7 }}>
-                                                You can continue the conversation or regenerate the response.
-                                            </span>
-                                        }
+                            {/* Show content even when there's an error */}
+                            {error && streamedContent && streamedContent.trim() && (
+                                <div className="message-content" style={{ opacity: 0.8 }}>
+                                    <MarkdownRenderer
+                                        key={`stream-${currentConversationId}-with-error`}
+                                        markdown={streamedContent}
+                                        forceRender={streamingConversations.has(currentConversationId)}
+                                        isStreaming={streamingConversations.has(currentConversationId)}
+                                        enableCodeApply={enableCodeApply}
                                     />
-                                )}
-                                {/* Show content even when there's an error */}
-                                {error && streamedContent && streamedContent.trim() && (
-                                    <div className="message-content" style={{ opacity: 0.8 }}>
-                                        <MarkdownRenderer
-                                            key={`stream-${currentConversationId}-with-error`}
-                                            markdown={streamedContent}
-                                            forceRender={streamingConversations.has(currentConversationId)}
-                                            isStreaming={streamingConversations.has(currentConversationId)}
-                                            enableCodeApply={enableCodeApply}
-                                        />
-                                    </div>
-                                )}
+                                </div>
+                            )}
 
-                            </>
-                        </Suspense>
-                    </div>
-                )}
+                        </>
+                    </Suspense>
+                </div>
+            )}
 
-            <div ref={contentRef} style={{ minHeight: '10px' }}></div>
-            {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
-            {streamingConversations.has(currentConversationId) &&
-                !error && (isLoading || isPendingResponse) && // don't show loading if there's an error
-                // Only show loading indicator if we don't have any streamed content yet and haven't started rendering
-                (!streamedContentMap.has(currentConversationId) ||
-                    streamedContentMap.get(currentConversationId) === '') && (
-                    <LoadingIndicator />
-                )}
-        </div>
-    );
+        <div ref={contentRef} style={{ minHeight: '10px' }}></div>
+        {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
+        {streamingConversations.has(currentConversationId) &&
+            !error && (isLoading || isPendingResponse) && // don't show loading if there's an error
+            // Only show loading indicator if we don't have any streamed content yet and haven't started rendering
+            (!streamedContentMap.has(currentConversationId) ||
+                streamedContentMap.get(currentConversationId) === '') && (
+                <LoadingIndicator />
+            )}
+    </div>
+);
 };

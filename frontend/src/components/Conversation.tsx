@@ -66,14 +66,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
             streamedContentMap.get(conversationId) !== '';
     }, [streamedContentMap]);
 
-    // Effect to handle scrolling when messages change
-    useEffect(() => {
-        // Only scroll if we're not streaming or user hasn't manually scrolled
-        // Removed auto-scrolling from Conversation component to prevent conflicts
-        // StreamedContent handles scrolling during streaming
-    }, [currentMessages.length, isStreaming, userHasScrolled, isTopToBottom]);
-
-
     useEffect(() => {
         // Only log when message count changes significantly, not on every render
         if (Math.abs(currentMessages.length - renderedCountRef.current) > 2) {
