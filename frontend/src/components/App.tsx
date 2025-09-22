@@ -89,7 +89,10 @@ const PANEL_COLLAPSED_KEY = 'ZIYA_PANEL_COLLAPSED';
 const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
 
 export const App: React.FC = () => {
-    const { streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap } = useChatContext();
+    const {
+        streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap,
+        streamingConversations, currentConversationId, isStreaming, userHasScrolled, setUserHasScrolled
+    } = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const [astEnabled, setAstEnabled] = useState(false);
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(() => {
@@ -102,14 +105,13 @@ export const App: React.FC = () => {
         const minWidth = 200;
         return isNaN(width) || width <= 0 ? 300 : Math.max(minWidth, width);
     };
-    const { streamingConversations, currentConversationId, isStreaming,
-        userHasScrolled, setUserHasScrolled } = useChatContext();
     const lastScrollPositionRef = useRef<number>(0);
     const [panelWidth, setPanelWidth] = useState(() => {
         const saved = localStorage.getItem(PANEL_WIDTH_KEY);
         return saved ? parseInt(saved, 10) : 300; // Default width: 300px
     });
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
+    const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
     const [showShellConfig, setShowShellConfig] = useState(false);
     const [showMCPStatus, setShowMCPStatus] = useState(false);
@@ -161,33 +163,99 @@ export const App: React.FC = () => {
         checkASTStatus();
     }, []);
 
-    // Reduce logging frequency to improve performance
-    // console.log('Current mcpEnabled state:', mcpEnabled);
-    // Add scroll event listener to detect manual scrolling
+    // Enhanced scroll event listener for proper bottom-follow behavior
     useEffect(() => {
-        const chatContainer = document.querySelector('.chat-container');
+        const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
         if (!chatContainer) return;
 
+        let scrollTimeout: NodeJS.Timeout;
+
         const handleScroll = () => {
+            // Clear existing timeout to debounce rapid scroll events
+            clearTimeout(scrollTimeout);
+
+            scrollTimeout = setTimeout(() => {
+                if (!chatContainer) return;
+
+                const { scrollTop, scrollHeight, clientHeight } = chatContainer;
+                const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
+                const isNearBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 100;
+
+                // If user scrolls to bottom, reset userHasScrolled to re-enable auto-scrolling
+                if (isAtBottom && userHasScrolled) {
+                    console.log('📜 User scrolled back to bottom - resuming auto-scroll');
+                    setUserHasScrolled(false);
+                    return;
+                }
+
+                // If user scrolls away from bottom significantly, mark as manual scroll
+                if (!isNearBottom && Math.abs(scrollTop - lastScrollPositionRef.current) > 50) {
+                    if (!userHasScrolled) {
+                        console.log('📜 User scrolled away from bottom - pausing auto-scroll');
+                        setUserHasScrolled(true);
+                    }
+                }
+
+                lastScrollPositionRef.current = scrollTop;
+            }, 100); // Debounce scroll events
+        };
+
+        chatContainer.addEventListener('scroll', handleScroll, { passive: true });
+
+        return () => {
+            chatContainer.removeEventListener('scroll', handleScroll);
+            clearTimeout(scrollTimeout);
+        };
+    }, [userHasScrolled, setUserHasScrolled]);
+
+    // Auto-scroll to bottom when new messages arrive or streaming updates occur
+    useEffect(() => {
+        // Only auto-scroll in top-down mode when user hasn't manually scrolled away and not currently streaming
+        if (!isTopToBottom || userHasScrolled) return;
+
+        const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
+        if (!chatContainer) return;
+
+        // Scroll to bottom smoothly
+        const scrollToBottom = () => {
             const { scrollTop, scrollHeight, clientHeight } = chatContainer as HTMLElement;
             const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
 
-            // If user scrolls to bottom, reset userHasScrolled to false to re-enable auto-scrolling
-            if (isAtBottom && userHasScrolled) {
-                setUserHasScrolled(false);
-                return;
+            if (!isAtBottom) {
+                // Only auto-scroll for new messages when not actively streaming
+                // StreamedContent handles scrolling during streaming
+                if (!streamingConversations.has(currentConversationId)) {
+                    console.log('📜 App: Auto-scrolling to bottom for new messages');
+                    chatContainer.scrollTo({
+                        top: chatContainer.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                } else {
+                    console.log('📜 App: Skipping auto-scroll - streaming active, StreamedContent will handle');
+                }
             }
-
-            // If we're not at the bottom and the scroll position changed significantly, mark as user scrolled
-            if (!isAtBottom && Math.abs(scrollTop - lastScrollPositionRef.current) > 10) {
-                setUserHasScrolled(true);
-            }
-            lastScrollPositionRef.current = scrollTop;
         };
 
-        chatContainer.addEventListener('scroll', handleScroll);
-        return () => chatContainer.removeEventListener('scroll', handleScroll);
-    }, [userHasScrolled, setUserHasScrolled]);
+        // Use requestAnimationFrame to ensure DOM has updated
+        requestAnimationFrame(scrollToBottom);
+    }, [isTopToBottom, currentMessages, streamedContentMap, userHasScrolled, streamingConversations, currentConversationId]);
+
+    // Reset userHasScrolled when switching conversations
+    useEffect(() => {
+        // Reset scroll state when switching to a new conversation
+        // This ensures auto-scroll works immediately in new conversations
+        setUserHasScrolled(false);
+
+        // Also scroll to bottom when switching conversations in top-down mode
+        if (isTopToBottom) {
+            setTimeout(() => {
+                const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
+                if (chatContainer) {
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+            }, 100);
+        }
+    }, [currentConversationId, isTopToBottom, setUserHasScrolled]);
 
     const handleNewChat = async () => {
         try {
@@ -293,58 +361,44 @@ export const App: React.FC = () => {
         });
     };
 
-    // in top-down mode autoscroll to end
-    useEffect(() => {
-        // Removed aggressive auto-scrolling that was causing cursor jumps
-        // Let StreamedContent handle scrolling during streaming
-    }, [isTopToBottom, currentMessages, streamedContentMap, userHasScrolled, streamingConversations, currentConversationId]);
-
     const toggleDirection = () => {
-        // Prevent scroll jumping when toggling direction
-        const chatContainer = document.querySelector('.chat-container');
-        const currentScrollTop = chatContainer?.scrollTop || 0;
+        const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
 
         setIsTopToBottom(prev => !prev);
+        setUserHasScrolled(false);
 
-        // Restore scroll position after a brief delay
         setTimeout(() => {
             if (chatContainer) {
-                chatContainer.scrollTop = currentScrollTop;
+                if (!isTopToBottom) {
+                    console.log('📜 Switching to top-down mode - scrolling to bottom');
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                } else {
+                    console.log('📜 Switching to bottom-up mode - scrolling to top');
+                    chatContainer.scrollTop = 0;
+                }
+            }
+
+            const bottomUpContent = bottomUpContentRef.current;
+            if (bottomUpContent && isTopToBottom) {
+                requestAnimationFrame(() => bottomUpContent.scrollTop = 0);
             }
         }, 50);
     };
 
-    useEffect(() => {
-        // Handle scroll position after mode switch
-        const chatContainer = document.querySelector('.chat-container');
-        const bottomUpContent = document.querySelector('.bottom-up-content');
-
-        setTimeout(() => {
-            if (isTopToBottom && chatContainer) {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            } else if (!isTopToBottom && bottomUpContent) {
-                requestAnimationFrame(() => bottomUpContent.scrollTop = 0);
-            }
-        }, 100);
-    }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
-
-    // Add keyboard shortcut for layout reset
+    // Add keyboard shortcut handling
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.ctrlKey && e.shiftKey && e.key === 'R') {
+            if (e.ctrlKey && e.key === 'r') {
                 e.preventDefault();
-                localStorage.removeItem('ZIYA_PANEL_WIDTH');
-                localStorage.removeItem('ZIYA_PANEL_COLLAPSED');
-                document.documentElement.style.setProperty('--folder-panel-width', '300px');
                 window.location.reload();
             }
         };
+
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
 
     const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
-
     const chatContainerContent = isTopToBottom ? (
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
             <div style={{
@@ -457,12 +511,14 @@ export const App: React.FC = () => {
                             overflow: 'hidden'
                         }}>
                         <FolderTree isPanelCollapsed={isPanelCollapsed} />
-                        <div className="chat-container">
+                        <div
+                            className="chat-container"
+                            ref={chatContainerRef}
+                        >
                             <div className="chat-content-stabilizer">
                                 <LayoutErrorBoundary>
                                     {chatContainerContent}
                                 </LayoutErrorBoundary>
-                                {/* Add a hidden element to check layout integrity */}
                                 <div id="layout-integrity-check" style={{
                                     position: 'absolute',
                                     visibility: 'hidden'
@@ -493,6 +549,6 @@ export const App: React.FC = () => {
 
                 </ConfigProvider>
             </ProfilerWrapper>
-        </ExtensionErrorBoundary >
+        </ExtensionErrorBoundary>
     );
 };

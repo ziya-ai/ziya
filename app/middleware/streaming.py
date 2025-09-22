@@ -668,16 +668,23 @@ class StreamingMiddleware(BaseHTTPMiddleware):
     
     def _should_flush_buffer(self, buffer: str) -> bool:
         """Determine if we should flush the buffer."""
-        # Flush if we have a complete tool call
+        # Always flush if we have a complete tool call
         if self._contains_complete_tool_call(buffer):
             return True
         
-        # Flush if buffer is getting too large (safety measure)
-        if len(buffer) > 1000:
+        # Always flush if buffer is getting too large (safety measure)
+        if len(buffer) > 500:  # Reduced from 1000 to prevent long delays
             return True
         
-        # Flush if we have content that doesn't look like it's leading to a tool call
-        if buffer and not self._might_be_tool_start(buffer):
+        # NEW LOGIC: Only hold content if we're clearly in the middle of a tool call
+        # Don't hold content just because it "might" lead to a tool call
+        if self._contains_partial(buffer):
+            # We have partial tool call content - hold it
+            return False
+        
+        # For everything else, flush immediately to prevent delays
+        # This includes regular text that doesn't look like tool content
+        if buffer and len(buffer.strip()) > 0:
             return True
         
         return False

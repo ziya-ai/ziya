@@ -1721,6 +1721,15 @@ async def stream_chunks(body):
             iteration += 1
             logger.info(f"🔍 AGENT ITERATION {iteration}: Starting iteration")
 
+            # Check for stream interruption requests
+            if conversation_id not in active_streams:
+                logger.info(f"🔄 Stream for {conversation_id} was interrupted, stopping gracefully")
+                interruption_notice = {"op": "add", "path": "/processing_state", "value": "interrupted"}
+                yield f"data: {json.dumps({'ops': [interruption_notice]})}\n\n"
+                yield f"data: {json.dumps({'stream_interrupted': True})}\n\n"
+                await cleanup_stream(conversation_id)
+                return
+
             current_response = ""
             tool_executed = False
         
@@ -4178,6 +4187,124 @@ async def reset_mcp_state(request: Request):
         
     except Exception as e:
         logger.error(f"Error resetting MCP state: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post('/api/check-files-in-context')
+async def check_files_in_context(request: Request):
+    """Check which files from a list are currently available in the selected context."""
+    try:
+        body = await request.json()
+        file_paths = body.get('filePaths', [])
+        current_files = body.get('currentFiles', [])
+        
+        if not file_paths:
+            return {"missingFiles": [], "availableFiles": []}
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        if not user_codebase_dir:
+            return JSONResponse(status_code=500, content={"error": "ZIYA_USER_CODEBASE_DIR not set"})
+        
+        logger.info(f"🔄 CONTEXT_CHECK: Checking {len(file_paths)} files against {len(current_files)} current context files")
+        logger.info(f"🔄 CONTEXT_CHECK: Files to check: {file_paths}")
+        logger.info(f"🔄 CONTEXT_CHECK: Current context: {current_files[:10]}...")
+        
+        missing_files = []
+        available_files = []
+        
+        for file_path in file_paths:
+            # Clean up the file path (remove a/ or b/ prefixes from git diffs)
+            clean_path = file_path.strip()
+            if clean_path.startswith('a/') or clean_path.startswith('b/'):
+                clean_path = clean_path[2:]
+            
+            # Check if the file is in the current selected context
+            is_in_context = False
+            
+            # Direct match
+            if clean_path in current_files:
+                is_in_context = True
+            # Check if any selected folder contains this file
+            elif any(clean_path.startswith(f + '/') or f.endswith('/') and clean_path.startswith(f) 
+                    for f in current_files):
+                is_in_context = True
+            
+            logger.info(f"🔄 CONTEXT_CHECK: File '{clean_path}' in context: {is_in_context}")
+            
+            if is_in_context:
+                available_files.append(clean_path)
+            else:
+                # File is not in current context - check if it exists on disk (can be added)
+                full_path = os.path.join(user_codebase_dir, clean_path)
+                if os.path.exists(full_path) and os.path.isfile(full_path):
+                    missing_files.append(clean_path)  # Exists but not in context
+                else:
+                    missing_files.append(clean_path)  # Doesn't exist at all
+        
+        logger.info(f"🔄 CONTEXT_CHECK: Result - Available: {available_files}, Missing: {missing_files}")
+        return {
+            "missingFiles": missing_files,
+            "availableFiles": available_files
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking files in context: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post('/api/restart-stream-with-context')
+async def restart_stream_with_context(request: Request):
+    """Restart stream with enhanced context including additional files."""
+    try:
+        body = await request.json()
+        conversation_id = body.get('conversation_id')
+        added_files = body.get('added_files', [])
+        current_files = body.get('current_files', [])
+        
+        if not conversation_id:
+            return JSONResponse(status_code=400, content={"error": "conversation_id is required"})
+        
+        logger.info(f"🔄 CONTEXT_ENHANCEMENT: Restarting stream for {conversation_id} with {len(added_files)} additional files")
+        
+        # First, cleanly abort the current stream if it exists
+        if conversation_id in active_streams:
+            logger.info(f"🔄 CONTEXT_ENHANCEMENT: Aborting existing stream for {conversation_id}")
+            await cleanup_stream(conversation_id)
+            # Give it a moment to clean up
+            await asyncio.sleep(0.1)
+        
+        # Combine current files with newly added files
+        all_files = list(set(current_files + added_files))
+        logger.info(f"🔄 CONTEXT_ENHANCEMENT: Using combined files: current={len(current_files)}, added={len(added_files)}, total={len(all_files)}")
+        
+        # Build enhanced context body
+        enhanced_body = {
+            'question': "Continue with the enhanced context that now includes the referenced files.",
+            'conversation_id': conversation_id,
+            'config': {
+                'files': all_files,  # Use all files including newly added ones
+                'conversation_id': conversation_id
+            },
+            '_context_enhancement': True,  # Flag to indicate this is a context enhancement
+            '_added_files': added_files
+        }
+        
+        logger.info(f"🔄 CONTEXT_ENHANCEMENT: Starting enhanced stream with {len(added_files)} files")
+        
+        # Stream the enhanced response
+        return StreamingResponse(
+            stream_chunks(enhanced_body),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error restarting stream with enhanced context: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post('/api/apply-changes')

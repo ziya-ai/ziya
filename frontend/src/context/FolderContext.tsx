@@ -26,6 +26,7 @@ export interface FolderContextType {
   scanError: string | null;
   getFolderTokenCount: (path: string, folderData: Folders) => number;
   accurateTokenCounts: Record<string, { count: number; timestamp: number }>;
+  addFilesToContext: (filePaths: string[]) => Promise<void>;
 }
 
 const FolderContext = createContext<FolderContextType | undefined>(undefined);
@@ -269,7 +270,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         console.log('No items selected, skipping accurate token updates');
       }
     }, 100); // Small delay to ensure UI renders first
-    
+
     return () => clearTimeout(timeoutId);
   }, [checkedKeys, debouncedUpdateAccurateTokens]);
 
@@ -405,7 +406,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         setIsScanning(false);
       }
     };
-    
+
     // Post message to trigger async execution
     channel.port2.postMessage(null);
   }, [startProgressPolling]);
@@ -429,9 +430,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         }, 100);
       }
     };
-    
+
+    // Call the async function
     asyncInit();
-  }, [fetchFolders]);
+  }, []); // Add empty dependency array
 
   // Add timeout handling with user notification
   useEffect(() => {
@@ -476,6 +478,29 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     };
   }, [isScanning, cancelScan]);
 
+  // Function to programmatically add files to context
+  const addFilesToContext = useCallback(async (filePaths: string[]) => {
+    try {
+      console.log('📁 CONTEXT: Adding files to context:', filePaths);
+      
+      // Add files to checked keys using the existing pattern
+      setCheckedKeys(prev => {
+        const newKeys = [...prev, ...filePaths.filter(file => !prev.includes(file))];
+        console.log('📁 CONTEXT: Updated checked keys:', newKeys);
+        
+        // Save to localStorage immediately to persist the change
+        localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(newKeys));
+        
+        return newKeys;
+      });
+      
+      console.log('📁 CONTEXT: Files added to context successfully');
+    } catch (error) {
+      console.error('Error adding files to context:', error);
+      throw error;
+    }
+  }, [setCheckedKeys]);
+
   const contextValue = useMemo(() => ({
     folders,
     getFolderTokenCount,
@@ -491,9 +516,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     scanProgress,
     scanError,
     accurateTokenCounts,
+    addFilesToContext,
     // Remove forceRefreshCounter from dependencies to prevent unnecessary re-renders
   }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning,
-    scanProgress, scanError, accurateTokenCounts, forceRefreshCounter]);
+    scanProgress, scanError, accurateTokenCounts, forceRefreshCounter, addFilesToContext]);
 
   return (
     <FolderContext.Provider value={contextValue}>
@@ -508,19 +534,24 @@ export const useFolderContext = () => {
     // Return safe defaults when called outside FolderProvider
     return {
       folders: undefined,
-      treeData: [],
-      checkedKeys: [],
+      treeData: [] as TreeDataNode[],
       setTreeData: () => { },
+      checkedKeys: [] as React.Key[],
       setCheckedKeys: () => { },
       searchValue: '',
       setSearchValue: () => { },
-      expandedKeys: [],
+      expandedKeys: [] as React.Key[],
       setExpandedKeys: () => { },
       isScanning: false,
-      scanProgress: null,
+      scanProgress: null as {
+        directories: number;
+        files: number;
+        elapsed: number;
+      } | null,
       scanError: null,
-      accurateTokenCounts: {},
-      getFolderTokenCount: () => 0
+      getFolderTokenCount: () => 0,
+      accurateTokenCounts: {} as Record<string, { count: number; timestamp: number }>,
+      addFilesToContext: async () => { },
     };
   }
   return context;

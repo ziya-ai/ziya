@@ -76,8 +76,14 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     if is_google_endpoint:
         logger.info("MCP_GUIDELINES: Google model detected. Skipping XML tool instructions in prompt.")
         return prompt
+    
+    # Check if native tools are available - if so, skip XML instructions
+    native_tools_available = context.get("native_tools_available", False)
+    if native_tools_available:
+        logger.info("MCP_GUIDELINES: Native tools available. Skipping XML tool instructions in prompt.")
+        return prompt
     else:
-        logger.info("MCP_DEBUG: Not a Google endpoint, adding XML tool instructions.")
+        logger.info("MCP_DEBUG: Not a Google endpoint and no native tools, adding XML tool instructions.")
         # For other models (Bedrock, etc.), provide XML-based tool instructions
         mcp_guidelines = """
 
