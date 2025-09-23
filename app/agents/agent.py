@@ -1808,31 +1808,34 @@ def create_agent_chain(chat_model: BaseChatModel):
     # Create cache key based on model configuration
     model_id = ModelManager.get_model_id() or getattr(chat_model, 'model_id', 'unknown')
     ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
-    mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP") != "false"
+    mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes")
     
     # Get MCP tools first to include in cache key
     mcp_tools = []
-    try:
-        from app.mcp.manager import get_mcp_manager
-        from app.mcp.enhanced_tools import create_secure_mcp_tools
-        mcp_manager = get_mcp_manager()
-        # Ensure MCP is initialized before creating tools
-        if not mcp_manager.is_initialized:
-            # Don't initialize during startup - let server startup handle it
-            logger.info("MCP manager not yet initialized, will use available tools when ready")
-            mcp_tools = []
-        else:
-            mcp_tools = create_secure_mcp_tools()
-            logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+    if mcp_enabled:
+        try:
+            from app.mcp.manager import get_mcp_manager
+            from app.mcp.enhanced_tools import create_secure_mcp_tools
+            mcp_manager = get_mcp_manager()
+            # Ensure MCP is initialized before creating tools
+            if not mcp_manager.is_initialized:
+                # Don't initialize during startup - let server startup handle it
+                logger.info("MCP manager not yet initialized, will use available tools when ready")
+                mcp_tools = []
+            else:
+                mcp_tools = create_secure_mcp_tools()
+                logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+            
+            if mcp_manager.is_initialized:
+                mcp_tools = create_secure_mcp_tools()
+                logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+            else:
+                logger.warning("MCP manager not initialized, no MCP tools available")
         
-        if mcp_manager.is_initialized:
-            mcp_tools = create_secure_mcp_tools()
-            logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
-        else:
-            logger.warning("MCP manager not initialized, no MCP tools available")
-    
-    except Exception as e:
-        logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+        except Exception as e:
+            logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+    else:
+        logger.debug("MCP is disabled, no tools will be created for agent chain")
     
     # Include MCP tool count in cache key to ensure different chains for different tool availability
     cache_key = f"{model_id}_{ast_enabled}_{mcp_enabled}_{len(mcp_tools)}"
@@ -2099,22 +2102,26 @@ def create_agent_executor(agent_chain: Runnable):
 
     # Get MCP tools for the executor
     mcp_tools = []
-    try:
-        logger.info("Attempting to get MCP tools for agent executor...")
-        
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        
-        if mcp_manager.is_initialized:
-            mcp_tools = create_mcp_tools()
-            logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
-            for tool in mcp_tools:
-                logger.info(f"  - {tool.name}: {tool.description}")
-        else:
-            logger.info("MCP not initialized, no MCP tools available")
-    except Exception as e:
-        logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
-        from app.mcp.manager import get_mcp_manager
+    # Check if MCP is enabled before creating tools
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        try:
+            logger.info("Attempting to get MCP tools for agent executor...")
+            
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            
+            if mcp_manager.is_initialized:
+                mcp_tools = create_mcp_tools()
+                logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
+                for tool in mcp_tools:
+                    logger.info(f"  - {tool.name}: {tool.description}")
+            else:
+                logger.info("MCP not initialized, no MCP tools available")
+        except Exception as e:
+            logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
+            from app.mcp.manager import get_mcp_manager
+    else:
+        logger.debug("MCP is disabled, no tools will be created for agent executor")
         mcp_manager = get_mcp_manager()
 
     logger.info(f"AGENT_EXECUTOR: Tools being passed to AgentExecutor: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")

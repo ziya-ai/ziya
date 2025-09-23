@@ -334,16 +334,16 @@ class MCPManager:
                     logger.error(f"No configuration found for server '{server_name}' during restart.")
                     return False
             
-                # Create and connect new client
-                client = MCPClient(server_config)
-                self.clients[server_name] = client
-                success = await self._connect_server(server_name, client)
-                
-                # Invalidate cache when client configuration changes
-                self.invalidate_tools_cache()
-                
-                logger.info(f"Server {server_name} restart {'successful' if success else 'failed'}")
-                return success
+            # Create and connect new client
+            client = MCPClient(server_config)
+            self.clients[server_name] = client
+            success = await self._connect_server(server_name, client)
+            
+            # Invalidate cache when client configuration changes
+            self.invalidate_tools_cache()
+            
+            logger.info(f"Server {server_name} restart {'successful' if success else 'failed'}")
+            return success
             
         except Exception as e:
             logger.error(f"Error restarting server {server_name}: {str(e)}")
@@ -559,6 +559,28 @@ class MCPManager:
 _mcp_manager: Optional[MCPManager] = None
 def get_mcp_manager() -> MCPManager:
     """Get the global MCP manager instance."""
+    import os
+    
+    # Check if MCP is enabled before creating manager
+    if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        # Return a dummy manager that's never initialized when MCP is disabled
+        class DisabledMCPManager:
+            def __init__(self):
+                self.is_initialized = False
+                self.clients = {}
+                self.server_configs = {}
+            
+            async def initialize(self):
+                pass
+            
+            def get_all_tools(self):
+                return []
+            
+            def get_server_status(self):
+                return {}
+                
+        return DisabledMCPManager()
+    
     global _mcp_manager
     if _mcp_manager is None:
         _mcp_manager = MCPManager()
