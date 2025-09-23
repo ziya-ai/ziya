@@ -1,0 +1,6 @@
+{
+    "description": "Complex system lifecycle state machine with nested states, failure modes, and recovery procedures",
+    "diagram_type": "stateDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Advanced state diagram with deep nesting, multiple failure paths, and recovery mechanisms"
+}

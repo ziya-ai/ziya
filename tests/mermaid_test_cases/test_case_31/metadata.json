@@ -1,0 +1,6 @@
+{
+    "description": "TCP packet structure diagram showing bit field layout",
+    "diagram_type": "packet-beta",
+    "expected_to_fail": false,
+    "target_issue": "Packet diagram syntax without proper formatting"
+}

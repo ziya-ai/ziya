@@ -6,6 +6,9 @@ import { useTheme } from '../context/ThemeContext';
 // Configuration
 const AST_STATUS_CHECK_INTERVAL = 3000; // 3 seconds
 
+// Global request deduplication for AST status
+let activeAstRequest: Promise<AstStatus> | null = null;
+
 /**
  * Format elapsed time in a human-readable format
  * @param seconds - Elapsed time in seconds
@@ -36,6 +39,21 @@ export const triggerAstStatusCheck = () => {
 };
 
 /**
+ * Deduplicated AST status fetch
+ */
+const fetchAstStatusDeduplicated = async (): Promise<AstStatus> => {
+  if (activeAstRequest) {
+    console.debug('Reusing existing AST status request');
+    return activeAstRequest;
+  }
+
+  activeAstRequest = fetchAstStatus();
+  const result = await activeAstRequest;
+  activeAstRequest = null;
+  return result;
+};
+
+/**
  * AST Status Indicator Component
  * Shows the current status of AST indexing
  */
@@ -46,16 +64,40 @@ const AstStatusIndicator: React.FC = () => {
   const { isDarkMode } = useTheme();
 
   useEffect(() => {
+    // Early exit if AST is not enabled in environment
+    // Check if AST is enabled before making any API calls
+    const checkIfAstEnabled = () => {
+      // Simple check - if there's no AST environment indication, don't even try
+      const url = new URL(window.location.href);
+      const hasAstParam = url.searchParams.has('ast') || 
+                         localStorage.getItem('ZIYA_AST_ENABLED') === 'true' ||
+                         document.querySelector('[data-ast-enabled]');
+      
+      return hasAstParam;
+    };
+    
+    if (!checkIfAstEnabled()) {
+      console.debug('AST not enabled, skipping status checks');
+      return;
+    }
+    
+    const abortController = new AbortController();
     let timer: number | null = null;
     let mounted = true;
 
     const checkStatus = async () => {
+      // Check if component was unmounted
+      if (abortController.signal.aborted || !mounted) return;
+
       try {
-        const astStatus = await fetchAstStatus();
+        const astStatus = await fetchAstStatusDeduplicated();
+
+        // Double-check abort status after async operation
+        if (abortController.signal.aborted || !mounted) return;
 
         if (mounted) {
           setStatus(astStatus);
-          
+
           // Track if we've ever seen active indexing
           if (astStatus.is_indexing || astStatus.is_complete) {
             setHasSeenActiveIndexing(true);
@@ -79,8 +121,13 @@ const AstStatusIndicator: React.FC = () => {
           }
         }
       } catch (error) {
+        // Ignore AbortError - it's expected during cleanup
+        if (error instanceof Error && error.name === 'AbortError') {
+          console.debug('AST status check aborted');
+          return;
+        }
         console.error('Error checking AST status:', error);
-        
+
         // Only continue checking if we've previously seen active indexing
         if (hasSeenActiveIndexing) {
           // Try again after a delay
@@ -123,6 +170,7 @@ const AstStatusIndicator: React.FC = () => {
     // Cleanup
     return () => {
       mounted = false;
+      abortController.abort();
       if (timer) {
         window.clearTimeout(timer);
       }
@@ -142,7 +190,7 @@ const AstStatusIndicator: React.FC = () => {
     if (!hasSeenActiveIndexing) {
       return null;
     }
-    
+
     return (
       <Card
         className="ast-status-error"

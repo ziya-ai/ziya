@@ -1,5 +1,6 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
+import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import ELK from 'elkjs';
 
 export interface D2Spec {
@@ -358,6 +359,17 @@ class ELKLayoutEngine {
 export const d2Plugin: D3RenderPlugin = {
     name: 'd2-renderer',
     priority: 6,
+    sizingConfig: {
+        sizingStrategy: 'auto-expand',
+        needsDynamicHeight: true,
+        needsOverflowVisible: true,
+        observeResize: true,
+        containerStyles: {
+            width: '100%',
+            height: 'auto',
+            overflow: 'visible'
+        }
+    },
     canHandle: isD2Spec,
 
     isDefinitionComplete: (definition: string): boolean => {
@@ -392,8 +404,9 @@ export const d2Plugin: D3RenderPlugin = {
             }
 
             // Parse D2 definition
+            const extractedDefinition = extractDefinitionFromYAML(spec.definition, 'd2');
             const parser = new D2Parser();
-            const { nodes, edges, containers } = parser.parse(spec.definition);
+            const { nodes, edges, containers } = parser.parse(extractedDefinition);
 
             if (nodes.length === 0) {
                 container.innerHTML = `

@@ -1,0 +1,21 @@
+gitgraph
+    commit id: "Initial monolith"
+    commit id: "Add user authentication"
+    commit id: "Implement basic CRUD"
+    
+    branch feature/microservices-migration
+    checkout feature/microservices-migration
+    commit id: "Extract user service"
+    commit id: "Add service discovery"
+    commit id: "Implement API gateway"
+    
+    checkout main
+    branch feature/payment-integration
+    checkout feature/payment-integration
+    commit id: "Add Stripe integration"
+    commit id: "Implement payment webhooks"
+    commit id: "Add payment validation"
+    
+    checkout main
+    merge feature/payment-integration
+    commit id: "Update payment documentation"

@@ -255,6 +255,18 @@ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
 export const jointPlugin: D3RenderPlugin = {
     name: 'joint-renderer',
     priority: 6, // Higher than basic charts, lower than mermaid/graphviz
+    sizingConfig: {
+        sizingStrategy: 'fixed',
+        needsDynamicHeight: false,
+        needsOverflowVisible: false,
+        observeResize: false,
+        minWidth: 400,
+        minHeight: 300,
+        containerStyles: {
+            height: '600px',
+            overflow: 'auto'
+        }
+    },
 
     canHandle: (spec: any): boolean => {
         return isJointSpec(spec);
