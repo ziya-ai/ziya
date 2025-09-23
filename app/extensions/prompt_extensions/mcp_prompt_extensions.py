@@ -61,6 +61,12 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         logger.info("MCP_GUIDELINES: Skipping for gemini-2.5-pro due to prompt size limits")
         return prompt
     
+    # Check if MCP is enabled
+    import os
+    if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        logger.info("MCP_GUIDELINES: MCP is disabled, returning original prompt")
+        return prompt
+    
     # Check if MCP tools are available in the context
     # This would be passed from the agent system when MCP is initialized
     mcp_tools_available = context.get("mcp_tools_available", False)

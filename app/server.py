@@ -140,13 +140,17 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     
     # Get available tools for the template
     tools_list = []
-    try:
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        if mcp_manager.is_initialized:
-            tools_list = [f"- {tool.name}: {tool.description}" for tool in mcp_manager.get_all_tools()]
-    except Exception as e:
-        logger.warning(f"Could not get tools for template: {e}")
+    # Check if MCP is enabled before loading tools
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            if mcp_manager.is_initialized:
+                tools_list = [f"- {tool.name}: {tool.description}" for tool in mcp_manager.get_all_tools()]
+        except Exception as e:
+            logger.warning(f"Could not get tools for template: {e}")
+    else:
+        logger.debug("MCP is disabled, no tools will be loaded for template")
     
     # Build messages manually to ensure proper conversation history
     messages = []
@@ -1134,7 +1138,27 @@ async def stream_chunks(body):
             
             # Format the system message
             formatted_system_content = system_content.replace('{codebase}', codebase_content)
-            formatted_system_content = formatted_system_content.replace('{tools}', 'MCP tools available')
+            
+            # Check if MCP is actually enabled and has tools
+            mcp_tools_text = "No tools available"
+            # Check if MCP is enabled before loading tools
+            if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+                try:
+                    mcp_manager = get_mcp_manager()
+                    if mcp_manager.is_initialized:
+                        available_tools = mcp_manager.get_all_tools()
+                        if available_tools:
+                            mcp_tools_text = f"MCP tools available: {', '.join([tool.name for tool in available_tools])}"
+                        else:
+                            mcp_tools_text = "MCP initialized but no tools available"
+                    else:
+                        mcp_tools_text = "MCP tools disabled"
+                except Exception as e:
+                    mcp_tools_text = "MCP tools unavailable"
+            else:
+                mcp_tools_text = "MCP tools disabled"
+                
+            formatted_system_content = formatted_system_content.replace('{tools}', mcp_tools_text)
             
             messages.append({'type': 'system', 'content': formatted_system_content})
         
@@ -1344,24 +1368,29 @@ async def stream_chunks(body):
                         
                         # Get available tools including MCP tools
                         tools = []
-                        try:
-                            from app.mcp.manager import get_mcp_manager
-                            mcp_manager = get_mcp_manager()
-                            logger.debug(f"MCP manager initialized: {mcp_manager.is_initialized}")
-                            if mcp_manager.is_initialized:
-                                # Convert MCP tools to Bedrock format
-                                mcp_tools = mcp_manager.get_all_tools()
-                                logger.debug(f"Found {len(mcp_tools)} MCP tools")
-                                for tool in mcp_tools:
-                                    logger.debug(f"MCP tool: {tool.name}")
-                                    tools.append({
-                                        'name': tool.name,
-                                    'description': tool.description,
-                                    'input_schema': getattr(tool, 'inputSchema', getattr(tool, 'input_schema', {}))
-                                })
-                        except Exception as e:
-                            logger.debug(f"MCP tool loading error: {e}")
-                            logger.warning(f"Could not get MCP tools: {e}")
+                        
+                        # Check if MCP is enabled before loading tools
+                        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+                            logger.debug("MCP is disabled, no tools will be loaded")
+                        else:
+                            try:
+                                from app.mcp.manager import get_mcp_manager
+                                mcp_manager = get_mcp_manager()
+                                logger.debug(f"MCP manager initialized: {mcp_manager.is_initialized}")
+                                if mcp_manager.is_initialized:
+                                    # Convert MCP tools to Bedrock format
+                                    mcp_tools = mcp_manager.get_all_tools()
+                                    logger.debug(f"Found {len(mcp_tools)} MCP tools")
+                                    for tool in mcp_tools:
+                                        logger.debug(f"MCP tool: {tool.name}")
+                                        tools.append({
+                                            'name': tool.name,
+                                        'description': tool.description,
+                                        'input_schema': getattr(tool, 'inputSchema', getattr(tool, 'input_schema', {}))
+                                    })
+                            except Exception as e:
+                                logger.debug(f"MCP tool loading error: {e}")
+                                logger.warning(f"Could not get MCP tools: {e}")
                         
                         # Add shell tool if no MCP tools available
                         if not tools:
