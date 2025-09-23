@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.3.0"
+version = "0.3.1"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>",
            "Dan Cohn <chroma@gmail.com>"]
@@ -25,7 +25,7 @@ cryptography = ">=3.4.8,<43.0.0"
 pyOpenSSL = ">=20.0.0,<25.0.0"
 # NumPy version constraint to support older GCC versions
 numpy = ">=1.21.0,<2.0.0"
-langchain-google-genai = "^2.1.0"
+langchain-google-genai = "2.0.4"
 langchain = ">=0.3,<0.4"
 langgraph = ">=0.2,<0.3"
 langchainhub = ">=0.1.15"
@@ -37,6 +37,7 @@ transformers = "^4.36.2"
 setuptools = ">=68.0.0"
 # AST parsing dependencies
 cssutils = ">=2.6.0"
+google-generativeai = ">=0.8.5"
 html5lib = ">=1.1"
 tqdm = "^4.66.1"
 # Document extraction dependencies
