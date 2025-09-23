@@ -67,6 +67,8 @@ class MCPClient:
         self.resources: List[MCPResource] = []
         self.tools: List[MCPTool] = []
         self.prompts: List[MCPPrompt] = []
+        self._last_successful_call = time.time()
+        self._last_reconnect_attempt = 0  # Rate limit reconnections
         
     async def connect(self) -> bool:
         """
@@ -82,9 +84,13 @@ class MCPClient:
                 logger.error(f"No command specified for MCP server: {self.server_config.get('name', 'unknown')}")
                 return False
             
-            # Use the current working directory where the program was started
-            # This is more intuitive for users - commands execute where they launched the program
-            working_dir = os.getcwd()
+            # Use the preserved user codebase directory instead of current working directory
+            # The current working directory may have changed during module imports
+            working_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            if not working_dir:
+                working_dir = os.getcwd()
+                logger.warning(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {working_dir}")
+            
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             project_root = os.path.dirname(app_dir)
             
@@ -100,9 +106,6 @@ class MCPClient:
 
             # Resolve command paths
             resolved_command = []
-            # This flag tracks if we've found any script to potentially update working_dir
-            # based on the first script encountered.
-            initial_script_found_for_working_dir_update = False
 
             for part in command:
                 if part.endswith('.py') and not os.path.isabs(part):
@@ -114,9 +117,6 @@ class MCPClient:
                         potential_path = os.path.join(root, part)
                         if os.path.exists(potential_path):
                             current_part_resolved_path = potential_path
-                            if not initial_script_found_for_working_dir_update: # Set working_dir based on the first script found
-                                working_dir = root # This updates working_dir for Popen
-                                initial_script_found_for_working_dir_update = True
                             found_this_part_in_roots = True
                             logger.info(f"Found MCP server script '{part}' at: {current_part_resolved_path}")
                             break # Found the script for this part
@@ -174,6 +174,9 @@ class MCPClient:
                 self.capabilities = init_result.get("capabilities", {})
                 self.is_connected = True
                 
+                # Initialize successful call timestamp on connection
+                self._last_successful_call = time.time()
+                
                 # Send initialized notification
                 await self._send_notification("notifications/initialized")
                 
@@ -217,12 +220,43 @@ class MCPClient:
                 self.process = None
                 self.is_connected = False
     
+    def _is_process_healthy(self) -> bool:
+        """Check if the MCP server process is still healthy."""
+        if not self.process:
+            return False
+        
+        # Check if process is still running
+        if self.process.poll() is not None:
+            logger.warning(f"MCP server process has terminated with code: {self.process.returncode}")
+            self.is_connected = False
+            return False
+        
+        # Only check if process is actually running, not based on call timeouts
+        # A server shouldn't be marked unhealthy just because it hasn't been used recently
+        return True
+    
     async def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None, _retry_count: int = 0) -> Optional[Dict[str, Any]]:
         """Send a JSON-RPC request to the MCP server."""
         max_retries = 3
         
         if not self.process or not self.process.stdin:
             return None
+            
+        # Check process health before sending request
+        if not self._is_process_healthy():
+            # Rate limit reconnection attempts to prevent runaway processes
+            now = time.time()
+            if now - self._last_reconnect_attempt < 30:  # Wait 30 seconds between attempts
+                logger.warning("Process unhealthy, but reconnection rate limited")
+                return None
+                
+            logger.warning("Process unhealthy, attempting reconnection")
+            self._last_reconnect_attempt = now
+            if await self.connect():
+                logger.info("Reconnection successful, retrying request")
+            else:
+                logger.error("Reconnection failed")
+                return None
             
         self.request_id += 1
         request = {
@@ -291,6 +325,8 @@ class MCPClient:
                     "code": error_code
                 }
                 
+            # Update successful call timestamp
+            self._last_successful_call = time.time()
             return response.get("result")
             
         except Exception as e:

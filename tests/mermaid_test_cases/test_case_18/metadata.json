@@ -1,0 +1,6 @@
+{
+    "description": "Comprehensive Kubernetes cluster architecture with control plane, worker nodes, storage, networking, and monitoring",
+    "diagram_type": "graph",
+    "expected_to_fail": false,
+    "target_issue": "Complex container orchestration architecture with extensive interconnections"
+}

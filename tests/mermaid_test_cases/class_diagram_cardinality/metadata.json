@@ -1,0 +1,7 @@
+{
+    "description": "Class diagram with invalid cardinality relationships that should be fixed",
+    "diagram_type": "classdiagram",
+    "expected_to_fail": false,
+    "expected_warnings": [],
+    "target_issue": "Invalid cardinality syntax fixing"
+}

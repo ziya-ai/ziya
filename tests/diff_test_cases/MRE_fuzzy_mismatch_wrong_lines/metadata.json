@@ -1,0 +1,5 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "Test case where fuzzy matching fails due to incorrect line numbers in diff (original case from session start)",
+    "date_added": "2025-01-08"
+}

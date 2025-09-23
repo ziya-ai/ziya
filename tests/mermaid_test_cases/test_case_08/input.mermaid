@@ -1,0 +1,114 @@
+graph TB
+    subgraph "Cloud Infrastructure"
+        subgraph "Load Balancing Layer"
+            ALB[Application Load Balancer]
+            NLB[Network Load Balancer]
+            CF[CloudFront CDN]
+        end
+        
+        subgraph "Compute Layer"
+            subgraph "Web Tier"
+                WEB1[Web Server 1]
+                WEB2[Web Server 2]
+                WEB3[Web Server 3]
+            end
+            
+            subgraph "Application Tier"
+                APP1[App Server 1]
+                APP2[App Server 2]
+                APP3[App Server 3]
+                APP4[App Server 4]
+            end
+            
+            subgraph "Background Processing"
+                WORKER1[Worker Node 1]
+                WORKER2[Worker Node 2]
+                QUEUE[Message Queue]
+                SCHEDULER[Task Scheduler]
+            end
+        end
+        
+        subgraph "Data Layer"
+            subgraph "Primary Database"
+                MASTER[(Master DB)]
+                SLAVE1[(Read Replica 1)]
+                SLAVE2[(Read Replica 2)]
+            end
+            
+            subgraph "Caching Layer"
+                REDIS[(Redis Cluster)]
+                MEMCACHED[(Memcached)]
+            end
+            
+            subgraph "Storage"
+                S3[(Object Storage)]
+                EFS[(File System)]
+            end
+        end
+        
+        subgraph "Monitoring & Logging"
+            METRICS[Metrics Collector]
+            LOGS[Log Aggregator]
+            ALERTS[Alert Manager]
+            DASHBOARD[Monitoring Dashboard]
+        end
+        
+        subgraph "Security"
+            WAF[Web Application Firewall]
+            SECRETS[Secrets Manager]
+            IAM[Identity & Access Management]
+        end
+    end
+    
+    subgraph "External Services"
+        CDN[Content Delivery Network]
+        EMAIL[Email Service]
+        SMS[SMS Gateway]
+        PAYMENT[Payment Gateway]
+        ANALYTICS[Analytics Service]
+    end
+    
+    USER[End Users] --> CF
+    CF --> WAF
+    WAF --> ALB
+    ALB --> WEB1
+    ALB --> WEB2
+    ALB --> WEB3
+    
+    WEB1 --> APP1
+    WEB2 --> APP2
+    WEB3 --> APP3
+    WEB3 --> APP4
+    
+    APP1 --> MASTER
+    APP2 --> SLAVE1
+    APP3 --> SLAVE2
+    APP4 --> REDIS
+    
+    APP1 --> QUEUE
+    APP2 --> QUEUE
+    QUEUE --> WORKER1
+    QUEUE --> WORKER2
+    SCHEDULER --> WORKER1
+    SCHEDULER --> WORKER2
+    
+    APP1 --> S3
+    APP2 --> EFS
+    WORKER1 --> S3
+    WORKER2 --> EFS
+    
+    APP1 --> EMAIL
+    APP2 --> SMS
+    APP3 --> PAYMENT
+    APP4 --> ANALYTICS
+    
+    MASTER --> SLAVE1
+    MASTER --> SLAVE2
+    
+    WEB1 --> METRICS
+    APP1 --> LOGS
+    METRICS --> DASHBOARD
+    LOGS --> ALERTS
+    
+    APP1 --> SECRETS
+    APP2 --> IAM

@@ -1,0 +1,6 @@
+{
+    "description": "Complex microservices architecture with multiple subgraphs and interconnections",
+    "diagram_type": "flowchart",
+    "expected_to_fail": false,
+    "target_issue": "Complex nested subgraph architecture visualization"
+}

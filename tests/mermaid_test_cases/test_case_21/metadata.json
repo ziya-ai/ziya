@@ -1,0 +1,6 @@
+{
+    "description": "Advanced sequence diagram with complex interactions, parallel processing, critical sections, and error handling",
+    "diagram_type": "sequenceDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Complex sequence diagram with advanced Mermaid features like par, critical, option, and break"
+}

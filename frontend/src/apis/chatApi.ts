@@ -9,6 +9,17 @@ interface ErrorResponse {
     detail: string;
     event?: string;
     status_code?: number;
+    retry_after?: string;
+    throttle_info?: {
+        auto_attempts_exhausted?: boolean;
+        total_auto_attempts?: number;
+        can_user_retry?: boolean;
+        backoff_used?: number[];
+    };
+    ui_action?: string;
+    user_message?: string;
+    preserved_content?: string;
+    originalRequestData?: any;
 }
 
 const isValidMessage = (message: any) => {
@@ -23,90 +34,155 @@ const isValidMessage = (message: any) => {
 function extractErrorFromSSE(content: string): ErrorResponse | null {
     if (!content) return null;
 
-    // Check for validation errors first (these are critical and should be shown)
-    if (content.includes('ValidationException') && content.includes('Input is too long')) {
-        return {
-            error: 'context_size_error',
-            detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
-            status_code: 413
-        };
-    }
-    
-    // Check for throttling errors
-    if (content.includes('ThrottlingException') || content.includes('Too many requests')) {
-        return {
-            error: 'throttling_error',
-            detail: 'Too many requests to AWS Bedrock. Please wait a moment before trying again.',
-            status_code: 429
-        };
+    // Only check for errors in properly formatted SSE data that starts with "data: "
+    // This prevents false positives from tool execution results or code examples
+    if (!content.startsWith('data: ')) {
+        return null;
     }
 
-    // Check for other validation errors
     try {
-        // Check for JSON error format
-        if (content.includes('"error"') || content.includes('"detail"')) {
-            try {
-                const parsed = JSON.parse(content);
-                if (parsed.error || parsed.detail) {
-                    return {
-                        error: parsed.error || 'Unknown error',
-                        detail: parsed.detail || parsed.error || 'An error occurred',
-                        status_code: parsed.status_code
-                    };
-                }
-            } catch (e) {
-                // Not valid JSON, continue with other checks
+        // Try to parse as JSON first (most reliable error format)
+        const dataContent = content.substring(6); // Remove "data: " prefix
+
+        if (dataContent.trim() === '[DONE]') {
+            return null;
+        }
+
+        try {
+            const parsed = JSON.parse(dataContent);
+
+            // Only treat as error if it's actually structured as an error response
+            // This prevents false positives from content that mentions error keywords
+            if (!parsed.error && !parsed.detail && !parsed.status_code) {
+                return null; // Not an error structure, just content
             }
-        }
 
-        // Check for validation exception patterns in plain text
-        if (content.includes('ValidationException') || content.includes('Input is too long')) {
-            return {
-                error: 'validation_error',
-                detail: 'The request contains invalid data or is too large for the model.'
-            };
-        }
-
-        // Check for specific error patterns - only at the beginning of lines
-        // and not within code blocks
-        const hasErrorPattern = content.match(/^Error:/m) || content.match(/^error:/m);
-        if (hasErrorPattern) {
-            // Check if this pattern is inside a code block
-            const codeBlockRegex = /```[\s\S]*?(?:^Error:|^error:)[\s\S]*?```/m;
-            const isInCodeBlock = codeBlockRegex.test(content);
-
-            // Only treat as error if not in a code block
-            if (!isInCodeBlock) {
-                const errorMatch = content.match(/(?:^|\n)(?:Error|error):\s*(.+?)(?:\n|$)/);
-                if (errorMatch && errorMatch[1]) {
-                    return {
-                        error: 'Error detected',
-                        detail: errorMatch[1].trim()
-                    };
-                }
-            }
-        }
-
-        // Check for "An error occurred" pattern - but not in code blocks
-        if (content.toLowerCase().includes('an error occurred')) {
-            // Check if this is likely part of code or documentation
-            const isInCodeOrExample = /```[\s\S]*?an error occurred[\s\S]*?```/i.test(content) ||
-                /`an error occurred`/i.test(content) ||
-                /example.*?an error occurred/i.test(content);
-
-            if (!isInCodeOrExample) {
+            // Check for explicit error objects
+            if (parsed.error && parsed.error.type && parsed.error.detail) {
                 return {
-                    error: 'Error detected',
-                    detail: 'An error occurred during processing'
+                    error: parsed.error.type,
+                    detail: parsed.error.detail,
+                    status_code: parsed.error.status_code
                 };
             }
-        }
 
-        return null;
+            // Check for direct error format
+            if (parsed.error || parsed.detail) {
+                return {
+                    error: parsed.error || 'unknown_error',
+                    detail: parsed.detail || parsed.error || 'An unknown error occurred',
+                    status_code: parsed.status_code
+                };
+            }
+
+            // Check for error content in JSON format (like the tool names error)
+            if (parsed.type === 'error' && parsed.content) {
+                // Check if it's a ValidationException
+                if (parsed.content.includes('ValidationException')) {
+                    if (parsed.content.includes('Input is too long')) {
+                        return {
+                            error: 'context_size_error',
+                            detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                            status_code: 413
+                        };
+                    } else {
+                        return {
+                            error: 'validation_error',
+                            detail: parsed.content,
+                            status_code: 400
+                        };
+                    }
+                }
+                // Handle other error types
+                return {
+                    error: 'unknown_error',
+                    detail: parsed.content,
+                    status_code: 500
+                };
+            }
+
+            // Not an error JSON object
+            return null;
+
+        } catch (e) {
+            // Not valid JSON, check for specific error patterns in plain text
+            // But only if it looks like an actual error message, not tool output
+
+            // Check for validation errors - but only in error-formatted messages
+            if (dataContent.includes('ValidationException')) {
+                // Make sure this isn't part of tool execution output
+                if (!dataContent.includes('tool_execution') &&
+                    !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
+                    !dataContent.includes('```') && // Not in code block
+                    dataContent.includes('error')) { // Must have error context
+
+                    if (dataContent.includes('Input is too long')) {
+                        return {
+                            error: 'context_size_error',
+                            detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                            status_code: 413
+                        };
+                    } else {
+                        // Handle other ValidationExceptions with a generic message
+                        return {
+                            error: 'validation_error',
+                            detail: 'Model parameter error: ' + dataContent.replace(/^data:\s*/, '').trim(),
+                            status_code: 400
+                        };
+                    }
+                }
+            }
+
+            // Check for throttling errors - but only in error-formatted messages
+            // Be much more strict about what constitutes a throttling error
+            if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
+                !dataContent.includes('reached max retries') &&
+                !dataContent.includes('tool_execution') && !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
+                !dataContent.includes('```') && // Not in code block
+                !dataContent.includes('diff --git') && // Not in diff
+                !dataContent.includes('MATH_INLINE') && // Not in tool output
+                !dataContent.includes('Shell Command') && // Not in shell command output
+                !dataContent.includes('result') && // Not in tool result
+                !dataContent.includes('"type": "text"') && // Not regular text content
+                !dataContent.includes('"content":') && // Not content field
+                (dataContent.includes('"error"') && dataContent.includes('"detail"'))) { // Must be structured error
+                return {
+                    error: 'throttling_error',
+                    detail: 'Too many requests to AWS Bedrock. Please wait a moment before trying again.',
+                    status_code: 429
+                };
+            }
+
+            // Check for exhausted retry throttling errors
+            if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
+                (dataContent.includes('reached max retries') || dataContent.includes('exhausted')) &&
+                !dataContent.includes('tool_execution') && !dataContent.includes('```')) {
+                return {
+                    error: 'throttling_error_exhausted',
+                    detail: 'AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.',
+                    status_code: 429
+                };
+            }
+
+            // Catch-all for any other error-like content that wasn't handled above
+            if (dataContent.includes('Exception') && dataContent.includes('error') &&
+                !dataContent.includes('tool_execution') &&
+                !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
+                !dataContent.includes('```')) {
+                return {
+                    error: 'unknown_error',
+                    detail: dataContent.replace(/^data:\s*/, '').trim(),
+                    status_code: 500
+                };
+            }
+
+            return null;
+        }
     } catch (error) {
         console.warn('Error in extractErrorFromSSE:', error);
         return null;
     }
+
 }
 
 /**
@@ -115,16 +191,25 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
 function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
     try {
         // Try to find JSON objects in the chunk
-        
+
         // First check for validation errors in plain text
-        if (chunk.includes('ValidationException') && chunk.includes('Input is too long')) {
-            return {
-                error: 'context_size_error',
-                detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
-                status_code: 413
-            };
+        if (chunk.includes('ValidationException')) {
+            if (chunk.includes('Input is too long')) {
+                return {
+                    error: 'context_size_error',
+                    detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                    status_code: 413
+                };
+            } else {
+                // Handle other ValidationExceptions with a generic message
+                return {
+                    error: 'validation_error',
+                    detail: 'Model parameter error: ' + chunk.replace(/^data:\s*/, '').trim(),
+                    status_code: 400
+                };
+            }
         }
-        
+
         const jsonMatches = chunk.match(/(\{.*?\})/g);
         if (!jsonMatches) return null;
 
@@ -135,8 +220,8 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                 // Check for direct error properties
                 if (data.error || data.detail) {
                     return {
-                        error: data.error || 'Unknown error',
-                        detail: data.detail || data.error || 'An error occurred',
+                        error: data.error || 'unknown_error',
+                        detail: data.detail || data.error || 'An unknown error occurred',
                         status_code: data.status_code
                     };
                 }
@@ -148,8 +233,8 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                             // Check for error in value
                             if (op.value.error || op.value.detail) {
                                 return {
-                                    error: op.value.error || 'Unknown error',
-                                    detail: op.value.detail || op.value.error || 'An error occurred',
+                                    error: op.value.error || 'unknown_error',
+                                    detail: op.value.detail || op.value.error || 'An unknown error occurred',
                                     status_code: op.value.status_code
                                 };
                             }
@@ -158,12 +243,16 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                             if (op.value.messages && Array.isArray(op.value.messages)) {
                                 for (const msg of op.value.messages) {
                                     // Check for validation errors in message content
-                                    if (msg.content && typeof msg.content === 'string' && 
-                                        msg.content.includes('ValidationException') && 
-                                        msg.content.includes('Input is too long')) {
-                                        return { error: 'context_size_error', detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.', status_code: 413 };
+                                    if (msg.content && typeof msg.content === 'string' &&
+                                        msg.content.includes('ValidationException')) {
+                                        if (msg.content.includes('Input is too long')) {
+                                            return { error: 'context_size_error', detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.', status_code: 413 };
+                                        } else {
+                                            // Handle other ValidationExceptions with a generic message
+                                            return { error: 'validation_error', detail: 'Model parameter error: ' + msg.content.replace(/^data:\s*/, '').trim(), status_code: 400 };
+                                        }
                                     }
-                                    
+
                                     if (msg.content && typeof msg.content === 'string') {
                                         // Only check for errors outside of code blocks
                                         const isInCodeBlock = /```[\s\S]*?(?:Error:|error:)[\s\S]*?```/m.test(msg.content);
@@ -180,6 +269,18 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
             } catch (e) {
                 // Not valid JSON, try next match
             }
+        }
+
+        // Catch-all for any Exception patterns that weren't handled above
+        if (chunk.includes('Exception') &&
+            !chunk.includes('tool_execution') &&
+            !chunk.includes('```') &&
+            chunk.includes('error')) {
+            return {
+                error: 'unknown_error',
+                detail: chunk.replace(/^data:\s*/, '').trim(),
+                status_code: 500
+            };
         }
 
         return null;
@@ -222,10 +323,12 @@ export const sendPayload = async (
     removeStreamingConversation: (id: string) => void,
     addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void,
     isStreamingToCurrentConversation: boolean = true,
-    setProcessingState?: (state: ProcessingState) => void
+    setProcessingState?: (state: ProcessingState) => void,
+    setReasoningContentMap?: Dispatch<SetStateAction<Map<string, string>>>
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
+    let currentThinkingContent = '';
     let errorOccurred = false;
     let containsDiff = false;  // Flag to track if content contains diff blocks
 
@@ -241,6 +344,7 @@ export const sendPayload = async (
     // Set up abort event listener
     const abortListener = (event: CustomEvent) => {
         if (event.detail.conversationId === conversationId) {
+            console.log('🔄 ABORT: Received abort event for conversation:', conversationId);
             console.log(`Aborting stream for conversation: ${conversationId}`);
             abortController.abort();
             isAborted = true;
@@ -248,6 +352,7 @@ export const sendPayload = async (
             console.log('Sending abort notification to server');
             // Also notify the server about the abort
             try {
+                console.log('🔄 ABORT: Sending server-side abort notification');
                 fetch('/api/abort-stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -369,33 +474,46 @@ export const sendPayload = async (
                         // Not a warning JSON, continue processing
                     }
 
-                    // Check for errors using our new function - but be careful not to match code examples
-                    // Skip error checking if the data looks like it contains code blocks or diffs
+                    // Check for errors using our new function - but be more careful
+                    // Skip error checking if the data looks like it contains tool execution results
                     const containsCodeBlock = data.includes('```');
-                    const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(data);
+                    const containsToolExecution = data.includes('tool_execution') || data.includes('⟩') || data.includes('⟨');
+                    const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(data);
 
                     if (errorResponse) {
                         console.log("Current content when error detected:", currentContent.substring(0, 200) + "...");
                         console.log("Current content length:", currentContent.length);
                         console.log("Error detected in SSE data:", errorResponse);
-                        
+
+                        // For throttling errors, include original request data for retry
+                        if (errorResponse.error === 'throttling_error' || errorResponse.error === 'throttling_error_exhausted') {
+                            errorResponse.originalRequestData = {
+                                messages, question, checkedItems, conversationId
+                            };
+
+                            // Dispatch custom event for throttling errors
+                            document.dispatchEvent(new CustomEvent('throttlingError', {
+                                detail: errorResponse
+                            }));
+                        }
+
                         // Check if the error data contains preserved content and dispatch it
                         try {
                             const errorData = JSON.parse(data);
-                            
+
                             // Include the current streamed content in the preserved data
                             if (currentContent && currentContent.trim()) {
                                 errorData.existing_streamed_content = currentContent;
                                 console.log('Including existing streamed content in preserved data:', currentContent.length, 'characters');
                             }
-                            
+
                             if (errorData.pre_streaming_work || errorData.preserved_content || errorData.successful_tool_results) {
                                 console.log('Dispatching preserved content event from error data:', {
                                     hasPreStreamingWork: !!errorData.pre_streaming_work,
                                     hasPreservedContent: !!errorData.preserved_content,
                                     hasSuccessfulTools: !!errorData.successful_tool_results
                                 });
-                                
+
                                 // Dispatch the preserved content event
                                 document.dispatchEvent(new CustomEvent('preservedContent', {
                                     detail: errorData
@@ -414,16 +532,72 @@ export const sendPayload = async (
                         message.warning({
                             content: errorMessage,
                             duration: isPartialResponse ? 15 : 10,
-                            key: 'stream-error'
+                            key: `stream-error-${conversationId}`
                         });
                         errorOccurred = true;
-                        // Don't remove streaming conversation yet - let the preserved content handler do it
-                        // removeStreamingConversation(conversationId);
+
+                        // If we have accumulated content, add it to the conversation before removing the stream
+                        if (currentContent && currentContent.trim()) {
+                            const partialMessage: Message = {
+                                role: 'assistant',
+                                content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']'
+                            };
+                            addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
+                            console.log('Preserved partial content as message:', currentContent.length, 'characters');
+                        }
+
+                        // Clean up streaming state
+                        setStreamedContentMap((prev: Map<string, string>) => {
+                            const next = new Map(prev);
+                            next.delete(conversationId);
+                            return next;
+                        });
                         return;
+                    }
+
+                    // Skip [DONE] marker
+                    if (data.trim() === '[DONE]') {
+                        continue;
                     }
 
                     try {
                         const jsonData = JSON.parse(data);
+
+                        // Handle throttling status messages
+                        if (jsonData.type === 'throttling_status') {
+                            console.log('Throttling status:', jsonData.message);
+                            // Show throttling status in UI
+                            message.info({
+                                content: jsonData.message,
+                                duration: jsonData.delay + 1, // Show for delay duration + 1 second
+                                key: `throttling-${conversationId}`
+                            });
+                            continue;
+                        }
+
+                        // Handle throttling failure with continue button
+                        if (jsonData.type === 'throttling_failed') {
+                            console.log('Throttling failed:', jsonData.message);
+
+                            // Show error with continue button option
+                            const errorResponse = {
+                                error: 'throttling_failed',
+                                detail: jsonData.message,
+                                show_continue_button: true
+                            };
+
+                            message.error({
+                                content: jsonData.message + ' Click to retry.',
+                                duration: 0, // Don't auto-dismiss
+                                key: `throttling-failed-${conversationId}`,
+                                onClick: () => {
+                                    window.location.reload(); // Simple retry
+                                }
+                            });
+
+                            errorOccurred = true;
+                            return;
+                        }
 
                         // Handle done marker
                         if (jsonData.done) {
@@ -438,8 +612,49 @@ export const sendPayload = async (
                         }
 
                         // Extract text content from the response
-                        if (jsonData.text) {
+                        if (jsonData.type === 'text' && jsonData.content) {
+                            // Handle new streaming format with type field
+                            if (currentThinkingContent) {
+                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
+                                currentThinkingContent = ''; // Clear after using
+                            }
+                            // Always add the current text content
+                            currentContent += jsonData.content;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else if (jsonData.text) {
+                            // Handle text content - check for accumulated thinking first
+                            console.log('Text via jsonData.text, thinking content length:', currentThinkingContent?.length || 0);
+                            if (currentThinkingContent) {
+                                console.log('Adding thinking content via text branch:', currentThinkingContent.substring(0, 50) + '...');
+                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
+                                currentThinkingContent = ''; // Clear after using
+                            }
                             currentContent += jsonData.text;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else if (jsonData.type === 'thinking') {
+                            // Handle thinking content - display immediately
+                            const thinkingContent = `<thinking-data>${jsonData.content}</thinking-data>\n\n`;
+                            currentContent += thinkingContent;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else if (jsonData.type === 'text') {
+                            // When we get text, prepend any accumulated thinking content
+                            if (currentThinkingContent) {
+                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
+                                currentThinkingContent = ''; // Clear after using
+                            }
+                            currentContent += jsonData.content;
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
                                 next.set(conversationId, currentContent);
@@ -447,6 +662,88 @@ export const sendPayload = async (
                             });
                         } else if (jsonData.content) {
                             currentContent += jsonData.content;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else if (jsonData.type === 'tool_start') {
+                            // Handle tool start events - show that a tool is starting
+                            console.log('🔧 TOOL_START received:', jsonData);
+
+                            // Normalize tool name - ensure single mcp_ prefix
+                            let toolName = jsonData.tool_name;
+                            if (!toolName.startsWith('mcp_')) {
+                                toolName = `mcp_${toolName}`;
+                            }
+                            // Remove any double prefixes
+                            toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
+
+                            // Format input for display
+                            let inputDisplay = '';
+                            if (jsonData.input && Object.keys(jsonData.input).length > 0) {
+                                if (jsonData.input.command) {
+                                    inputDisplay = jsonData.input.command;
+                                } else if (jsonData.input.tool_input) {
+                                    inputDisplay = jsonData.input.tool_input;
+                                } else {
+                                    inputDisplay = JSON.stringify(jsonData.input);
+                                }
+                            }
+
+                            // Format as tool block that shows the tool is starting
+                            const toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: ${inputDisplay}\n\`\`\`\n\n`;
+
+                            console.log('🔧 TOOL_START formatted:', toolStartDisplay);
+                            currentContent += toolStartDisplay;
+                            console.log('🔧 CURRENT_CONTENT after tool_start:', currentContent.slice(-200));
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else if (jsonData.type === 'tool_execution') {
+                            // Handle structured tool execution using existing ToolBlock syntax
+                            console.log('🔧 TOOL_EXECUTION received:', jsonData);
+                            const signedIndicator = jsonData.signed ? ' 🔒' : '';
+
+                            // Normalize tool name - ensure single mcp_ prefix
+                            let toolName = jsonData.tool_name;
+                            if (!toolName.startsWith('mcp_')) {
+                                toolName = `mcp_${toolName}`;
+                            }
+                            // Remove any double prefixes
+                            toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
+
+                            // Extract result - handle both string and object formats
+                            let result = jsonData.result;
+                            if (typeof result === 'string' && result.startsWith('{')) {
+                                try {
+                                    const parsed = JSON.parse(result);
+                                    if (parsed.error && parsed.message) {
+                                        result = parsed.message;
+                                    }
+                                } catch (e) {
+                                    // Keep original result if parsing fails
+                                }
+                            }
+
+                            // Format as tool block that the MarkdownRenderer will recognize and style properly
+                            const toolDisplay = `\n\`\`\`tool:${toolName}${signedIndicator}\n${result}\n\`\`\`\n\n`;
+
+                            console.log('🔧 TOOL_DISPLAY formatted:', toolDisplay);
+
+                            // Replace the corresponding tool_start block if it exists
+                            const toolStartPattern = new RegExp(`\\n\`\`\`tool:${toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n⏳ Running:.*?\\n\`\`\`\\n\\n`, 'g');
+                            if (toolStartPattern.test(currentContent)) {
+                                currentContent = currentContent.replace(toolStartPattern, toolDisplay);
+                                console.log('🔧 TOOL_EXECUTION: Replaced tool_start block with result');
+                            } else {
+                                currentContent += toolDisplay;
+                                console.log('🔧 TOOL_EXECUTION: Added new tool block (no matching tool_start found)');
+                            }
+
+                            console.log('🔧 CURRENT_CONTENT after tool:', currentContent.slice(-200));
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
                                 next.set(conversationId, currentContent);
@@ -466,9 +763,63 @@ export const sendPayload = async (
                                 // Note: State will auto-reset to 'idle' when removeStreamingConversation is called
                                 continue;
                             }
+                            if (op.op === 'add' && op.path.endsWith('/reasoning_content/-')) {
+                                // Handle reasoning content separately
+                                const reasoningContent = op.value || '';
+                                if (reasoningContent && setReasoningContentMap) {
+                                    console.log('ChatAPI: Adding reasoning content:', reasoningContent);
+                                    setReasoningContentMap((prev: Map<string, string>) => {
+                                        const next = new Map(prev);
+                                        const existing = next.get(conversationId) || '';
+                                        next.set(conversationId, existing + reasoningContent);
+                                        return next;
+                                    });
+                                }
+                                continue;
+                            }
                             if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
-                                const newContent = op.value || '';
+                                let newContent = op.value || '';
                                 if (!newContent) continue;
+
+                                // Handle new Bedrock format with content= wrapper
+                                if (typeof newContent === 'string' && newContent.includes('content=')) {
+                                    // More robust extraction for various formats:
+                                    // content='text' additional_kwargs={} response_metadata={}
+                                    // content="text" additional_kwargs={} response_metadata={}
+
+                                    let extractedContent = '';
+
+                                    // Try single quotes first
+                                    let match = newContent.match(/content='([^']*(?:\\.[^']*)*)'(?:\s+additional_kwargs=.*)?$/);
+                                    if (match) {
+                                        extractedContent = match[1];
+                                    } else {
+                                        // Try double quotes
+                                        match = newContent.match(/content="([^"]*(?:\\.[^"]*)*)"(?:\s+additional_kwargs=.*)?$/);
+                                        if (match) {
+                                            extractedContent = match[1];
+                                        } else {
+                                            // Fallback: extract anything between quotes after content=
+                                            match = newContent.match(/content=['"]([^'"]*)['"]/);
+                                            if (match) {
+                                                extractedContent = match[1];
+                                            } else {
+                                                // Last resort: use original content
+                                                extractedContent = newContent;
+                                            }
+                                        }
+                                    }
+
+                                    // Unescape common escape sequences
+                                    newContent = extractedContent
+                                        .replace(/\\'/g, "'")
+                                        .replace(/\\"/g, '"')
+                                        .replace(/\\n/g, '\n')
+                                        .replace(/\\t/g, '\t')
+                                        .replace(/\\r/g, '\r')
+                                        .replace(/\\\\/g, '\\');
+                                }
+
                                 currentContent += newContent;
                                 setStreamedContentMap((prev: Map<string, string>) => {
                                     const next = new Map(prev);
@@ -488,19 +839,38 @@ export const sendPayload = async (
                                                 console.log("Detected diff content in message, disabling error detection");
                                             }
 
-                                            // Skip error checking if the message contains code blocks or diffs
+                                            // Skip error checking if the message contains tool execution results
                                             const containsCodeBlock = msg.content.includes('```');
-                                            const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(msg.content);
+                                            const containsToolExecution = msg.content.includes('tool_execution') || msg.content.includes('⟩') || msg.content.includes('⟨');
+                                            const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(msg.content);
 
                                             if (errorResponse) {
                                                 console.log("Error detected in message content:", errorResponse);
                                                 message.error({
                                                     content: errorResponse.detail || 'An error occurred',
-                                                    duration: 10,
+                                                    duration: errorResponse.status_code === 429 ? 15 : 10,
+                                                    key: `stream-error-${conversationId}`
+                                                });
+                                                message.warning({
+                                                    content: `${errorResponse.detail || 'An error occurred'} (Partial response preserved - ${currentContent.length} characters)`,
+                                                    duration: 15,
                                                     key: 'stream-error'
                                                 });
                                                 errorOccurred = true;
+
+                                                // Preserve partial content before removing stream
+                                                if (currentContent && currentContent.trim()) {
+                                                    const partialMessage: Message = {
+                                                        role: 'assistant',
+                                                        content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']'
+                                                    };
+                                                    addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
+                                                }
+
+                                                // Clean up
+                                                setIsStreaming(false);
                                                 removeStreamingConversation(conversationId);
+                                                setStreamedContentMap((prev: Map<string, string>) => new Map(prev));
                                                 break;
                                             }
                                         }
@@ -581,13 +951,37 @@ export const sendPayload = async (
                                         ? `${nestedError.detail} (Partial response preserved - ${currentContent.length} characters)`
                                         : nestedError.detail || 'An error occurred';
 
-                                    message.warning({
+                                    // Dispatch preserved content event before showing error
+                                    if (isPartialResponse && currentContent.length > 0) {
+                                        document.dispatchEvent(new CustomEvent('preservedContent', {
+                                            detail: {
+                                                existing_streamed_content: currentContent,
+                                                error_detail: nestedError.detail || 'An error occurred during processing'
+                                            }
+                                        }));
+                                        // Don't remove streaming conversation here - let preserved content handler do it
+                                    } else if (currentContent && currentContent.length > 0) {
+                                        // Save partial content even without the preserved content event
+                                        const partialMessage: Message = {
+                                            role: 'assistant',
+                                            content: currentContent + '\n\n[Response interrupted: ' + (nestedError.detail || 'An error occurred during processing') + ']'
+                                        };
+                                        addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
+                                        console.log('Saved partial content directly:', currentContent.length, 'characters');
+                                        removeStreamingConversation(conversationId);
+                                    }
+                                    else {
+                                        // No partial content to save
+                                        removeStreamingConversation(conversationId);
+                                    }
+
+                                    const messageType = isPartialResponse ? 'warning' : 'error';
+                                    message[messageType]({
                                         content: errorMessage,
                                         duration: isPartialResponse ? 15 : 10,
-                                        key: 'stream-error'
+                                        key: `stream-error-${conversationId}`
                                     });
                                     errorOccurred = true;
-                                    removeStreamingConversation(conversationId);
                                     break;
                                 }
                             }
@@ -638,27 +1032,55 @@ export const sendPayload = async (
                     return 'Response generation stopped by user.';
                 }
                 // Check if the content is an error message using our new function
-                // Skip error checking if the content contains code blocks or diffs
+                // Skip error checking if the content contains tool execution results
                 const containsCodeBlock = currentContent.includes('```');
-                const errorResponse = (containsCodeBlock || containsDiff) ? null : extractErrorFromSSE(currentContent);
+                const containsToolExecution = currentContent.includes('tool_execution') || currentContent.includes('⟩') || currentContent.includes('⟨');
+                const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(currentContent);
 
                 if (errorResponse) {
                     console.log("Error detected in final content:", errorResponse);
 
-                    // Show different message for partial responses vs complete failures
                     const isPartialResponse = currentContent.length > 0;
+
+                    // Dispatch preserved content event before showing error and removing stream
+                    if (isPartialResponse) {
+                        document.dispatchEvent(new CustomEvent('preservedContent', {
+                            detail: {
+                                existing_streamed_content: currentContent,
+                                error_detail: errorResponse.detail || 'An error occurred during processing'
+                            }
+                        }));
+                    }
+
                     const errorMessage = isPartialResponse
                         ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
                         : errorResponse.detail || 'An error occurred';
 
-                    message.warning({
+                    const messageType = isPartialResponse ? 'warning' : 'error';
+                    message[messageType]({
                         content: errorMessage,
                         duration: isPartialResponse ? 15 : 10,
-                        key: 'stream-error'
+                        key: `stream-error-${conversationId}`
                     });
                     errorOccurred = true;
                     removeStreamingConversation(conversationId);
-                    return '';
+
+                    // Still return the partial content so it can be used
+                    return currentContent || '';
+                }
+
+                // Even if we detect an error in the final content, save what we have
+                if (errorOccurred && currentContent && currentContent.trim()) {
+                    const partialMessage: Message = {
+                        role: 'assistant',
+                        content: currentContent
+                    };
+
+                    const isNonCurrentConversation = !isStreamingToCurrentConversation;
+                    addMessageToConversation(partialMessage, conversationId, isNonCurrentConversation);
+                    removeStreamingConversation(conversationId);
+                    console.log('Saved partial content on error:', currentContent.length, 'characters');
+                    return currentContent;
                 }
 
                 // Create a message object for the AI response
@@ -747,3 +1169,43 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         signal
     });
 }
+
+/**
+ * Restart stream with enhanced context by adding missing files
+ */
+export const restartStreamWithEnhancedContext = async (
+    conversationId: string,
+    addedFiles: string[],
+    currentFiles: string[] = []
+): Promise<void> => {
+    console.log('🔄 CONTEXT_ENHANCEMENT: Restarting stream with enhanced context:', { conversationId, addedFiles, currentFiles });
+
+    try {
+        // Send restart request to backend which will handle the streaming
+        const response = await fetch('/api/restart-stream-with-context', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+            },
+            body: JSON.stringify({
+                conversation_id: conversationId,
+                added_files: addedFiles,
+                current_files: currentFiles
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to restart stream: ${response.status} ${response.statusText}`);
+        }
+
+        console.log('🔄 CONTEXT_ENHANCEMENT: Stream restart request sent successfully');
+
+        // The response will be a new stream that the existing handlers will pick up
+        // No need to handle the stream here - the existing chatApi will handle it
+
+    } catch (error) {
+        console.error('Error restarting stream with enhanced context:', error);
+        throw error;
+    }
+};

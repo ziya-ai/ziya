@@ -21,6 +21,16 @@ const defaultMargin = { top: 20, right: 20, bottom: 30, left: 40 };
 export const basicChartPlugin: D3RenderPlugin = {
     name: 'basic-chart',
     priority: 10, // Higher priority than network diagram
+    sizingConfig: {
+        sizingStrategy: 'responsive',
+        needsDynamicHeight: false,
+        needsOverflowVisible: false,
+        observeResize: false,
+        containerStyles: {
+            height: '400px',
+            overflow: 'auto'
+        }
+    },
     canHandle: (spec: any) => {
         return (
             typeof spec === 'object' &&

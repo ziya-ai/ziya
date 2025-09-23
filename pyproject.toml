@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.2.4.1"
+version = "0.3.0"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>",
            "Dan Cohn <chroma@gmail.com>"]
@@ -13,6 +13,7 @@ packages = [
 python = ">=3.9,<4.0"
 uvicorn = "^0.23.2"
 whatthepatch = ">=1.0.2"
+requests = "^2.31.0"
 patch-ng = ">=1.17"
 pydantic = "^2.9.2"
 jinja2 = "^3.1.3"
