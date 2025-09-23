@@ -8,17 +8,57 @@ from app.utils.prompt_extensions import prompt_extension
 from app.utils.logging_utils import logger
 
 @prompt_extension(
-    name="gemini_family_extension",
+    name="gemini_pro_family_extension",
     extension_type="family",
-    target="gemini",
+    target="gemini-pro",
+    config={
+        "enabled": True,
+        "priority": 20
+    }
+)
+def gemini_pro_family_extension(prompt: str, context: dict) -> str:
+    """
+    Add instructions for Gemini Pro family models.
+    
+    Args:
+        prompt: The original prompt
+        context: Extension context
+        
+    Returns:
+        str: Modified prompt
+    """
+    import re
+    from app.utils.logging_utils import logger
+    logger.info(f"GEMINI_EXTENSION: Called with prompt length: {len(prompt)}")
+    logger.info(f"GEMINI_EXTENSION: Context: {context}")
+    
+    if not context.get("config", {}).get("enabled", True):
+        logger.info("GEMINI_EXTENSION: Extension disabled, returning original prompt")
+        return prompt
+
+    # Aggressively remove any XML-based tool instructions to prevent conflicts with native function calling.
+    # This is a safeguard against other extensions incorrectly adding these instructions.
+    cleaned_prompt = re.sub(r'\n\n## MCP Tool Usage - CRITICAL INSTRUCTIONS.*', '', prompt, flags=re.DOTALL)
+    
+    if len(cleaned_prompt) < len(prompt):
+        logger.info("GEMINI_EXTENSION: Removed conflicting XML tool instructions from the prompt.")
+    else:
+        logger.info("GEMINI_EXTENSION: No conflicting XML tool instructions found to remove.")
+
+    return cleaned_prompt
+
+@prompt_extension(
+name="gemini_flash_family_extension",
+    extension_type="family",
+    target="gemini-flash",
     config={
         "enabled": True,
         "priority": 5
     }
 )
-def gemini_family_extension(prompt: str, context: dict) -> str:
+def gemini_flash_family_extension(prompt: str, context: dict) -> str:
     """
-    Add instructions for all Gemini family models.
+    Add instructions for Gemini Flash family models.
     
     Args:
         prompt: The original prompt
@@ -30,24 +70,32 @@ def gemini_family_extension(prompt: str, context: dict) -> str:
     if not context.get("config", {}).get("enabled", True):
         return prompt
     
-    # Add Gemini family specific instructions
-    gemini_instructions = """
-GEMINI FAMILY INSTRUCTIONS:
-1. When generating code, focus on clarity and maintainability
-2. For complex code explanations, use step-by-step breakdowns
-3. When suggesting changes, provide clear reasoning for each modification
-4. Leverage your multimodal capabilities when appropriate for code visualization
+    # Replace TOOL_SENTINEL format with Google-compatible format
+    if "<TOOL_SENTINEL>" in prompt:
+        # Replace the tool format examples with Google-compatible format
+        prompt = prompt.replace(
+            "**mcp_get_current_time Format:**\n```\n<TOOL_SENTINEL>\n<name>mcp_get_current_time</name>\n<arguments>{\n  \"format\": \"readable\"\n}</arguments>\n</TOOL_SENTINEL>\n```",
+            "**mcp_get_current_time Format:**\n```\nI'll use the get_current_time tool to get the current date and time.\n```"
+        )
+        prompt = prompt.replace(
+            "**mcp_run_shell_command Format:**\n```\n<TOOL_SENTINEL>\n<name>mcp_run_shell_command</name>\n<arguments>{\n  \"command\": \"ls -la\",\n  \"timeout\": \"1\"\n}</arguments>\n</TOOL_SENTINEL>\n```",
+            "**mcp_run_shell_command Format:**\n```\nI'll use the shell command tool to execute: pwd\n```"
+        )
+        
+        # Add Google-specific tool instructions
+        gemini_tool_instructions = """
+GEMINI TOOL USAGE:
+- Use tools when requested by the user
+- For shell commands, use the mcp_run_shell_command tool with the appropriate command
+- For time queries, use the mcp_get_current_time tool
+- Provide actual tool results rather than describing what you would do
 """
+        
+        # Insert the tool instructions
+        if "**Usage Rules:**" in prompt:
+            prompt = prompt.replace("**Usage Rules:**", gemini_tool_instructions + "\n\n**Usage Rules:**")
     
-    # Find a good place to insert the instructions
-    if "CRITICAL: INSTRUCTION PRESERVATION:" in prompt:
-        # Insert after the instruction preservation section
-        parts = prompt.split("CRITICAL: INSTRUCTION PRESERVATION:", 1)
-        preservation_section = parts[1].split("\n\n", 1)
-        return parts[0] + "CRITICAL: INSTRUCTION PRESERVATION:" + preservation_section[0] + "\n\n" + gemini_instructions + "\n\n" + preservation_section[1]
-    else:
-        # Just add to the beginning
-        return gemini_instructions + "\n\n" + prompt
+    return prompt
 
 @prompt_extension(
     name="gemini_pro_extension",

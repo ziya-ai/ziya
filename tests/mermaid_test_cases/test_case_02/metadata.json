@@ -1,0 +1,6 @@
+{
+    "description": "Complex event-driven architecture class diagram with inheritance, interfaces, and generic types",
+    "diagram_type": "classDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Advanced class diagram features with complex relationships"
+}

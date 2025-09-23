@@ -1,0 +1,6 @@
+{
+    "description": "Test case for React Suspense wrapper diff that returns false 'already applied' indicator",
+    "target_file": "frontend/src/components/App.tsx",
+    "expected_to_fail": false,
+    "test_already_applied_detection": true
+}

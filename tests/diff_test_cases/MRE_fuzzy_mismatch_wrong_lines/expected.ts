@@ -1,0 +1,19 @@
+                    if (errorResponse) {
+                        console.log("Current content when error detected:", currentContent.substring(0, 200) + "...");
+                        console.log("Current content length:", currentContent.length);
+                        console.log("Error detected in SSE data:", errorResponse);
+                        
+                        // For throttling errors, include original request data for retry
+                        if (errorResponse.error === 'throttling_error' || errorResponse.error === 'throttling_error_exhausted') {
+                            errorResponse.originalRequestData = {
+                                messages, question, checkedItems, conversationId
+                            };
+                            
+                            // Dispatch custom event for throttling errors
+                            document.dispatchEvent(new CustomEvent('throttlingError', {
+                                detail: errorResponse
+                            }));
+                        }
+
+                        // Check if the error data contains preserved content and dispatch it
+                        try {

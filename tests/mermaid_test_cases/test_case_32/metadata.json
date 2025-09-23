@@ -1,0 +1,5 @@
+{
+    "description": "Manufacturing Process - Sankey diagram showing material flow through production",
+    "diagram_type": "sankey-beta",
+    "complexity": "medium"
+}

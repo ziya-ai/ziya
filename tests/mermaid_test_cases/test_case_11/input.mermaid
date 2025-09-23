@@ -1,0 +1,117 @@
+sequenceDiagram
+    participant Browser as Web Browser
+    participant CDN as Content Delivery Network
+    participant LB as Load Balancer
+    participant Gateway as API Gateway
+    participant Auth as Authentication Service
+    participant UserSvc as User Service
+    participant OrderSvc as Order Service
+    participant PaymentSvc as Payment Service
+    participant InventorySvc as Inventory Service
+    participant NotificationSvc as Notification Service
+    participant EventBus as Event Bus
+    participant Cache as Redis Cache
+    participant UserDB as User Database
+    participant OrderDB as Order Database
+    participant PaymentDB as Payment Database
+    participant InventoryDB as Inventory Database
+    participant EmailSvc as Email Service
+    participant SMSSvc as SMS Service
+    participant AuditSvc as Audit Service
+    
+    Browser->>CDN: GET /app
+    CDN-->>Browser: Static Assets
+    Browser->>LB: POST /api/orders
+    LB->>Gateway: Forward Request
+    Gateway->>Auth: Validate JWT Token
+    Auth->>Cache: Check Token Cache
+    
+    alt Token in Cache
+        Cache-->>Auth: Valid Token Data
+    else Token Not Cached
+        Auth->>UserDB: Validate Token
+        UserDB-->>Auth: User Data
+        Auth->>Cache: Cache Token Data
+    end
+    
+    Auth-->>Gateway: Token Valid
+    Gateway->>OrderSvc: Create Order Request
+    
+    OrderSvc->>UserSvc: Validate Customer
+    UserSvc->>Cache: Check User Cache
+    
+    alt User in Cache
+        Cache-->>UserSvc: User Data
+    else User Not Cached
+        UserSvc->>UserDB: Query User
+        UserDB-->>UserSvc: User Record
+        UserSvc->>Cache: Cache User Data
+    end
+    
+    UserSvc-->>OrderSvc: Customer Valid
+    
+    OrderSvc->>InventorySvc: Check Stock Availability
+    InventorySvc->>InventoryDB: Query Stock Levels
+    InventoryDB-->>InventorySvc: Stock Data
+    
+    alt Stock Available
+        InventorySvc-->>OrderSvc: Stock Confirmed
+        OrderSvc->>InventorySvc: Reserve Items
+        InventorySvc->>InventoryDB: Update Stock
+        InventoryDB-->>InventorySvc: Stock Reserved
+        InventorySvc-->>OrderSvc: Items Reserved
+        
+        OrderSvc->>PaymentSvc: Process Payment
+        PaymentSvc->>PaymentDB: Create Payment Record
+        PaymentDB-->>PaymentSvc: Payment Created
+        
+        alt Payment Successful
+            PaymentSvc-->>OrderSvc: Payment Confirmed
+            OrderSvc->>OrderDB: Save Order
+            OrderDB-->>OrderSvc: Order Saved
+            
+            OrderSvc->>EventBus: Publish OrderCreated Event
+            EventBus->>NotificationSvc: Order Created Event
+            EventBus->>AuditSvc: Order Created Event
+            
+            par Notification Processing
+                NotificationSvc->>EmailSvc: Send Order Confirmation
+                EmailSvc-->>NotificationSvc: Email Sent
+            and
+                NotificationSvc->>SMSSvc: Send SMS Notification
+                SMSSvc-->>NotificationSvc: SMS Sent
+            end
+            
+            NotificationSvc->>EventBus: Publish NotificationsSent Event
+            AuditSvc->>AuditSvc: Log Order Creation
+            
+            OrderSvc-->>Gateway: Order Created Successfully
+            Gateway-->>LB: 201 Created
+            LB-->>Browser: Order Confirmation
+            
+        else Payment Failed
+            PaymentSvc-->>OrderSvc: Payment Failed
+            OrderSvc->>InventorySvc: Release Reserved Items
+            InventorySvc->>InventoryDB: Update Stock
+            InventoryDB-->>InventorySvc: Stock Released
+            InventorySvc-->>OrderSvc: Items Released
+            
+            OrderSvc->>EventBus: Publish PaymentFailed Event
+            EventBus->>AuditSvc: Payment Failed Event
+            AuditSvc->>AuditSvc: Log Payment Failure
+            
+            OrderSvc-->>Gateway: Payment Failed
+            Gateway-->>LB: 402 Payment Required
+            LB-->>Browser: Payment Error
+        end
+        
+    else Stock Unavailable
+        InventorySvc-->>OrderSvc: Insufficient Stock
+        OrderSvc->>EventBus: Publish StockUnavailable Event
+        EventBus->>AuditSvc: Stock Unavailable Event
+        AuditSvc->>AuditSvc: Log Stock Issue
+        
+        OrderSvc-->>Gateway: Stock Unavailable
+        Gateway-->>LB: 409 Conflict
+        LB-->>Browser: Stock Error
+    end

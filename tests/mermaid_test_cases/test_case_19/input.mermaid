@@ -1,0 +1,155 @@
+flowchart LR
+    subgraph "Data Pipeline Architecture"
+        subgraph "Data Sources"
+            API1[Customer API]
+            API2[Product API]
+            API3[Order API]
+            DB1[(Transactional DB)]
+            DB2[(Analytics DB)]
+            FILES[File System]
+            STREAMS[Event Streams]
+        end
+        
+        subgraph "Ingestion Layer"
+            KAFKA[Apache Kafka]
+            KINESIS[AWS Kinesis]
+            PUBSUB[Google Pub/Sub]
+            BATCH[Batch Processor]
+        end
+        
+        subgraph "Processing Layer"
+            SPARK[Apache Spark]
+            FLINK[Apache Flink]
+            BEAM[Apache Beam]
+            AIRFLOW[Apache Airflow]
+            
+            subgraph "Stream Processing"
+                KAFKA_STREAMS[Kafka Streams]
+                STORM[Apache Storm]
+                SAMZA[Apache Samza]
+            end
+            
+            subgraph "Batch Processing"
+                HADOOP[Hadoop MapReduce]
+                SPARK_BATCH[Spark Batch]
+                HIVE[Apache Hive]
+            end
+        end
+        
+        subgraph "Storage Layer"
+            HDFS[(HDFS)]
+            S3[(Amazon S3)]
+            BIGQUERY[(BigQuery)]
+            SNOWFLAKE[(Snowflake)]
+            CASSANDRA[(Cassandra)]
+            ELASTICSEARCH[(Elasticsearch)]
+            
+            subgraph "Data Lake"
+                RAW[Raw Data Zone]
+                PROCESSED[Processed Data Zone]
+                CURATED[Curated Data Zone]
+            end
+        end
+        
+        subgraph "Serving Layer"
+            REDIS[(Redis)]
+            MEMCACHED[(Memcached)]
+            DRUID[(Apache Druid)]
+            CLICKHOUSE[(ClickHouse)]
+            
+            subgraph "APIs"
+                REST_API[REST API]
+                GRAPHQL_API[GraphQL API]
+                GRPC_API[gRPC API]
+            end
+        end
+        
+        subgraph "Analytics & ML"
+            JUPYTER[Jupyter Notebooks]
+            MLFLOW[MLflow]
+            KUBEFLOW[Kubeflow]
+            TENSORFLOW[TensorFlow]
+            PYTORCH[PyTorch]
+            
+            subgraph "Feature Store"
+                FEAST[Feast]
+                TECTON[Tecton]
+            end
+        end
+        
+        subgraph "Monitoring & Governance"
+            PROMETHEUS[Prometheus]
+            GRAFANA[Grafana]
+            DATADOG[DataDog]
+            ATLAS[Apache Atlas]
+            RANGER[Apache Ranger]
+            
+            subgraph "Data Quality"
+                GREAT_EXPECTATIONS[Great Expectations]
+                DBT[dbt]
+                MONTE_CARLO[Monte Carlo]
+            end
+        end
+    end
+    
+    API1 --> KAFKA
+    API2 --> KINESIS
+    API3 --> PUBSUB
+    DB1 --> BATCH
+    DB2 --> BATCH
+    FILES --> BATCH
+    STREAMS --> KAFKA
+    
+    KAFKA --> SPARK
+    KAFKA --> KAFKA_STREAMS
+    KINESIS --> FLINK
+    PUBSUB --> BEAM
+    BATCH --> HADOOP
+    BATCH --> SPARK_BATCH
+    
+    SPARK --> HDFS
+    SPARK --> S3
+    FLINK --> CASSANDRA
+    BEAM --> BIGQUERY
+    KAFKA_STREAMS --> ELASTICSEARCH
+    HADOOP --> HDFS
+    SPARK_BATCH --> S3
+    HIVE --> HDFS
+    
+    HDFS --> RAW
+    S3 --> PROCESSED
+    BIGQUERY --> CURATED
+    
+    RAW --> PROCESSED
+    PROCESSED --> CURATED
+    
+    CURATED --> REDIS
+    CURATED --> DRUID
+    ELASTICSEARCH --> CLICKHOUSE
+    
+    REDIS --> REST_API
+    DRUID --> GRAPHQL_API
+    CLICKHOUSE --> GRPC_API
+    
+    CURATED --> JUPYTER
+    CURATED --> MLFLOW
+    S3 --> TENSORFLOW
+    BIGQUERY --> PYTORCH
+    
+    TENSORFLOW --> FEAST
+    PYTORCH --> TECTON
+    
+    AIRFLOW --> SPARK
+    AIRFLOW --> FLINK
+    AIRFLOW --> BEAM
+    
+    PROMETHEUS --> GRAFANA
+    DATADOG --> GRAFANA
+    ATLAS --> RANGER
+    
+    GREAT_EXPECTATIONS --> DBT
+    DBT --> MONTE_CARLO
+    
+    SPARK --> GREAT_EXPECTATIONS
+    FLINK --> GREAT_EXPECTATIONS
+    BEAM --> GREAT_EXPECTATIONS

@@ -18,13 +18,7 @@ interface ShellConfig {
 const { Panel } = Collapse;
 
 const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose }) => {
-    const [config, setConfig] = useState<ShellConfig>({
-        enabled: true,
-        allowedCommands: ['ls', 'cat', 'pwd', 'grep', 'wc', 'touch', 'find', 'date'],
-        gitOperationsEnabled: true,
-        safeGitOperations: ['status', 'log', 'show', 'diff', 'branch', 'remote', 'ls-files', 'blame'],
-        timeout: 10
-    });
+    const [config, setConfig] = useState<ShellConfig | null>(null);
     const [newCommand, setNewCommand] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -43,11 +37,36 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             }
         } catch (error) {
             console.error('Failed to fetch shell config:', error);
-            // Use default config if fetch fails
+            setConfig({
+                enabled: true,
+                allowedCommands: [],
+                gitOperationsEnabled: true,
+                safeGitOperations: [],
+                timeout: 10
+            });
+        }
+    };
+
+    const syncMCPServerToggle = async (enabled: boolean) => {
+        try {
+            await fetch('/api/mcp/toggle-server', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    server_name: 'shell',
+                    enabled: enabled
+                }),
+            });
+        } catch (error) {
+            console.warn('Failed to sync MCP server toggle:', error);
         }
     };
 
     const saveConfig = async () => {
+        if (!config) return;
+
         setLoading(true);
         try {
             const response = await fetch('/api/mcp/shell-config', {
@@ -61,6 +80,15 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             if (response.ok) {
                 const result = await response.json();
                 if (result.success) {
+                    await syncMCPServerToggle(config.enabled);
+
+                    window.dispatchEvent(new CustomEvent('mcpStatusChanged', {
+                        detail: {
+                            serverName: 'shell',
+                            enabled: config.enabled
+                        }
+                    }));
+
                     message.success(result.message || 'Shell configuration updated instantly');
                 } else {
                     message.error(result.message || 'Failed to update shell configuration');
@@ -78,43 +106,52 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
     };
 
     const addCommand = () => {
+        if (!config) return;
+
         if (newCommand.trim() && !config.allowedCommands.includes(newCommand.trim())) {
             setConfig(prev => ({
-                ...prev,
-                allowedCommands: [...prev.allowedCommands, newCommand.trim()]
+                ...prev!,
+                allowedCommands: [...prev!.allowedCommands, newCommand.trim()]
             }));
             setNewCommand('');
         }
     };
 
     const removeCommand = (command: string) => {
+        if (!config) return;
+
         setConfig(prev => ({
-            ...prev,
-            allowedCommands: prev.allowedCommands.filter(cmd => cmd !== command)
+            ...prev!,
+            allowedCommands: prev!.allowedCommands.filter(cmd => cmd !== command)
         }));
     };
 
     const toggleGitOperation = (operation: string) => {
+        if (!config) return;
+
         setConfig(prev => ({
-            ...prev,
-            safeGitOperations: prev.safeGitOperations.includes(operation)
-                ? prev.safeGitOperations.filter(op => op !== operation)
-                : [...prev.safeGitOperations, operation]
+            ...prev!,
+            safeGitOperations: prev!.safeGitOperations.includes(operation)
+                ? prev!.safeGitOperations.filter(op => op !== operation)
+                : [...prev!.safeGitOperations, operation]
         }));
     };
 
     const dangerousCommands = ['rm', 'rmdir', 'mv', 'cp', 'chmod', 'chown', 'sudo', 'su'];
-    // const destructiveGitOperations = ['reset', 'rebase', 'merge', 'push', 'pull', 'checkout', 'commit', 'add', 'rm'];
-    const safeGitOperations = [
-        'status', 'log', 'show', 'diff', 'branch', 'remote', 'config --get',
-        'ls-files', 'ls-tree', 'blame', 'tag', 'stash list', 'reflog',
-        'rev-parse', 'describe', 'shortlog', 'whatchanged'
-    ];
+    const allGitOperations = ['status', 'log', 'show', 'diff', 'branch', 'remote', 'config --get', 'ls-files', 'ls-tree', 'blame', 'tag', 'stash list', 'reflog', 'rev-parse', 'describe', 'shortlog', 'whatchanged'];
 
     const isDangerous = (command: string) =>
         dangerousCommands.some(dangerous =>
             command.toLowerCase().includes(dangerous.toLowerCase())
         );
+
+    if (!config) {
+        return (
+            <Modal title="Shell Command Configuration" open={visible} onCancel={onClose} footer={null}>
+                <div style={{ textAlign: 'center', padding: '40px' }}>Loading configuration...</div>
+            </Modal>
+        );
+    }
 
     return (
         <Modal
@@ -131,7 +168,10 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                     <Space align="center">
                         <Switch
                             checked={config.enabled}
-                            onChange={(checked) => setConfig(prev => ({ ...prev, enabled: checked }))}
+                            onChange={async (checked) => {
+                                setConfig(prev => ({ ...prev!, enabled: checked }));
+                                await syncMCPServerToggle(checked);
+                            }}
                         />
                         <span>Enable shell command execution</span>
                     </Space>
@@ -150,65 +190,18 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                     style={{ marginBottom: 16 }}
                 />
 
-                <Divider />
-
                 <Collapse defaultActiveKey={['1']} ghost>
                     <Panel header="Basic Configuration" key="1">
-
                         <div>
-                            <h4>Command Timeout</h4>
-                            <Input
-                                type="number"
-                                value={config.timeout}
-                                onChange={(e) => setConfig(prev => ({ ...prev, timeout: parseInt(e.target.value) || 10 }))}
-                                suffix="seconds"
-                                style={{ width: 150 }}
-                            />
-                        </div>
-
-                        <Divider />
-
-                        <div>
-                            <Space align="center" style={{ marginBottom: 12 }}>
-                                <Switch
-                                    checked={config.gitOperationsEnabled}
-                                    onChange={(checked) => setConfig(prev => ({ ...prev, gitOperationsEnabled: checked }))}
-                                />
-                                <span>Enable safe Git operations</span>
-                            </Space>
+                            <h4>Allowed Commands</h4>
                             <div style={{ marginBottom: 12, color: '#666', fontSize: '12px' }}>
-                                When enabled, allows read-only and safe Git commands
+                                Commands that the AI agent can execute. These are loaded from the server configuration.
                             </div>
 
-                            {config.gitOperationsEnabled && (
-                                <div style={{ marginLeft: 24 }}>
-                                    <h5>Allowed Git Operations:</h5>
-                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                                        {safeGitOperations.map(operation => (
-                                            <Checkbox
-                                                key={operation}
-                                                checked={config.safeGitOperations.includes(operation)}
-                                                onChange={() => toggleGitOperation(operation)}
-                                            >
-                                                git {operation}
-                                            </Checkbox>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    </Panel>
-
-                    <Panel header="Custom Commands" key="2">
-                        <div>
-                            <h4>Additional Allowed Commands</h4>
-                            <div style={{ marginBottom: 12, color: '#666', fontSize: '12px' }}>
-                                Add custom commands to the whitelist. Be careful with potentially dangerous commands.
-                            </div>
                             <div style={{ marginBottom: 12 }}>
                                 <Input.Group compact>
                                     <Input
-                                        placeholder="Enter command name"
+                                        placeholder="Add additional command"
                                         value={newCommand}
                                         onChange={(e) => setNewCommand(e.target.value)}
                                         onPressEnter={addCommand}
@@ -225,34 +218,79 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                 </Input.Group>
                             </div>
 
-                            <List
-                                size="small"
-                                dataSource={config.allowedCommands}
-                                renderItem={(command) => (
-                                    <List.Item
-                                        actions={[
-                                            <Button
-                                                type="text"
-                                                size="small"
-                                                icon={<DeleteOutlined />}
-                                                onClick={() => removeCommand(command)}
-                                                danger
-                                            />
-                                        ]}
-                                    >
-                                        <Space>
-                                            <Tag color={isDangerous(command) ? 'red' : 'blue'}>
-                                                {command}
-                                            </Tag>
+                            {config.allowedCommands && config.allowedCommands.length > 0 && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: 16 }}>
+                                    {config.allowedCommands.map((command) => (
+                                        <Tag
+                                            key={command}
+                                            closable
+                                            color={isDangerous(command) ? 'red' : 'blue'}
+                                            onClose={() => removeCommand(command)}
+                                            style={{ marginBottom: '4px' }}
+                                        >
+                                            {command}
                                             {isDangerous(command) && (
-                                                <WarningOutlined style={{ color: '#ff4d4f' }} />
+                                                <WarningOutlined style={{ marginLeft: 4, color: '#ff4d4f' }} />
                                             )}
-                                        </Space>
-                                    </List.Item>
-                                )}
-                                style={{ maxHeight: 200, overflow: 'auto' }}
+                                        </Tag>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <Divider />
+
+                        <div>
+                            <h4>Command Timeout</h4>
+                            <Input
+                                type="number"
+                                value={config.timeout}
+                                onChange={(e) => setConfig(prev => ({ ...prev!, timeout: parseInt(e.target.value) || 10 }))}
+                                suffix="seconds"
+                                style={{ width: 150 }}
                             />
                         </div>
+
+                        <Divider />
+
+                        <div>
+                            <Space align="center" style={{ marginBottom: 12 }}>
+                                <Switch
+                                    checked={config.gitOperationsEnabled}
+                                    onChange={(checked) => setConfig(prev => ({ ...prev!, gitOperationsEnabled: checked }))}
+                                />
+                                <span>Enable safe Git operations</span>
+                            </Space>
+                            <div style={{ marginBottom: 12, color: '#666', fontSize: '12px' }}>
+                                When enabled, allows read-only and safe Git commands
+                            </div>
+
+                            {config.gitOperationsEnabled && (
+                                <div style={{ marginLeft: 24 }}>
+                                    <h5>Allowed Git Operations:</h5>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                                        {allGitOperations.map(operation => (
+                                            <Checkbox
+                                                key={operation}
+                                                checked={config.safeGitOperations.includes(operation)}
+                                                onChange={() => toggleGitOperation(operation)}
+                                            >
+                                                git {operation}
+                                            </Checkbox>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </Panel>
+
+                    <Panel header="Advanced Configuration" key="2">
+                        <Alert
+                            message="Advanced Configuration"
+                            description="This section is reserved for future advanced shell configuration options."
+                            type="info"
+                            showIcon
+                        />
                     </Panel>
                 </Collapse>
             </Space>

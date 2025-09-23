@@ -31,6 +31,16 @@ const isNetworkDiagramSpec = (spec: any): spec is NetworkDiagramSpec => {
 export const networkDiagramPlugin: D3RenderPlugin = {
     name: 'network-diagram',
     priority: 1,
+    sizingConfig: {
+        sizingStrategy: 'responsive',
+        needsDynamicHeight: false,
+        needsOverflowVisible: false,
+        observeResize: false,
+        containerStyles: {
+            height: '400px',
+            overflow: 'auto'
+        }
+    },
     canHandle: isNetworkDiagramSpec,
     render: (container: HTMLElement, d3: any, spec: any) => {
         console.debug('Network diagram plugin rendering:', { spec });

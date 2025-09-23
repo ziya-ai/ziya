@@ -133,7 +133,7 @@ def get_confidence_threshold(level='medium'):
 
 def get_max_offset():
     """Get the configured maximum offset for hunk application."""
-    max_offset = get_config_value(ENV_MAX_OFFSET, 100)  # Increased from 8 to 100 to handle more cases
+    max_offset = get_config_value(ENV_MAX_OFFSET, 500)  # Increased from 100 to 500 for large files
     return int(max_offset) if isinstance(max_offset, str) else max_offset
 
 def is_adaptive_context_enabled():

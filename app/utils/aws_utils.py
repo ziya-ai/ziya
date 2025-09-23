@@ -71,7 +71,7 @@ def get_current_region():
         logger.warning(f"Error getting region from boto3 session: {e}")
         
     # Fall back to default region
-    from app.config import DEFAULT_REGION
+    from app.config.models_config import DEFAULT_REGION
     logger.warning(f"Using default region: {DEFAULT_REGION}")
     return DEFAULT_REGION
 
@@ -97,22 +97,25 @@ class ThrottleSafeBedrock(BaseClient):
         """Forward converse calls to the client."""
         return self.client.converse(*args, **kwargs)
 
-def check_aws_credentials(is_server_startup=True, profile_name=None):
+def check_aws_credentials(is_server_startup=True, profile_name=None, region_name=None):
     """Check if AWS credentials are valid.
     
     Args:
         is_server_startup (bool): Whether this check is being performed during server startup
                                  or during a query in an already running server.
         profile_name (str): Optional AWS profile name to use
+        region_name (str): Optional AWS region name to use
     """
     try:
-        # Create a fresh session with the specified profile if provided
-        if profile_name:
-            session = create_fresh_boto3_session(profile_name=profile_name)
-            sts = session.client('sts')
-        else:
-            session = create_fresh_boto3_session()
-            sts = session.client('sts')
+        import os
+        # Use the same fresh session creation method as the working Bedrock clients
+        session = create_fresh_boto3_session(profile_name=profile_name)
+        
+        # Use the same region as the working clients
+        if not region_name:
+            region_name = os.environ.get("AWS_REGION", "us-west-2")
+        
+        sts = session.client('sts', region_name=region_name)
             
         # Try to get caller identity
         identity = sts.get_caller_identity()

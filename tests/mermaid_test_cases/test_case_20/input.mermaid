@@ -1,0 +1,65 @@
+gantt
+    title Enterprise Digital Transformation Roadmap
+    dateFormat YYYY-MM-DD
+    axisFormat %Y-%m
+    
+    section Phase 1: Foundation
+        Infrastructure Assessment    :done, infra1, 2024-01-01, 2024-02-15
+        Legacy System Analysis      :done, legacy1, 2024-01-15, 2024-03-01
+        Cloud Migration Strategy    :done, cloud1, after legacy1, 30d
+        Security Framework Design   :done, security1, after infra1, 45d
+        Governance Framework        :done, gov1, after cloud1, 20d
+        Foundation Milestone        :milestone, found1, after security1 gov1, 1d
+    
+    section Phase 2: Core Platform
+        Cloud Infrastructure Setup  :active, cloud2, after found1, 60d
+        Identity Management System  :active, identity1, after found1, 45d
+        API Gateway Implementation  :api1, after identity1, 30d
+        Microservices Architecture  :micro1, after cloud2, 90d
+        Data Platform Foundation    :data1, after cloud2, 75d
+        DevOps Pipeline Setup       :devops1, after api1, 40d
+        Core Platform Milestone     :milestone, core1, after micro1 data1 devops1, 1d
+    
+    section Phase 3: Business Applications
+        Customer Portal Development :customer1, after core1, 120d
+        Employee Self-Service       :employee1, after core1, 90d
+        Partner Integration Platform :partner1, after core1, 105d
+        Mobile Application Suite    :mobile1, after customer1, 80d
+        Analytics Dashboard         :analytics1, after data1, 100d
+        Workflow Automation Engine  :workflow1, after employee1, 70d
+        Business Apps Milestone     :milestone, business1, after mobile1 analytics1 workflow1, 1d
+    
+    section Phase 4: Advanced Capabilities
+        AI/ML Platform Deployment   :ai1, after business1, 90d
+        IoT Integration Platform    :iot1, after business1, 75d
+        Advanced Analytics Suite    :advanced1, after analytics1, 85d
+        Predictive Maintenance      :predict1, after ai1, 60d
+        Real-time Decision Engine   :realtime1, after advanced1, 70d
+        Blockchain Integration      :blockchain1, after iot1, 55d
+        Advanced Capabilities Milestone :milestone, advanced1_milestone, after predict1 realtime1 blockchain1, 1d
+    
+    section Phase 5: Optimization
+        Performance Optimization    :perf1, after advanced1_milestone, 45d
+        Cost Optimization          :cost1, after advanced1_milestone, 40d
+        Security Hardening         :security2, after advanced1_milestone, 50d
+        Compliance Certification   :compliance1, after security2, 30d
+        User Experience Enhancement :ux1, after perf1, 35d
+        Process Automation         :process1, after cost1, 40d
+        Optimization Milestone     :milestone, opt1, after compliance1 ux1 process1, 1d
+    
+    section Phase 6: Innovation
+        Emerging Technology Research :research1, after opt1, 60d
+        Innovation Lab Setup        :lab1, after opt1, 45d
+        Proof of Concept Development :poc1, after research1, 90d
+        Technology Incubation       :incubate1, after lab1, 120d
+        Innovation Pilot Programs   :pilot1, after poc1, 75d
+        Future Roadmap Planning     :future1, after incubate1 pilot1, 30d
+        Innovation Milestone        :milestone, innovation1, after future1, 1d
+    
+    section Continuous Activities
+        Change Management           :change1, 2024-01-01, 2026-12-31
+        Training and Development    :training1, 2024-02-01, 2026-12-31
+        Quality Assurance          :qa1, 2024-03-01, 2026-12-31
+        Risk Management            :risk1, 2024-01-01, 2026-12-31
+        Vendor Management          :vendor1, 2024-01-15, 2026-12-31
+        Stakeholder Communication  :comm1, 2024-01-01, 2026-12-31

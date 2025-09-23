@@ -1,0 +1,52 @@
+gantt
+    title Enterprise Software Development Lifecycle
+    dateFormat YYYY-MM-DD
+    axisFormat %m/%d
+    
+    section Phase 1: Planning & Analysis
+        Stakeholder Workshops     :done, plan1, 2024-01-01, 2024-01-15
+        Business Requirements     :done, plan2, after plan1, 10d
+        Technical Requirements    :done, plan3, after plan2, 8d
+        Risk Assessment          :done, plan4, after plan3, 5d
+        Project Charter          :milestone, plan5, after plan4, 1d
+    
+    section Phase 2: Architecture & Design
+        System Architecture      :active, arch1, after plan5, 20d
+        Database Design         :arch2, after plan5, 15d
+        API Specification       :arch3, after arch2, 12d
+        Security Architecture   :arch4, after arch1, 10d
+        UI/UX Design           :arch5, after plan5, 18d
+        Design Review          :milestone, arch6, after arch1 arch3 arch4 arch5, 3d
+    
+    section Phase 3: Development Sprint 1
+        Core Infrastructure     :dev1, after arch6, 25d
+        Authentication Module   :dev2, after arch6, 18d
+        User Management        :dev3, after dev2, 15d
+        Database Layer         :dev4, after arch6, 20d
+        API Gateway           :dev5, after dev4, 12d
+        Frontend Framework    :dev6, after arch6, 14d
+    
+    section Phase 4: Development Sprint 2
+        Business Logic Layer   :dev7, after dev3 dev5, 22d
+        Payment Processing     :dev8, after dev7, 16d
+        Reporting Engine       :dev9, after dev7, 18d
+        Notification System    :dev10, after dev7, 12d
+        Admin Dashboard        :dev11, after dev6 dev5, 20d
+        Mobile API            :dev12, after dev5, 14d
+    
+    section Phase 5: Integration & Testing
+        Component Testing      :test1, after dev7, 15d
+        Integration Testing    :test2, after dev8 dev9 dev10, 18d
+        System Testing         :test3, after test2, 14d
+        Performance Testing    :test4, after test3, 12d
+        Security Testing       :test5, after test3, 10d
+        User Acceptance Testing :test6, after test4 test5, 20d
+        Load Testing          :test7, after test6, 8d
+    
+    section Phase 6: Deployment & Launch
+        Production Setup       :deploy1, after test7, 8d
+        Data Migration        :deploy2, after deploy1, 5d
+        Deployment Automation :deploy3, after deploy2, 3d
+        Go-Live              :milestone, deploy4, after deploy3, 1d
+        Post-Launch Support   :deploy5, after deploy4, 14d
+        Performance Monitoring :deploy6, after deploy4, 30d

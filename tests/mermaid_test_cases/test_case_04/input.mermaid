@@ -1,0 +1,110 @@
+erDiagram
+    CUSTOMER {
+        uuid customer_id PK
+        string first_name
+        string last_name
+        string email UK
+        string phone_number
+        date date_of_birth
+        enum gender
+        timestamp created_at
+        timestamp updated_at
+        boolean is_active
+        json preferences
+    }
+    
+    ADDRESS {
+        uuid address_id PK
+        uuid customer_id FK
+        string address_type
+        string street_address
+        string city
+        string state_province
+        string postal_code
+        string country_code
+        boolean is_default
+        timestamp created_at
+    }
+    
+    ORDER {
+        uuid order_id PK
+        uuid customer_id FK
+        string order_number UK
+        enum order_status
+        decimal subtotal
+        decimal tax_amount
+        decimal shipping_cost
+        decimal discount_amount
+        decimal total_amount
+        string currency_code
+        timestamp order_date
+        timestamp shipped_date
+        timestamp delivered_date
+        json metadata
+    }
+    
+    ORDER_ITEM {
+        uuid order_item_id PK
+        uuid order_id FK
+        uuid product_id FK
+        string product_sku
+        string product_name
+        integer quantity
+        decimal unit_price
+        decimal total_price
+        json product_options
+    }
+    
+    PRODUCT {
+        uuid product_id PK
+        string product_sku UK
+        string product_name
+        text description
+        decimal price
+        string currency_code
+        integer stock_quantity
+        enum product_status
+        json specifications
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    CATEGORY {
+        uuid category_id PK
+        string category_name UK
+        string category_slug UK
+        text description
+        uuid parent_category_id FK
+        integer sort_order
+        boolean is_active
+        timestamp created_at
+    }
+    
+    PRODUCT_CATEGORY {
+        uuid product_id FK
+        uuid category_id FK
+        integer sort_order
+        timestamp created_at
+    }
+    
+    PAYMENT {
+        uuid payment_id PK
+        uuid order_id FK
+        string payment_method
+        string payment_provider
+        string transaction_id UK
+        decimal amount
+        string currency_code
+        enum payment_status
+        timestamp payment_date
+        json payment_details
+    }
+    
+    CUSTOMER ||--o{ ADDRESS : has
+    CUSTOMER ||--o{ ORDER : places
+    ORDER ||--o{ ORDER_ITEM : contains
+    ORDER ||--|| PAYMENT : paid_by
+    PRODUCT ||--o{ ORDER_ITEM : included_in
+    PRODUCT ||--o{ PRODUCT_CATEGORY : belongs_to
+    CATEGORY ||--o{ PRODUCT_CATEGORY : contains
+    CATEGORY ||--o{ CATEGORY : parent_of

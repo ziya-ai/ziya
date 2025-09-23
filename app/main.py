@@ -8,7 +8,8 @@ from app.utils.logging_utils import logger
 from app.utils.version_util import get_current_version, get_latest_version
 
 # Import configuration instead of individual constants
-import app.config as config
+import app.config.models_config as config
+from app.config.app_config import DEFAULT_PORT
 
 
 def get_available_models(endpoint=None):
@@ -27,8 +28,15 @@ def get_available_models(endpoint=None):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Run with custom options")
+    
+    # File inclusion/exclusion options
+    parser.add_argument("--include", default=[], type=lambda x: x.split(','),
+                        help="Include paths outside of the current working directory. Supports comma-separated lists. (e.g., --include '/path/to/external/lib,/another/external/path')")
     parser.add_argument("--exclude", default=[], type=lambda x: x.split(','),
-                        help="List of files or directories to exclude (e.g., --exclude 'tst,build,*.py')")
+                        help="Exclude specified files, directories, or file patterns from the codebase. Supports comma-separated lists. (e.g., --exclude 'node_modules,dist,*.pyc')")
+    parser.add_argument("--include-only", default=[], type=lambda x: x.split(','),
+                        help="Only include specified directories, files, or file patterns, excluding everything else. Supports comma-separated lists and wildcard patterns. (e.g., --include-only 'src,lib' or --include-only '*.py,*.tsx')")
+    
     parser.add_argument("--profile", type=str, default=None,
                         help="AWS profile to use (e.g., --profile ziya)")
     parser.add_argument("--region", type=str, default=None,
@@ -47,9 +55,9 @@ def parse_arguments():
                         help=f"Model to use from selected endpoint (default: {default_model}). Available models: {model_list}")
     parser.add_argument("--model-id", type=str, default=None,
                         help="Override the model ID directly (advanced usage, bypasses model name lookup)")
-    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT,
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=(f"Port number to run Ziya frontend on "
-                              f"(default: {config.DEFAULT_PORT}, e.g., --port 8080)"))
+                              f"(default: {DEFAULT_PORT}, e.g., --port 8080)"))
 
     # Add model parameter arguments without specific ranges
     parser.add_argument("--temperature", type=float, default=None,
@@ -78,6 +86,14 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def find_endpoint_for_model(model):
+    """Find which endpoint contains the specified model."""
+    for endpoint, models in config.MODEL_CONFIGS.items():
+        if model in models:
+            return endpoint
+    return None
+
+
 def validate_model_and_endpoint(endpoint, model):
     """
     Validate that the specified endpoint and model are valid.
@@ -87,12 +103,18 @@ def validate_model_and_endpoint(endpoint, model):
         model: The model name to validate
         
     Returns:
-        tuple: (is_valid, error_message)
+        tuple: (is_valid, error_message, corrected_endpoint)
     """
+    # If model is specified but endpoint doesn't contain it, try to auto-detect
+    if model and endpoint in config.MODEL_CONFIGS and model not in config.MODEL_CONFIGS[endpoint]:
+        correct_endpoint = find_endpoint_for_model(model)
+        if correct_endpoint:
+            return True, None, correct_endpoint
+    
     # Check if endpoint is valid
     if endpoint not in config.MODEL_CONFIGS:
         valid_endpoints = ", ".join(config.MODEL_CONFIGS.keys())
-        return False, f"Invalid endpoint: '{endpoint}'. Valid endpoints are: {valid_endpoints}"
+        return False, f"Invalid endpoint: '{endpoint}'. Valid endpoints are: {valid_endpoints}", None
     
     # If model is None, use the default model for the endpoint
     if model is None:
@@ -101,17 +123,30 @@ def validate_model_and_endpoint(endpoint, model):
     # Check if model is valid for the endpoint
     if model not in config.MODEL_CONFIGS[endpoint]:
         valid_models = ", ".join(config.MODEL_CONFIGS[endpoint].keys())
-        return False, f"Invalid model: '{model}' for endpoint '{endpoint}'. Valid models are: {valid_models}"
+        return False, f"Invalid model: '{model}' for endpoint '{endpoint}'. Valid models are: {valid_models}", None
     
-    return True, None
+    return True, None, endpoint
 
 
 def setup_environment(args):
     import os
     os.environ["ZIYA_USER_CODEBASE_DIR"] = os.getcwd()
 
+    # Handle file inclusion/exclusion options
     additional_excluded_dirs = ','.join(args.exclude)
     os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] = additional_excluded_dirs
+    
+    # Handle include-only option (takes precedence over exclude)
+    if args.include_only:
+        include_only_dirs = ','.join(args.include_only)
+        os.environ["ZIYA_INCLUDE_ONLY_DIRS"] = include_only_dirs
+        logger.info(f"Only including specified directories/files: {include_only_dirs}")
+    
+    # Handle include option for external paths
+    if args.include:
+        include_dirs = ','.join(args.include)
+        os.environ["ZIYA_INCLUDE_DIRS"] = include_dirs
+        logger.info(f"Including external paths: {include_dirs}")
 
     # Check for conflicting arguments before setting AWS profile
     if args.endpoint == "google" and args.profile:
@@ -143,10 +178,17 @@ def setup_environment(args):
     endpoint = args.endpoint
     model = args.model
     
-    is_valid, error_message = validate_model_and_endpoint(endpoint, model)
+    is_valid, error_message, corrected_endpoint = validate_model_and_endpoint(endpoint, model)
     if not is_valid:
         logger.error(error_message)
         sys.exit(1)
+    
+    # Use corrected endpoint if auto-detection occurred
+    if corrected_endpoint and corrected_endpoint != endpoint:
+        logger.info(f"Auto-detected endpoint '{corrected_endpoint}' for model '{model}'")
+        endpoint = corrected_endpoint
+        # Update args.endpoint so it's available throughout the application
+        args.endpoint = corrected_endpoint
     
     os.environ["ZIYA_ENDPOINT"] = endpoint
     if model:
@@ -299,6 +341,9 @@ def start_server(args):
         # Pre-initialize the model to catch any credential issues before starting the server
         logger.info("Performing initial authentication check...")
         try:
+            # Import KnownCredentialException at the top level to avoid UnboundLocalError
+            from app.utils.custom_exceptions import KnownCredentialException
+            
             # Only check AWS credentials if using Bedrock endpoint
             from app.utils.custom_exceptions import KnownCredentialException
             
@@ -314,7 +359,8 @@ def start_server(args):
                     from app.agents.models import ModelManager
                     ModelManager._state['last_auth_error'] = message
                     # Raise KnownCredentialException which will handle printing the message only once
-                    raise KnownCredentialException(message)
+                    # Pass is_server_startup=True to indicate this is during initial startup
+                    raise KnownCredentialException(message, is_server_startup=True)
             
             # Set an environment variable to indicate we've already checked auth
             # This will be used by ModelManager to avoid duplicate initialization
@@ -369,20 +415,36 @@ def check_auth(args):
     setup_environment(args)
     
     try:
-        # Import the check_aws_credentials function
-        from app.utils.aws_utils import check_aws_credentials
-        
-        # Check credentials and get status and message
-        valid, message = check_aws_credentials()
-        
-        if valid:
-            print("\n✅ AWS credentials are valid.")
-            return True
+        # Only check AWS credentials if using Bedrock endpoint
+        if args.endpoint == "bedrock":
+            # Import the check_aws_credentials function
+            from app.utils.aws_utils import check_aws_credentials
+            
+            # Check credentials and get status and message
+            valid, message = check_aws_credentials()
+            
+            if valid:
+                print("\n✅ AWS credentials are valid.")
+                return True
+            else:
+                print(f"\n{message}")
+                return False
+        elif args.endpoint == "google":
+            # Check Google API key
+            import os
+            google_api_key = os.environ.get("GOOGLE_API_KEY")
+            if google_api_key:
+                print("\n✅ Google API key is configured.")
+                return True
+            else:
+                print("\n⚠️ ERROR: GOOGLE_API_KEY environment variable is not set.")
+                print("Please set your Google API key: export GOOGLE_API_KEY=<your-key>")
+                return False
         else:
-            print(f"\n{message}")
+            print(f"\n⚠️ ERROR: Unknown endpoint '{args.endpoint}'")
             return False
     except ImportError:
-        print("\n⚠️ ERROR: Could not import AWS utilities to check authentication.")
+        print("\n⚠️ ERROR: Could not import required utilities to check authentication.")
         return False
     except Exception as e:
         print(f"\n⚠️ ERROR: Authentication check failed: {str(e)}")

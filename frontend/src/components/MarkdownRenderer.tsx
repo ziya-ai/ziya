@@ -8,6 +8,9 @@ import { DiffLine } from './DiffLine';
 import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
+import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
+import { parseThinkingContent, removeThinkingTags } from '../utils/thinkingParser';
+import { useFolderContext } from '../context/FolderContext';
 import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
@@ -18,9 +21,55 @@ import { useTheme } from '../context/ThemeContext';
 import type * as PrismType from 'prismjs';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
+import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
+import 'katex/dist/katex.min.css';
+import { restartStreamWithEnhancedContext } from '../apis/chatApi';
+
+// Thinking component for DeepSeek reasoning content
+const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; isStreaming?: boolean }> = ({ children, isDarkMode, isStreaming = false }) => {
+    // Start expanded during streaming, collapsed when done
+    const [isExpanded, setIsExpanded] = useState(isStreaming);
+    const thinkingRenderedRef = useRef(false);
+
+    return (
+        <div className={`thinking-block ${isDarkMode ? 'dark' : 'light'}`} style={{
+            border: `1px solid ${isDarkMode ? '#444' : '#ddd'}`,
+            borderRadius: '8px',
+            margin: '12px 0',
+            backgroundColor: isDarkMode ? '#1a1a1a' : '#f8f9fa'
+        }}>
+            <div
+                onClick={() => setIsExpanded(!isExpanded)}
+                style={{
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    borderBottom: isExpanded ? `1px solid ${isDarkMode ? '#444' : '#ddd'}` : 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontSize: '14px',
+                    color: isDarkMode ? '#888' : '#666'
+                }}
+            >
+                <span>{isExpanded ? '▼' : '▶'}</span>
+                <span>🤔 Thinking...</span>
+            </div>
+            {isExpanded && (
+                <div style={{
+                    padding: '12px',
+                    fontSize: '13px',
+                    fontFamily: 'monospace',
+                    color: isDarkMode ? '#ccc' : '#555',
+                    whiteSpace: 'pre-wrap'
+                }}>
+                    {children}
+                </div>
+            )}
+        </div>
+    );
+};
 
 // Define the status interface
-import 'katex/dist/katex.min.css';
 interface HunkStatus {
     applied: boolean;
     alreadyApplied?: boolean;
@@ -49,6 +98,7 @@ interface ApplyChangesButtonProps {
     fileIndex: number;
     diffElementId: string;
     enabled: boolean;
+    isStreaming?: boolean;
     setHunkStatuses?: (updater: (prev: Map<string, HunkStatus>) => Map<string, HunkStatus>) => void;
 }
 
@@ -414,6 +464,67 @@ const DiffControls = memo(({
         </div>
     );
 });
+
+// Helper function to extract all file paths from a diff
+const extractAllFilesFromDiff = (diffContent: string): string[] => {
+    const files: string[] = [];
+    const lines = diffContent.split('\n');
+
+    for (const line of lines) {
+        // Extract from git diff headers
+        const gitMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+        if (gitMatch) {
+            const newPath = gitMatch[2];
+            const oldPath = gitMatch[1];
+            if (newPath !== '/dev/null') files.push(newPath);
+            if (oldPath !== '/dev/null' && oldPath !== newPath) files.push(oldPath);
+        }
+
+        // Extract from unified diff headers as backup
+        const minusMatch = line.match(/^--- a\/(.+)$/);
+        if (minusMatch && !minusMatch[1].includes('/dev/null')) {
+            files.push(minusMatch[1]);
+        }
+
+        const plusMatch = line.match(/^\+\+\+ b\/(.+)$/);
+        if (plusMatch && !plusMatch[1].includes('/dev/null')) {
+            files.push(plusMatch[1]);
+        }
+    }
+
+    return [...new Set(files)]; // Remove duplicates
+};
+
+// Function to check if files are in current context - do this locally!
+const checkFilesInContext = (filePaths: string[], currentFiles: string[] = []): { missingFiles: string[], availableFiles: string[] } => {
+    const missingFiles: string[] = [];
+    const availableFiles: string[] = [];
+    
+    for (const filePath of filePaths) {
+        // Clean up the file path (remove a/ or b/ prefixes from git diffs)
+        let cleanPath = filePath.trim();
+        if (cleanPath.startsWith('a/') || cleanPath.startsWith('b/')) {
+            cleanPath = cleanPath.substring(2);
+        }
+        
+        // Check if the file is in the current selected context
+        const isInContext = currentFiles.some(currentFile => 
+            currentFile === cleanPath || 
+            cleanPath.startsWith(currentFile + '/') ||
+            (currentFile.endsWith('/') && cleanPath.startsWith(currentFile))
+        );
+        
+        if (isInContext) {
+            availableFiles.push(cleanPath);
+        } else {
+            missingFiles.push(cleanPath);
+        }
+    }
+    
+    console.log('🔄 CONTEXT_ENHANCEMENT: Local check result:', { filePaths, currentFiles: currentFiles.slice(0, 5), missingFiles, availableFiles });
+    return { missingFiles, availableFiles };
+};
+
 DiffControls.displayName = 'DiffControls';
 
 const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
@@ -535,6 +646,67 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
     }
 };
 
+// Helper function to fix Haiku-style diffs that are missing unified diff headers
+const fixHaikuStyleDiff = (diff: string): string => {
+    const lines = diff.split('\n');
+    const result: string[] = [];
+
+    // Extract file path from git header
+    const gitHeaderMatch = lines[0].match(/diff --git a\/(.*?) b\/(.*?)$/);
+    if (!gitHeaderMatch) {
+        return diff; // Can't fix without git header
+    }
+
+    const filePath = gitHeaderMatch[2] || gitHeaderMatch[1];
+
+    // Add git header
+    result.push(lines[0]);
+
+    // Add missing unified diff headers
+    result.push(`--- a/${filePath}`);
+    result.push(`+++ b/${filePath}`);
+
+    // Process the rest of the lines
+    let i = 1;
+    while (i < lines.length) {
+        const line = lines[i];
+
+        // Skip any existing headers that might be malformed
+        if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('index ')) {
+            i++;
+            continue;
+        }
+
+        // Handle hunk headers - fix incomplete ones
+        if (line.startsWith('@@')) {
+            // Check if this is a Haiku-style incomplete hunk header
+            const hunkMatch = line.match(/^@@\s+-(\d+),(\d+)\s+\+(\d+),(\d+)\s+@@(.*)$/);
+            if (hunkMatch) {
+                result.push(line);
+            } else {
+                // Try to fix malformed hunk headers
+                const partialMatch = line.match(/^@@\s+-(\d+),?\s*(\d*)\s+\+?(\d+),?\s*(\d*)\s*@@?(.*)$/);
+                if (partialMatch) {
+                    const [, oldStart, oldCount, newStart, newCount, context] = partialMatch;
+                    const fixedLine = `@@ -${oldStart},${oldCount || '1'} +${newStart},${newCount || '1'} @@${context || ''}`;
+                    result.push(fixedLine);
+                } else {
+                    result.push(line);
+                }
+            }
+        } else {
+            // Regular content line - preserve as is
+            result.push(line);
+        }
+
+        i++;
+    }
+
+    const fixedDiff = result.join('\n');
+    console.log('🔧 Fixed Haiku-style diff:', fixedDiff.substring(0, 200) + '...');
+    return fixedDiff;
+};
+
 // Helper function to check if this is a deletion diff
 const isDeletionDiff = (content: string) => {
     return content.includes('diff --git') &&
@@ -564,7 +736,15 @@ const normalizeGitDiff = (diff: string): string => {
             /^@@\s+-\d+,\d+\s+@@/.test(line)
         );
 
-        if (hasDiffHeaders && hasHunkHeader) {
+        // Check for Haiku-style diffs that have git headers but missing unified diff headers
+        const hasGitHeader = lines.some(line => line.startsWith('diff --git'));
+        const hasHunkHeaders = lines.some(line => line.startsWith('@@'));
+
+        if ((hasDiffHeaders && hasHunkHeader) || (hasGitHeader && hasHunkHeaders && !hasDiffHeaders)) {
+            // Handle Haiku-style diffs that are missing unified diff headers
+            if (hasGitHeader && hasHunkHeaders && !hasDiffHeaders) {
+                return fixHaikuStyleDiff(diff);
+            }
             return diff;  // Return original diff if it's properly formatted
         }
 
@@ -895,12 +1075,16 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     useEffect(() => {
         const parseAndSetFiles = () => {
             try {
-                let parsedFiles = parseDiff(normalizeGitDiff(diff));
+                const normalizedDiff = normalizeGitDiff(diff);
+                let parsedFiles = parseDiff(normalizedDiff);
 
                 // After all parsing attempts, check if we have valid, renderable files/hunks
                 if (!parsedFiles || parsedFiles.length === 0 ||
                     !parsedFiles[0].hunks || parsedFiles[0].hunks.length === 0) {
                     // If not, it's effectively a parse error for rich rendering purposes
+                    if (process.env.NODE_ENV === 'development') {
+                        console.warn('DiffView - Parse failed: No valid files/hunks found');
+                    }
                     setParseError(true);
                     parsedFilesRef.current = []; // Ensure ref is also empty
                 } else {
@@ -978,6 +1162,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     parsedFilesRef.current = [];
                 }
             } catch (error) {
+                if (process.env.NODE_ENV === 'development') {
+                    console.error('DiffView - ParseDiff error:', error);
+                    console.error('DiffView - Failed diff content:', diff.substring(0, 200) + '...');
+                }
                 setErrorMessage(error instanceof Error ? error.message : String(error));
                 console.error('Error parsing diff:', error);
 
@@ -1184,15 +1372,35 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
     // Handle parse error case
     if (parseError) {
+        if (process.env.NODE_ENV === 'development') {
+            console.warn('DiffView - Rendering fallback due to parse error');
+        }
         return (
-            <pre data-testid="diff-parse-error" style={{
-                backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                color: isDarkMode ? '#e6e6e6' : 'inherit',
-                padding: '10px',
-                borderRadius: '4px'
-            }}>
-                <code>{diff}</code>
-            </pre>
+            <div>
+                <div style={{
+                    backgroundColor: isDarkMode ? '#2d2d2d' : '#f8f8f8',
+                    padding: '8px 12px',
+                    borderRadius: '4px 4px 0 0',
+                    fontSize: '12px',
+                    color: isDarkMode ? '#888' : '#666',
+                    borderBottom: '1px solid ' + (isDarkMode ? '#404040' : '#e1e4e8')
+                }}>
+                    📄 Diff (fallback rendering - parsing failed)
+                </div>
+                <pre data-testid="diff-parse-error" style={{
+                    backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                    color: isDarkMode ? '#e6e6e6' : 'inherit',
+                    padding: '16px',
+                    borderRadius: '0 0 4px 4px',
+                    margin: 0,
+                    overflow: 'auto',
+                    fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace',
+                    fontSize: '13px',
+                    lineHeight: '1.45'
+                }}>
+                    <code>{diff}</code>
+                </pre>
+            </div>
         );
     }
 
@@ -1487,6 +1695,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     fileIndex={fileIndex}
                                     diffElementId={elementId}
                                     filePath={file.newPath || file.oldPath}
+                                    isStreaming={isGlobalStreaming}
                                     setHunkStatuses={setInstanceHunkStatusMap}
                                     enabled={window.enableCodeApply === 'true'}
                                 />
@@ -1639,7 +1848,37 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     );
 };
 
-const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, fileIndex, diffElementId, enabled, setHunkStatuses }) => {
+/**
+ * Check if a diff is complete and ready for application
+ */
+const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
+    if (!diffContent || !diffContent.trim()) return false;
+
+    // If not streaming, assume diff is complete
+    if (!isStreaming) return true;
+
+    // For streaming diffs, check if they have the essential structure
+    const lines = diffContent.split('\n');
+    const hasGitHeader = lines.some(line => line.startsWith('diff --git'));
+    const hasFileHeaders = lines.some(line => line.startsWith('---')) &&
+        lines.some(line => line.startsWith('+++'));
+    const hasHunkHeader = lines.some(line => line.match(/^@@\s+-\d+/));
+    const hasContent = lines.some(line => line.match(/^[+-\s]/));
+
+    // Check if the diff ends properly (not cut off mid-hunk)
+    const lastNonEmptyLine = lines.filter(line => line.trim()).pop() || '';
+    const endsAbruptly = lastNonEmptyLine.startsWith('@@') ||
+        lastNonEmptyLine.match(/^[+-]/) &&
+        !lines.slice(-3).some(line => line.trim() === '');
+
+    // A complete diff should have header structure and not end abruptly
+    const hasMinimalStructure = hasGitHeader && hasFileHeaders && hasHunkHeader && hasContent;
+    const isStructurallyComplete = hasMinimalStructure && !endsAbruptly;
+
+    return isStructurallyComplete;
+};
+
+const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, fileIndex, diffElementId, enabled, isStreaming = false, setHunkStatuses }) => {
     const [isApplied, setIsApplied] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
@@ -1651,6 +1890,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     // Track processed request IDs to prevent infinite update loops
     const processedRequestIds = useRef(new Set<string>());
 
+    // Check if the diff is complete and ready for application
+    const diffComplete = useMemo(() => {
+        return isDiffComplete(diff, isStreaming);
+    }, [diff, isStreaming]);
+
+    const shouldDisableButton = isApplied || isProcessing || (isStreaming && !diffComplete);
     const buttonId = useId();
     // Define a function to trigger diff updates
     const triggerDiffUpdate = (hunkStatuses: Record<string, any> | null = null, requestId: string | null = null, diffElementId: string | null = null) => {
@@ -2288,7 +2533,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     return enabled ? (
         <Button
             onClick={handleApplyChanges}
-            disabled={isApplied || isProcessing}
+            disabled={shouldDisableButton}
             loading={isProcessing}
             type={isApplied ? "default" : "primary"}
             style={{ marginLeft: '8px' }} id={`apply-changes-${buttonId}`}
@@ -2316,27 +2561,252 @@ interface DiffTokenProps {
 }
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
-    const { isStreaming } = useChatContext();
+    const { isStreaming, streamingConversations, currentConversationId,
+        currentMessages, addMessageToConversation, setStreamedContentMap,
+        removeStreamingConversation, setIsStreaming } = useChatContext();
+    const { checkedKeys, addFilesToContext } = useFolderContext();
     // Generate a unique ID once when the component mounts
     const [diffId] = useState(() =>
         `diff-${Math.random().toString(36).substring(2, 9)}-${Date.now()}`);
     const contentRef = useRef<string | null>(null);
+    const [isCheckingFiles, setIsCheckingFiles] = useState(false);
+    const hasCheckedFilesRef = useRef(false);
+    const checkTimeoutRef = useRef<NodeJS.Timeout>();
+    const [needsContextEnhancement, setNeedsContextEnhancement] = useState(false);
+    const [missingFilesList, setMissingFilesList] = useState<string[]>([]);
+    const lastTokenLengthRef = useRef(0);
+    const hasCheckedAfterStreamingRef = useRef(false);
+
+    // Check for missing files after streaming completes if we haven't checked yet
+    useEffect(() => {
+        if (!streamingConversations.has(currentConversationId) &&
+            !hasCheckedAfterStreamingRef.current &&
+            !hasCheckedFilesRef.current &&
+            token.text.includes('diff --git')) {
+
+            console.log('🔄 CONTEXT_ENHANCEMENT: Checking after streaming completed');
+            hasCheckedAfterStreamingRef.current = true;
+
+            const checkAfterStreaming = async () => {
+                const referencedFiles = extractAllFilesFromDiff(token.text);
+                console.log('🔄 CONTEXT_ENHANCEMENT: Files extracted from diff:', referencedFiles);
+                if (referencedFiles.length > 0) {
+                    const currentFiles = Array.from(checkedKeys).map(String);
+                    const response = checkFilesInContext(referencedFiles, currentFiles);
+                    console.log('🔄 CONTEXT_ENHANCEMENT: API response after streaming for files', referencedFiles, ':', response);
+                    if (response.missingFiles.length > 0) {
+                        await addFilesToContext(response.missingFiles);
+                        setMissingFilesList(response.missingFiles);
+                        setNeedsContextEnhancement(true);
+                        console.log('🔄 CONTEXT_ENHANCEMENT: Set overlay after streaming for missing files:', response.missingFiles);
+                    }
+                }
+            };
+
+            checkAfterStreaming();
+        }
+    }, [streamingConversations, currentConversationId, token.text, addFilesToContext]);
+
+    // Debounced check function
+    const debouncedCheck = useCallback((checkFn: () => Promise<void>) => {
+        if (checkTimeoutRef.current) clearTimeout(checkTimeoutRef.current);
+        checkTimeoutRef.current = setTimeout(checkFn, 500); // Wait 500ms for diff to stabilize
+    }, []);
+
+    // Check if referenced files are in context when diff is rendered during streaming
+    useEffect(() => {
+        const checkMissingFiles = async () => {
+            if (!token.text || hasCheckedFilesRef.current || isCheckingFiles) return;
+
+            // Check streaming state more comprehensively
+            const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+
+            // Only log when we actually find something interesting
+            if (!isCurrentlyStreaming) return;
+
+            // Only check during active streaming to avoid interrupting completed responses
+            if (!isCurrentlyStreaming) {
+                return;
+            }
+
+            const referencedFiles = extractAllFilesFromDiff(token.text);
+            if (referencedFiles.length === 0) return;
+
+            console.log('🔄 CONTEXT_ENHANCEMENT: Checking files in diff:', referencedFiles);
+
+            // Mark as checked BEFORE doing the work to prevent race conditions
+            hasCheckedFilesRef.current = true;
+            setIsCheckingFiles(true);
+            
+            try {
+                const currentFiles = Array.from(checkedKeys).map(String);
+                const response = checkFilesInContext(referencedFiles, currentFiles);
+                console.log('🔄 CONTEXT_ENHANCEMENT: API response:', response);
+                const { missingFiles } = response;
+
+                if (missingFiles.length > 0) {
+                    console.log('🔄 CONTEXT_ENHANCEMENT: Missing files detected:', missingFiles);
+
+                    // Add files to context using the proper context method
+                    await addFilesToContext(missingFiles);
+
+                    // Instead of interrupting, show enhancement overlay
+                    setMissingFilesList(missingFiles);
+                    setNeedsContextEnhancement(true);
+                } else {
+                    console.log('🔄 CONTEXT_ENHANCEMENT: No missing files found, all referenced files are already in context');
+                }
+            } catch (error) {
+                console.error('Error checking missing files:', error);
+            } finally {
+                setIsCheckingFiles(false);
+            }
+        };
+
+        // Only trigger if token content has significantly grown (to avoid spam)
+        const currentLength = token.text.length;
+        const lengthGrowth = currentLength - lastTokenLengthRef.current;
+        lastTokenLengthRef.current = currentLength;
+
+        // Only check if content has grown significantly or if streaming completed
+        if (lengthGrowth > 200 || !streamingConversations.has(currentConversationId)) {
+            if (streamingConversations.has(currentConversationId)) {
+                debouncedCheck(checkMissingFiles);
+            } else if (!hasCheckedFilesRef.current) {
+            } else if (!hasCheckedFilesRef.current) {
+                checkMissingFiles();
+            }
+        }
+    }, [token.text.length, currentConversationId, streamingConversations, isCheckingFiles]);
+
+    // Restart stream with enhanced context
+    const restartStreamWithFiles = async (addedFiles: string[]) => {
+        try {
+            console.log('🔄 CONTEXT_ENHANCEMENT: Starting stream restart process');
+
+            // First, explicitly abort the current stream
+            document.dispatchEvent(new CustomEvent('abortStream', {
+                detail: { conversationId: currentConversationId }
+            }));
+
+            // Wait a moment for the stream to be aborted
+            await new Promise(resolve => setTimeout(resolve, 200));
+
+            // Use the imported function
+            const allCurrentFiles = Array.from(checkedKeys).map(String);
+            console.log('🔄 CONTEXT_ENHANCEMENT: Restarting with files:', { added: addedFiles, total: allCurrentFiles.length });
+            await restartStreamWithEnhancedContext(currentConversationId, addedFiles, allCurrentFiles);
+
+            // Show subtle notification
+            message.info({
+                content: `Added missing files: ${addedFiles.join(', ')}. Restarting with enhanced context...`,
+                duration: 3,
+                key: `context-enhanced-${currentConversationId}`
+            });
+        } catch (error) {
+            console.error('Error restarting stream with enhanced context:', error);
+            console.error('🔄 CONTEXT_ENHANCEMENT: Failed to restart stream:', error);
+
+            // Show fallback message
+            message.warning({
+                content: `Added files to context: ${addedFiles.join(', ')}. Please retry your request to use the enhanced context.`,
+                duration: 8,
+                key: `context-enhanced-fallback-${currentConversationId}`
+            });
+
+            // Reset the checking state so the diff can render normally
+            setIsCheckingFiles(false);
+        }
+    };
+
+    // Reset check flag when conversation changes
+    useEffect(() => {
+        hasCheckedFilesRef.current = false;
+        hasCheckedAfterStreamingRef.current = false;
+        setNeedsContextEnhancement(false);
+        setMissingFilesList([]);
+        // Clear any pending timeouts
+        if (checkTimeoutRef.current) {
+            clearTimeout(checkTimeoutRef.current);
+        }
+        return () => {
+            if (checkTimeoutRef.current) clearTimeout(checkTimeoutRef.current);
+        };
+    }, [currentConversationId]);
+
+    // Clean up any MATH_INLINE expansions that might have slipped through
+    const cleanedText = useMemo(() => {
+        if (!token.text) return '';
+        // Replace any MATH_INLINE expansions with their original form
+        return token.text.replace(/⟨MATH_INLINE:(\d+)⟩/g, '$$1');
+    }, [token.text]);
 
     // Store the content in a ref to avoid re-renders
     useEffect(() => {
-        if (!contentRef.current || contentRef.current !== token.text) {
-            contentRef.current = token.text;
+        if (!contentRef.current || contentRef.current !== cleanedText) {
+            contentRef.current = cleanedText;
         }
-    }, [token.text]);
+    }, [currentConversationId]);
+
+    // Function to retry with enhanced context
+    const retryWithEnhancedContext = async () => {
+        setNeedsContextEnhancement(false);
+        try {
+            const allCurrentFiles = Array.from(checkedKeys).map(String);
+            await restartStreamWithEnhancedContext(currentConversationId, missingFilesList, allCurrentFiles);
+
+            message.success({
+                content: `Retrying with enhanced context including: ${missingFilesList.join(', ')}`,
+                duration: 3,
+                key: `context-retry-${currentConversationId}`
+            });
+        } catch (error) {
+            console.error('Error retrying with enhanced context:', error);
+            message.error('Failed to retry with enhanced context. Please try your request again.');
+        }
+    };
+
+    // Show context enhancement overlay when files are missing
+    const contextEnhancementOverlay = (isCheckingFiles || needsContextEnhancement) ? (
+        <div style={{
+            position: 'relative', width: '100%', 
+            backgroundColor: needsContextEnhancement ? 'rgba(255,193,7,0.9)' : 'rgba(0,0,0,0.7)', 
+            color: needsContextEnhancement ? '#000' : 'white',
+            padding: '12px', textAlign: 'center',
+            borderRadius: '4px'
+        }}>
+            {isCheckingFiles ? (
+                '🔄 Checking context...'
+            ) : needsContextEnhancement ? (
+                <div>
+                    <div style={{ marginBottom: '8px' }}>
+                        ⚠️ This diff references files not in context: <strong>{missingFilesList.join(', ')}</strong>
+                    </div>
+                    <Button 
+                        type="primary" 
+                        size="small" 
+                        onClick={retryWithEnhancedContext}
+                        style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
+                    >
+                        Retry with Enhanced Context
+                    </Button>
+                </div>
+            ) : null}
+        </div>
+    ) : null;
+
 
     return (
-        <DiffViewWrapper
-            token={token}
-            index={index}
-            elementId={diffId}
-            enableCodeApply={enableCodeApply}
-            isStreaming={isStreaming}
-        />
+        <div>
+            {contextEnhancementOverlay}
+            <DiffViewWrapper
+                token={{ ...token, text: cleanedText }}
+                index={index}
+                elementId={diffId}
+                enableCodeApply={enableCodeApply}
+                isStreaming={isStreaming}
+            />
+        </div>
     );
 });
 
@@ -2776,6 +3246,9 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'br' | 'list_item' |
     'unknown';
 
+// Track last log timestamp to prevent excessive logging
+let lastLogTimestamp = 0;
+
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
@@ -2783,8 +3256,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     // 1. Prioritize content-based detection for diffs, regardless of lang tag
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
+
         // Check first few lines for diff markers
         const linesToCheck = text.split('\n').slice(0, 5);
+
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
         const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
@@ -2797,7 +3272,23 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // More lenient check for diff --git, allowing it not to be the very first thing
         const containsDiffGit = text.includes('diff --git');
 
+        // Only log when debug logging is enabled
+        if (isDebugLoggingEnabled() && false) {
+            debugLog('Diff markers analysis:', {
+                hasGitHeader,
+                hasMinusHeader,
+                hasPlusHeader,
+                hasHunkHeader,
+                diffMarkersFound,
+                containsDiffGit,
+                shouldBeDiff: containsDiffGit || diffMarkersFound >= 2
+            });
+        }
+
         if (containsDiffGit || diffMarkersFound >= 2) {
+            if (isDebugLoggingEnabled()) {
+                debugLog('DETECTED AS DIFF (content-based)');
+            }
             return 'diff';
         }
     }
@@ -2806,24 +3297,30 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
 
-        console.log('Processing code block with lang:', lang);
-        // Debug logging for ALL code blocks
-        console.log('determineTokenType - Code block with lang:', lang, 'tokenType:', tokenType);
-
-        // Debug logging for tool detection
-        console.log('Code block detected with lang:', lang, 'content preview:', (token as TokenWithText).text?.substring(0, 50));
+        // Only log when debug logging is enabled and only for debugging specific issues
+        if (isDebugLoggingEnabled() && false) {
+            debugLog('Processing code block with lang:', lang);
+            debugLog('determineTokenType - Code block with lang:', lang, 'tokenType:', tokenType);
+            debugLog('Code block detected with lang:', lang, 'content preview:', (token as TokenWithText).text?.substring(0, 50));
+        }
 
         // Check for MCP tool blocks first
         if (lang.startsWith('tool:mcp_')) {
             const toolName = lang.substring(5); // Remove 'tool:' prefix to get 'mcp_...'
             (token as TokenWithText).toolName = toolName;
-            console.log('MCP tool block detected:', toolName);
+            // Only log when debug logging is enabled
+            if (isDebugLoggingEnabled()) {
+                debugLog('MCP tool block detected:', toolName);
+            }
             return 'tool';
         }
         if (lang.startsWith('tool:')) {
             const toolName = lang.substring(5); // Remove 'tool:' prefix
             (token as TokenWithText).toolName = toolName;
-            console.log('Tool block detected:', toolName);
+            // Only log when debug logging is enabled
+            if (isDebugLoggingEnabled()) {
+                debugLog('Tool block detected:', toolName);
+            }
             return 'tool';
         }
 
@@ -2845,7 +3342,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         }
 
         if (lang === 'mermaid') return 'mermaid';  // Check mermaid FIRST
-        if (lang === 'diff') return 'diff';
+        if (lang === 'diff') {
+            console.log('✅ MarkdownRenderer - DETECTED AS DIFF (lang tag)');
+            return 'diff';
+        }
         if (lang === 'graphviz' || lang === 'dot') return 'graphviz';
         if (lang === 'vega-lite' || lang === 'vegalite') return 'vega-lite';
         if (lang === 'vega-lite') return 'vega-lite';
@@ -2989,20 +3489,27 @@ const decodeHtmlEntities = (text: string): string => {
         .replace(/&trade;/g, '™');
 };
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false): React.ReactNode => {
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingContentRef?: React.MutableRefObject<string>): React.ReactNode => {
+    // Only log when debug logging is enabled and not too frequently
+    const shouldLog = isDebugLoggingEnabled() &&
+        (Date.now() - lastLogTimestamp > 10000);
+
+    if (shouldLog && tokens.length > 0) {
+        lastLogTimestamp = Date.now();
+        debugLog(`Processing ${tokens.length} tokens`);
+    }
+
     return tokens.map((token, index) => {
         const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
         const tokenWithText = token as TokenWithText; // Helper cast
 
-        if ((token as any).lang?.startsWith('tool:')) {
-            console.log(`Tool token processing - originalType: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, lang: ${(token as any).lang}`);
-        }
-
-        // Debug math tokens
-        if (tokenWithText.text && (tokenWithText.text.includes('MATH_INLINE:') || tokenWithText.text.includes('MATH_DISPLAY:'))) {
-            console.log(`Math token detected - type: <span class="math-inline-span">MATH_INLINE:{token.type}, determinedType: </span>{determinedType}, content: ${tokenWithText.text.substring(0, 100)}`);
+        // Only log tool tokens when debug logging is enabled
+        if (isDebugLoggingEnabled() &&
+            index === 0 &&
+            (token as any).lang?.startsWith('tool:')) {
+            debugLog(`Tool token detected: ${(token as any).lang}`);
         }
 
         // Override code detection if this token follows a tool token
@@ -3028,20 +3535,38 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         try {
             switch (determinedType) {
                 case 'diff':
-                    const rawDiffText = decodeHtmlEntities(tokenWithText.text || '');
+                    // Only log when debug logging is enabled and only for debugging
+                    if (isDebugLoggingEnabled() && false) {
+                        debugLog('Rendering DIFF token');
+                    }
+                    const rawDiffText = tokenWithText.text || '';
                     // Apply cleaning specific to diff content AFTER decoding
                     const cleanedDiff = cleanDiffContent(rawDiffText);
                     // Ensure lang is set to 'diff' for the component
                     const diffToken = { ...tokenWithText, text: cleanedDiff, lang: 'diff' };
+                    // Only log when debug logging is enabled and only for debugging
+                    if (isDebugLoggingEnabled() && false) {
+                        debugLog('Created diffToken:', {
+                            hasText: !!diffToken.text,
+                            textLength: diffToken.text?.length,
+                            lang: diffToken.lang,
+                            textPreview: diffToken.text?.substring(0, 100) + '...'
+                        });
+                    }
 
                     // Check if this is a multi-file diff and not already a sub-render
                     if (!isSubRender) {
                         const fileDiffs = splitMultiFileDiffs(cleanedDiff);
                         if (fileDiffs.length > 1) {
+                            console.log('🎨 MarkdownRenderer - Rendering multi-file diff');
                             return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode);
                         }
                     }
 
+                    // Only log when debug logging is enabled and only for debugging
+                    if (isDebugLoggingEnabled() && false) {
+                        debugLog('Rendering single DiffToken component');
+                    }
                     return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
 
                 case 'file-operation':
@@ -3077,7 +3602,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     );
                 case 'mermaid':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
-                    console.log(`🎯 CREATING MERMAID SPEC:`, { text: tokenWithText.text.substring(0, 100) });
+                    // Only log when debug logging is enabled and only for debugging
+                    if (isDebugLoggingEnabled() && false) {
+                        debugLog(`CREATING MERMAID SPEC:`, { text: tokenWithText.text.substring(0, 100) });
+                    }
                     // Pass the definition directly to D3Renderer, which will use the mermaidPlugin
                     // We need a spec object that the mermaidPlugin can handle with streaming flag
                     const mermaidSpec = {
@@ -3151,7 +3679,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         );
                     }
 
-                    console.log('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
+                    // Only log successful tool rendering when debug logging is enabled
+                    if (isDebugLoggingEnabled()) {
+                        debugLog('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
+                    }
                     return (
                         <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
                     );
@@ -3239,7 +3770,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Filter out empty text tokens that might remain after processing
                     const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
-                    return <p key={index}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode)}</p>;
+                    return <p key={index}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef)}</p>;
 
                 case 'list':
                     // Render list, processing items recursively
@@ -3250,7 +3781,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             {listToken.items.map((item, itemIndex) => (
                                 // Render list items using the 'list_item' case below
                                 <React.Fragment key={itemIndex}>
-                                    {renderTokens([item], enableCodeApply, isDarkMode)}
+                                    {renderTokens([item], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef)}
                                 </React.Fragment>
                             ))}
                         </ListTag>
@@ -3259,7 +3790,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'list_item':
                     const listItemToken = token as Tokens.ListItem;
 
-                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode);
+                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef);
 
                     // Handle task list items
                     if (listItemToken.task) {
@@ -3308,7 +3839,21 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     );
 
                 case 'html':
-                    if (!hasText(tokenWithText)) return null;                    // Be cautious with dangerouslySetInnerHTML
+                    if (!hasText(tokenWithText)) return null;
+
+                    // Handle thinking blocks - check for thinking-data tags
+                    if (tokenWithText.text.includes('thinking-wrapper') || tokenWithText.text.match(/<thinking-data>([\s\S]*?)<\/thinking-data>/)) {
+                        console.log('🤔 Detected thinking-data tag in HTML token:', tokenWithText.text.substring(0, 100));
+                        const match = tokenWithText.text.match(/<thinking-data>([\s\S]*?)<\/thinking-data>/);
+                        if (match) {
+                            const content = match[1];
+                            console.log('🤔 Extracted thinking content:', content.substring(0, 50) + '...');
+                            console.log('🤔 Returning ThinkingBlock component');
+                            return <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{content}</ThinkingBlock>;
+                        }
+                    }
+
+                    // Be cautious with dangerouslySetInnerHTML
 
                     // List of known/safe HTML tags that we want to actually render as HTML
                     const knownHtmlTags = [
@@ -3319,7 +3864,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         'a', 'img', 'video', 'audio',
                         'blockquote', 'pre', 'code',
                         'details', 'summary',
-                        'math', 'mi', 'mo', 'mn', 'mrow', 'mfrac', 'msup', 'msub', 'msubsup', 'msqrt', 'mroot'
+                        'math', 'mi', 'mo', 'mn', 'mrow', 'mfrac', 'msup', 'msub', 'msubsup', 'msqrt', 'mroot',
+                        'thinking-data'
 
                     ];
 
@@ -3374,6 +3920,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
                     let decodedText = decodeHtmlEntities(tokenWithText.text);
+
+                    // Handle thinking block tokens
+                    if (decodedText.startsWith('THINKING_MARKER')) {
+                        const thinkingContent = thinkingContentRef?.current || '';
+                        return <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{thinkingContent}</ThinkingBlock>;
+                    }
 
                     // Handle math expressions in text tokens
                     if (decodedText.includes('⟨MATH_INLINE:')) {
@@ -3584,16 +4136,77 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
     }
 };
 
+/**
+ * Detects and normalizes indented diff blocks that Gemini sometimes produces
+ * @param content The markdown content to process
+ * @returns Normalized content with indented diffs fixed
+ */
+const normalizeIndentedDiffs = (content: string): string => {
+    const lines = content.split('\n');
+    const result: string[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+        const line = lines[i];
+
+        // Look for indented diff headers (common patterns from Gemini)
+        const indentedDiffMatch = line.match(/^(\s{4,})```diff$/);
+        if (indentedDiffMatch) {
+            const indentLevel = indentedDiffMatch[1].length;
+            console.log(`Found indented diff block with ${indentLevel} spaces of indentation`);
+
+            // Add the diff header without indentation
+            result.push('```diff');
+            i++;
+
+            // Process the diff content, removing the same amount of indentation
+            while (i < lines.length) {
+                const diffLine = lines[i];
+
+                // Check for end of diff block
+                if (diffLine.match(/^\s*```\s*$/)) {
+                    result.push('```');
+                    i++;
+                    break;
+                }
+
+                // Remove the indentation from diff content lines
+                if (diffLine.startsWith(' '.repeat(indentLevel))) {
+                    // Remove exactly the same amount of indentation as the opening ```diff
+                    const normalizedLine = diffLine.substring(indentLevel);
+                    result.push(normalizedLine);
+                } else if (diffLine.trim() === '') {
+                    // Preserve empty lines
+                    result.push('');
+                } else {
+                    // Line has less indentation than expected - might be end of block or malformed
+                    result.push(diffLine);
+                }
+                i++;
+            }
+        } else {
+            result.push(line);
+            i++;
+        }
+    }
+
+    return result.join('\n');
+};
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
-    // State for the tokens that are currently displayed with stable reference
-    const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
-    // Ref to store the previous set of tokens, useful for certain streaming optimizations or comparisons
+
+    // All refs declared at the top to ensure they're in scope for useMemo
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
-    // Track if we're in a streaming response - this is for the overall component 
     const parseTimeoutRef = useRef<NodeJS.Timeout>();
     const markdownRef = useRef<string>(markdown);
+    const thinkingRenderedRef = useRef(false);
+    const thinkingContentRef = useRef<string>('');
+    const [forceRenderKey, setForceRenderKey] = useState(0);
+
+    // State for the tokens that are currently displayed with stable reference
+    const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
     const isStreamingState = isStreaming;
 
     // Memoize the parsing of markdown into tokens.
@@ -3605,13 +4218,50 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
 
         try {
+            // Reset thinking refs only when content actually shrinks (indicating a new message)
+            // Don't reset when content is just growing during streaming
+            if (markdownRef.current && markdown.length < markdownRef.current.length) {
+                thinkingRenderedRef.current = false;
+                thinkingContentRef.current = '';
+            }
             markdownRef.current = markdown;
             // During streaming, if we already have a diff being rendered, keep it stable
             let processedMarkdown = markdown;
 
+            // Pre-process indented diff blocks before any other processing
+            processedMarkdown = normalizeIndentedDiffs(processedMarkdown);
+
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
                 return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
+            }
+
+            // Pre-process tool calls to handle both <n> and <name> formats
+            const toolCallMatch = parseToolCall(processedMarkdown);
+            if (toolCallMatch) {
+                // Replace the tool call with a formatted display version
+                const formattedToolCall = formatToolCallForDisplay(toolCallMatch);
+                processedMarkdown = processedMarkdown.replace(
+                    /<TOOL_SENTINEL>[\s\S]*?<\/TOOL_SENTINEL>/,
+                    formattedToolCall
+                );
+            }
+
+            // Pre-process thinking content to extract and handle separately (only once)
+            if (!thinkingRenderedRef.current) {
+                const thinkingMatch = parseThinkingContent(processedMarkdown);
+                if (thinkingMatch) {
+                    // Store thinking content in ref IMMEDIATELY
+                    thinkingContentRef.current = thinkingMatch.content;
+                    thinkingRenderedRef.current = true;
+                    // Remove thinking tags from main content
+                    processedMarkdown = removeThinkingTags(processedMarkdown);
+                    // Add simple marker at the beginning
+                    processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
+                }
+            } else {
+                // Remove thinking tags from subsequent renders
+                processedMarkdown = removeThinkingTags(processedMarkdown);
             }
 
             // Pre-process tool blocks to clean up literal inclusions
@@ -3624,22 +4274,61 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 '```tool:$1'
             );
 
-            // Pre-process math expressions
-            // Handle display math $$...$$
-            processedMarkdown = processedMarkdown.replace(
-                /\$\$([\s\S]+?)\$\$/g,
-                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
-            );
-            // Handle inline math $...$
-            processedMarkdown = processedMarkdown.replace(
-                /\$([^⟩]+?)\$/g,
-                (match, p1) => {
-                    // Only treat as math if it contains LaTeX commands or mathematical symbols
-                    const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
-                    const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
-                    return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
-                }
-            );
+            // First check if this is a diff or code block that shouldn't have math processing
+            const isDiff = processedMarkdown.includes('diff --git') ||
+                (processedMarkdown.includes('```diff') && processedMarkdown.includes('+++')) ||
+                (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m));
+
+            const hasCodeBlocks = processedMarkdown.includes('```');
+
+            // Only process math expressions if this doesn't look like a diff
+            if (!isDiff) {
+                // Split the markdown into code blocks and non-code blocks
+                const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
+
+                // Process each segment separately
+                processedMarkdown = segments.map((segment, index) => {
+                    // Skip math processing for code blocks (odd indices in the split)
+                    if (index % 2 === 1 && segment.startsWith('```')) {
+                        return segment;
+                    }
+
+                    // Process math only in non-code segments
+                    let processed = segment;
+
+                    // Handle display math $$...$$
+                    processed = processed.replace(
+                        /\$\$([\s\S]+?)\$\$/g,
+                        '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
+                    );
+
+                    // Handle inline math $...$
+                    processed = processed.replace(
+                        /\$([^⟩]+?)\$/g,
+                        (match, p1) => {
+                            // Skip processing if this looks like a regex replacement ($1, $2, etc.)
+                            if (/^\d+$/.test(p1.trim())) {
+                                return match; // Keep $1, $2, etc. as is
+                            }
+
+                            // Skip processing if this is inside code-like contexts
+                            const surroundingText = match.substring(0, 50) + match.substring(match.length - 50);
+                            if (surroundingText.includes('replace(') ||
+                                surroundingText.includes('processedDef') ||
+                                surroundingText.includes('regex')) {
+                                return match; // Keep as is in code contexts
+                            }
+
+                            // Only treat as math if it contains LaTeX commands or mathematical symbols
+                            const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
+                            const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
+                            return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                        }
+                    );
+
+                    return processed;
+                }).join('');
+            }
 
             // Pre-process MathML blocks to prevent fragmentation
             const mathMLRegex = /<math[^>]*>[\s\S]*?<\/math>/gi;
@@ -3686,8 +4375,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Only memoize the rendered content when not streaming or when streaming completes
     const renderedContent = useMemo(() => {
-        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming);
-    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Remove streaming state for live updates
+        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef);
+    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, forceRenderKey]); // Use forceRenderKey to trigger re-renders
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
@@ -3708,20 +4397,48 @@ const cleanDiffContent = (content: string): string => {
             line.startsWith('@@ ')) {
             return line;
         }
-        // Handle content lines with various line number formats
-        // Matches: [NNN ], [NNN+], [NNN,+], [NNN*]
-        const match = line.match(/^(\s*)([+-]+\s*)?\[(\d+)(?:[+*]|\s*,\s*[+-\s])?\s*\](\s*)(.*?)$/);
-        if (match) {
-            const [_, leadingSpace, marker, _num, postSpace, content] = match;
-            // Preserve exact whitespace and handle markers
-            if (marker && marker.trim()) {
-                // For add/remove lines, keep original marker and all whitespace
-                return `${marker.trim()}${postSpace.substring(1)}${content}`;
-            } else {
-                // For context lines, ensure we have a space marker
-                return `${postSpace}${content}`;
-            }
+
+        // Fix any MATH_INLINE expansions that might have slipped through
+        // This handles cases like $1 in regex replacements being converted to ⟨MATH_INLINE:1⟩
+        if (line.includes('⟨MATH_INLINE:')) {
+            // Replace ⟨MATH_INLINE:1⟩ with $1, ⟨MATH_INLINE:2⟩ with $2, etc.
+            line = line.replace(/⟨MATH_INLINE:(\d+)⟩/g, '$$1');
         }
+
+        // Handle offset diff format lines
+        // Pattern: optional leading spaces + optional +/- + [number + optional modifier] + space + content
+        // Examples: [001 ], [002+], [003*], [004,+], +[005 ], -[006 ]
+        const offsetMatch = line.match(/^(\s*)([+-]?)?\[(\d+)([+*,\s]*)\]\s(.*)⟩/);
+        if (offsetMatch) {
+            const [_, leadingSpace, diffMarker, lineNum, modifier, content] = offsetMatch;
+
+            // Determine the actual diff marker based on the modifier or explicit marker
+            let actualMarker = '';
+            if (diffMarker) {
+                // Explicit +/- before the bracket
+                actualMarker = diffMarker;
+            } else if (modifier.includes('+')) {
+                // [NNN+] format - addition
+                actualMarker = '+';
+            } else if (modifier.includes('*')) {
+                // [NNN*] format - modification (treat as context)
+                actualMarker = ' ';
+            } else {
+                // [NNN ] format - context line
+                actualMarker = ' ';
+            }
+
+            return `${actualMarker}${content}`;
+        }
+
+        // Handle lines that might have been partially processed or malformed
+        const simpleOffsetMatch = line.match(/^\s*\[(\d+)[+*\s]*\]\s*(.*)$/);
+        if (simpleOffsetMatch) {
+            const [_, lineNum, content] = simpleOffsetMatch;
+            return ` ${content}`;
+        }
+
+        // Return line unchanged if no offset format detected
         return line;
     });
     return cleanedLines.join('\n');

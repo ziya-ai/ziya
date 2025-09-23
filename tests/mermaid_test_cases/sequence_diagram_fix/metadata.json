@@ -1,0 +1,7 @@
+{
+    "description": "Sequence diagram with bullet characters and invalid option statements",
+    "diagram_type": "sequencediagram", 
+    "expected_to_fail": false,
+    "expected_warnings": ["bullet_characters"],
+    "target_issue": "Sequence diagram bullet and option statement fixing"
+}

@@ -5,6 +5,7 @@ This module integrates the prompt extension framework with the existing prompt s
 """
 
 import os
+import hashlib
 from typing import Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
@@ -12,6 +13,9 @@ from app.utils.logging_utils import logger
 from app.mcp.manager import get_mcp_manager
 from app.utils.prompt_extensions import PromptExtensionManager
 from app.agents.prompts import original_template, conversational_prompt
+
+# Global cache for extended prompts
+_prompt_cache = {}
 
 def get_extended_prompt(model_name: Optional[str] = None, 
                        model_family: Optional[str] = None,
@@ -33,6 +37,28 @@ def get_extended_prompt(model_name: Optional[str] = None,
         context = {}
     logger.error(f"🔍 EXECUTION_TRACE: get_extended_prompt() called for model: {model_name}")
     
+    logger.info("PROMPT_DEBUG: get_extended_prompt called with:")
+    logger.info(f"PROMPT_DEBUG:   model_name='{model_name}'")
+    logger.info(f"PROMPT_DEBUG:   model_family='{model_family}'")
+    logger.info(f"PROMPT_DEBUG:   endpoint='{endpoint}'")
+    logger.info(f"PROMPT_DEBUG:   context keys='{list(context.keys()) if context else 'None'}'")
+    # Create cache key from parameters
+    cache_data = {
+        'model_name': model_name,
+        'model_family': model_family, 
+        'endpoint': endpoint,
+        'context': context,
+        'template_length': len(original_template)
+    }
+    cache_key = hashlib.md5(str(sorted(cache_data.items())).encode()).hexdigest()[:8]
+    
+    # Check cache
+    if cache_key in _prompt_cache:
+        logger.info(f"Using cached extended prompt for {cache_key}")
+        return _prompt_cache[cache_key]
+    
+    logger.info(f"Creating new extended prompt for {cache_key}")
+    
     # Get the original template
     template = original_template
     
@@ -48,9 +74,9 @@ def get_extended_prompt(model_name: Optional[str] = None,
     
     logger.error(f"🔍 EXECUTION_TRACE: Extended template length: {len(extended_template)}")
     logger.info(f"PROMPT_MANAGER: Final extended template length: {len(extended_template)}")
-    logger.info(f"PROMPT_MANAGER: Original template length: {len(template)}")
+    logger.info(f"PROMPT_MANAGER: Original template length: {len(original_template)}")
     logger.info(f"PROMPT_MANAGER: Extended template length: {len(extended_template)}")
-    logger.info(f"PROMPT_MANAGER: Template was modified: {len(extended_template) != len(template)}")
+    logger.info(f"PROMPT_MANAGER: Template was modified: {len(extended_template) != len(original_template)}")
     
     # Create a new prompt template with the extended template
     extended_prompt = ChatPromptTemplate.from_messages(
@@ -64,7 +90,17 @@ def get_extended_prompt(model_name: Optional[str] = None,
         ]
     )
     
+    # Cache the result
+    _prompt_cache[cache_key] = extended_prompt
+    logger.info(f"Cached extended prompt for {cache_key}")
+    
     return extended_prompt
+
+def invalidate_prompt_cache():
+    """Invalidate the prompt extension cache to force fresh prompt generation."""
+    global _prompt_cache
+    _prompt_cache = {}
+    logger.info("Prompt extension cache invalidated")
 
 def get_model_info_from_config() -> Dict[str, str]:
     """
@@ -73,7 +109,7 @@ def get_model_info_from_config() -> Dict[str, str]:
     Returns:
         Dict[str, str]: Dictionary with model_name, model_family, and endpoint
     """
-    from app.config import DEFAULT_ENDPOINT, DEFAULT_MODELS, MODEL_CONFIGS
+    from app.config.models_config import DEFAULT_ENDPOINT, DEFAULT_MODELS, MODEL_CONFIGS
     
     # Get endpoint and model from environment variables
     endpoint = os.environ.get("ZIYA_ENDPOINT", DEFAULT_ENDPOINT)

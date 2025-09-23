@@ -1,0 +1,50 @@
+flowchart TB
+    subgraph "Machine Learning Pipeline"
+        subgraph "Data Ingestion"
+            S3[S3 Raw Data] --> KAFKA[Kafka Streams]
+            API[REST APIs] --> KAFKA
+            DB[(PostgreSQL)] --> KAFKA
+            KAFKA --> SPARK[Spark Streaming]
+        end
+        
+        subgraph "Feature Engineering"
+            SPARK --> FEATURE_STORE[(Feature Store)]
+            FEATURE_STORE --> TRANSFORM[Feature Transform]
+            TRANSFORM --> VALIDATE[Data Validation]
+            VALIDATE --> CLEAN[Data Cleaning]
+        end
+        
+        subgraph "Model Training"
+            CLEAN --> SPLIT[Train/Test Split]
+            SPLIT --> TRAIN[Model Training]
+            SPLIT --> TEST[Model Testing]
+            TRAIN --> HYPEROPT[Hyperparameter Tuning]
+            HYPEROPT --> VALIDATE_MODEL[Model Validation]
+            TEST --> EVALUATE[Model Evaluation]
+        end
+        
+        subgraph "Model Deployment"
+            VALIDATE_MODEL --> REGISTRY[Model Registry]
+            REGISTRY --> CONTAINER[Containerization]
+            CONTAINER --> K8S[Kubernetes Deployment]
+            K8S --> ENDPOINT[Inference Endpoint]
+        end
+        
+        subgraph "Monitoring & Feedback"
+            ENDPOINT --> METRICS[Performance Metrics]
+            METRICS --> DRIFT[Data Drift Detection]
+            DRIFT --> ALERT[Alert System]
+            ALERT --> RETRAIN[Automated Retraining]
+            RETRAIN --> TRAIN
+        end
+    end
+    
+    subgraph "External Systems"
+        USERS[End Users] --> ENDPOINT
+        ENDPOINT --> PREDICTIONS[Prediction Results]
+        PREDICTIONS --> ANALYTICS[Analytics Dashboard]
+        ANALYTICS --> BUSINESS[Business Intelligence]
+    end
+    
+    BUSINESS --> FEEDBACK[Business Feedback]
+    FEEDBACK --> FEATURE_STORE

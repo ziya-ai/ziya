@@ -1,0 +1,6 @@
+{
+    "description": "Complex distributed system sequence with caching, event bus, parallel processing, and error handling",
+    "diagram_type": "sequenceDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Advanced sequence diagram with nested conditions, parallel execution, and event-driven architecture"
+}
