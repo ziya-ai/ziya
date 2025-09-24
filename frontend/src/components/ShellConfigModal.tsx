@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Switch, Input, Button, List, Tag, Space, message, Divider, Checkbox, Collapse, Alert } from 'antd';
+import { Modal, Switch, Input, Button, List, Tag, Space, message, Divider, Checkbox, Collapse, Alert, Slider } from 'antd';
 import { PlusOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons';
 
 interface ShellConfigModalProps {
@@ -42,7 +42,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 allowedCommands: [],
                 gitOperationsEnabled: true,
                 safeGitOperations: [],
-                timeout: 10
+                timeout: 30
             });
         }
     };
@@ -241,13 +241,20 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                         <Divider />
 
                         <div>
-                            <h4>Command Timeout</h4>
-                            <Input
-                                type="number"
+                            <h4>Command Timeout: {config.timeout}s</h4>
+                            <Slider
+                                min={10}
+                                max={600}
                                 value={config.timeout}
-                                onChange={(e) => setConfig(prev => ({ ...prev!, timeout: parseInt(e.target.value) || 10 }))}
-                                suffix="seconds"
-                                style={{ width: 150 }}
+                                onChange={(value) => setConfig(prev => ({ ...prev!, timeout: value }))}
+                                marks={{
+                                    10: '10s',
+                                    60: '1m',
+                                    120: '2m',
+                                    300: '5m',
+                                    600: '10m'
+                                }}
+                                style={{ width: '100%', marginBottom: 20 }}
                             />
                         </div>
 

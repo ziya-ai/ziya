@@ -237,6 +237,9 @@ class MCPClient:
     
     async def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None, _retry_count: int = 0) -> Optional[Dict[str, Any]]:
         """Send a JSON-RPC request to the MCP server."""
+        import time
+        start_time = time.time()
+        
         max_retries = 3
         
         if not self.process or not self.process.stdin:
@@ -270,12 +273,18 @@ class MCPClient:
             
         try:
             request_json = json.dumps(request) + "\n"
+            write_start = time.time()
             self.process.stdin.write(request_json)
             self.process.stdin.flush()
+            write_time = time.time() - write_start
+            logger.info(f"🔍 MCP_TIMING: Write took {write_time*1000:.1f}ms")
             
             # Read response
             try:
+                read_start = time.time()
                 response_line = self.process.stdout.readline()
+                read_time = time.time() - read_start
+                logger.info(f"🔍 MCP_TIMING: Read took {read_time*1000:.1f}ms")
                 timeout_occurred = False
             except Exception as e:
                 logger.error(f"Error reading from MCP server: {e}")
@@ -300,25 +309,23 @@ class MCPClient:
             if "error" in response:
                 error_info = response['error']
                 error_code = error_info.get("code", -1)
-                error_message = error_info.get("message", "Unknown MCP server error")
+                error_message = str(error_info.get("message", "Unknown error"))
                 
                 # Check if this is a timeout error and we haven't exhausted retries
                 is_timeout = (error_code == -32603 and 
                              ("timed out" in error_message.lower() or "timeout" in error_message.lower()))
                 
-                if is_timeout and _retry_count < max_retries:
-                    logger.warning(f"MCP server timeout (attempt {_retry_count + 1}/{max_retries + 1}), retrying silently: {error_message}")
-                    # Wait a brief moment before retry
+                # Timeouts should fail immediately to let the model choose a lighter alternative
+                if not is_timeout and _retry_count < max_retries:
+                    logger.error(f"MCP server error: {error_info}")
+                    # Only retry non-timeout errors
                     await asyncio.sleep(0.5)
                     return await self._send_request(method, params, _retry_count + 1)
                 
-                # Log error (only after retries exhausted for timeouts)
-                if is_timeout:
-                    logger.error(f"MCP server timeout after {max_retries + 1} attempts: {error_info}")
-                else:
-                    logger.error(f"MCP server error: {error_info}")
+                # Log all errors (timeouts fail immediately, others after retries)
+                logger.error(f"MCP server {'timeout' if is_timeout else 'error'}: {error_info}")
                 
-                # Return error information so it can be displayed to the user
+                # Create error result
                 return {
                     "error": True,
                     "message": error_message,
@@ -327,6 +334,8 @@ class MCPClient:
                 
             # Update successful call timestamp
             self._last_successful_call = time.time()
+            total_time = time.time() - start_time
+            logger.info(f"🔍 MCP_TIMING: Total request took {total_time*1000:.1f}ms for method '{method}'")
             return response.get("result")
             
         except Exception as e:

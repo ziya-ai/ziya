@@ -616,8 +616,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
     // Fix invalid color names like "#green" 
     try {
       let specStringForColorFix = JSON.stringify(vegaSpec);
+      // Fix colors with # prefix that should be plain color names
       specStringForColorFix = specStringForColorFix.replace(/"#(green|red|orange|blue|yellow|purple|black|white|gray|grey|cyan|magenta|pink|brown|violet|indigo|gold|silver)"/gi, '"$1"');
+      // Fix invalid color names that aren't real CSS colors
+      specStringForColorFix = specStringForColorFix.replace(/"rainbow"/gi, '"#ff6b6b"');
+      specStringForColorFix = specStringForColorFix.replace(/"gradient"/gi, '"#4ecdc4"');
+      specStringForColorFix = specStringForColorFix.replace(/"multicolor"/gi, '"#45b7d1"');
       vegaSpec = JSON.parse(specStringForColorFix);
+      console.log('🔧 VEGA-POST-PROCESS: Applied color fixes to spec');
     } catch (e) {
       console.warn("Could not apply color fix to Vega-Lite spec", e);
     }
@@ -1247,10 +1253,55 @@ export const vegaLitePlugin: D3RenderPlugin = {
         field: 'week',
         type: 'ordinal',
         title: 'Week'
-      };
+      }
     }
 
-    // Fix parallel coordinates charts missing x,y encodings
+    // Fix line charts with y encoding missing field property
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.y.field) {
+      console.log('Fixing line chart with y encoding missing field property');
+      
+      // If there's a fold transform, use the value field from it
+      if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
+        const foldTransform = vegaSpec.transform.find(t => t.fold);
+        const valueField = foldTransform?.as?.[1] || 'value';
+        vegaSpec.encoding.y.field = valueField;
+        console.log(`Added y field from fold transform: "${valueField}"`);
+      } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
+        // If there's a calculated field 'y', use that
+        vegaSpec.encoding.y.field = 'y';
+        console.log('Added y field from calculated field: "y"');
+      }
+    }
+
+    // Fix regular line charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing line chart with fold transform missing y-axis encoding');
+      
+      // Find the fold transform to get the correct field name for the y-axis
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value'; // Default to 'value' if not specified
+      
+      vegaSpec.encoding.y = {
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      // Also add color encoding to distinguish the different lines
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key'; // Default to 'key' if not specified
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix line charts with fold transforms missing y-axis encoding for the folded value field
     if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
         vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
         vegaSpec.encoding && vegaSpec.encoding.detail && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {

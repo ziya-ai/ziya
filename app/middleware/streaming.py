@@ -146,6 +146,16 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 # If it's not valid JSON, just pass it as a string
                                 content = str(chunk)
                                 
+                                # Immediately pass through tool_start messages without buffering
+                                if '"type": "tool_start"' in content:
+                                    # First flush any buffered content
+                                    if content_buffer:
+                                        yield f"data: {json.dumps({'content': content_buffer})}\n\n"
+                                        content_buffer = ""
+                                    # Then send the tool_start message
+                                    yield content
+                                    continue
+                                
                                 # Buffer content to check for tool calls
                                 content_buffer += content
                                 
@@ -246,6 +256,16 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         else:
                             # For simple string content
                             content = str(raw_content)
+                            
+                            # Immediately pass through tool_start messages without buffering
+                            if '"type": "tool_start"' in content:
+                                # First flush any buffered content
+                                if content_buffer:
+                                    yield f"data: {json.dumps({'content': content_buffer})}\n\n"
+                                    content_buffer = ""
+                                # Then send the tool_start message
+                                yield content
+                                continue
                             
                             # Buffer content to check for tool calls
                             content_buffer += content

@@ -191,7 +191,7 @@ class ShellServer:
                                 "properties": {
                                     "command": {
                                         "type": "string",
-                                        "description": "The shell command to execute"
+                                        "description": "A complete shell command with all required arguments (e.g., 'ls -la', 'grep pattern file', 'find . -name \"*.py\"'). Do not use incomplete commands like 'grep' alone."
                                     },
                                     "timeout": {
                                         "type": "number",

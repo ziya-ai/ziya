@@ -19,7 +19,7 @@ DEFAULT_SHELL_CONFIG = {
         "ls-files", "ls-tree", "blame", "tag", "stash list", "reflog", 
         "rev-parse", "describe", "shortlog", "whatchanged"
     ],
-    "timeout": 10
+    "timeout": 30
 }
 
 def get_default_shell_config():

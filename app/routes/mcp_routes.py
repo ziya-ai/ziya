@@ -313,9 +313,13 @@ async def get_shell_config():
             }
         else:
             # Shell server not connected, return default config with enabled=False
+            # But still check for environment timeout override
+            default_config = get_default_shell_config()
+            timeout = int(os.environ.get("COMMAND_TIMEOUT", default_config["timeout"]))
             return {
-                **get_default_shell_config(),
-                "enabled": False
+                **default_config,
+                "enabled": False,
+                "timeout": timeout
             }
         
     except Exception as e:
@@ -347,7 +351,7 @@ async def update_shell_config(config: ShellConfig):
         
         # Create new shell server configuration
         new_shell_config = {
-            "command": ["python", "-u", "mcp_servers/shell_server.py"],
+            "command": ["python", "-u", "app/mcp_servers/shell_server.py"],
             "enabled": config.enabled,
             "env": {
                 "ALLOW_COMMANDS": ",".join(config.allowedCommands),
@@ -358,6 +362,9 @@ async def update_shell_config(config: ShellConfig):
         }
         
         if config.enabled:
+            # Update the server configuration in MCP manager before restarting
+            mcp_manager.server_configs["shell"] = new_shell_config
+            
             # Restart the shell server with new configuration
             logger.info(f"Attempting to restart shell server with config: {new_shell_config}")
             success = await mcp_manager.restart_server("shell", new_shell_config)
