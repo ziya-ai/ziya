@@ -8,7 +8,7 @@ from typing import AsyncIterator, Any
 from app.agents.wrappers.nova_formatter import NovaFormatter
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from starlette.responses import StreamingResponse, Response
 from starlette.types import ASGIApp
 from langchain_core.outputs import ChatGeneration
@@ -46,7 +46,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 break
         
         # If this is a streaming request, we need to handle it specially
-        if is_streaming and "/ziya/stream" in request.url.path:
+        if is_streaming and ("/ziya/stream" in request.url.path or "/api/chat" in request.url.path):
             logger.info(f"Detected streaming request to {request.url.path}")
             # For streaming requests, we need to modify the response
             response = await call_next(request)
@@ -123,12 +123,100 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         yield "data: [DONE]\n\n"
                         return
                     
+                    # Handle string chunks first (most common case)
+                    if isinstance(chunk, str):
+                        logger.info("Processing string chunk")
+                        # Check if it's already an SSE message
+                        if chunk.startswith('data:'):
+                            yield chunk
+                        else:
+                            # Check if it might be JSON
+                            try:
+                                # Try to parse as JSON to validate
+                                json_obj = json.loads(chunk)
+                                # If it's valid JSON, pass it through as properly serialized JSON
+                                chunk_content = json.dumps(json_obj)
+                                
+                                # DEBUGGING: Check if JSON serialization changed size
+                                if len(chunk_content) != chunk_size and json_obj.get('type') == 'tool_execution':
+                                    logger.warning(f"🔍 JSON_SIZE_CHANGE: Original {chunk_size} -> Serialized {len(chunk_content)} chars")
+                                
+                                yield f"data: {json.dumps(json_obj)}\n\n"
+                            except json.JSONDecodeError:
+                                # If it's not valid JSON, just pass it as a string
+                                content = str(chunk)
+                                
+                                # Immediately pass through tool_start messages without buffering
+                                if '"type": "tool_start"' in content:
+                                    # First flush any buffered content
+                                    if content_buffer:
+                                        yield f"data: {json.dumps({'content': content_buffer})}\n\n"
+                                        content_buffer = ""
+                                    # Then send the tool_start message
+                                    yield content
+                                    continue
+                                
+                                # Buffer content to check for tool calls
+                                content_buffer += content
+                                
+                                # Check if we have a complete tool call or if we should flush the buffer
+                                if self._should_flush_buffer(content_buffer):
+                                    # If this contains a complete tool call, execute it and send the result
+                                    if self._contains_complete_tool_call(content_buffer):
+                                        # First, send the complete tool call to the frontend as JSON
+                                        yield f"data: {json.dumps({'tool_call': content_buffer})}\n\n"
+                                        
+                                        try:
+                                            # Execute the tool call
+                                            logger.info(f"Executing tool call in streaming middleware: {content_buffer[:100]}...")
+                                            from app.mcp.consolidated import execute_mcp_tools_with_status
+                                            tool_result = await execute_mcp_tools_with_status(content_buffer)
+                                            logger.info(f"Tool execution result: {tool_result[:100]}...")
+                                            
+                                            # Send the tool result to the frontend
+                                            yield f"data: {json.dumps({'tool_result': tool_result})}\n\n"
+                                        except Exception as tool_error:
+                                            logger.error(f"Error executing tool call: {tool_error}")
+                                            # Send error message
+                                            error_msg = f"\n\n```tool:error\n❌ **Tool Error:** {str(tool_error)}\n```\n\n"
+                                            yield f"data: {json.dumps({'tool_error': error_msg})}\n\n"
+                                        
+                                        # Clear buffer
+                                        content_buffer = ""
+                                    else:
+                                        # Send buffered content as JSON, not raw content
+                                        yield f"data: {json.dumps({'content': content_buffer})}\n\n"
+                                        content_buffer = ""
+                                elif self._contains_partial(content_buffer):
+                                    # Still accumulate partial content
+                                    accumulated_content += content
+                                    # Hold the content in buffer, don't send yet
+                                    continue
+                                else:
+                                    # Safe to send immediately as raw content
+                                    yield f"data: {content}\n\n"
+                                    content_buffer = ""
+                        
+                        # Log chunk content preview
+                        if len(chunk) > 200:
+                            logger.info(f"String chunk preview:\n{chunk[:200]}...")
+                            logger.info(f"...and ends with:\n{chunk[-200:]}")
+                        else:
+                            logger.info(f"Full string chunk:\n{chunk}")
+                        
+                        if not content_buffer:  # Only continue if we're not buffering
+                            continue
+                    
                     # Handle AIMessageChunk objects
                     if isinstance(chunk, AIMessageChunk):
                         logger.info("Processing AIMessageChunk")
                     
                     # Get the raw content, preserving structure
-                    raw_content = chunk.content
+                    raw_content = None
+                    if hasattr(chunk, 'content'):
+                        raw_content = chunk.content
+                    else:
+                        raw_content = chunk  # Assume chunk itself is the content
                     
                     # Check if this might be thinking mode content (typically more structured)
                     chunk_content = raw_content
@@ -169,20 +257,46 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             # For simple string content
                             content = str(raw_content)
                             
+                            # Immediately pass through tool_start messages without buffering
+                            if '"type": "tool_start"' in content:
+                                # First flush any buffered content
+                                if content_buffer:
+                                    yield f"data: {json.dumps({'content': content_buffer})}\n\n"
+                                    content_buffer = ""
+                                # Then send the tool_start message
+                                yield content
+                                continue
+                            
                             # Buffer content to check for tool calls
                             content_buffer += content
                             
                             # Check if we have a complete tool call or if we should flush the buffer
                             if self._should_flush_buffer(content_buffer):
-                                # If this contains a complete tool call, don't send it to frontend
-                                # The agent will process it and send the tool result instead
+                                # If this contains a complete tool call, execute it and send the result
                                 if self._contains_complete_tool_call(content_buffer):
-                                    # Clear buffer and don't send to frontend
+                                    # First, send the complete tool call to the frontend as JSON
+                                    yield f"data: {json.dumps({'tool_call': content_buffer})}\n\n"
+                                    
+                                    try:
+                                        # Execute the tool call
+                                        logger.info(f"Executing tool call in streaming middleware: {content_buffer[:100]}...")
+                                        from app.mcp.consolidated import execute_mcp_tools_with_status
+                                        tool_result = await execute_mcp_tools_with_status(content_buffer)
+                                        logger.info(f"Tool execution result: {tool_result[:100]}...")
+                                        
+                                        # Send the tool result to the frontend
+                                        yield f"data: {json.dumps({'tool_result': tool_result})}\n\n"
+                                    except Exception as tool_error:
+                                        logger.error(f"Error executing tool call: {tool_error}")
+                                        # Send error message
+                                        error_msg = f"\n\n```tool:error\n❌ **Tool Error:** {str(tool_error)}\n```\n\n"
+                                        yield f"data: {json.dumps({'tool_error': error_msg})}\n\n"
+                                    
+                                    # Clear buffer
                                     content_buffer = ""
-                                    continue
                                 else:
-                                    # Send buffered content and clear buffer
-                                    yield f"data: {content_buffer}\n\n"
+                                    # Send buffered content as JSON, not raw content
+                                    yield f"data: {json.dumps({'content': content_buffer})}\n\n"
                                     content_buffer = ""
                             elif self._contains_partial(content_buffer):
                                 # Still accumulate partial content
@@ -190,7 +304,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 # Hold the content in buffer, don't send yet
                                 continue
                             else:
-                                # Safe to send immediately
+                                # Safe to send immediately as raw content
                                 yield f"data: {content}\n\n"
                                 content_buffer = ""
                         
@@ -254,6 +368,15 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         if chunk.startswith('data:'):
                             yield chunk
                         else:
+                            # DEBUGGING: Check for large chunks that might get dropped
+                            chunk_size = len(chunk)
+                            if chunk_size > 10000:
+                                logger.warning(f"🔍 LARGE_CHUNK_DETECTED: {chunk_size} chars - monitoring for truncation")
+                            
+                            # Check if this is a tool result chunk
+                            if "tool_execution" in chunk or "tool_result" in chunk:
+                                logger.info(f"🔍 TOOL_RESULT_CHUNK: size={chunk_size}, content preview: {chunk[:100]}...")
+                            
                             # Check if it might be JSON
                             try:
                                 # Try to parse as JSON to validate
@@ -261,6 +384,15 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 # If it's valid JSON, pass it through as properly serialized JSON
                                 chunk_content = json.dumps(json_obj)
                                 yield f"data: {json.dumps(json_obj)}\n\n"
+                                
+                                # DEBUGGING: Track large JSON objects
+                                if len(chunk_content) > 5000:
+                                    logger.warning(f"🔍 MIDDLEWARE_LARGE_JSON: {len(chunk_content)} chars, type={json_obj.get('type')}")
+                                    if json_obj.get('type') == 'tool_execution':
+                                        result_size = len(json_obj.get('result', ''))
+                                        logger.warning(f"🔍 MIDDLEWARE_TOOL_RESULT: tool={json_obj.get('tool_name')}, result_size={result_size}")
+                                        if result_size == 0:
+                                            logger.error(f"🔍 MIDDLEWARE_EMPTY_RESULT: Tool result is empty after JSON processing!")
                             except json.JSONDecodeError:
                                 # If it's not valid JSON, just pass it as a string
                                 yield f"data: {chunk}\n\n"
@@ -475,32 +607,140 @@ class StreamingMiddleware(BaseHTTPMiddleware):
     
     def _contains_partial(self, content: str) -> bool:
         """Check if content contains the start of a tool call but not the end."""
-        return TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE not in content
+        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        
+        # Check for configurable sentinels
+        config_partial = TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE not in content
+        
+        # Check for hardcoded sentinels
+        hardcoded_partial = "<TOOL_SENTINEL>" in content and "</TOOL_SENTINEL>" not in content
+        
+        # Check for generic XML-style tags with unbalanced opening/closing tags
+        # This handles both <invoke> and custom tool tags
+        import re
+        xml_tags = re.findall(r'<([a-zA-Z_][a-zA-Z0-9_]*)[^>]*>', content)
+        for tag in xml_tags:
+            if f"<{tag}" in content and f"</{tag}>" not in content:
+                return True
+        
+        # Check for specific tool tags we know about
+        known_tools = ["get_current_time", "run_shell_command"]
+        for tool in known_tools:
+            if f"<{tool}" in content and f"</{tool}>" not in content:
+                return True
+        
+        return config_partial or hardcoded_partial
     
     def _contains_complete_tool_call(self, content: str) -> bool:
         """Check if content contains a complete tool call."""
-        return TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content
+        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        
+        # For TOOL_SENTINEL format, check if it has both name and arguments tags
+        if TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content:
+            has_n_name = "<n>" in content and "</n>" in content
+            has_name_name = "<name>" in content and "</name>" in content
+            has_args = "<arguments>" in content and "</arguments>" in content
+            return (has_n_name or has_name_name) and has_args
+        
+        if "<TOOL_SENTINEL>" in content and "</TOOL_SENTINEL>" in content:
+            has_n_name = "<n>" in content and "</n>" in content
+            has_name_name = "<name>" in content and "</name>" in content
+            has_args = "<arguments>" in content and "</arguments>" in content
+            return (has_n_name or has_name_name) and has_args
+        
+        # Check for specific tool formats
+        if "<get_current_time>" in content and "</get_current_time>" in content:
+            return True
+            
+        if "<run_shell_command>" in content and "</run_shell_command>" in content:
+            return "<command>" in content and "</command>" in content
+            
+        if "<invoke name=" in content and "</invoke>" in content:
+            return True
+        
+        # Check for generic XML-style tags with balanced opening/closing tags
+        import re
+        xml_pattern = r'<([a-zA-Z_][a-zA-Z0-9_]*)[^>]*>(.*?)</\1>'
+        xml_match = re.search(xml_pattern, content, re.DOTALL)
+        
+        # Special case for <TOOL_SENTINEL><n>tool_name</n>
+        if "<TOOL_SENTINEL>" in content and "<n>" in content and "</n>" in content and "</TOOL_SENTINEL>" not in content:
+            return False
+            
+        return bool(xml_match)
+    
+    async def _execute_tool_call(self, content: str) -> str:
+        """Execute a tool call in the content and return the result."""
+        try:
+            # Import the MCP tool execution function
+            from app.mcp.consolidated import execute_mcp_tools_with_status
+            
+            # Execute the tool call
+            logger.info(f"Executing tool call in streaming middleware: {content[:100]}...")
+            result = await execute_mcp_tools_with_status(content)
+            logger.info(f"Tool execution result: {result[:100]}...")
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error executing tool call in streaming middleware: {e}")
+            # Return error message
+            return f"\n\n```tool:error\n❌ **Tool Error:** {str(e)}\n```\n\n"
     
     def _should_flush_buffer(self, buffer: str) -> bool:
         """Determine if we should flush the buffer."""
-        # Flush if we have a complete tool call
+        # Always flush if we have a complete tool call
         if self._contains_complete_tool_call(buffer):
             return True
         
-        # Flush if buffer is getting too large (safety measure)
-        if len(buffer) > 1000:
+        # Always flush if buffer is getting too large (safety measure)
+        if len(buffer) > 500:  # Reduced from 1000 to prevent long delays
             return True
         
-        # Flush if we have content that doesn't look like it's leading to a tool call
-        if buffer and not self._might_be_tool_call_start(buffer):
+        # NEW LOGIC: Only hold content if we're clearly in the middle of a tool call
+        # Don't hold content just because it "might" lead to a tool call
+        if self._contains_partial(buffer):
+            # We have partial tool call content - hold it
+            return False
+        
+        # For everything else, flush immediately to prevent delays
+        # This includes regular text that doesn't look like tool content
+        if buffer and len(buffer.strip()) > 0:
             return True
         
         return False
     
     def _might_be_tool_start(self, content: str) -> bool:
         """Check if content might be the start of a tool call."""
+        from app.config.models_config import TOOL_SENTINEL_OPEN
+        
+        # Check for configurable sentinel
         sentinel_start = TOOL_SENTINEL_OPEN[:min(len(content), len(TOOL_SENTINEL_OPEN))]
-        return content.endswith(sentinel_start) or TOOL_SENTINEL_OPEN.startswith(content.strip())
+        config_match = content.endswith(sentinel_start) or TOOL_SENTINEL_OPEN.startswith(content.strip())
+        
+        # Check for hardcoded sentinel
+        hardcoded_sentinel = "<TOOL_SENTINEL>"
+        hardcoded_start = hardcoded_sentinel[:min(len(content), len(hardcoded_sentinel))]
+        hardcoded_match = content.endswith(hardcoded_start) or hardcoded_sentinel.startswith(content.strip())
+        
+        # Check for tool name tags - both <n> and <name> formats
+        name_tag_patterns = ["<n>", "<name>"]
+        name_tag_match = any(pattern in content for pattern in name_tag_patterns)
+        
+        # Check for common tool tag prefixes
+        common_prefixes = ["<get", "<run", "<inv", "<TOOL", "<name>", "<n>"]
+        prefix_match = any(content.endswith(prefix) or content.strip().startswith(prefix) for prefix in common_prefixes)
+        
+        # Check for specific tool names we know about
+        known_tools = ["get_current_time", "run_shell_command", "mcp_run_shell_command", "mcp_get_current_time"]
+        for tool in known_tools:
+            tool_start = f"<{tool}"[:min(len(content), len(tool) + 1)]
+            if content.endswith(tool_start) or f"<{tool}".startswith(content.strip()):
+                return True
+        
+        # Check for generic XML-style opening tag
+        xml_match = "<" in content and content.rstrip().endswith(">")
+        
+        return config_match or hardcoded_match or prefix_match or name_tag_match or xml_match
     
     def _looks_like_tool_output(self, content: str) -> bool:
         """Check if content looks like tool output."""
