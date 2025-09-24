@@ -6,7 +6,7 @@ with MCP (Model Context Protocol) servers and tools.
 """
 
 from app.utils.prompt_extensions import prompt_extension
-from app.config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from app.utils.logging_utils import logger
 
 logger.info("MCP_GUIDELINES: mcp_prompt_extensions.py module being imported")
@@ -29,23 +29,69 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         
     Returns:
         str: Modified prompt with MCP guidelines
-    """
+     """
     logger.info("MCP_GUIDELINES: @prompt_extension decorator applied to mcp_usage_guidelines")
     logger.info("MCP_GUIDELINES: mcp_usage_guidelines function called")
+    import os
+    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    logger.info(f"MCP_DEBUG: Checking endpoint from environment: '{endpoint}'")
+    is_google_endpoint = endpoint == "google"
+ 
     if not context.get("config", {}).get("enabled", True):
         logger.info("MCP_GUIDELINES: Extension disabled by config, returning original prompt")
+        return prompt
+    
+    # Skip MCP guidelines for gemini-2.5-pro to avoid prompt size limits
+    # Check multiple sources for model identification
+    model_id = context.get("model_id", "")
+    model_name = context.get("model_name", "")
+    
+    # If model_id is not in context, try to get it from ModelManager
+    if not model_id:
+        try:
+            from app.agents.models import ModelManager
+            model_id = ModelManager.get_model_id() or ""
+        except Exception:
+            pass
+    
+    # Check if this is gemini-2.5-pro by any identifier
+    if ("gemini-2.5-pro" in model_id or 
+        "gemini-pro" in model_name or
+        "gemini-2.5-pro" in str(context)):
+        logger.info("MCP_GUIDELINES: Skipping for gemini-2.5-pro due to prompt size limits")
+        return prompt
+    
+    # Check if MCP is enabled
+    import os
+    if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        logger.info("MCP_GUIDELINES: MCP is disabled, returning original prompt")
         return prompt
     
     # Check if MCP tools are available in the context
     # This would be passed from the agent system when MCP is initialized
     mcp_tools_available = context.get("mcp_tools_available", False)
-    available_tools = context.get("available_mcp_tools", [])
+    from app.mcp.tools import create_mcp_tools
+    all_mcp_tools = create_mcp_tools()
+    available_tools = [tool.name for tool in all_mcp_tools]
     
-    if not mcp_tools_available or not available_tools:
-        logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.") # ADD THIS
+    if not available_tools:
+        logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.")
+        return prompt
+ 
+    # For Google models, native function calling is used. Do not add XML tool instructions.
+    if is_google_endpoint:
+        logger.info("MCP_GUIDELINES: Google model detected. Skipping XML tool instructions in prompt.")
         return prompt
     
-    mcp_guidelines = """
+    # Check if native tools are available - if so, skip XML instructions
+    native_tools_available = context.get("native_tools_available", False)
+    if native_tools_available:
+        logger.info("MCP_GUIDELINES: Native tools available. Skipping XML tool instructions in prompt.")
+        return prompt
+    else:
+        logger.info("MCP_DEBUG: Not a Google endpoint and no native tools, adding XML tool instructions.")
+        # For other models (Bedrock, etc.), provide XML-based tool instructions
+        mcp_guidelines = """
 
 ## MCP Tool Usage - CRITICAL INSTRUCTIONS
 **EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**
@@ -61,14 +107,15 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
 2. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
 3. **Time queries**: Always use tool rather than guessing current time
 4. **Error handling**: Show actual errors and try alternatives
-5. **Verification**: Use tools to verify system state rather than making assumptions    
+5. **Verification**: Use tools to verify system state rather than making assumptions
+6. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
 """
 
-    logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}") # ADD THIS
-    logger.info(f"MCP_GUIDELINES: Appending guidelines. Available tools: {available_tools}") # ADD THIS
+    logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}")
+    logger.info(f"MCP_GUIDELINES: Appending guidelines. Available tools: {available_tools}")
     modified_prompt = prompt + mcp_guidelines
-    logger.info(f"MCP_GUIDELINES: Modified prompt length: {len(modified_prompt)}") # ADD THIS
-    logger.info(f"MCP_GUIDELINES: Last 500 chars of modified prompt: ...{modified_prompt[-500:]}") # ADD THIS
+    logger.info(f"MCP_GUIDELINES: Modified prompt length: {len(modified_prompt)}")
+    logger.info(f"MCP_GUIDELINES: Last 500 chars of modified prompt: ...{modified_prompt[-500:]}")
     return modified_prompt
 
 def _get_tool_description(tool_name: str) -> str:
