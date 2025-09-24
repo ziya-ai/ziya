@@ -54,7 +54,7 @@ from app.utils.error_handlers import format_error_response, detect_error_type
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 
 from app.mcp.manager import get_mcp_manager
-from app.config import TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_CLOSE
 from app.mcp.tools import create_mcp_tools, parse_tool_call
 # Wrap model initialization in try/except to catch credential errors early
 try:
@@ -430,7 +430,7 @@ class RetryingChatBedrock(Runnable):
         
     def _get_model_config(self):
         """Get the configuration for the current model."""
-        from app.config import MODEL_CONFIGS, MODEL_FAMILIES
+        from app.config.models_config import MODEL_CONFIGS, MODEL_FAMILIES
         
         if not hasattr(self.model, 'model_id'):
             return {}
@@ -560,6 +560,7 @@ class RetryingChatBedrock(Runnable):
 
     async def astream(self, input: Any, config: Optional[Dict] = None, **kwargs):
         """Stream responses with retries and proper message formatting."""
+        logger.error(f"🔍 AGENT_ASTREAM: Starting astream with input type: {type(input)}")
         # Reset MCP tool execution counter for new request cycle
         try:
             from app.mcp.tools import _reset_counter_async
@@ -567,8 +568,8 @@ class RetryingChatBedrock(Runnable):
         except Exception as e:
             logger.warning(f"Failed to reset MCP tool counter: {e}")
         
-        max_retries = 3
-        base_retry_delay = 1
+        max_retries = 4  # Allow 4 retries for throttling
+        throttling_base_delay = 5  # Start with 5 seconds for throttling
 
         # Get max_tokens from environment variables
         max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
@@ -613,9 +614,18 @@ class RetryingChatBedrock(Runnable):
                 logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
         
         # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
+        # But store it for CustomBedrockClient to access via module global
+        logger.info(f"🔍 CONVERSATION_ID: filtered_kwargs keys = {list(filtered_kwargs.keys())}")
         if "conversation_id" in filtered_kwargs:
+            conversation_id = filtered_kwargs["conversation_id"]
+            # Store in a global variable that CustomBedrockClient can access
+            import app.utils.custom_bedrock as custom_bedrock_module
+            custom_bedrock_module._current_conversation_id = conversation_id
+            logger.info(f"Stored conversation_id in module global: {conversation_id}")
             del filtered_kwargs["conversation_id"]
             logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
+        else:
+            logger.info("🔍 CONVERSATION_ID: No conversation_id found in filtered_kwargs")
         
         # Use filtered kwargs for the model call
         kwargs = filtered_kwargs
@@ -729,10 +739,46 @@ class RetryingChatBedrock(Runnable):
 
                 # Filter out empty messages
                 if isinstance(messages, list):
-                    messages = [
-                        msg for msg in messages 
-                        if isinstance(msg, BaseMessage) and msg.content
-                    ]
+                    logger.info(f"🔍 FILTERING: Before filtering - {len(messages)} messages")
+                    for i, msg in enumerate(messages):
+                        # Handle both BaseMessage objects and dictionaries safely
+                        try:
+                            if hasattr(msg, 'content'):
+                                content = str(msg.content)[:100]
+                                empty = not msg.content
+                            elif isinstance(msg, dict) and 'content' in msg:
+                                content = str(msg['content'])[:100]
+                                empty = not msg['content']
+                            else:
+                                content = str(msg)[:100]
+                                empty = True
+                            logger.info(f"🔍 FILTERING: Message {i}: {type(msg).__name__} - content: '{content}...' - empty: {empty}")
+                        except Exception as e:
+                            logger.warning(f"🔍 FILTERING: Error accessing message {i} content: {e} - type: {type(msg)}")
+                    
+                    # Filter messages - handle both BaseMessage objects and dictionaries
+                    filtered_messages = []
+                    for msg in messages:
+                        if isinstance(msg, BaseMessage) and msg.content:
+                            filtered_messages.append(msg)
+                        elif isinstance(msg, dict) and msg.get('content'):
+                            filtered_messages.append(msg)
+                    
+                    messages = filtered_messages
+                    
+                    logger.info(f"🔍 FILTERING: After filtering - {len(messages)} messages")
+                    for i, msg in enumerate(messages):
+                        try:
+                            if hasattr(msg, 'content'):
+                                content = str(msg.content)[:100]
+                            elif isinstance(msg, dict) and 'content' in msg:
+                                content = str(msg['content'])[:100]
+                            else:
+                                content = str(msg)[:100]
+                            logger.info(f"🔍 FILTERING: Kept Message {i}: {type(msg).__name__} - content: '{content}...'")
+                        except Exception as e:
+                            logger.warning(f"🔍 FILTERING: Error accessing kept message {i} content: {e}")
+                    
                     if not messages:
                         raise ValueError("No valid messages with content")
                     logger.debug(f"Filtered to {len(messages)} non-empty messages")
@@ -776,6 +822,7 @@ class RetryingChatBedrock(Runnable):
                     model_config["conversation_id"] = conversation_id
                     
                 async for chunk in self.model.astream(messages, model_config, **kwargs):
+                    logger.error(f"🔍 AGENT_MODEL_ASTREAM: Received chunk type: {type(chunk)}, content: {getattr(chunk, 'content', str(chunk))[:100]}")
                     # Check if this is an error chunk that should terminate this specific stream
                     # If we reach here, we've successfully started streaming
                     
@@ -910,6 +957,45 @@ class RetryingChatBedrock(Runnable):
                 error_str = str(e)
                 logger.warning(f"Bedrock client error: {error_str}")
                 
+                # Check for token-based throttling (different from rate throttling)
+                is_token_throttling = ("Too many tokens" in error_str and 
+                                     "ThrottlingException" in error_str)
+                
+                # Handle throttling with proper backoff
+                if "ThrottlingException" in error_str or "Too many requests" in error_str:
+                    if attempt < max_retries - 1:
+                        # Throttling-specific backoff: 5s, 10s, 20s, 40s
+                        if attempt == 0:
+                            retry_delay = 5
+                        elif attempt == 1:
+                            retry_delay = 10
+                        elif attempt == 2:
+                            retry_delay = 20
+                        else:
+                            retry_delay = 40
+                        
+                        logger.info(f"Throttling detected, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                
+                # Handle token throttling with fresh connection retry
+                if is_token_throttling and attempt < max_retries - 1:
+                    logger.info(f"Token throttling detected, creating fresh connection after 20s wait (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(20)  # Wait 20 seconds as you suggested
+                    
+                    # Force a fresh connection by reinitializing the model
+                    try:
+                        from app.agents.models import ModelManager
+                        fresh_model = ModelManager.initialize_model(force_reinit=True)
+                        if fresh_model:
+                            self.model = fresh_model
+                            logger.info("Successfully created fresh model connection for token throttling retry")
+                            continue
+                    except Exception as reinit_error:
+                        logger.warning(f"Failed to reinitialize model for token throttling retry: {reinit_error}")
+                        # Continue with original model if reinit fails
+                        continue
+                
                 # Check for validation errors first (these are more important than throttling)
                 if "ValidationException" in error_str and "Input is too long" in error_str:
                     error_message = {
@@ -997,10 +1083,18 @@ class RetryingChatBedrock(Runnable):
                     # Format error message for throttling
                     error_message = {
                         "error": "throttling_error",
-                        "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
+                        "detail": "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.",
                         "status_code": 429,
                         "stream_id": stream_id,
-                        "retry_after": "5"
+                        "retry_after": "60",
+                        "throttle_info": {
+                            "auto_attempts_exhausted": True,
+                            "total_auto_attempts": max_retries,
+                            "can_user_retry": True,
+                            "backoff_used": [5, 10, 20, 40][:attempt + 1]
+                        },
+                        "ui_action": "show_retry_button",
+                        "user_message": "Click 'Retry' to attempt again, or wait a few minutes for better success rate."
                     }
                     
                     # Include pre-streaming work in preservation
@@ -1048,14 +1142,32 @@ class RetryingChatBedrock(Runnable):
                 # Check if this is a Bedrock error that was wrapped in another exception
                 error_type, detail, status_code, retry_after = detect_error_type(error_str)
                 logger.info(f"Detected error type: {error_type}, status: {status_code}")
-                
-                # For final attempt failures, ensure proper error formatting
+                # Handle other exceptions
+                error_type, detail, status_code, retry_after = detect_error_type(error_str)
+            
+                # Handle throttling with proper backoff for generic exceptions too
+                if "ThrottlingException" in error_str or "Too many requests" in error_str or "Too many tokens" in error_str:
+                    if attempt < max_retries - 1:
+                        # Throttling-specific backoff: 5s, 10s, 20s, 40s
+                        if attempt == 0:
+                            retry_delay = 5
+                        elif attempt == 1:
+                            retry_delay = 10
+                        elif attempt == 2:
+                            retry_delay = 20
+                        else:
+                            retry_delay = 40
+                        
+                        logger.info(f"Throttling detected in exception, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        continue
+
+                # For non-throttling errors, use shorter backoff
                 if attempt < max_retries - 1:
-                    # Exponential backoff and retry
-                    retry_delay = base_retry_delay * (2 ** attempt)
+                    retry_delay = 1 * (2 ** attempt)  # 1s, 2s, 4s for other errors
+                    logger.info(f"Non-throttling error, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(retry_delay)
                     continue
-                
                 # Final attempt failed, send error response
                 error_message = {
                     "error": error_type,
@@ -1077,32 +1189,55 @@ class RetryingChatBedrock(Runnable):
 
     def _is_tool_execution_content(self, content: str) -> bool:
         """Check if content indicates tool execution."""
+        # Check for tool sentinel markers
+        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        
+        # Check for complete tool calls
+        if TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content:
+            return True
+        
+        # Check for hardcoded sentinel markers
+        if "<TOOL_SENTINEL>" in content and "</TOOL_SENTINEL>" in content:
+            return True
+            
+        # Check for other tool indicators
         tool_indicators = [
             "MCP Tool",
             "Tool:",
             "$ ",  # Shell command indicator
+            "```tool:",
             "```shell",
             "```bash",
             "Executing tool",
             "Running command",
         ]
-        # placeholder always returns false until logic is implemented
-        return False
-
-    def _is_tool_execution_content(self, content: str) -> bool:
-        """Check if content indicates tool execution."""
-        tool_indicators = [
-            "MCP Tool",
-            "Tool:",
-            "$ ",  # Shell command indicator
-            "```shell",
-            "```bash",
-            "Executing tool",
-            "Running command",
-            "SECURITY BLOCK",
-            "Tool execution"
-        ]
+        
         return any(indicator in content for indicator in tool_indicators)
+
+    async def _execute_tool_call(self, content: str) -> str:
+        """
+        Execute a tool call in the content and return the result.
+        
+        Args:
+            content: The content containing a tool call
+            
+        Returns:
+            The content with the tool call replaced by the result
+        """
+        try:
+            # Import the MCP tool execution function
+            from app.mcp.consolidated import execute_mcp_tools_with_status
+            
+            # Execute the tool call
+            logger.info(f"Executing tool call during streaming: {content[:100]}...")
+            result = await execute_mcp_tools_with_status(content)
+            logger.info(f"Tool execution result: {result[:100]}...")
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error executing tool call: {e}")
+            # Return error message
+            return f"\n\n```tool:error\n❌ **Tool Error:** {str(e)}\n```\n\n"
 
     async def _notify_tool_execution_state(self, content: str):
         """Notify about tool execution state changes."""
@@ -1145,8 +1280,8 @@ class RetryingChatBedrock(Runnable):
 
     def invoke(self, input: Any, config: Optional[Dict] = None, **kwargs) -> Any:
         """Invoke the model with retries and proper message formatting."""
-        max_retries = 3
-        base_retry_delay = 1.0
+        max_retries = 4
+        throttling_base_delay = 5.0
         
         # Apply post-instructions if input is a user query
         if isinstance(input, str):
@@ -1258,11 +1393,44 @@ class RetryingChatBedrock(Runnable):
                         for i, msg in enumerate(formatted_input):
                             logger.error(f"Message {i}: {msg}")
                     else:
-                        logger.error(f"Input: {formatted_input}")
+                        logger.error(f"Message {i}: {msg}")
                 
+                # Handle throttling with proper backoff
+                if "ThrottlingException" in error_str or "Too many requests" in error_str or "Too many tokens" in error_str:
+                    if attempt < max_retries - 1:
+                        # Throttling-specific backoff: 5s, 10s, 20s, 40s
+                        if attempt == 0:
+                            retry_delay = 5.0
+                        elif attempt == 1:
+                            retry_delay = 10.0
+                        elif attempt == 2:
+                            retry_delay = 20.0
+                        else:
+                            retry_delay = 40.0
+                        
+                        logger.info(f"Throttling detected, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        # Final attempt failed - enhance error response for frontend
+                        error_message = {
+                            "error": "throttling_error",
+                            "detail": "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.",
+                            "status_code": 429,
+                            "throttle_info": {
+                                "auto_attempts_exhausted": True,
+                                "total_auto_attempts": max_retries,
+                                "can_user_retry": True,
+                                "backoff_used": [5.0, 10.0, 20.0, 40.0][:attempt + 1]
+                            },
+                            "ui_action": "show_retry_button",
+                            "user_message": "Click 'Retry' to attempt again, or wait a few minutes for better success rate."
+                        }
+                        # Let this fall through to the final error handling
+
                 if attempt < max_retries - 1:
-                    # Exponential backoff
-                    retry_delay = base_retry_delay * (2 ** attempt)
+                    # For non-throttling errors, use shorter backoff
+                    retry_delay = 1.0 * (2 ** attempt)  # 1s, 2s, 4s for other errors
                     logger.info(f"Retrying in {retry_delay} seconds...")
                     time.sleep(retry_delay)
                 else:
@@ -1298,6 +1466,9 @@ class LazyLoadedModel:
         elif self._model is None: # Only initialize if both state and self._model are None
             logger.warning("ModelManager state is empty, initializing model on first use")
             model_instance = ModelManager.initialize_model(force_reinit=True) # Initialize without override here
+            if model_instance is None:
+                logger.error("Model initialization failed - returning None")
+                return None
             self._model = RetryingChatBedrock(model_instance)
         return self._model
     def __call__(self):
@@ -1312,12 +1483,16 @@ class LazyLoadedModel:
         self._binding_logged = False
  
     def bind(self, **kwargs):
-        if self._model is None:
-            self._model_with_stop = self.get_model().bind(**kwargs)
-        return self.get_model().bind(**kwargs)
+        model = self.get_model()
+        if model is None:
+            logger.error("Cannot bind model - model initialization failed")
+            return None
+        return model.bind(**kwargs)
  
 model = LazyLoadedModel()
 llm_with_stop = model.bind(stop=["</tool_input>"])
+if llm_with_stop is None:
+    logger.warning("Model binding failed during initialization - will retry later")
 
 # Store the initial llm_with_stop in ModelManager
 from app.agents.models import ModelManager
@@ -1366,8 +1541,33 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
             if success:
                 # Log a preview of the content
                 preview = "\n".join(annotated_lines[:5]) if annotated_lines else "NO CONTENT"
-                logger.info(f"Content preview for {file_path}:\n{preview}\n...")
+                logger.debug(f"Content preview for {file_path}:\n{preview}\n...")
                 combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
+            else:
+                # Add file directly to FileStateManager when not found
+                logger.info(f"File {file_path} not in FileStateManager, adding it directly")
+                content = read_file_content(full_path)
+                if content:
+                    # Ensure conversation exists
+                    if conversation_id not in file_state_manager.conversation_states:
+                        file_state_manager.conversation_states[conversation_id] = {}
+                    
+                    # Add file directly to state
+                    from app.utils.file_state_manager import FileState
+                    lines = content.splitlines()
+                    file_state_manager.conversation_states[conversation_id][file_path] = FileState(
+                        path=file_path,
+                        content_hash=file_state_manager._compute_hash(lines),
+                        line_states={},
+                        original_content=lines.copy(),
+                        current_content=lines.copy(),
+                        last_seen_content=lines.copy(),
+                        last_context_submission_content=lines.copy()
+                    )
+                    
+                    # Get annotated content
+                    annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
+                    combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
     
@@ -1470,6 +1670,8 @@ def extract_codebase(x):
         logger.info("No files selected, returning placeholder codebase message")
         return "No files have been selected for context analysis."
     
+    logger.info(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
+    logger.info(f"🔍 EXTRACT_CODEBASE_DEBUG: First 5 files: {files[:5]}")
     print(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
     conversation_id = (
         x.get("conversation_id") or 
@@ -1509,13 +1711,12 @@ def extract_codebase(x):
             continue
  
     # Initialize conversation state immediately after loading files
-    if conversation_id not in file_state_manager.conversation_states:
-        logger.info(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
-        file_state_manager.initialize_conversation(conversation_id, file_contents)
-        logger.info(f"Initialized conversation {conversation_id} with {len(file_contents)} files")
-        # Set initial context submission baseline
-        file_state_manager.mark_context_submission(conversation_id)
-        logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
+    logger.info(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
+    file_state_manager.initialize_conversation(conversation_id, file_contents)
+    logger.info(f"Initialized conversation {conversation_id} with {len(file_contents)} files")
+    # Set initial context submission baseline
+    file_state_manager.mark_context_submission(conversation_id)
+    logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
     
     # Update any files that may have changed
     file_state_manager.update_files_in_state(conversation_id, file_contents)
@@ -1554,11 +1755,11 @@ def extract_codebase(x):
 
     final_string = "\n".join(result)
     file_markers = [line for line in final_string.split('\n') if line.startswith('File: ')]
-    logger.info(f"Final string assembly:")
-    logger.info(f"Total length: {len(final_string)} chars")
-    logger.info(f"Number of File: markers: {len(file_markers)}")
-    logger.info(f"First 500 chars:\n{final_string[:500]}")
-    logger.info(f"Last 500 chars:\n{final_string[-500:]}")
+    logger.debug(f"Final string assembly:")
+    logger.debug(f"Total length: {len(final_string)} chars")
+    logger.debug(f"Number of File: markers: {len(file_markers)}")
+    logger.debug(f"First 500 chars:\n{final_string[:500]}")
+    logger.debug(f"Last 500 chars:\n{final_string[-500:]}")
 
     # Debug the content at each stage
     logger.info("Content flow tracking:")
@@ -1590,7 +1791,7 @@ def log_output(x):
 
 def log_codebase_wrapper(x):
     codebase = extract_codebase(x)
-    logger.info(f"Codebase before prompt: {len(codebase)} chars")
+    logger.debug(f"Codebase before prompt: {len(codebase)} chars")
     file_count = len([l for l in codebase.split('\n') if l.startswith('File: ')])
     logger.info(f"Number of files in codebase before prompt: {file_count}")
     file_lines = [l for l in codebase.split('\n') if l.startswith('File: ')]
@@ -1600,19 +1801,54 @@ def log_codebase_wrapper(x):
 def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
     from langchain.agents import create_xml_agent
+    import hashlib
+    from app.agents.models import ModelManager
     logger.error("🔍 EXECUTION_TRACE: create_agent_chain() called")
     
-    # Bind the stop sequence to the model  
-    llm_with_stop = chat_model.bind(stop=[TOOL_SENTINEL_CLOSE])
-    
-    # Store the model with stop in the ModelManager state
-    from app.agents.models import ModelManager
-    ModelManager._state['llm_with_stop'] = llm_with_stop
-    
-    # Initialize MCP tools if available
-    mcp_tools = []
+    # Create cache key based on model configuration
+    model_id = ModelManager.get_model_id() or getattr(chat_model, 'model_id', 'unknown')
     ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
-    logger.info(f"Creating agent chain with AST enabled: {ast_enabled}")
+    mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes")
+    
+    # Get MCP tools first to include in cache key
+    mcp_tools = []
+    if mcp_enabled:
+        try:
+            from app.mcp.manager import get_mcp_manager
+            from app.mcp.enhanced_tools import create_secure_mcp_tools
+            mcp_manager = get_mcp_manager()
+            # Ensure MCP is initialized before creating tools
+            if not mcp_manager.is_initialized:
+                # Don't initialize during startup - let server startup handle it
+                logger.info("MCP manager not yet initialized, will use available tools when ready")
+                mcp_tools = []
+            else:
+                mcp_tools = create_secure_mcp_tools()
+                logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+            
+            if mcp_manager.is_initialized:
+                mcp_tools = create_secure_mcp_tools()
+                logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+            else:
+                logger.warning("MCP manager not initialized, no MCP tools available")
+        
+        except Exception as e:
+            logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+    else:
+        logger.debug("MCP is disabled, no tools will be created for agent chain")
+    
+    # Include MCP tool count in cache key to ensure different chains for different tool availability
+    cache_key = f"{model_id}_{ast_enabled}_{mcp_enabled}_{len(mcp_tools)}"
+    cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
+    
+    # Check ModelManager cache
+    from app.agents.models import ModelManager
+    cached_chain = ModelManager._state.get('agent_chain_cache', {}).get(cache_key_hash)
+    if cached_chain:
+        logger.info(f"Using cached agent chain for {cache_key_hash}")
+        return cached_chain
+    
+    logger.info(f"Creating new agent chain for {cache_key_hash}")
     
     # Get model information for prompt extensions
     model_info = get_model_info_from_config()
@@ -1621,8 +1857,6 @@ def create_agent_chain(chat_model: BaseChatModel):
     endpoint = model_info["endpoint"]
     
     logger.info(f"Creating agent chain for model: {model_name}, family: {model_family}, endpoint: {endpoint}")
-    
-    # Get the extended prompt with model-specific extensions
     
     # Define the input mapping with conditional AST context
     input_mapping = {
@@ -1652,61 +1886,114 @@ def create_agent_chain(chat_model: BaseChatModel):
         # Add empty AST context to avoid template errors
         input_mapping["ast_context"] = lambda x: {}
 
-    # Get MCP tools
-    mcp_tools = []
-    try:
-        from app.mcp.manager import get_mcp_manager
-        from app.mcp.tools import create_mcp_tools
-        mcp_manager = get_mcp_manager()
-        # Ensure MCP is initialized before creating tools
-        if not mcp_manager.is_initialized:
-            logger.warning("MCP manager not initialized during agent creation, attempting initialization...")
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're in an async context, we can't wait for initialization
-                logger.warning("Cannot initialize MCP synchronously in async context")
-            else:
-                loop.run_until_complete(mcp_manager.initialize())
-        
-        if mcp_manager.is_initialized:
-
-            mcp_tools = create_mcp_tools()
-            logger.info(f"Created {len(mcp_tools)} MCP tools for XML agent: {[tool.name for tool in mcp_tools]}")
-        else:
-            logger.warning("MCP manager not initialized, no MCP tools available")
+    # Disable Google native function calling for now - will migrate off langchain later
+    if False: # endpoint == "google" and len(mcp_tools) > 0:
+        logger.info(f"Detected Google model with {len(mcp_tools)} tools - enabling native function calling")
+        try:
+            # Import Google wrapper
+            from app.agents.wrappers.ziya_google_genai import ZiyaChatGoogleGenerativeAI
+            
+            # Check if the model is our custom wrapper (handle RetryingChatBedrock wrapper)
+            underlying_model = chat_model.model if hasattr(chat_model, 'model') else chat_model
+            if isinstance(underlying_model, ZiyaChatGoogleGenerativeAI):
+                # Get prompt template for system message
+                mcp_context = {
+                     "mcp_tools_available": len(mcp_tools) > 0,
+                     "available_mcp_tools": [tool.name for tool in mcp_tools],
+                     "model_id": model_id
+                }
+                
+                prompt_template = get_extended_prompt(
+                    model_name=model_name,
+                    model_family=model_family,
+                    endpoint=endpoint,
+                    context=mcp_context
+                )
+                
+                # Bind tools using Google's native function calling
+                llm_with_tools = underlying_model.bind_tools(mcp_tools)
+                logger.info(f"Successfully bound {len(mcp_tools)} tools to Google model")
+                
+                # Create a simple chain that just calls the model with tools
+                def google_agent_call(input_data):
+                    """Handle Google function calling."""
+                    # Apply input mapping
+                    mapped_input = {}
+                    for key, mapper in input_mapping.items():
+                        try:
+                            mapped_input[key] = mapper(input_data)
+                        except Exception as e:
+                            logger.error(f"Error applying input mapping for {key}: {e}")
+                            mapped_input[key] = ""
+                    
+                    # Format messages for Google
+                    messages = []
+                    
+                    # Add system message from prompt
+                    if hasattr(prompt_template, 'messages') and prompt_template.messages:
+                        system_msg = prompt_template.messages[0]
+                        if hasattr(system_msg, 'format'):
+                            formatted_content = system_msg.format(**mapped_input)
+                            messages.append(SystemMessage(content=formatted_content))
+                    
+                    # Add user question
+                    question = mapped_input.get("question", "")
+                    if question:
+                        messages.append(HumanMessage(content=question))
+                    
+                    # Call model with function calling
+                    try:
+                        result = llm_with_tools.invoke(messages)
+                        return {"output": result.content}
+                    except Exception as e:
+                        logger.error(f"Google function calling error: {e}")
+                        # Fall back to regular model without tools
+                        result = chat_model.invoke(messages)
+                        return {"output": result.content}
+                
+                from langchain_core.runnables import RunnableLambda
+                agent_chain = RunnableLambda(google_agent_call)
+                
+                logger.info("Created Google function calling agent chain")
+                
+                # Cache and return
+                if 'agent_chain_cache' not in ModelManager._state:
+                    ModelManager._state['agent_chain_cache'] = {}
+                ModelManager._state['agent_chain_cache'][cache_key_hash] = agent_chain
+                logger.info(f"Cached Google agent chain for {cache_key_hash}")
+                
+                return agent_chain
+                
+        except Exception as e:
+            logger.warning(f"Failed to create Google function calling agent, falling back to XML: {e}")
     
-    except Exception as e:
-        logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+    # Bind the stop sequence to the model for XML agents
+    llm_with_stop = chat_model.bind(stop=[TOOL_SENTINEL_CLOSE])
+    
+    # Store the model with stop in the ModelManager state
+    ModelManager._state['llm_with_stop'] = llm_with_stop
     
     # Add MCP context for prompt extensions
     mcp_context = {
          "mcp_tools_available": len(mcp_tools) > 0,
-         "available_mcp_tools": [tool.name for tool in mcp_tools]
+         "available_mcp_tools": [tool.name for tool in mcp_tools],
+     "model_id": model_id,
+     "endpoint": endpoint
     }
-    
+    logger.info(f"AGENT_DEBUG: Passing mcp_context to get_extended_prompt: {mcp_context}")
+ 
     prompt_template = get_extended_prompt(
-        model_name=model_name,
+     model_name=model_name,
         model_family=model_family,
         endpoint=endpoint,
         context=mcp_context
     )
     
-    logger.error(f"🔍 EXECUTION_TRACE: Agent chain using extended prompt template of length: {len(str(prompt_template))}")
-    
-    logger.info(f"AGENT_CHAIN: Received prompt template type: {type(prompt_template)}")
-    logger.info(f"AGENT_CHAIN: Prompt template messages: {len(prompt_template.messages)}")
-    for i, msg in enumerate(prompt_template.messages):
-        logger.info(f"AGENT_CHAIN: Message {i} type: {type(msg)}")
-        if hasattr(msg, 'prompt') and hasattr(msg.prompt, 'template'):
-            logger.info(f"AGENT_CHAIN: Message {i} template length: {len(msg.prompt.template)}")
-            logger.info(f"AGENT_CHAIN: Message {i} last 200 chars: {msg.prompt.template[-200:]}")
-        elif hasattr(msg, 'template'):
-            logger.info(f"AGENT_CHAIN: Message {i} template length: {len(msg.template)}")
-        else:
-            logger.info(f"AGENT_CHAIN: Message {i} has no accessible template")
-    
-    logger.info(f"AGENT_CHAIN: Tools being passed to create_xml_agent: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
+    # Check if model is available before creating agent
+    if llm_with_stop is None:
+        logger.error("Cannot create XML agent - model is not available (likely due to credential issues)")
+        return None
+        
     # Create the XML agent directly with input preprocessing
     # Use custom output parser for MCP tool detection
     agent = create_xml_agent(llm_with_stop, mcp_tools, prompt_template)
@@ -1738,11 +2025,27 @@ def create_agent_chain(chat_model: BaseChatModel):
     agent_chain = preprocessing_chain | agent
     
     logger.info(f"Created XML agent with {len(mcp_tools)} tools and input mapping")
-    logger.info(f"Input mapping keys: {list(input_mapping.keys())}") 
+    logger.info(f"Input mapping keys: {list(input_mapping.keys())}")
+    
+    # Cache the agent chain
+    if 'agent_chain_cache' not in ModelManager._state:
+        ModelManager._state['agent_chain_cache'] = {}
+    ModelManager._state['agent_chain_cache'][cache_key_hash] = agent_chain
+    logger.info(f"Cached agent chain for {cache_key_hash}")
+    
     return agent_chain
  
-# Initialize the agent chain
-agent = create_agent_chain(model)
+# Initialize the agent chain lazily
+agent = None
+
+def get_or_create_agent():
+    """Get the agent, creating it if necessary."""
+    global agent
+    if agent is None:
+        agent = create_agent_chain(model)
+        if agent is None:
+            logger.warning("Agent creation failed - will retry when credentials are available")
+    return agent
 
 def reset_mcp_tool_counter():
     """Reset the MCP tool execution counter for a new request cycle."""
@@ -1799,28 +2102,38 @@ def create_agent_executor(agent_chain: Runnable):
 
     # Get MCP tools for the executor
     mcp_tools = []
-    try:
-        logger.info("Attempting to get MCP tools for agent executor...")
-        
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        
-        if mcp_manager.is_initialized:
-            mcp_tools = create_mcp_tools()
-            logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
-            for tool in mcp_tools:
-                logger.info(f"  - {tool.name}: {tool.description}")
-        else:
-            logger.info("MCP not initialized, no MCP tools available")
-    except Exception as e:
-        logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
-        from app.mcp.manager import get_mcp_manager
+    # Check if MCP is enabled before creating tools
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        try:
+            logger.info("Attempting to get MCP tools for agent executor...")
+            
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            
+            if mcp_manager.is_initialized:
+                mcp_tools = create_mcp_tools()
+                logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
+                for tool in mcp_tools:
+                    logger.info(f"  - {tool.name}: {tool.description}")
+            else:
+                logger.info("MCP not initialized, no MCP tools available")
+        except Exception as e:
+            logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
+            from app.mcp.manager import get_mcp_manager
+    else:
+        logger.debug("MCP is disabled, no tools will be created for agent executor")
         mcp_manager = get_mcp_manager()
 
     logger.info(f"AGENT_EXECUTOR: Tools being passed to AgentExecutor: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
         
     # Create the original executor
     logger.info(f"Creating AgentExecutor with agent type: {type(agent_chain)}")
+    
+    # Check if agent is available before creating executor
+    if agent_chain is None:
+        logger.error("Cannot create AgentExecutor - agent is not available")
+        return None
+        
     original_executor = AgentExecutor(
         verbose=True,  # Enable verbose logging
         agent=agent_chain,
@@ -1997,7 +2310,19 @@ def create_agent_executor(agent_chain: Runnable):
     # Return a new instance of our safe executor
     return SafeAgentExecutor(original_executor)
 
-agent_executor = create_agent_executor(agent)
+# Initialize agent_executor lazily
+agent_executor = None
+
+def get_or_create_agent_executor():
+    """Get the agent executor, creating it if necessary."""
+    global agent_executor
+    if agent_executor is None:
+        current_agent = get_or_create_agent()
+        if current_agent is not None:
+            agent_executor = create_agent_executor(current_agent)
+            if agent_executor is None:
+                logger.warning("Agent executor creation failed - will retry when credentials are available")
+    return agent_executor
 
 def initialize_langserve(app, executor):
     """Initialize or reinitialize langserve routes with the given executor."""
@@ -2044,15 +2369,16 @@ def initialize_langserve(app, executor):
     for route in original_routes:
         new_app.routes.append(route)
  
-    # Add new routes with executor
+    # Add LangServe routes for non-Bedrock models (Gemini, Nova, etc.)
+    # The priority /api/chat endpoint will intercept Bedrock requests
     add_routes(
         new_app,
         executor,
-        disabled_endpoints=["playground", "stream", "invoke"],
+        disabled_endpoints=["playground"],  # Keep stream and invoke for non-Bedrock models
         path="/ziya"
     )
     
-    logger.info("Added new routes with updated executor")
+    logger.info("Added LangServe routes - priority /api/chat will handle Bedrock routing")
 
     # Clear all routes from original app
     while app.routes:
