@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, Suspense } from 'react';
 import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
@@ -110,6 +110,8 @@ export const App: React.FC = () => {
         const saved = localStorage.getItem(PANEL_WIDTH_KEY);
         return saved ? parseInt(saved, 10) : 300; // Default width: 300px
     });
+    const scrollPreservationRef = useRef<{ position: number; wasAtBottom: boolean }>({ position: 0, wasAtBottom: false });
+    const isRenderingRef = useRef(false);
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
     const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -201,18 +203,64 @@ export const App: React.FC = () => {
         };
 
         chatContainer.addEventListener('scroll', handleScroll, { passive: true });
-
+        
         return () => {
             chatContainer.removeEventListener('scroll', handleScroll);
             clearTimeout(scrollTimeout);
         };
     }, [userHasScrolled, setUserHasScrolled]);
 
+    // Preserve scroll position during re-renders
+    useLayoutEffect(() => {
+        const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
+        if (!chatContainer) return;
+
+        // Before render: capture current position
+        const { scrollTop, scrollHeight, clientHeight } = chatContainer;
+        const wasAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
+        
+        scrollPreservationRef.current = {
+            position: scrollTop,
+            wasAtBottom
+        };
+        
+        isRenderingRef.current = true;
+        
+        // After render: restore appropriate position
+        return () => {
+            if (!isRenderingRef.current) return;
+            
+            requestAnimationFrame(() => {
+                const { wasAtBottom, position } = scrollPreservationRef.current;
+                
+                if (isTopToBottom) {
+                    if (wasAtBottom && !userHasScrolled) {
+                        // If we were at bottom and not manually scrolled, stay at bottom
+                        console.log('📜 Preserving bottom position after render');
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    } else if (!streamingConversations.has(currentConversationId)) {
+                        // If not streaming, preserve exact position to prevent jumps
+                        console.log('📜 Preserving scroll position after render:', position);
+                        chatContainer.scrollTop = position;
+                    }
+                } else {
+                    // In bottom-up mode, preserve position
+                    chatContainer.scrollTop = position;
+                }
+                
+                isRenderingRef.current = false;
+            });
+        };
+    }, [currentMessages, streamedContentMap, isTopToBottom, userHasScrolled, currentConversationId, streamingConversations]);
+
     // Auto-scroll to bottom when new messages arrive or streaming updates occur
     useEffect(() => {
-        // Only auto-scroll in top-down mode when user hasn't manually scrolled away and not currently streaming
-        if (!isTopToBottom || userHasScrolled) return;
-
+        // Only auto-scroll in specific circumstances to prevent jumping
+        if (!isTopToBottom || userHasScrolled || isRenderingRef.current) return;
+        
+        // Only auto-scroll if we're not currently streaming (StreamedContent handles that)
+        if (streamingConversations.has(currentConversationId)) return;
+        
         const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
         if (!chatContainer) return;
 
@@ -220,32 +268,26 @@ export const App: React.FC = () => {
         const scrollToBottom = () => {
             const { scrollTop, scrollHeight, clientHeight } = chatContainer as HTMLElement;
             const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
-
+            
             if (!isAtBottom) {
-                // Only auto-scroll for new messages when not actively streaming
-                // StreamedContent handles scrolling during streaming
-                if (!streamingConversations.has(currentConversationId)) {
-                    console.log('📜 App: Auto-scrolling to bottom for new messages');
-                    chatContainer.scrollTo({
-                        top: chatContainer.scrollHeight,
-                        behavior: 'smooth'
-                    });
-                } else {
-                    console.log('📜 App: Skipping auto-scroll - streaming active, StreamedContent will handle');
-                }
+                console.log('📜 App: Auto-scrolling to bottom for new messages (non-streaming)');
+                chatContainer.scrollTo({
+                    top: chatContainer.scrollHeight,
+                    behavior: 'auto' // Use auto to prevent conflicts with other scroll logic
+                });
             }
         };
-
+        
         // Use requestAnimationFrame to ensure DOM has updated
         requestAnimationFrame(scrollToBottom);
-    }, [isTopToBottom, currentMessages, streamedContentMap, userHasScrolled, streamingConversations, currentConversationId]);
+    }, [isTopToBottom, currentMessages.length, userHasScrolled, streamingConversations, currentConversationId]);
 
     // Reset userHasScrolled when switching conversations
     useEffect(() => {
         // Reset scroll state when switching to a new conversation
         // This ensures auto-scroll works immediately in new conversations
         setUserHasScrolled(false);
-
+        
         // Also scroll to bottom when switching conversations in top-down mode
         if (isTopToBottom) {
             setTimeout(() => {
@@ -256,16 +298,6 @@ export const App: React.FC = () => {
             }, 100);
         }
     }, [currentConversationId, isTopToBottom, setUserHasScrolled]);
-
-    const handleNewChat = async () => {
-        try {
-            await startNewChat();
-            setStreamedContentMap(new Map());
-        } catch (error) {
-            message.error('Failed to create new chat');
-            console.error('Error creating new chat:', error);
-        }
-    };
 
     const handlePanelResize = (newWidth: number) => {
         const minWidth = 200;
@@ -497,7 +529,7 @@ export const App: React.FC = () => {
                                     </>
                                 )}
                                 <Tooltip title="New Chat">
-                                    <Button icon={<PlusOutlined />} onClick={handleNewChat} />
+                                    <Button icon={<PlusOutlined />} onClick={() => startNewChat()} />
                                 </Tooltip>
                             </div>
                         </div>
