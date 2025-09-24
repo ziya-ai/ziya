@@ -10,6 +10,7 @@ from typing import Dict, List, Any, Optional
 
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger
+from app.config.shell_config import DEFAULT_SHELL_CONFIG, get_default_shell_config
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
@@ -22,12 +23,15 @@ class MCPServerConfig(BaseModel):
     enabled: bool = True
 
 class ShellConfig(BaseModel):
-    enabled: bool = True
-    allowedCommands: List[str] = ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"]
-    gitOperationsEnabled: bool = True
-    safeGitOperations: List[str] = ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"]
-    timeout: int = 10
+    enabled: bool = DEFAULT_SHELL_CONFIG["enabled"]
+    allowedCommands: List[str] = DEFAULT_SHELL_CONFIG["allowedCommands"]
+    gitOperationsEnabled: bool = DEFAULT_SHELL_CONFIG["gitOperationsEnabled"]
+    safeGitOperations: List[str] = DEFAULT_SHELL_CONFIG["safeGitOperations"]
+    timeout: int = DEFAULT_SHELL_CONFIG["timeout"]
 
+class ServerToggleRequest(BaseModel):
+    server_name: str
+    enabled: bool
 
 @router.get("/status")
 async def get_mcp_status():
@@ -39,7 +43,7 @@ async def get_mcp_status():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "initialized": False,
                 "disabled": True,
@@ -59,6 +63,7 @@ async def get_mcp_status():
         
         status = mcp_manager.get_server_status()
         config_info = mcp_manager.get_config_search_info()
+        server_configs = mcp_manager.server_configs
         
         return {
             "initialized": True,
@@ -67,7 +72,8 @@ async def get_mcp_status():
             "connected_servers": sum(1 for s in status.values() if s["connected"]),
             "config_path": config_info["config_path"],
             "config_exists": config_info["config_exists"],
-            "config_search_paths": config_info["search_paths"]
+            "config_search_paths": config_info["search_paths"],
+            "server_configs": {name: {"enabled": config.get("enabled", True)} for name, config in server_configs.items()}
         }
         
     except Exception as e:
@@ -85,7 +91,7 @@ async def get_mcp_resources():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {"resources": [], "disabled": True}
             
         mcp_manager = get_mcp_manager()
@@ -123,7 +129,7 @@ async def get_mcp_tools():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {"tools": [], "disabled": True}
         
         # Add detailed status information for debugging
@@ -174,7 +180,7 @@ async def get_mcp_prompts():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {"prompts": [], "disabled": True}
             
         mcp_manager = get_mcp_manager()
@@ -211,7 +217,7 @@ async def initialize_mcp():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "success": False,
                 "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
@@ -254,7 +260,7 @@ async def get_shell_config():
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "enabled": False,
                 "disabled": True,
@@ -265,45 +271,51 @@ async def get_shell_config():
         
         if not mcp_manager.is_initialized:
             return {
-                "enabled": False,
-                "allowedCommands": ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"],
-                "gitOperationsEnabled": True,
-                "safeGitOperations": ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"],
-                "timeout": 10
+                **get_default_shell_config(),
+                "enabled": False
             }
         
         # Check if shell server is connected
         shell_client = mcp_manager.clients.get("shell")
         if shell_client and shell_client.is_connected:
-            # Try to get the current configuration from the server config
-            # For built-in servers, we can check the original config
-            current_config = None
-            if hasattr(shell_client, 'server_config'):
-                current_config = shell_client.server_config
+            # Get current server config directly from the MCP manager
+            server_config = mcp_manager.server_configs.get("shell", {})
+            server_env = server_config.get("env", {})
             
-            allowed_commands = ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"]
-            if current_config and "env" in current_config and "ALLOW_COMMANDS" in current_config["env"]:
-                allowed_commands = [cmd.strip() for cmd in current_config["env"]["ALLOW_COMMANDS"].split(",") if cmd.strip()]
+            # Extract allowed commands from environment configuration
+            # Always start with the full default command list
+            allowed_commands = DEFAULT_SHELL_CONFIG["allowedCommands"].copy()
             
-            # Extract git operations from environment or use defaults
-            git_operations = ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"]
-            if current_config and "env" in current_config and "SAFE_GIT_OPERATIONS" in current_config["env"]:
-                git_operations = [op.strip() for op in current_config["env"]["SAFE_GIT_OPERATIONS"].split(",") if op.strip()]
+            # Only override if environment explicitly provides a DIFFERENT set
+            if "ALLOW_COMMANDS" in server_env and server_env["ALLOW_COMMANDS"].strip():
+                # If environment override exists, use it instead
+                env_commands = [cmd.strip() for cmd in server_env["ALLOW_COMMANDS"].split(",") if cmd.strip()]
+                # Only replace if the environment list is substantially different (not just a subset)
+                if env_commands and len(env_commands) >= len(DEFAULT_SHELL_CONFIG["allowedCommands"]) * 0.8:
+                    allowed_commands = env_commands
+                    logger.info(f"Using environment override commands: {allowed_commands}")
+            
+            # Extract git operations from environment or use defaults  
+            git_operations_enabled = server_env.get("GIT_OPERATIONS_ENABLED", "true").lower() in ("true", "1", "yes")
+            git_operations = DEFAULT_SHELL_CONFIG["safeGitOperations"].copy()
+            if "SAFE_GIT_OPERATIONS" in server_env:
+                git_operations = [op.strip() for op in server_env["SAFE_GIT_OPERATIONS"].split(",") if op.strip()]
+            
+            # Extract timeout from environment
+            timeout = int(server_env.get("COMMAND_TIMEOUT", DEFAULT_SHELL_CONFIG["timeout"]))
             
             return {
                 "enabled": True,
                 "allowedCommands": allowed_commands,
-                "gitOperationsEnabled": True,
+                "gitOperationsEnabled": git_operations_enabled,
                 "safeGitOperations": git_operations,
-                "timeout": 10
+                "timeout": timeout
             }
         else:
+            # Shell server not connected, return default config with enabled=False
             return {
-                "enabled": False,
-                "allowedCommands": ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "date"],
-                "gitOperationsEnabled": True,
-                "safeGitOperations": ["status", "log", "show", "diff", "branch", "remote", "ls-files", "blame"],
-                "timeout": 10
+                **get_default_shell_config(),
+                "enabled": False
             }
         
     except Exception as e:
@@ -317,16 +329,21 @@ async def update_shell_config(config: ShellConfig):
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "false").lower() in ("true", "1", "yes"):
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
             return {
                 "success": False,
                 "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
             }
             
         mcp_manager = get_mcp_manager()
-        
-        if not mcp_manager.is_initialized:
+        if not mcp_manager:
             return {"success": False, "message": "MCP manager not initialized"}
+        
+        # Update the server config to reflect the enabled state
+        # This is the critical missing piece that prevents reconnection!
+        if "shell" in mcp_manager.server_configs:
+            mcp_manager.server_configs["shell"]["enabled"] = config.enabled
+            logger.info(f"Updated shell server enabled state to: {config.enabled}")
         
         # Create new shell server configuration
         new_shell_config = {
@@ -342,26 +359,120 @@ async def update_shell_config(config: ShellConfig):
         
         if config.enabled:
             # Restart the shell server with new configuration
+            logger.info(f"Attempting to restart shell server with config: {new_shell_config}")
             success = await mcp_manager.restart_server("shell", new_shell_config)
+            
+            if not success:
+                # Get detailed error information
+                shell_client = mcp_manager.clients.get("shell")
+                error_details = "Unknown error"
+                if shell_client and shell_client.process:
+                    try:
+                        stderr_output = shell_client.process.stderr.read() if shell_client.process.stderr else ""
+                        if stderr_output:
+                            error_details = f"Shell server stderr: {stderr_output}"
+                    except Exception as e:
+                        error_details = f"Could not read shell server error: {str(e)}"
+                
+                logger.error(f"Shell server restart failed. Details: {error_details}")
+                return {"success": False, "message": f"Failed to restart shell server: {error_details}"}
             
             if success:
                 logger.info(f"Shell server restarted with new config: {config.allowedCommands}")
+                
+                # Invalidate tools cache to ensure fresh tool list with updated shell tools
+                mcp_manager.invalidate_tools_cache()
+                
                 return {
                     "success": True, 
                     "message": f"Shell server updated instantly. Basic commands: {', '.join(config.allowedCommands)}, Git operations: {'enabled' if config.gitOperationsEnabled else 'disabled'}"
                 }
-            else:
-                return {"success": False, "message": "Failed to restart shell server"}
         else:
             # Disable shell server by disconnecting it
             if "shell" in mcp_manager.clients:
                 await mcp_manager.clients["shell"].disconnect()
                 del mcp_manager.clients["shell"]
-                logger.info("Shell server disabled")
+                logger.info("Shell server client disconnected")
+            
+            # Critical: Update the server config to prevent reconnection
+            if "shell" in mcp_manager.server_configs:
+                mcp_manager.server_configs["shell"]["enabled"] = False
+                logger.info("Shell server marked as disabled in server configs")
+            
+            # Invalidate tools cache to ensure fresh tool list without shell tools
+            mcp_manager.invalidate_tools_cache()
             
             return {"success": True, "message": "Shell server disabled instantly"}
         
     except Exception as e:
         logger.error(f"Error updating shell config: {e}")
         raise HTTPException(status_code=500, detail=f"Error updating shell config: {str(e)}")
+
+@router.post("/toggle-server")
+async def toggle_server(request: ServerToggleRequest):
+    """
+    Enable or disable a specific MCP server.
+    """
+    try:
+        # Check if MCP is enabled
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+            return {
+                "success": False,
+                "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
+            }
+            
+        mcp_manager = get_mcp_manager()
+
+        # Add debug logging
+        logger.info(f"Toggle server request: {request.server_name} -> {request.enabled}")
+        logger.info(f"MCP manager initialized: {mcp_manager.is_initialized}")
+        logger.info(f"Available server configs: {list(mcp_manager.server_configs.keys()) if mcp_manager.server_configs else 'None'}")
+        logger.info(f"Server config for {request.server_name}: {mcp_manager.server_configs.get(request.server_name) if mcp_manager.server_configs else 'None'}")
+        
+        if not mcp_manager.is_initialized:
+            return {"success": False, "message": "MCP manager not initialized"}
+        
+        # Update the server config
+        if request.server_name in mcp_manager.server_configs:
+            mcp_manager.server_configs[request.server_name]["enabled"] = request.enabled
+            logger.info(f"Updated {request.server_name} server enabled state to: {request.enabled}")
+
+        # Ensure shell server config exists
+        if request.server_name == "shell" and request.server_name not in mcp_manager.server_configs:
+            logger.warning("Shell server config missing, creating default config")
+            mcp_manager.server_configs["shell"] = mcp_manager.builtin_server_definitions.get("shell", {})
+        
+        if request.enabled:
+            # Restart the server with current configuration
+            server_config = mcp_manager.server_configs.get(request.server_name)
+            if server_config:
+                success = await mcp_manager.restart_server(request.server_name, server_config)
+                message = f"{request.server_name} server enabled and restarted" if success else f"Failed to restart {request.server_name} server"
+                
+                # Invalidate tools cache to ensure fresh tool list with newly enabled server tools
+                if success:
+                    mcp_manager.invalidate_tools_cache()
+            else:
+                message = f"No configuration found for {request.server_name} server"
+        else:
+            # Disable server by disconnecting it
+            if request.server_name in mcp_manager.clients:
+                await mcp_manager.clients[request.server_name].disconnect()
+                del mcp_manager.clients[request.server_name]
+                logger.info(f"{request.server_name} server disabled")
+            
+            # Update server config to mark as disabled
+            if request.server_name in mcp_manager.server_configs:
+                mcp_manager.server_configs[request.server_name]["enabled"] = False
+            
+            # Invalidate tools cache to ensure fresh tool list without disabled server tools
+            mcp_manager.invalidate_tools_cache()
+            
+            message = f"{request.server_name} server disabled"
+        
+        return {"success": True, "message": message}
+        
+    except Exception as e:
+        logger.error(f"Error toggling server {request.server_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error toggling server: {str(e)}")
  
