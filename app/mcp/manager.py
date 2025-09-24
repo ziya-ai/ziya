@@ -45,6 +45,11 @@ class MCPManager:
         self._reconnection_attempts: Dict[str, float] = {}  # Track last reconnection attempt per server
         self._failed_servers: set = set()  # Servers that have failed too many times
         
+        # Loop detection for repetitive tool calls
+        self._recent_tool_calls: List[tuple] = []  # (tool_name, arguments, timestamp)
+        self._max_recent_calls = 10
+        self._loop_detection_window = 30  # seconds
+        
     def _get_builtin_server_definitions(self) -> Dict[str, Dict[str, Any]]:
         """Defines configurations for built-in MCP servers."""
         builtin_servers = {}
@@ -394,6 +399,8 @@ class MCPManager:
             server_config = self.server_configs.get(server_name, {})
             is_enabled = server_config.get("enabled", True)
             
+            logger.info(f"MCP_MANAGER.get_all_tools: Server '{server_name}' - connected: {client.is_connected}, enabled: {is_enabled}")
+            
             if client.is_connected and is_enabled:
                 client_tools = client.tools
                 logger.info(f"MCP_MANAGER.get_all_tools: Server '{server_name}' has {len(client_tools)} tools: {[t.name for t in client_tools]}")
@@ -464,6 +471,30 @@ class MCPManager:
                         return content
         return None
     
+    def _is_repetitive_call(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+        """Check if this tool call is repetitive within the detection window."""
+        current_time = time.time()
+        call_signature = (tool_name, str(arguments))
+        
+        # Clean old calls outside the window
+        self._recent_tool_calls = [
+            (name, args, timestamp) for name, args, timestamp in self._recent_tool_calls
+            if current_time - timestamp <= self._loop_detection_window
+        ]
+        
+        # Count identical calls in the window
+        identical_calls = sum(1 for name, args, _ in self._recent_tool_calls 
+                             if (name, args) == call_signature)
+        
+        # Add current call
+        self._recent_tool_calls.append((tool_name, str(arguments), current_time))
+        
+        # Keep only recent calls
+        if len(self._recent_tool_calls) > self._max_recent_calls:
+            self._recent_tool_calls = self._recent_tool_calls[-self._max_recent_calls:]
+        
+        return identical_calls >= 3  # Allow max 3 identical calls
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Call an MCP tool.
@@ -476,6 +507,11 @@ class MCPManager:
         Returns:
             Tool execution result or None if not found
         """
+        # Check for repetitive calls
+        if self._is_repetitive_call(tool_name, arguments):
+            logger.warning(f"🔍 MCP_MANAGER: Blocking repetitive tool call: {tool_name} with {arguments}")
+            return {"content": [{"type": "text", "text": "Tool call blocked due to repetitive execution pattern"}]}
+        
         # Remove mcp_ prefix if present for internal tool lookup
         internal_tool_name = tool_name
         if tool_name.startswith("mcp_"):

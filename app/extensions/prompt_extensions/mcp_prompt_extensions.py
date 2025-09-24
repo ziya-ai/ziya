@@ -69,14 +69,20 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     
     # Check if MCP tools are available in the context
     # This would be passed from the agent system when MCP is initialized
-    mcp_tools_available = context.get("mcp_tools_available", False)
-    from app.mcp.tools import create_mcp_tools
-    all_mcp_tools = create_mcp_tools()
-    available_tools = [tool.name for tool in all_mcp_tools]
+    # Get server-specific tools only (exclude MCPResourceTool which is always present)
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        server_tools = mcp_manager.get_all_tools() if mcp_manager.is_initialized else []
+        available_tools = [f"mcp_{tool.name}" if not tool.name.startswith("mcp_") else tool.name for tool in server_tools]
+    except Exception as e:
+        logger.warning(f"Could not get MCP server tools: {e}")
+        available_tools = []
     
     if not available_tools:
         logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.")
         return prompt
+
  
     # For Google models, native function calling is used. Do not add XML tool instructions.
     if is_google_endpoint:
@@ -93,6 +99,19 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         # For other models (Bedrock, etc.), provide XML-based tool instructions
         mcp_guidelines = """
 
+🚨 CRITICAL FILE MODIFICATION PROHIBITION 🚨
+═══════════════════════════════════════════════
+NEVER use tools to:
+- Copy files (cp, backup, etc.)
+- Modify files directly (sed, awk, etc.) 
+- Create new files
+- Move or rename files
+- Change file permissions
+
+ONLY suggest changes through Git diff patches in your response text.
+If you catch yourself about to modify a file with a tool - STOP and provide a diff instead.
+═══════════════════════════════════════════════
+
 ## MCP Tool Usage - CRITICAL INSTRUCTIONS
 **EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**
 
@@ -104,11 +123,30 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
 **Usage Rules:**
 0. **Prefer local context and AST over tools when either can provide similar information**
 1. **Always use actual tool results** - Never fabricate output
+
+⚠️  BEFORE EVERY TOOL CALL ASK YOURSELF: ⚠️
+"Am I about to modify a file? If yes, I must provide a Git diff patch instead!"
 2. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
 3. **Time queries**: Always use tool rather than guessing current time
 4. **Error handling**: Show actual errors and try alternatives
 5. **Verification**: Use tools to verify system state rather than making assumptions
 6. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
+"""
+
+        # Add shell-specific warning if shell command tool is available
+        if any("shell" in tool.lower() or "run_shell_command" in tool for tool in available_tools):
+            mcp_guidelines += """
+
+🛑 SHELL COMMAND RESTRICTIONS 🛑
+Tools are for READING and ANALYZING code, not changing it.
+When using shell commands, stick to read-only operations like:
+- ls, find, grep, cat, head, tail, wc, du, df
+- git status, git log, git show, git diff
+
+PROHIBITED shell operations:
+- File modifications: cp, mv, rm, touch, mkdir, chmod, chown
+- Text editing: sed, awk with -i, nano, vim, echo >
+- System changes: sudo, su, systemctl, service
 """
 
     logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}")
@@ -118,13 +156,8 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     logger.info(f"MCP_GUIDELINES: Last 500 chars of modified prompt: ...{modified_prompt[-500:]}")
     return modified_prompt
 
-def _get_tool_description(tool_name: str) -> str:
-    """Get a brief description of what an MCP tool is used for."""
-    descriptions = {
-        "mcp_get_current_time": "checking current system time and date",
-        "mcp_run_shell_command": "executing safe shell commands to inspect system state", 
-    }
-    return descriptions.get(tool_name, "specialized system operations")
+# Removed _get_tool_description() function as it was hardcoding shell tool descriptions
+# even when shell server was disabled. Now we only show descriptions for actually enabled tools.
 
 def _get_tool_descriptions_from_mcp(available_tools: list) -> str:
     """Get tool descriptions from actual MCP tool definitions."""
@@ -136,6 +169,7 @@ def _get_tool_descriptions_from_mcp(available_tools: list) -> str:
         
         if mcp_manager.is_initialized:
             # Get all MCP tools with their descriptions
+            # This already filters by enabled servers only
             mcp_tools = mcp_manager.get_all_tools()
             tool_map = {tool.name: tool.description for tool in mcp_tools}
             
@@ -144,20 +178,23 @@ def _get_tool_descriptions_from_mcp(available_tools: list) -> str:
                 clean_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
                 description = tool_map.get(clean_name, "Specialized system operations")
                 
-                display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
-                tool_descriptions.append(f"- **{display_name}**: {description}")
+                # Only add description if the tool is actually available from enabled servers
+                if clean_name in tool_map:
+                    display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
+                    tool_descriptions.append(f"- **{display_name}**: {description}")
         else:
-            # Fallback if MCP manager not initialized
-            for tool_name in available_tools:
-                display_name = f"mcp_{tool_name}" if not tool_name.startswith("mcp_") else tool_name
-                tool_descriptions.append(f"- **{display_name}**: Specialized system operations")
+            # If MCP manager not initialized, don't show any tool descriptions
+            logger.warning("MCP manager not initialized, no tool descriptions available")
+            return ""
                 
     except Exception as e:
         logger.warning(f"Could not get MCP tool descriptions: {e}")
-        # Fallback to generic descriptions
-        for tool_name in available_tools:
-            display_name = f"mcp_{tool_name}" if not tool_name.startswith("mcp_") else tool_name
-            tool_descriptions.append(f"- **{display_name}**: Specialized system operations")
+        # Don't provide fallback descriptions - only show what's actually available
+        return ""
+    
+    if not tool_descriptions:
+        logger.info("No tool descriptions available from enabled servers")
+        return "No tools currently available."
     
     return "\n".join(tool_descriptions)
 
@@ -170,7 +207,7 @@ def _get_tool_call_formats_from_mcp(available_tools: list) -> str:
         if not mcp_manager.is_initialized:
             return _get_fallback_tool_formats(available_tools)
             
-        # Get all MCP tools with their schemas
+        # Get all MCP tools with their schemas (already filters by enabled servers only)
         mcp_tools = mcp_manager.get_all_tools()
         tool_schemas = {tool.name: tool.inputSchema for tool in mcp_tools}
         
@@ -180,8 +217,9 @@ def _get_tool_call_formats_from_mcp(available_tools: list) -> str:
             clean_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
             display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
             
+            # Only generate format examples for tools that are actually available from enabled servers
             schema = tool_schemas.get(clean_name)
-            if schema and "properties" in schema:
+            if clean_name in tool_schemas and schema and "properties" in schema:
                 # Generate example arguments from schema
                 example_args = _generate_example_args_from_schema(schema, clean_name)
                 
@@ -196,11 +234,14 @@ def _get_tool_call_formats_from_mcp(available_tools: list) -> str:
         if format_sections:
             return "\n\n".join(format_sections)
         else:
-            return _get_fallback_tool_formats(available_tools)
+            # Don't use fallback formats - only show what's actually available
+            logger.info("No tool format examples available from enabled servers")
+            return "No tool formats currently available."
             
     except Exception as e:
         logger.warning(f"Could not get MCP tool schemas: {e}")
-        return _get_fallback_tool_formats(available_tools)
+        # Don't provide fallback formats - only show what's actually available
+        return ""
  
 def _generate_example_args_from_schema(schema: dict, tool_name: str) -> str:
     """Generate example arguments JSON from tool schema."""
@@ -246,30 +287,8 @@ def _get_example_value_for_property(prop_info: dict, prop_name: str, tool_name: 
     else:
         return f"your_{prop_name}_here"
  
-def _get_fallback_tool_formats(available_tools: list) -> str:
-    """Fallback tool format examples when schema info isn't available."""
-    formats = []
-    
-    for tool_name in available_tools:
-        clean_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
-        display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
-        
-        if clean_name == "run_shell_command":
-            example_args = '{{"command": "ls -la"}}'
-        elif clean_name == "get_current_time":
-            example_args = '{{"format": "readable"}}'
-        else:
-            example_args = '{{"key": "value"}}'
-            
-        formats.append(f"""**{display_name} Format:**
-```
-{TOOL_SENTINEL_OPEN}
-<name>{display_name}</name>
-<arguments>{example_args}</arguments>
-{TOOL_SENTINEL_CLOSE}
-```""")
-    
-    return "\n\n".join(formats)
+# Removed _get_fallback_tool_formats() function as it was hardcoding shell tool examples
+# even when shell server was disabled. Now we only show formats for actually enabled tools.
 
 def register_extensions(manager):
     """

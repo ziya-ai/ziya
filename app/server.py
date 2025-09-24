@@ -146,7 +146,9 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
             from app.mcp.manager import get_mcp_manager
             mcp_manager = get_mcp_manager()
             if mcp_manager.is_initialized:
-                tools_list = [f"- {tool.name}: {tool.description}" for tool in mcp_manager.get_all_tools()]
+                all_tools = mcp_manager.get_all_tools()
+                tools_list = [f"- {tool.name}: {tool.description}" for tool in all_tools]
+                logger.info(f"🔍 SYSTEM_PROMPT_TOOLS: Including {len(all_tools)} tools in system prompt: {[t.name for t in all_tools]}")
         except Exception as e:
             logger.warning(f"Could not get tools for template: {e}")
     else:
@@ -1233,6 +1235,11 @@ async def stream_chunks(body):
                         logger.info(f"🔍 TOOL_CHUNK: tool_name={chunk.get('tool_name')}, result_size={len(chunk.get('result', ''))}")
                 
                 yield sse_data
+                
+                # Force immediate delivery for tool results
+                if chunk.get('type') == 'tool_execution':
+                    import sys
+                    sys.stdout.flush()
             
             yield "data: [DONE]\n\n"
             return

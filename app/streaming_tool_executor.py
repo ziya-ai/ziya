@@ -3,6 +3,8 @@ import asyncio
 import json
 import boto3
 import logging
+import os
+import time
 from typing import Dict, Any, List, AsyncGenerator, Optional
 
 logger = logging.getLogger(__name__)
@@ -144,6 +146,7 @@ class StreamingToolExecutor:
         for iteration in range(50):  # Increased from 20 to support more complex tasks
             logger.info(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             tools_executed_this_iteration = False  # Track if tools were executed in this iteration
+            blocked_tools_this_iteration = 0  # Track blocked tools to prevent runaway loops
             
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
@@ -164,6 +167,8 @@ class StreamingToolExecutor:
                 # Remove markdown tool patterns that cause hallucinations
                 system_content = re.sub(r'```tool:.*?```', '', system_content, flags=re.DOTALL)
                 system_content = re.sub(r'```.*?mcp_.*?```', '', system_content, flags=re.DOTALL)
+                # Remove only MCP tools list, not visualization tools
+                system_content = re.sub(r'- mcp_[^:]+:[^\n]*\n?', '', system_content)
                 body["system"] = system_content + "\n\nCRITICAL: Use ONLY native tool calling. Never generate markdown like ```tool:mcp_run_shell_command or ```bash. Use the provided tools directly."
 
             if bedrock_tools:
@@ -175,6 +180,7 @@ class StreamingToolExecutor:
                 # Exponential backoff for rate limiting
                 max_retries = 4
                 base_delay = 2  # Start with 2 seconds
+                iteration_start_time = time.time()
                 
                 for retry_attempt in range(max_retries + 1):
                     try:
@@ -209,10 +215,10 @@ class StreamingToolExecutor:
                 skipped_tools = set()  # Track tools we're skipping due to limits
                 executed_tool_signatures = set()  # Track tool name + args to prevent duplicates
                 
-                # Timeout protection
-                import time
+                # Timeout protection - use configured timeout from shell config
                 start_time = time.time()
-                chunk_timeout = 30
+                from app.config.shell_config import DEFAULT_SHELL_CONFIG
+                chunk_timeout = int(os.environ.get('COMMAND_TIMEOUT', DEFAULT_SHELL_CONFIG["timeout"]))
 
                 for event in response['body']:
                     # Timeout protection
@@ -238,6 +244,8 @@ class StreamingToolExecutor:
                                 })
                                 logger.info(f"🔍 COLLECTED_TOOL: {tool_name} (id: {tool_id})")
                                 
+
+                                
                                 active_tools[tool_id] = {
                                     'name': tool_name,
                                     'partial_json': '',
@@ -257,14 +265,16 @@ class StreamingToolExecutor:
                             assistant_text += text
                             
                             # Check for fake tool calls in the text and intercept them
-                            if ('```tool:' in assistant_text or 'run_shell_command\n$' in assistant_text or 
-                                ':mcp_run_shell_command\n$' in assistant_text):
+                            # DISABLED: This was causing premature execution of incomplete commands
+                            if False and (('```tool:' in assistant_text and '```' in assistant_text[assistant_text.find('```tool:') + 8:]) or \
+                               ('run_shell_command\n$' in assistant_text and '\n' in assistant_text[assistant_text.find('run_shell_command\n$') + 20:]) or \
+                               (':mcp_run_shell_command\n$' in assistant_text and '\n' in assistant_text[assistant_text.find(':mcp_run_shell_command\n$') + 23:])):
                                 # Extract and execute fake tool calls with multiple patterns
                                 import re
                                 patterns = [
-                                    r'```tool:(mcp_\w+)\n\$\s*([^`]+)```',  # Full markdown blocks
-                                    r'run_shell_command\n\$\s*([^\n]+)',    # Partial patterns
-                                    r':mcp_run_shell_command\n\$\s*([^\n]+)' # Alternative patterns
+                                    r'```tool:(mcp_\w+)\n\$\s*([^`]+)```',  # Full markdown blocks only
+                                    r'run_shell_command\n\$\s*([^\n]+)\n',    # Complete lines only
+                                    r':mcp_run_shell_command\n\$\s*([^\n]+)\n' # Complete lines only
                                 ]
                                 
                                 for pattern in patterns:
@@ -280,11 +290,20 @@ class StreamingToolExecutor:
                                             result = await self._execute_fake_tool('mcp_run_shell_command', command, assistant_text, tool_results, mcp_manager)
                                             if result:
                                                 yield result
-                            
-                            # Only yield text if it doesn't contain fake tool calls
-                            if not ('```tool:' in text):
-                                yield {'type': 'text', 'content': text}
-                                yielded_text_length += len(text)  # Track yielded text
+                                
+                                for pattern in patterns:
+                                    if re.search(pattern, text):
+                                        logger.warning(f"🚫 Intercepted fake tool call: {pattern}")
+                            if 'tool:' in text:
+                                # Skip fake tool patterns
+                                continue
+                                
+                            yield {
+                                'type': 'text', 
+                                'content': text,
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                            }
+                            yielded_text_length += len(text)  # Track yielded text
                         elif delta.get('type') == 'input_json_delta':
                             # Find tool by index
                             tool_id = None
@@ -330,6 +349,7 @@ class StreamingToolExecutor:
                                 if tool_signature in executed_tool_signatures:
                                     logger.info(f"🔍 DUPLICATE_TOOL_SKIP: Skipping duplicate {actual_tool_name} with args {args}")
                                     completed_tools.add(tool_id)
+                                    blocked_tools_this_iteration += 1
                                     continue
                                 
                                 # For shell commands, check for similar recent commands
@@ -343,6 +363,7 @@ class StreamingToolExecutor:
                                         if self._commands_similar(normalized_cmd, recent_cmd):
                                             logger.info(f"🔍 SIMILAR_COMMAND_SKIP: Skipping similar command: {command}")
                                             completed_tools.add(tool_id)
+                                            blocked_tools_this_iteration += 1
                                             # Skip this tool entirely - don't execute it
                                             break
                                     else:
@@ -354,13 +375,29 @@ class StreamingToolExecutor:
                                         
                                         executed_tool_signatures.add(tool_signature)
                                         
+                                        # Send tool_start event with complete arguments
+                                        yield {
+                                            'type': 'tool_start',
+                                            'tool_id': tool_id,
+                                            'tool_name': tool_name,
+                                            'args': args,
+                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                        }
+                                        
                                         # Execute the tool only if it's not similar to recent commands
                                         result = await mcp_manager.call_tool(actual_tool_name, args)
 
-                                        if isinstance(result, dict) and 'content' in result:
+                                        # Check if result contains an error or was blocked
+                                        if isinstance(result, dict) and result.get('error'):
+                                            error_msg = result.get('message', 'Unknown error')
+                                            result_text = f"ERROR: {error_msg}. Please try a different approach or fix the command."
+                                        elif isinstance(result, dict) and 'content' in result:
                                             content = result['content']
                                             if isinstance(content, list) and len(content) > 0:
                                                 result_text = content[0].get('text', str(result))
+                                                # Check if this was a blocked repetitive call
+                                                if 'blocked' in result_text.lower() or len(result_text) < 100:
+                                                    blocked_tools_this_iteration += 1
                                             else:
                                                 result_text = str(result)
                                         else:
@@ -376,7 +413,8 @@ class StreamingToolExecutor:
                                             'type': 'tool_execution',
                                             'tool_id': tool_id,
                                             'tool_name': tool_name,
-                                            'result': result_text
+                                            'result': result_text,
+                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                         }
                                         
                                         tools_executed_this_iteration = True  # Mark that tools were executed
@@ -384,6 +422,14 @@ class StreamingToolExecutor:
 
                             except Exception as e:
                                 error_msg = f"Tool error: {str(e)}"
+                                
+                                # Add error to tool_results so it gets fed back to the model
+                                tool_results.append({
+                                    'tool_id': tool_id,
+                                    'tool_name': tool_name,
+                                    'result': f"ERROR: {error_msg}. Please try a different approach or fix the command."
+                                })
+                                
                                 yield {'type': 'error', 'content': error_msg}
 
                     elif chunk['type'] == 'message_stop':
@@ -415,11 +461,26 @@ class StreamingToolExecutor:
                     logger.info(f"🔍 CONTINUING_ITERATION: Moving to iteration {iteration + 1} to let model respond to tool results")
                     continue
                 else:
-                    # No tools executed - end the stream
-                    if assistant_text.strip():
-                        logger.info(f"🔍 STREAM_END: Model produced text without tools, ending stream")
+                    # Check if too many tools were blocked (indicates runaway loop)
+                    if blocked_tools_this_iteration >= 3:
+                        logger.warning(f"🔍 RUNAWAY_LOOP_DETECTED: {blocked_tools_this_iteration} tools blocked in iteration {iteration}, ending stream")
                         yield {'type': 'stream_end'}
                         break
+                    
+                    # No tools executed - check if we should end the stream
+                    if assistant_text.strip():
+                        # Check if the text suggests the model is about to make a tool call
+                        # Only check the last 200 characters to avoid issues with long accumulated text
+                        text_end = assistant_text[-200:].lower().strip()
+                        suggests_tool_call = text_end.endswith(':')
+                        
+                        if suggests_tool_call and iteration < 3:  # More conservative limit
+                            logger.info(f"🔍 POTENTIAL_TOOL_CALL: Text suggests model wants to make a tool call, continuing: '{assistant_text[-50:]}'")
+                            continue
+                        else:
+                            logger.info(f"🔍 STREAM_END: Model produced text without tools, ending stream")
+                            yield {'type': 'stream_end'}
+                            break
                     elif iteration >= 2:  # Safety: end after 2 failed iterations
                         yield {'type': 'stream_end'}
                         break
