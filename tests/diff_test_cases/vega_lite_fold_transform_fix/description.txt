@@ -1,0 +1,7 @@
+Test case for VegaLite plugin fold transform field fix
+
+This test case adds additional field name fixes for fold transforms:
+1. Fixes "key" field references to use the actual key field name from fold transform
+2. Fixes "dimension" field references to use the actual key field name (common in parallel coordinates)
+
+The diff extends existing fold transform handling to cover more generic field name patterns.

@@ -321,6 +321,30 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
 
+  // Add a preprocessor to fix square bracket edge label syntax
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 SQUARE-BRACKET-LABEL-FIX: Converting square bracket labels to pipe syntax');
+
+      // Convert A -.-> B [label="text"] to A -.->|text| B
+      let result = definition.replace(
+        /(\w+)\s*(-.->|-->|---)\s*(\w+)\s*\[label="([^"]+)"\]/g,
+        '$1 $2|$4| $3'
+      );
+
+      console.log('🔍 SQUARE-BRACKET-LABEL-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'square-bracket-label-fix',
+    priority: 650, // Very high priority to run before other label fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
   // Add a preprocessor to fix quotes and parentheses in node labels - HIGHEST PRIORITY
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
