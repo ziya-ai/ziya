@@ -116,16 +116,6 @@ const isVegaLiteDefinitionComplete = (definition: string): boolean => {
 export const vegaLitePlugin: D3RenderPlugin = {
   name: 'vega-lite-renderer',
   priority: 8, // Higher priority than basic chart but lower than mermaid/graphviz
-  sizingConfig: {
-    sizingStrategy: 'content-driven',
-    needsDynamicHeight: true,
-    needsOverflowVisible: true,
-    observeResize: true,
-    containerStyles: {
-      width: '100%',
-      height: 'auto'
-    }
-  },
 
   canHandle: (spec: any): boolean => {
     return isVegaLiteSpec(spec);
