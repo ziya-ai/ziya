@@ -113,6 +113,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const [isLoading, setIsLoading] = useState(true);
     const [renderError, setRenderError] = useState<string | null>(null);
     const [displayWaitingMessage, setDisplayWaitingMessage] = useState<boolean>(false);
+    const [showRawContent, setShowRawContent] = useState(true); // Start with raw content visible
     const [hasAttemptedRender, setHasAttemptedRender] = useState<boolean>(false);
     const [errorDetails, setErrorDetails] = useState<string[]>([]);
     const cleanupRef = useRef<(() => void) | null>(null);
@@ -136,6 +137,20 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // Store the spec in a ref to avoid unnecessary re-renders
     useEffect(() => { lastSpecRef.current = spec; }, [spec]);
 
+    // Get raw content for display during streaming
+    const getRawContent = useCallback(() => {
+        if (typeof spec === 'string') {
+            return spec;
+        } else if (spec?.definition) {
+            return spec.definition;
+        } else if (typeof spec === 'object') {
+            return JSON.stringify(spec, null, 2);
+        }
+        return '';
+    }, [spec]);
+
+    const rawContent = getRawContent();
+
     // Estimate and reserve size early
     useEffect(() => {
         if (spec && !reservedSize) {
@@ -145,6 +160,24 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             console.debug('Reserved size for diagram:', estimated);
         }
     }, [spec, reservedSize]);
+
+    // Control when to show raw content vs rendered visualization
+    useEffect(() => {
+        if (isStreaming || !isMarkdownBlockClosed) {
+            setShowRawContent(true);
+        } else if (!isStreaming && isMarkdownBlockClosed) {
+            setShowRawContent(false);
+        }
+    }, [spec, reservedSize]);
+
+    // Control when to show raw content vs rendered visualization
+    useEffect(() => {
+        if (isStreaming || !isMarkdownBlockClosed) {
+            setShowRawContent(true);
+        } else if (!isStreaming && isMarkdownBlockClosed) {
+            setShowRawContent(false);
+        }
+    }, [isStreaming, isMarkdownBlockClosed, hasSuccessfulRenderRef.current]);
 
     // Comprehensive cleanup on unmount
     useEffect(() => {
@@ -201,7 +234,8 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             setRenderingStarted(true);
         }
 
-        if ((!hasAttemptedRender || !isStreaming) && !hasSuccessfulRenderRef.current) {
+        // Don't show loading state if we're showing raw content
+        if ((!hasAttemptedRender || !isStreaming) && !hasSuccessfulRenderRef.current && !showRawContent) {
             setIsLoading(true);
         }
         try {
@@ -494,17 +528,16 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     useEffect(() => {
         if (!mounted.current) return;
 
-        // Re-render when:
-        // 1. We haven't had a successful render yet
-        // 2. Markdown block just closed (streaming completed)
-        // 3. We're forcing a render
-        const shouldRender = !hasSuccessfulRenderRef.current ||
-            (!isStreaming && isMarkdownBlockClosed) ||
-            forceRender;
+        // Trigger rendering immediately when markdown block closes, even during streaming
+        const shouldRender = (
+            !hasSuccessfulRenderRef.current ||
+            isMarkdownBlockClosed ||  // Render as soon as block closes, don't wait for streaming to end
+            forceRender
+        ) && spec && (typeof spec === 'string' ? spec.trim().length > 0 : true);
 
         if (shouldRender) {
             const currentRender = ++renderIdRef.current;
-            console.debug(`Starting render #${currentRender}`);
+            console.debug(`Starting render #${currentRender}, isStreaming: ${isStreaming}, blockClosed: ${isMarkdownBlockClosed}`);
             initializeVisualization(forceRender);
         }
     }, [spec, isStreaming, isMarkdownBlockClosed, forceRender, initializeVisualization]);
@@ -773,19 +806,35 @@ ${svgData}`;
             data-render-id={renderIdRef.current}
             data-visualization-type={typeof spec === 'object' && spec?.type ? spec.type : 'unknown'}
         >
-            {isStreaming && !isMarkdownBlockClosed && !hasSuccessfulRenderRef.current ? (
-                <div style={{ textAlign: 'center', padding: '20px', backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa', border: '1px dashed #ccc', borderRadius: '4px' }}>
-                    <p>Waiting for complete {typeof spec === 'object' && spec?.type ? spec.type : 'diagram'} definition...</p>
+            {/* Show raw content during streaming */}
+            {showRawContent && rawContent ? (
+                <div style={{ 
+                    position: 'relative',
+                    backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                    border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`,
+                    borderRadius: '6px',
+                    padding: '16px',
+                    margin: '16px 0'
+                }}>
+                    <div style={{
+                        fontSize: '12px',
+                        color: isDarkMode ? '#8b949e' : '#586069',
+                        marginBottom: '8px',
+                        fontWeight: 'bold'
+                    }}>
+                        {typeof spec === 'object' && spec?.type ? `${spec.type.charAt(0).toUpperCase() + spec.type.slice(1)} Specification` : 'Diagram Specification'}
+                    </div>
+                    <pre style={{
+                        margin: 0,
+                        color: isDarkMode ? '#e6e6e6' : '#24292e',
+                        fontSize: '13px',
+                        lineHeight: '1.45',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace'
+                    }}>{rawContent}</pre>
                 </div>
-            ) : (
-                <>
-                    {displayWaitingMessage && (
-                        <div style={{ textAlign: 'center', padding: '20px', backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa', border: '1px dashed #ccc', borderRadius: '4px' }}>
-                            <p>Waiting for complete diagram definition...</p>
-                        </div>
-                    )}
-                </>
-            )}
+            ) : null}
 
             {isD3Render ? (
                 <div
@@ -816,24 +865,6 @@ ${svgData}`;
                         height: height || '100%'
                     }}
                 >
-                    {(isLoading || !spec) && !renderingStarted && (
-                        <div style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            bottom: 0,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            backgroundColor: 'rgba(0, 0, 0, 0.1)'
-                        }}>
-                            <Spin size="large" />
-                            <div style={{ marginTop: '10px', color: isDarkMode ? '#ffffff' : '#000000' }}>
-                                Preparing visualization...
-                            </div>
-                        </div>
-                    )}
                     {renderError && !isStreaming && isMarkdownBlockClosed && (
                         <pre style={{
                             padding: '16px',

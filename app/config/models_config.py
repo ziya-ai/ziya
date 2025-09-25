@@ -196,7 +196,7 @@ MODEL_CONFIGS = {
             "preferred_region": "us-east-1",  # Default preference but not restricted
             "token_limit": 200000,  # Total context window size
             "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
+            "default_max_output_tokens": 36000,  # Default value for max_output_tokens
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
             "family": "claude",

@@ -501,6 +501,31 @@ class DiffRegressionTest(unittest.TestCase):
         """Test case for SendChatContainer where second chunk is falsely detected as already applied"""
         self.run_diff_test('send_chat_container_false_applied')
         
+    def test_vega_lite_fold_transform_fix(self):
+        """Test case for VegaLite plugin fold transform field fix - should fail with timeout to profile performance issue"""
+        import signal
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError("Test timed out after 10 seconds")
+        
+        # Set a 10-second timeout
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(10)
+        
+        try:
+            self.run_diff_test('vega_lite_fold_transform_fix')
+            signal.alarm(0)  # Cancel the alarm
+        except TimeoutError:
+            signal.alarm(0)  # Cancel the alarm
+            self.fail("Test timed out - fuzzy matching is taking too long on large file with no matching content")
+        except Exception as e:
+            signal.alarm(0)  # Cancel the alarm
+            # This is expected - the diff should fail because the content doesn't match
+            if "low confidence match" in str(e) or "Failed to apply" in str(e):
+                pass  # Expected failure
+            else:
+                raise
+        
     def test_included_inline_unicode(self):
         """Test handling of inline Unicode characters in TypeScript code"""
         self.run_diff_test('included_inline_unicode')
