@@ -1,10 +1,12 @@
 import * as Viz from '@viz-js/viz';
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
+import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 
 export interface GraphvizSpec {
     type: 'graphviz';
     isStreaming?: boolean;
+    isMarkdownBlockClosed?: boolean;
     forceRender?: boolean;
     definition: string;
 }
@@ -25,6 +27,17 @@ const containerThemes = new WeakMap<HTMLElement, boolean>();
 export const graphvizPlugin: D3RenderPlugin = {
     name: 'graphviz-renderer',
     priority: 5,
+    sizingConfig: {
+        sizingStrategy: 'auto-expand',
+        needsDynamicHeight: true,
+        needsOverflowVisible: true,
+        observeResize: true,
+        containerStyles: {
+            width: '100%',
+            height: 'auto',
+            overflow: 'visible'
+        }
+    },
     canHandle: isGraphvizSpec,
 
     // Helper to check if a graphviz definition is complete
@@ -43,7 +56,8 @@ export const graphvizPlugin: D3RenderPlugin = {
         try {
             const hasExistingContent = container.querySelector('svg') !== null;
             // Show loading spinner immediately
-            container.innerHTML = `
+            const loadingSpinner = document.createElement('div');
+            loadingSpinner.innerHTML = `
                 <div style="
                     display: flex;
                     flex-direction: column;
@@ -73,33 +87,32 @@ export const graphvizPlugin: D3RenderPlugin = {
                         0% { transform: rotate(0deg); }
                         100% { transform: rotate(360deg); }
                     }
-                </style>
             `;
+            container.innerHTML = loadingSpinner.innerHTML;
 
-            // If we're streaming and the definition is incomplete, show a waiting message
-            if (spec.isStreaming && !spec.forceRender) {
-                const isComplete = isDiagramDefinitionComplete(spec.definition, 'graphviz');
-                const timestamp = Date.now();
-                console.log(`[${timestamp}] Graphviz streaming check:`, {
-                    isComplete,
-                    definitionLength: spec.definition.length,
-                    definitionPreview: spec.definition.substring(0, 50),
-                    definitionEnd: spec.definition.substring(spec.definition.length - 20)
-                });
-
-                if (!isComplete) {
-                    container.innerHTML = `
-                        <div style="text-align: center; padding: 20px; background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'}; border: 1px dashed #ccc; border-radius: 4px;">
-                            <p>Waiting for complete Graphviz definition...</p>
-                        </div>
-                    `;
-                    return; // Exit early and wait for complete definition
+            // Conservative streaming approach - only render when markdown block is closed
+            // This allows the content to display as highlighted code during streaming
+            if (spec.isStreaming && !spec.isMarkdownBlockClosed && !spec.forceRender) {
+                console.log('Graphviz: Markdown block still open, letting content display as code');
+                // Don't show a waiting message - let the markdown renderer show the code
+                // Just remove the loading spinner and return
+                try {
+                    container.innerHTML = '';
+                } catch (e) {
+                    console.warn('Could not remove loading spinner:', e);
                 }
+                return; // Exit early - let markdown renderer handle the streaming content
+            }
 
-                // If we already have content and we're streaming, don't show errors
-                if (hasExistingContent && spec.isStreaming) {
-                    return; // Keep existing content during streaming if definition is incomplete
-                }
+            // Only proceed with rendering when we have a complete definition
+            if (!spec.definition || spec.definition.trim().length < 10) {
+                console.log('Graphviz: Definition too short, waiting for more content');
+                return; // Exit early and wait for complete definition
+            }
+
+            // If we already have content and we're streaming, don't show errors
+            if (hasExistingContent && spec.isStreaming) {
+                return; // Keep existing content during streaming if definition is incomplete
             }
             console.log(`Rendering Graphviz diagram with ${spec.definition.length} chars`);
 
@@ -148,15 +161,32 @@ export const graphvizPlugin: D3RenderPlugin = {
 
             const vizInstance = await Viz.instance();
 
+            // Extract actual content from YAML wrapper if present
+            let processedDefinition = extractDefinitionFromYAML(spec.definition, 'graphviz');
+
+            // This converts all standard string labels to the more robust HTML-like label format.
+            processedDefinition = processedDefinition.replace(/label\s*=\s*"((?:\\"|[^"])*)"/g, (match, content) => {
+                // First, unescape any `\"` that might be in the original content string.
+                const unescapedContent = content.replace(/\\"/g, '"');
+
+                // Now, escape for HTML-like label format.
+                const escapedForHtml = unescapedContent
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/\\n/g, '<br/>').replace(/\n/g, '<br/>');
+
+                return `label=<${escapedForHtml}>`;
+
+            });
+
             // Add theme attributes to dot with more styling options
-            let themedDot = spec.definition;
+            let themedDot = processedDefinition;
 
             // Only add theme attributes if the graph has a proper structure
-            if (spec.definition.match(/^(\s*(?:di)?graph\s+[^{]*{)/)) {
+            if (processedDefinition.match(/^(\s*(?:di)?graph\s+[^{]*{)/)) {
                 // Set default text color based on page mode
                 const defaultTextColor = isDarkMode ? '#ffffff' : '#000000';
 
-                themedDot = spec.definition.replace(
+                themedDot = processedDefinition.replace(
                     /^(\s*(?:di)?graph\s+[^{]*{)/,
                     `$1
                     bgcolor="transparent";

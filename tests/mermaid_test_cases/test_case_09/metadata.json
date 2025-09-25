@@ -1,0 +1,6 @@
+{
+    "description": "End-to-end machine learning pipeline with automated feedback loops and monitoring",
+    "diagram_type": "flowchart",
+    "expected_to_fail": false,
+    "target_issue": "Complex ML pipeline with multiple interconnected subgraphs and feedback loops"
+}

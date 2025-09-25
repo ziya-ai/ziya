@@ -25,7 +25,6 @@ export const DiffLine = React.memo(({
     newLineNumber,
     viewType,
     showLineNumbers = true,
-    similarity,
     style
 }: DiffLineProps) => {
 
@@ -93,8 +92,13 @@ export const DiffLine = React.memo(({
         const highlightCode = async () => {
             setIsHighlighting(true);
             try {
-                if (!languageLoadedRef.current)
-                    await loadPrismLanguage(language);
+                if (!languageLoadedRef.current) {
+                    try {
+                        await loadPrismLanguage(language || 'plaintext');
+                    } catch (e) {
+                        console.warn(`Failed to load language ${language}, falling back to plaintext:`, e);
+                    }
+                }
                 languageLoadedRef.current = true;
 
                 if (!window.Prism || content.length <= 1) return;

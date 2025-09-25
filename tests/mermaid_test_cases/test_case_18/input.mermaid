@@ -1,0 +1,148 @@
+graph TB
+    subgraph "Kubernetes Cluster"
+        subgraph "Control Plane"
+            APISERVER[API Server]
+            ETCD[(etcd)]
+            SCHEDULER[Scheduler]
+            CONTROLLER[Controller Manager]
+            KUBELET_MASTER[Kubelet]
+        end
+        
+        subgraph "Worker Node 1"
+            KUBELET1[Kubelet]
+            KUBE_PROXY1[Kube Proxy]
+            CONTAINER_RUNTIME1[Container Runtime]
+            
+            subgraph "Pods Node 1"
+                POD1[Frontend Pod]
+                POD2[API Gateway Pod]
+                POD3[Auth Service Pod]
+            end
+        end
+        
+        subgraph "Worker Node 2"
+            KUBELET2[Kubelet]
+            KUBE_PROXY2[Kube Proxy]
+            CONTAINER_RUNTIME2[Container Runtime]
+            
+            subgraph "Pods Node 2"
+                POD4[User Service Pod]
+                POD5[Order Service Pod]
+                POD6[Payment Service Pod]
+            end
+        end
+        
+        subgraph "Worker Node 3"
+            KUBELET3[Kubelet]
+            KUBE_PROXY3[Kube Proxy]
+            CONTAINER_RUNTIME3[Container Runtime]
+            
+            subgraph "Pods Node 3"
+                POD7[Inventory Service Pod]
+                POD8[Notification Service Pod]
+                POD9[Analytics Service Pod]
+            end
+        end
+        
+        subgraph "Storage Layer"
+            PV1[Persistent Volume 1]
+            PV2[Persistent Volume 2]
+            PV3[Persistent Volume 3]
+            STORAGE_CLASS[Storage Class]
+        end
+        
+        subgraph "Networking"
+            INGRESS[Ingress Controller]
+            SERVICE_MESH[Istio Service Mesh]
+            CNI[Container Network Interface]
+        end
+        
+        subgraph "Monitoring & Logging"
+            PROMETHEUS[Prometheus]
+            GRAFANA[Grafana]
+            ELASTICSEARCH[Elasticsearch]
+            KIBANA[Kibana]
+            FLUENTD[Fluentd]
+        end
+    end
+    
+    subgraph "External Dependencies"
+        LOAD_BALANCER[External Load Balancer]
+        DNS[DNS Provider]
+        CERT_MANAGER[Certificate Manager]
+        EXTERNAL_DB[(External Database)]
+        EXTERNAL_CACHE[(External Cache)]
+        CLOUD_STORAGE[(Cloud Storage)]
+    end
+    
+    LOAD_BALANCER --> INGRESS
+    INGRESS --> POD1
+    INGRESS --> POD2
+    
+    APISERVER --> ETCD
+    APISERVER --> SCHEDULER
+    APISERVER --> CONTROLLER
+    
+    SCHEDULER --> KUBELET1
+    SCHEDULER --> KUBELET2
+    SCHEDULER --> KUBELET3
+    
+    CONTROLLER --> KUBELET1
+    CONTROLLER --> KUBELET2
+    CONTROLLER --> KUBELET3
+    
+    KUBELET1 --> CONTAINER_RUNTIME1
+    KUBELET2 --> CONTAINER_RUNTIME2
+    KUBELET3 --> CONTAINER_RUNTIME3
+    
+    CONTAINER_RUNTIME1 --> POD1
+    CONTAINER_RUNTIME1 --> POD2
+    CONTAINER_RUNTIME1 --> POD3
+    
+    CONTAINER_RUNTIME2 --> POD4
+    CONTAINER_RUNTIME2 --> POD5
+    CONTAINER_RUNTIME2 --> POD6
+    
+    CONTAINER_RUNTIME3 --> POD7
+    CONTAINER_RUNTIME3 --> POD8
+    CONTAINER_RUNTIME3 --> POD9
+    
+    POD2 --> POD3
+    POD2 --> POD4
+    POD2 --> POD5
+    POD2 --> POD6
+    POD5 --> POD4
+    POD5 --> POD6
+    POD5 --> POD7
+    POD6 --> EXTERNAL_DB
+    POD7 --> EXTERNAL_DB
+    POD8 --> EXTERNAL_CACHE
+    
+    SERVICE_MESH --> POD1
+    SERVICE_MESH --> POD2
+    SERVICE_MESH --> POD3
+    SERVICE_MESH --> POD4
+    SERVICE_MESH --> POD5
+    SERVICE_MESH --> POD6
+    SERVICE_MESH --> POD7
+    SERVICE_MESH --> POD8
+    SERVICE_MESH --> POD9
+    
+    STORAGE_CLASS --> PV1
+    STORAGE_CLASS --> PV2
+    STORAGE_CLASS --> PV3
+    
+    PV1 --> POD4
+    PV2 --> POD5
+    PV3 --> POD7
+    
+    PROMETHEUS --> KUBELET1
+    PROMETHEUS --> KUBELET2
+    PROMETHEUS --> KUBELET3
+    GRAFANA --> PROMETHEUS
+    
+    FLUENTD --> ELASTICSEARCH
+    KIBANA --> ELASTICSEARCH
+    
+    CERT_MANAGER --> DNS
+    CERT_MANAGER --> INGRESS

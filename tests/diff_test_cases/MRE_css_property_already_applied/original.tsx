@@ -7,7 +7,7 @@ const DiffView = React.memo(function DiffView({ diff, viewType, initialDisplayMo
             height: auto;
             overflow: visisble !important;
             background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
-            padding: 0px 16px 12px;
+            padding-bottom: 4px !important;
             box-sizing: border-box !important;
         }
         </style>

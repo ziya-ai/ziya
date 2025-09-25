@@ -97,7 +97,11 @@ Work on multiple tasks simultaneously by creating separate conversation threads.
 Most parameters can be configured interactively in the web interface. The following command line options are primarily for initial setup:
 
 #### General Options
-`--exclude`: Comma-separated list of files or directories or file suffix patterns to exclude from the codebase. Eg: "--exclude 'tst,build,*.py'"
+`--include`: Include paths outside of the current working directory. Supports comma-separated lists. (e.g., `--include '/path/to/external/lib,/another/external/path'`)
+
+`--exclude`: Exclude specified files, directories, or file patterns from the codebase. Supports comma-separated lists. (e.g., `--exclude 'node_modules,dist,*.pyc'`)
+
+`--include-only`: Only include specified directories, files, or file patterns, excluding everything else. Supports comma-separated lists and wildcard patterns. (e.g., `--include-only 'src,lib'` or `--include-only '*.py,*.tsx'`)
 
 `--port`: The port number for frontend app. Default is `6969`.
 
@@ -134,7 +138,9 @@ These parameters can also be configured in the web interface:
 `--max-output-tokens`: Maximum number of tokens to generate in the response.
 
 #### Advanced Options
-`--mcp`: Enable MCP agent capabilities
+
+`--mcp`: Enable MCP agent capabilities.
+
 `--ast`: Enable AST-based code understanding capabilities.
 
 ```bash
@@ -143,4 +149,13 @@ ziya --endpoint=bedrock --model=sonnet4.0 --profile=default --region=us-east-1 -
 
 # Example with Google Gemini
 ziya --endpoint=google --model=gemini-pro --exclude='node_modules,dist,*.pyc'
+
+# Example with include-only option for specific directories
+ziya --include-only='src,lib' --profile=default
+
+# Example with include-only option for specific file types
+ziya --include-only='*.py,*.tsx' --profile=default
+
+# Example with external include paths
+ziya --include='/path/to/external/lib,/another/external/path'
 ```

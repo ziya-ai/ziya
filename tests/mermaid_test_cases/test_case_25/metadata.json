@@ -1,0 +1,6 @@
+{
+    "description": "Advanced packet diagram showing complex network packet structure with detailed field layout",
+    "diagram_type": "packet",
+    "expected_to_fail": false,
+    "target_issue": "Beta packet diagram with extensive field definitions and bit ranges"
+}

@@ -1,0 +1,118 @@
+classDiagram
+    class EventSourcingAggregate {
+        <<abstract>>
+        #UUID aggregateId
+        #Long version
+        #List~DomainEvent~ uncommittedEvents
+        #EventStore eventStore
+        +loadFromHistory(List~DomainEvent~ events)* void
+        +markEventsAsCommitted() void
+        +getUncommittedEvents() List~DomainEvent~
+        #applyEvent(DomainEvent event)* void
+        #raiseEvent(DomainEvent event) void
+    }
+    
+    class OrderAggregate {
+        -OrderId orderId
+        -CustomerId customerId
+        -OrderStatus status
+        -List~OrderLine~ orderLines
+        -Money totalAmount
+        -Instant createdAt
+        +createOrder(CustomerId customerId, List~OrderLine~ lines) OrderAggregate
+        +addOrderLine(ProductId productId, Quantity quantity, Money unitPrice) void
+        +removeOrderLine(ProductId productId) void
+        +confirmOrder() void
+        +cancelOrder(String reason) void
+        +shipOrder(TrackingNumber trackingNumber) void
+        +completeOrder() void
+        -calculateTotalAmount() Money
+        -validateOrderLines() void
+    }
+    
+    class DomainEvent {
+        <<interface>>
+        +getAggregateId() UUID
+        +getEventId() UUID
+        +getOccurredOn() Instant
+        +getEventVersion() Integer
+        +getEventType() String
+    }
+    
+    class OrderCreatedEvent {
+        -OrderId orderId
+        -CustomerId customerId
+        -List~OrderLine~ orderLines
+        -Money totalAmount
+        -Instant createdAt
+        +OrderCreatedEvent(OrderId orderId, CustomerId customerId, List~OrderLine~ orderLines, Money totalAmount)
+    }
+    
+    class OrderConfirmedEvent {
+        -OrderId orderId
+        -Instant confirmedAt
+        +OrderConfirmedEvent(OrderId orderId, Instant confirmedAt)
+    }
+    
+    class OrderCancelledEvent {
+        -OrderId orderId
+        -String cancellationReason
+        -Instant cancelledAt
+        +OrderCancelledEvent(OrderId orderId, String reason, Instant cancelledAt)
+    }
+    
+    class EventStore {
+        <<interface>>
+        +saveEvents(UUID aggregateId, List~DomainEvent~ events, Long expectedVersion) void
+        +getEventsForAggregate(UUID aggregateId) List~DomainEvent~
+        +getEventsForAggregateFromVersion(UUID aggregateId, Long fromVersion) List~DomainEvent~
+        +getAllEvents() Stream~DomainEvent~
+        +getEventsByType(String eventType) Stream~DomainEvent~
+    }
+    
+    class InMemoryEventStore {
+        -Map~UUID, List~DomainEvent~~ eventStreams
+        -AtomicLong globalSequence
+        +saveEvents(UUID aggregateId, List~DomainEvent~ events, Long expectedVersion) void
+        +getEventsForAggregate(UUID aggregateId) List~DomainEvent~
+        +getEventsForAggregateFromVersion(UUID aggregateId, Long fromVersion) List~DomainEvent~
+        +getAllEvents() Stream~DomainEvent~
+        +getEventsByType(String eventType) Stream~DomainEvent~
+    }
+    
+    class EventPublisher {
+        -List~EventHandler~ handlers
+        +publish(DomainEvent event) void
+        +subscribe(EventHandler handler) void
+        +unsubscribe(EventHandler handler) void
+    }
+    
+    class EventHandler {
+        <<interface>>
+        +handle(DomainEvent event) void
+        +canHandle(DomainEvent event) boolean
+    }
+    
+    class OrderProjectionHandler {
+        -OrderReadModelRepository repository
+        +handle(DomainEvent event) void
+        +canHandle(DomainEvent event) boolean
+        -handleOrderCreated(OrderCreatedEvent event) void
+        -handleOrderConfirmed(OrderConfirmedEvent event) void
+        -handleOrderCancelled(OrderCancelledEvent event) void
+    }
+    
+    EventSourcingAggregate <|-- OrderAggregate
+    DomainEvent <|.. OrderCreatedEvent
+    DomainEvent <|.. OrderConfirmedEvent
+    DomainEvent <|.. OrderCancelledEvent
+    EventStore <|.. InMemoryEventStore
+    EventHandler <|.. OrderProjectionHandler
+    
+    OrderAggregate --> DomainEvent : raises
+    OrderAggregate --> EventStore : uses
+    EventPublisher --> EventHandler : notifies
+    EventPublisher --> DomainEvent : publishes
+    OrderProjectionHandler --> OrderCreatedEvent : handles
+    OrderProjectionHandler --> OrderConfirmedEvent : handles
+    OrderProjectionHandler --> OrderCancelledEvent : handles

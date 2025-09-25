@@ -1,0 +1,9 @@
+Test case for SendChatContainer where second chunk is falsely detected as already applied
+
+This test case reproduces a bug where:
+1. First hunk succeeds in system patch stage and modifies the file
+2. Second hunk reaches difflib stage and is incorrectly detected as "already applied" 
+   because the "already applied" check uses the modified file content instead of original content
+3. This causes the second hunk to be skipped even though it should be applied
+
+The fix ensures that "already applied" checks use the original file content, not the current modified content.

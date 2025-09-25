@@ -1,0 +1,5 @@
+{
+    "target_file": "app/agents/wrappers/google_direct.py",
+    "description": "Test case for malformed diff application where method body is pasted without method declaration",
+    "date_added": "2024-09-16"
+}
