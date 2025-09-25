@@ -1753,8 +1753,10 @@ async def stream_chunks(body):
             logger.info(f"🔍 STREAM_CHUNKS: Created {len(mcp_tools)} MCP tools for iteration")
         except Exception as e:
             logger.warning(f"Failed to get MCP tools for iteration: {e}")
-        # Define model_with_stop for the iteration loop
-        model_with_stop = model_instance
+        # Allow tool calls to complete - only stop at the END of tool calls
+        model_with_stop = model_instance.bind(stop=[
+            "</TOOL_SENTINEL>",  # Stop AFTER the tool call completes
+        ])
         logger.info(f"🔍 STREAM_CHUNKS: model_with_stop type: {type(model_with_stop)}")
 
         # Agent iteration loop for tool execution
