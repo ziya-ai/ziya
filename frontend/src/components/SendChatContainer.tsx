@@ -7,6 +7,7 @@ import { useFolderContext } from "../context/FolderContext";
 import { Button, Input, message } from 'antd';
 import { SendOutlined } from "@ant-design/icons";
 import { useQuestionContext } from '../context/QuestionContext';
+import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 
 const { TextArea } = Input;
 
@@ -26,19 +27,22 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         addMessageToConversation,
         streamedContentMap,
         setStreamedContentMap,
+        setReasoningContentMap,
         currentMessages,
         currentConversationId,
         streamingConversations,
         addStreamingConversation,
         removeStreamingConversation,
         updateProcessingState,
-        setUserHasScrolled
+        setUserHasScrolled,
+        getProcessingState
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();
     const textareaRef = useRef<any>(null);
     const inputChangeTimeoutRef = useRef<NodeJS.Timeout>();
     const [isProcessing, setIsProcessing] = useState(false);
+    const [throttlingError, setThrottlingError] = useState<any>(null);
 
     const { question, setQuestion } = useQuestionContext();
 
@@ -81,6 +85,19 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             if (inputChangeTimeoutRef.current) {
                 clearTimeout(inputChangeTimeoutRef.current);
             }
+        };
+    }, []);
+
+    // Listen for throttling errors from chatApi
+    useEffect(() => {
+        const handleThrottlingError = (event: CustomEvent) => {
+            console.log('Throttling error received:', event.detail);
+            setThrottlingError(event.detail);
+        };
+        
+        document.addEventListener('throttlingError', handleThrottlingError as EventListener);
+        return () => {
+            document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
         };
     }, []);
 
@@ -149,8 +166,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
         // Include the new message in messages for the API
         const baseMessages = isRetry ? currentMessages : [...currentMessages, newHumanMessage!];
-        // Filter out muted messages before sending to API - this is the definitive filter
-        const messagesToSend = baseMessages.filter(msg => msg.muted !== true);
+        // Filter out muted messages before sending to API - explicitly exclude muted messages
+        const messagesToSend = baseMessages.filter(msg => !msg.muted);
 
         addStreamingConversation(currentConversationId);
         const targetConversationId = currentConversationId;
@@ -168,7 +185,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 removeStreamingConversation,
                 addMessageToConversation,
                 streamingConversations.has(currentConversationId),
-                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state)
+                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state),
+                setReasoningContentMap
             );
             // Check if result is an error response
             if (typeof result === 'string' && result.includes('"error":"validation_error"')) {
@@ -231,6 +249,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
     return (
         <div className={`input-container ${empty ? 'empty-state' : ''} ${isProcessing || streamingConversations.has(currentConversationId) ? 'sending' : ''}`}>
+            {/* Display throttling error */}
+            {throttlingError && (
+                <ThrottlingErrorDisplay
+                    error={throttlingError}
+                    onDismiss={() => setThrottlingError(null)}
+                />
+            )}
+            
             <TextArea
                 ref={textareaRef}
                 value={question}

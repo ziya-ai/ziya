@@ -1,0 +1,79 @@
+classDiagram
+    class AbstractEventProcessor {
+        <<abstract>>
+        #EventBus eventBus
+        #Logger logger
+        #MetricsCollector metrics
+        +processEvent(Event event)* void
+        +validateEvent(Event event) boolean
+        #publishMetrics(String eventType, Duration processingTime) void
+    }
+    
+    class OrderEventProcessor {
+        -OrderService orderService
+        -InventoryService inventoryService
+        -PaymentService paymentService
+        +processEvent(Event event) void
+        +handleOrderCreated(OrderCreatedEvent event) void
+        +handleOrderCancelled(OrderCancelledEvent event) void
+        +handlePaymentProcessed(PaymentProcessedEvent event) void
+    }
+    
+    class UserEventProcessor {
+        -UserService userService
+        -NotificationService notificationService
+        -AuditService auditService
+        +processEvent(Event event) void
+        +handleUserRegistered(UserRegisteredEvent event) void
+        +handleUserUpdated(UserUpdatedEvent event) void
+        +handleUserDeleted(UserDeletedEvent event) void
+    }
+    
+    class Event {
+        <<interface>>
+        +getEventId() String
+        +getTimestamp() Instant
+        +getEventType() EventType
+        +getPayload() Object
+    }
+    
+    class OrderCreatedEvent {
+        -String orderId
+        -String customerId
+        -List~OrderItem~ items
+        -BigDecimal totalAmount
+        +getOrderId() String
+        +getCustomerId() String
+        +getItems() List~OrderItem~
+        +getTotalAmount() BigDecimal
+    }
+    
+    class UserRegisteredEvent {
+        -String userId
+        -String email
+        -String username
+        -Instant registrationTime
+        +getUserId() String
+        +getEmail() String
+        +getUsername() String
+        +getRegistrationTime() Instant
+    }
+    
+    class EventBus {
+        -List~AbstractEventProcessor~ processors
+        -ExecutorService executorService
+        -CircuitBreaker circuitBreaker
+        +publish(Event event) CompletableFuture~Void~
+        +subscribe(AbstractEventProcessor processor) void
+        +unsubscribe(AbstractEventProcessor processor) void
+        -routeEvent(Event event) void
+    }
+    
+    AbstractEventProcessor <|-- OrderEventProcessor
+    AbstractEventProcessor <|-- UserEventProcessor
+    Event <|.. OrderCreatedEvent
+    Event <|.. UserRegisteredEvent
+    AbstractEventProcessor --> EventBus : uses
+    EventBus --> Event : processes
+    OrderEventProcessor --> OrderCreatedEvent : handles
+    UserEventProcessor --> UserRegisteredEvent : handles

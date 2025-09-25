@@ -8,6 +8,51 @@ import shutil
 from pathlib import Path
 # Import the robust process_wheel function
 from scripts.post_build import process_wheel
+
+def get_newest_mtime(directory):
+    """Get the newest modification time in a directory tree."""
+    newest = 0
+    for root, dirs, files in os.walk(directory):
+        # Skip node_modules and build directories
+        dirs[:] = [d for d in dirs if d not in ['node_modules', 'build']]
+        for file in files:
+            file_path = os.path.join(root, file)
+            try:
+                mtime = os.path.getmtime(file_path)
+                if mtime > newest:
+                    newest = mtime
+            except OSError:
+                continue
+    return newest
+
+def should_rebuild_frontend():
+    """Check if frontend needs rebuilding."""
+    frontend_dir = Path("frontend")
+    build_dir = frontend_dir / "build"
+    
+    if not build_dir.exists():
+        return True
+    
+    # Get build time
+    try:
+        build_mtime = os.path.getmtime(build_dir)
+    except OSError:
+        return True
+    
+    # Check if any source files are newer than build
+    src_mtime = get_newest_mtime(frontend_dir / "src")
+    config_files = ["package.json", "tsconfig.json", "webpack.config.js", "eslint.config.mjs"]
+    
+    for config_file in config_files:
+        config_path = frontend_dir / config_file
+        if config_path.exists():
+            try:
+                if os.path.getmtime(config_path) > build_mtime:
+                    return True
+            except OSError:
+                continue
+    
+    return src_mtime > build_mtime
 def main():
     """Build the project."""
     print("Building Ziya...")
@@ -24,33 +69,27 @@ def main():
     # Build frontend if it exists
     frontend_project_dir = Path("frontend")
     if frontend_project_dir.exists():
-        print("Building frontend...")
-        try:
-            # Check if node_modules exists, if not run npm install
-            if not (frontend_project_dir / "node_modules").exists():
-                print("Running npm install for frontend...")
-                subprocess.run(["npm", "install"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
-            else:
-                print("Frontend dependencies (node_modules) already exist, skipping npm install.")
+        if should_rebuild_frontend():
+            print("Building frontend...")
+            try:
+                # Check if node_modules exists, if not run npm install
+                if not (frontend_project_dir / "node_modules").exists():
+                    print("Running npm install for frontend...")
+                    subprocess.run(["npm", "install"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
+                else:
+                    print("Frontend dependencies (node_modules) already exist, skipping npm install.")
 
-            subprocess.run(["npm", "run", "build"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
-            print("Frontend build completed")
+                subprocess.run(["npm", "run", "build"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
+                print("Frontend build completed")
 
-            # Copy frontend build to app/templates
-            # First, create __init__.py in templates to help Poetry recognize it
-            # The copying of frontend build to app/templates is now handled by process_wheel
-            # but we still need the __init__.py for Poetry to recognize app.templates as containing package_data
-            # if we were to use Poetry's native mechanisms. However, process_wheel handles this directly.
-            # init_file = templates_dir / "__init__.py"
-            # if not init_file.exists():
-            #    init_file.write_text("# Placeholder for package data recognition\n")
-
-        except subprocess.CalledProcessError as e:
-            print(f"Frontend build failed: {e}")
-            return 1
-        except FileNotFoundError:
-            print("npm command not found. Please ensure Node.js and npm are installed and in your PATH.")
-            return 1
+            except subprocess.CalledProcessError as e:
+                print(f"Frontend build failed: {e}")
+                return 1
+            except FileNotFoundError:
+                print("npm command not found. Please ensure Node.js and npm are installed and in your PATH.")
+                return 1
+        else:
+            print("Frontend source unchanged since last build, skipping TypeScript compilation")
     else:
         print("No frontend directory found, skipping frontend build")
 

@@ -1,0 +1,6 @@
+{
+    "description": "Event sourcing domain model with complex inheritance, interfaces, and generic types",
+    "diagram_type": "classDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Advanced event sourcing architecture with multiple design patterns"
+}

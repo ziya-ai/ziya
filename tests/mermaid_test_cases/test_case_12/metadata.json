@@ -1,0 +1,6 @@
+{
+    "description": "Multi-tenant SaaS platform database schema with comprehensive audit trails and complex relationships",
+    "diagram_type": "erDiagram",
+    "expected_to_fail": false,
+    "target_issue": "Complex multi-tenant ER diagram with extensive entity relationships and data types"
+}

@@ -1,0 +1,8 @@
+{
+    "description": "Test case for SendChatContainer where second chunk is falsely detected as already applied",
+    "original_file": "original.tsx",
+    "diff_file": "changes.diff",
+    "expected_file": "expected.tsx",
+    "target_file": "SendChatContainer.tsx",
+    "test_type": "standard"
+}

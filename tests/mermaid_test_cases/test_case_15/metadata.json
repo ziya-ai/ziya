@@ -1,0 +1,6 @@
+{
+    "description": "Complex software evolution git workflow showing migration from monolith to microservices with multiple parallel features",
+    "diagram_type": "gitgraph",
+    "expected_to_fail": false,
+    "target_issue": "Advanced git workflow with long-running feature branches, hotfixes, and architectural evolution"
+}

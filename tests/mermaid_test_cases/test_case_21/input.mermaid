@@ -1,0 +1,80 @@
+sequenceDiagram
+    participant Client
+    participant Gateway as API Gateway
+    participant Auth as Auth Service
+    participant Cache as Redis Cache
+    participant DB as Database
+    participant Queue as Message Queue
+    participant Worker as Background Worker
+    participant External as External API
+    participant Monitor as Monitoring
+    
+    Note over Client,Monitor: Complex API Request Flow with Error Handling
+    
+    Client->>+Gateway: POST /api/v1/orders
+    Note right of Client: Complex order with multiple items
+    
+    Gateway->>+Auth: Validate JWT Token
+    Auth-->>Cache: Check token cache
+    Cache-->>Auth: Token not found
+    Auth->>+DB: Validate token in DB
+    DB-->>-Auth: Token valid
+    Auth-->>Cache: Cache token (TTL: 1hr)
+    Auth-->>-Gateway: User authenticated
+    
+    par Validate Order Data
+        Gateway->>Gateway: Schema validation
+    and Check Rate Limits
+        Gateway->>Cache: Check rate limit
+        Cache-->>Gateway: Within limits
+    and Log Request
+        Gateway->>Monitor: Log API request
+    end
+    
+    Gateway->>+DB: Begin transaction
+    
+    loop For each order item
+        Gateway->>DB: Check inventory
+        alt Insufficient inventory
+            DB-->>Gateway: Stock insufficient
+            Gateway->>Queue: Queue restock notification
+            Gateway-->>Client: 409 Conflict - Low stock
+            break Insufficient inventory
+        else Stock available
+            DB-->>Gateway: Stock confirmed
+            Gateway->>DB: Reserve inventory
+        end
+    end
+    
+    critical Payment Processing
+        Gateway->>+External: Process payment
+        External-->>-Gateway: Payment successful
+    option Payment failed
+        Gateway->>DB: Rollback transaction
+        Gateway-->>Client: 402 Payment Required
+    option Timeout
+        Gateway->>Queue: Queue payment retry
+        Gateway-->>Client: 202 Processing
+    end
+    
+    Gateway->>DB: Create order record
+    Gateway->>DB: Update inventory
+    Gateway->>DB: Commit transaction
+    
+    par Async Operations
+        Gateway->>Queue: Queue order confirmation
+        Queue->>+Worker: Process confirmation
+        Worker->>External: Send confirmation email
+        Worker->>Monitor: Log order created
+        Worker-->>-Queue: Confirmation sent
+    and Cache Updates
+        Gateway->>Cache: Update inventory cache
+        Gateway->>Cache: Cache order details
+    end
+    
+    Gateway-->>-Client: 201 Created - Order successful
+    
+    Note over Worker: Background processing continues
+    Worker->>External: Update analytics
+    Worker->>DB: Update customer metrics
+    Worker->>Monitor: Update order metrics

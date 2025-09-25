@@ -1,162 +1,106 @@
 /**
- * Utility functions for diagram completion detection
+ * Extract diagram definition from YAML-wrapped content
+ * Handles cases where diagram specs are wrapped in YAML metadata like:
+ * type: mermaid
+ * definition: |
+ *   graph TD
+ *     A --> B
  */
-
-export type DiagramType = 'mermaid' | 'graphviz' | 'vega-lite' | 'unknown';
-
-/**
- * Detect the type of diagram from content
- */
-export function detectDiagramType(content: string): DiagramType {
-  const trimmed = content.trim().toLowerCase();
-
-  // Mermaid detection
-  if (trimmed.startsWith('graph') ||
-    trimmed.startsWith('flowchart') ||
-    trimmed.startsWith('sequencediagram') ||
-    trimmed.startsWith('classDiagram') ||
-    trimmed.startsWith('stateDiagram') ||
-    trimmed.startsWith('erDiagram') ||
-    trimmed.startsWith('journey') ||
-    trimmed.startsWith('gantt') ||
-    trimmed.startsWith('pie') ||
-    trimmed.startsWith('gitgraph')) {
-    return 'mermaid';
-  }
-
-  // Graphviz detection
-  if (trimmed.match(/^\s*(?:strict\s+)?(digraph|graph)\s+\w*\s*\{/)) {
-    return 'graphviz';
-  }
-
-  // Vega-Lite detection
-  try {
-    const parsed = JSON.parse(content);
-    if (parsed && typeof parsed === 'object') {
-      if (parsed.$schema?.includes('vega-lite') ||
-        (parsed.mark && parsed.encoding) ||
-        (parsed.data && (parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat))) {
-        return 'vega-lite';
-      }
+export function extractDefinitionFromYAML(definition: string, diagramType: string): string {
+    // Check if this looks like YAML-wrapped content
+    const typePattern = `type: ${diagramType}`;
+    if (!definition.includes(typePattern) || !definition.includes('definition:')) {
+        return definition; // Not YAML-wrapped, return as-is
     }
-  } catch {
-    // Not valid JSON, continue
-  }
 
-  return 'unknown';
+    console.log(`🔧 Detected YAML-wrapped ${diagramType} definition, extracting content...`);
+    const lines = definition.split('\n');
+    let inDefinition = false;
+    const contentLines: string[] = [];
+    
+    for (const line of lines) {
+        if (line.trim() === 'definition: |' || line.trim().startsWith('definition: |')) {
+            inDefinition = true;
+            continue;
+        }
+        if (inDefinition) {
+            // Remove the leading spaces that are part of YAML indentation (usually 2 spaces)
+            const cleanedLine = line.replace(/^  /, '');
+            contentLines.push(cleanedLine);
+        }
+    }
+    
+    const extractedContent = contentLines.join('\n').trim();
+    console.log(`✅ Extracted ${diagramType} definition (${extractedContent.length} chars):`, extractedContent.substring(0, 200));
+    return extractedContent;
 }
 
 /**
- * Check if a diagram definition is complete enough to render
+ * Check if a diagram definition appears to be complete based on the diagram type
+ * @param definition - The diagram definition string
+ * @param diagramType - The type of diagram (mermaid, graphviz, vega-lite, etc.)
+ * @returns boolean indicating if the definition appears complete
  */
-export function isDiagramDefinitionComplete(definition: string, type?: DiagramType | string): boolean {
-  if (!definition || definition.trim().length === 0) return false;
+export function isDiagramDefinitionComplete(definition: string, diagramType: string): boolean {
+    if (!definition || definition.trim().length === 0) return false;
 
-  const detectedType = type || detectDiagramType(definition);
+    // Extract actual content if YAML-wrapped
+    const actualDefinition = extractDefinitionFromYAML(definition, diagramType);
+    
+    switch (diagramType.toLowerCase()) {
+        case 'mermaid':
+            return isMermaidDefinitionComplete(actualDefinition);
+        case 'graphviz':
+            return isGraphvizDefinitionComplete(actualDefinition);
+        case 'vega-lite':
+            return isVegaLiteDefinitionComplete(actualDefinition);
+        default:
+            // Generic check - at least 2 lines and doesn't end with incomplete markers
+            const lines = actualDefinition.trim().split('\n');
+            return lines.length >= 2 && !actualDefinition.endsWith('```');
+    }
+}
 
-  switch (detectedType) {
-    case 'mermaid':
-      return isMermaidDefinitionComplete(definition);
-    case 'graphviz':
-    case 'dot':
-      return isGraphvizDefinitionComplete(definition);
-    case 'vega-lite':
-      return isVegaLiteDefinitionComplete(definition);
-    default:
-      return true; // Assume complete for unknown types
-  }
+function isMermaidDefinitionComplete(definition: string): boolean {
+    const lines = definition.trim().split('\n');
+    if (lines.length < 2) return false;
+    
+    const firstLine = lines[0].trim().toLowerCase();
+    if (firstLine.startsWith('graph') || firstLine.startsWith('flowchart')) {
+        // For flowcharts, check for balanced braces if any
+        const openBraces = definition.split('{').length - 1;
+        const closeBraces = definition.split('}').length - 1;
+        return openBraces === closeBraces;
+    }
+    
+    return lines.length >= 3 && !definition.endsWith('```');
+}
+
+function isGraphvizDefinitionComplete(definition: string): boolean {
+    if (!definition || definition.trim().length === 0) return false;
+    
+    // Check for balanced braces
+    const openBraces = definition.split('{').length - 1;
+    const closeBraces = definition.split('}').length - 1;
+    
+    return openBraces === closeBraces && openBraces > 0 && definition.includes('}');
 }
 
 function isVegaLiteDefinitionComplete(definition: string): boolean {
-  try {
-    const parsed = JSON.parse(definition);
-    if (!parsed || typeof parsed !== 'object') return false;
-
-    const hasData = parsed.data !== undefined;
-    const hasVisualization = parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat;
-    return hasData && hasVisualization;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Checks if a Mermaid diagram definition is complete enough to render
- * @param definition The Mermaid diagram definition string
- * @returns boolean indicating if the definition is complete
- */
-export function isMermaidDefinitionComplete(definition: string): boolean {
-  if (!definition) return false;
-  const trimmedDef = definition.trim();
-  if (trimmedDef.length < 10) return false; // Arbitrary minimum length to avoid premature rendering
-
-  const lines = trimmedDef.split('\n');
-  if (lines.length < 2 && !trimmedDef.endsWith(';')) return false; // Simple diagrams might be one-liners ending with ;
-
-  const firstLine = lines[0].trim().toLowerCase();
-  const knownTypes = ['graph', 'flowchart', 'sequenceDiagram', 'classDiagram', 'stateDiagram', 'erDiagram', 'gantt', 'pie', 'gitGraph', 'mindmap', 'timeline', 'requirement', 'xychart', 'sankey-beta', 'quadrantChart'];
-
-  if (!knownTypes.some(type => firstLine.startsWith(type))) {
-    // If it doesn't start with a known type, it's unlikely to be a complete mermaid diagram yet
-    // unless it's a very short definition that might be completed soon.
-    // Allow very short definitions to pass if they are part of a stream.
-    return trimmedDef.length < 50; // Heuristic: if short, assume it might become valid
-  }
-
-  // Check for specific diagram types
-  if (firstLine.startsWith('graph') || firstLine.startsWith('flowchart')) {
-    // For flowcharts, check for at least one link or node definition after the type declaration
-    // and that it doesn't end abruptly (e.g., mid-node definition)
-    const hasContent = lines.slice(1).some(line => line.includes('-->') || line.includes('---') || line.match(/^\s*\w+/));
-    const endsSensibly = !trimmedDef.match(/\[[^\]]*$/) && !trimmedDef.match(/\([^)]*$/); // Doesn't end mid-bracket/paren
-    return hasContent && endsSensibly;
-  }
-
-  if (firstLine.startsWith('sequencediagram')) {
-    // For sequence diagrams, check if there are actual interactions
-    const hasActor = lines.some(line => line.trim().startsWith('participant') || line.trim().startsWith('actor'));
-    const hasMessage = lines.some(line => line.includes('->') || line.includes('->>'));
-    return hasActor && hasMessage;
-  }
-
-  if (firstLine.startsWith('classDiagram')) {
-    // For class diagrams, check for class definitions
-    return lines.some(line => line.includes('class '));
-  }
-
-  if (firstLine.startsWith('erDiagram')) {
-    // For ER diagrams, check for entity relationships
-    return lines.some(line => line.includes('||') || line.includes('|{') || line.includes('}|'));
-  }
-
-  // For other diagram types, check if there are at least a few lines
-  // and the definition doesn't end with an incomplete code block
-  // A common indicator of incompleteness during streaming is ending with an open quote or bracket.
-  const lastChar = trimmedDef.slice(-1);
-  const potentiallyIncomplete = ['[', '(', '{', '"', "'"].includes(lastChar);
-  return lines.length >= 2 && !potentiallyIncomplete;
-}
-
-/**
- * Checks if a Graphviz diagram definition is complete enough to render
- * @param definition The Graphviz diagram definition string
- * @returns boolean indicating if the definition is complete
- */
-export function isGraphvizDefinitionComplete(definition: string): boolean {
-  if (!definition) return false;
-  const trimmedDef = definition.trim();
-  if (trimmedDef.length < 10) return false; // Arbitrary minimum length
-
-  const firstLine = trimmedDef.split('\n')[0].trim().toLowerCase();
-  if (!firstLine.startsWith('digraph') && !firstLine.startsWith('graph') &&
-    !firstLine.startsWith('strict digraph') && !firstLine.startsWith('strict graph')) {
-    return false; // Must start with a valid Graphviz keyword
-  }
-
-  const openBraces = (trimmedDef.match(/{/g) || []).length;
-  const closeBraces = (trimmedDef.match(/}/g) || []).length;
-
-  // A complete graphviz definition must start correctly, have at least one pair of braces,
-  // have balanced braces, and end with a closing brace.
-  return openBraces > 0 && openBraces === closeBraces && trimmedDef.endsWith('}');
+    if (!definition || definition.trim().length === 0) return false;
+    
+    try {
+        const parsed = JSON.parse(definition);
+        
+        // Basic completeness checks
+        if (!parsed || typeof parsed !== 'object') return false;
+        
+        // Check for required Vega-Lite properties
+        const hasData = parsed.data !== undefined;
+        const hasVisualization = parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat;
+        
+        return hasData && hasVisualization;
+    } catch (error) {
+        return false;
+    }
 }

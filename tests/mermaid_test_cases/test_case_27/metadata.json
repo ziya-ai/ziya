@@ -1,0 +1,6 @@
+{
+    "description": "Complex timeline showing evolution of computing technologies across multiple eras",
+    "diagram_type": "timeline",
+    "expected_to_fail": false,
+    "target_issue": "Timeline diagram with multiple sections and detailed historical progression"
+}
