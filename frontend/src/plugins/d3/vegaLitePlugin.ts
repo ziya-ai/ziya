@@ -433,13 +433,43 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
         
         if (!shapeEnc.field || !spec.data?.values) {
-          console.log('🔧 VEGA-PREPROCESS: Removing shape encoding without proper field/data');
+          console.log('🔧 VEGA-PREPROCESS: Removing shape encoding with missing field or data');
           shouldRemoveShape = true;
         }
         
         if (shouldRemoveShape) {
+          console.log('🔧 VEGA-PREPROCESS: Removing problematic shape encoding');
           delete spec.encoding.shape;
-          console.log('🔧 VEGA-PREPROCESS: Removed problematic shape encoding');
+        }
+      }
+      
+      // Fix 1.5: Fix fold transform field name mismatches
+      if (spec.transform && spec.transform.some((t: any) => t.fold) && spec.encoding) {
+        const foldTransform = spec.transform.find((t: any) => t.fold);
+        if (foldTransform && foldTransform.as) {
+          const keyField = foldTransform.as[0] || 'key';
+          const valueField = foldTransform.as[1] || 'value';
+          
+          Object.keys(spec.encoding).forEach(channel => {
+            const channelSpec = spec.encoding[channel];
+            if (channelSpec && channelSpec.field) {
+              // Fix "value" -> actual value field name from fold transform
+              if (channelSpec.field === 'value' && valueField !== 'value') {
+                console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "value" -> "${valueField}" in ${channel} encoding`);
+                channelSpec.field = valueField;
+              }
+              // Fix "key" -> actual key field name from fold transform
+              if (channelSpec.field === 'key' && keyField !== 'key') {
+                console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "key" -> "${keyField}" in ${channel} encoding`);
+                channelSpec.field = keyField;
+              }
+              // Fix "dimension" -> actual key field name from fold transform (common in parallel coordinates)
+              if (channelSpec.field === 'dimension' && keyField !== 'dimension') {
+                console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "dimension" -> "${keyField}" in ${channel} encoding`);
+                channelSpec.field = keyField;
+              }
+            }
+          });
         }
       }
       
@@ -597,10 +627,127 @@ export const vegaLitePlugin: D3RenderPlugin = {
     // Additional post-preprocessing validations and fixes
     console.log('🔧 VEGA-POST-PROCESS: Starting additional fixes');
     
-    // Handle problematic axis configurations
+    // Fix problematic axis labelLimit values that can cause rendering failures
     if (vegaSpec.encoding?.x?.axis?.labelLimit !== undefined && vegaSpec.encoding.x.axis.labelLimit <= 0) {
       console.log('🔧 VEGA-POST-PROCESS: Fixing problematic axis labelLimit');
       delete vegaSpec.encoding.x.axis.labelLimit;
+    }
+    
+    // Fix problematic axis properties in layered charts
+    if (vegaSpec.layer && Array.isArray(vegaSpec.layer)) {
+      vegaSpec.layer.forEach((layer, index) => {
+        if (layer.encoding) {
+          ['x', 'y'].forEach(axis => {
+            if (layer.encoding[axis]?.axis?.labelLimit !== undefined && layer.encoding[axis].axis.labelLimit <= 0) {
+              console.log(`🔧 VEGA-POST-PROCESS: Fixing problematic ${axis} axis labelLimit in layer ${index}`);
+              delete layer.encoding[axis].axis.labelLimit;
+            }
+          });
+        }
+      });
+    }
+    
+    // Fix layered charts with mismatched y-axis scales and missing legends
+    if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
+      console.log('🔧 VEGA-POST-PROCESS: Fixing layered chart scales and legends');
+      
+      vegaSpec.layer.forEach((layer, index) => {
+        if (layer.encoding?.y?.scale?.domain && layer.encoding.y.field) {
+          const yField = layer.encoding.y.field;
+          
+          // Check if the scale domain is inappropriate for the data
+          if (vegaSpec.data?.values) {
+            const fieldValues = vegaSpec.data.values.map(d => d[yField]).filter(v => v !== undefined);
+            const minVal = Math.min(...fieldValues);
+            const maxVal = Math.max(...fieldValues);
+            const domainMin = layer.encoding.y.scale.domain[0];
+            const domainMax = layer.encoding.y.scale.domain[1];
+            
+            // If the domain is much larger than the data range, remove it to use auto-scaling
+            if (domainMax > maxVal * 5 || domainMin < minVal - (maxVal - minVal)) {
+              console.log(`Removing inappropriate y-axis domain [${domainMin}, ${domainMax}] for field "${yField}" with range [${minVal}, ${maxVal}]`);
+              delete layer.encoding.y.scale.domain;
+            }
+          }
+        }
+        
+        // Add legend labels for layered charts if missing
+        if (layer.mark?.color && !layer.encoding?.color && index > 0) {
+          // This layer has a hardcoded color but no legend - we'll handle this in resolve below
+        }
+      });
+    }
+    
+    // Fix faceted charts with bars using fixed y values instead of proper encodings
+    if (vegaSpec.facet && vegaSpec.spec?.layer) {
+      console.log('🔧 VEGA-POST-PROCESS: Fixing faceted chart layer encodings');
+      
+      vegaSpec.spec.layer.forEach((layer, index) => {
+        if (layer.mark?.type === 'bar' && layer.encoding?.y?.value !== undefined) {
+          console.log(`Fixing bar layer ${index} with fixed y value`);
+          
+          // Remove the fixed y value and create proper bar encoding
+          delete layer.encoding.y.value;
+          
+          // For horizontal bars, we need to swap x and y
+          if (layer.encoding.x?.field && layer.encoding.x.type === 'quantitative') {
+            // This should be a horizontal bar chart
+            const xField = layer.encoding.x.field;
+            const xConfig = { ...layer.encoding.x };
+            
+            // Swap x and y for horizontal bars
+            layer.encoding.y = xConfig;
+            layer.encoding.x = {
+              field: vegaSpec.facet.row?.field || vegaSpec.facet.column?.field,
+              type: 'nominal'
+            };
+          }
+        }
+      });
+    }
+    
+    // Fix layered charts missing legends for hardcoded colors
+    if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
+      console.log('🔧 VEGA-POST-PROCESS: Adding legends for layered chart with hardcoded colors');
+      
+      const layersWithHardcodedColors = vegaSpec.layer.filter(layer => 
+        layer.encoding?.color?.value || layer.mark?.color
+      );
+      
+      if (layersWithHardcodedColors.length > 0) {
+        // Create a synthetic dataset for the legend
+        const legendData: { series: string; color: string }[] = [];
+        vegaSpec.layer.forEach((layer, index) => {
+          const color = layer.encoding?.color?.value || layer.mark?.color;
+          const yField = layer.encoding?.y?.field;
+          
+          if (color && yField) {
+            legendData.push({
+              series: yField.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
+              color: color
+            });
+          }
+        });
+        
+        if (legendData.length > 0) {
+          // Add a legend layer
+          vegaSpec.layer.push({
+            data: { values: legendData },
+            mark: { type: 'point', size: 0, opacity: 0 },
+            encoding: {
+              color: {
+                field: 'series',
+                type: 'nominal',
+                scale: {
+                  domain: legendData.map(d => d.series),
+                  range: legendData.map(d => d.color)
+                },
+                legend: { title: 'Metrics' }
+              }
+            }
+          });
+        }
+      }
     }
     
     // Fix invalid color names like "#green" 
@@ -1264,11 +1411,11 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
     }
 
-    // Fix regular line charts with fold transforms missing y-axis encoding
-    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+    // Fix area charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
         vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
         vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
-      console.log('Fixing line chart with fold transform missing y-axis encoding');
+      console.log('Fixing area chart with fold transform missing y-axis encoding');
       
       // Find the fold transform to get the correct field name for the y-axis
       const foldTransform = vegaSpec.transform.find(t => t.fold);
@@ -1280,14 +1427,643 @@ export const vegaLitePlugin: D3RenderPlugin = {
         title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
       };
       
-      // Also add color encoding to distinguish the different lines
+      // Also add color encoding to distinguish the different areas
       if (!vegaSpec.encoding.color) {
         const colorFieldName = foldTransform?.as?.[0] || 'key'; // Default to 'key' if not specified
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal'
+        };
+      }
+    }
+
+    // Fix bar charts with fold transforms missing y-axis encoding for the 'value' field
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+      console.log('Fixing bar chart with fold transform missing y-axis encoding for value field');
+      
+      // Find the fold transform to get the correct field name for the y-axis
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value'; // Use the second field from fold's 'as' array
+      
+      // Create or update y encoding
+      if (!vegaSpec.encoding.y) {
+        vegaSpec.encoding.y = {};
+      }
+      vegaSpec.encoding.y = {
+        ...vegaSpec.encoding.y,
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      // Also add color encoding to distinguish the different characters
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key'; // Use the first field from fold's 'as' array
         vegaSpec.encoding.color = {
           field: colorFieldName,
           type: 'nominal',
           title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
         };
+      };
+    }
+
+    // Fix bar charts with fold transforms missing y-axis encoding for the 'value' field
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+      console.log('Fixing bar chart with fold transform missing y-axis encoding for value field');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      vegaSpec.encoding.y = {
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+    }
+
+    // Fix for bar charts missing y-axis encoding (common issue with flow/journey charts)
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') && 
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing line chart with y encoding missing field property');
+      
+      // If there's a fold transform, use the value field from it
+      if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
+        const foldTransform = vegaSpec.transform.find(t => t.fold);
+        const valueField = foldTransform?.as?.[1] || 'value';
+        vegaSpec.encoding.y.field = valueField;
+        console.log(`Added y field from fold transform: "${valueField}"`);
+      } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
+        // If there's a calculated field 'y', use that
+        vegaSpec.encoding.y.field = 'y';
+        console.log('Added y field from calculated field: "y"');
+      }
+    }
+
+    // Fix regular line charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+      console.log('Fixing line chart with fold transform missing y-axis encoding');
+      
+      // Find the fold transform to get the correct field name for the y-axis
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      if (!vegaSpec.encoding.y) {
+        vegaSpec.encoding.y = {};
+      }
+      vegaSpec.encoding.y = {
+        ...vegaSpec.encoding.y,
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      // Also add color encoding to distinguish the different lines if not already present
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix area charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing area chart with fold transform missing y-axis encoding');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      vegaSpec.encoding.y = {
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix rect/heatmap charts with fold transforms missing y-axis and color encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'rect' || vegaSpec.mark === 'rect') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing rect chart with fold transform missing y-axis encoding');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const keyField = foldTransform?.as?.[0] || 'key'; // Element field
+      const valueField = foldTransform?.as?.[1] || 'value'; // Mastery level field
+      
+      vegaSpec.encoding.y = {
+        field: keyField,
+        type: 'nominal',
+        title: keyField.charAt(0).toUpperCase() + keyField.slice(1)
+      };
+      
+      // Use the value field for color encoding to show intensity
+      if (!vegaSpec.encoding.color) {
+        vegaSpec.encoding.color = {
+          field: valueField,
+          type: 'quantitative',
+          title: valueField.charAt(0).toUpperCase() + valueField.slice(1).replace('_', ' '),
+          scale: {
+            scheme: 'viridis'
+          }
+        };
+      }
+    }
+
+    // Fix rect/heatmap charts with aggregate transforms missing color encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'rect' || vegaSpec.mark === 'rect') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.aggregate) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && vegaSpec.encoding.y && !vegaSpec.encoding.color) {
+      console.log('Fixing rect chart with aggregate transform missing color encoding');
+      
+      // Look for calculated fields or aggregated fields to use for color
+      const calculateTransform = vegaSpec.transform.find(t => t.calculate);
+      const aggregateTransform = vegaSpec.transform.find(t => t.aggregate);
+      
+      let colorField: string | null = null;
+      if (calculateTransform?.as) {
+        colorField = calculateTransform.as; // Use calculated field like "effective_power"
+      } else if (aggregateTransform?.aggregate) {
+        // Use the first aggregated field
+        colorField = aggregateTransform.aggregate[0]?.as;
+      }
+      
+      if (colorField) {
+        vegaSpec.encoding.color = {
+          field: colorField,
+          type: 'quantitative',
+          title: colorField.charAt(0).toUpperCase() + colorField.slice(1).replace('_', ' '),
+          scale: {
+            scheme: 'blues'
+          }
+        };
+        console.log(`Added color encoding with field: "${colorField}"`);
+      }
+    }
+
+    // Fix arc/pie charts missing theta encoding for segment sizing
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'arc' || vegaSpec.mark === 'arc') &&
+        vegaSpec.encoding && vegaSpec.encoding.color && !vegaSpec.encoding.theta) {
+      console.log('Fixing line chart with y encoding missing field property');
+      
+      // If there's a fold transform, use the value field from it
+      if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
+        const foldTransform = vegaSpec.transform.find(t => t.fold);
+        const valueField = foldTransform?.as?.[1] || 'value';
+        vegaSpec.encoding.y.field = valueField;
+        console.log(`Added y field from fold transform: "${valueField}"`);
+      } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
+        // If there's a calculated field 'y', use that
+        vegaSpec.encoding.y.field = 'y';
+        console.log('Added y field from calculated field: "y"');
+      }
+    }
+
+    // Fix line charts with detail encoding that may be interfering with proper rendering
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.encoding && vegaSpec.encoding.detail && vegaSpec.encoding.color &&
+        vegaSpec.encoding.detail.field === vegaSpec.encoding.color.field) {
+      console.log('Fixing line chart with redundant detail encoding');
+      
+      // Remove redundant detail encoding when it duplicates color encoding
+      delete vegaSpec.encoding.detail;
+      console.log('Removed redundant detail encoding that duplicated color encoding');
+      
+      // Ensure we have proper x and y encodings after field fixes
+      if (vegaSpec.encoding.x && vegaSpec.encoding.y && vegaSpec.encoding.x.field && vegaSpec.encoding.y.field) {
+        console.log(`Line chart encodings verified: x="${vegaSpec.encoding.x.field}", y="${vegaSpec.encoding.y.field}", color="${vegaSpec.encoding.color.field}"`);
+      } else {
+        console.warn('Line chart still missing required encodings after detail fix');
+      }
+    }
+
+    // Fix line charts with fold transforms missing both x and y encodings
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && !vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing line chart with fold transform missing both x and y encodings');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const keyField = foldTransform?.as?.[0] || 'key';
+      const valueField = foldTransform?.as?.[1] || 'value';
+      
+      vegaSpec.encoding.x = {
+        field: keyField,
+        type: 'nominal',
+        title: keyField.charAt(0).toUpperCase() + keyField.slice(1)
+      };
+      vegaSpec.encoding.y = {
+        field: valueField,
+        type: 'quantitative',
+        title: valueField.charAt(0).toUpperCase() + valueField.slice(1).replace('_', ' ')
+      };
+    }
+
+    // Fix chronological ordering for time-based fold transforms
+    if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && vegaSpec.encoding.x.type === 'nominal') {
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      if (foldTransform?.fold && Array.isArray(foldTransform.fold)) {
+        // Check if this looks like a time-based sequence that should be ordered
+        const foldFields = foldTransform.fold;
+        const hasTimeSequence = foldFields.some(field => 
+          field.includes('before') || field.includes('after') || 
+          field.includes('start') || field.includes('end') ||
+          field.includes('initial') || field.includes('final')
+        );
+        
+        if (hasTimeSequence) {
+          console.log('Fixing chronological ordering for time-based fold transform');
+          vegaSpec.encoding.x.sort = foldFields; // Use original fold order
+        }
+      }
+    }
+
+    // Fix line charts with fold transforms missing y-axis encoding for the folded value field
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+      console.log('Fixing line chart with fold transform missing y-axis encoding');
+      
+      // Find the fold transform to get the correct field name for the y-axis
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      if (!vegaSpec.encoding.y) {
+        vegaSpec.encoding.y = {};
+      }
+      vegaSpec.encoding.y = {
+        ...vegaSpec.encoding.y,
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      // Also add color encoding to distinguish the different lines if not already present
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix area charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing area chart with fold transform missing y-axis encoding');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      vegaSpec.encoding.y = {
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix line charts with y encoding missing field property
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.y.field) {
+      console.log('Fixing line chart with y encoding missing field property');
+      
+      // If there's a fold transform, use the value field from it
+      if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
+        const foldTransform = vegaSpec.transform.find(t => t.fold);
+        const valueField = foldTransform?.as?.[1] || 'value';
+        vegaSpec.encoding.y.field = valueField;
+        console.log(`Added y field from fold transform: "${valueField}"`);
+      } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
+        // If there's a calculated field 'y', use that
+        vegaSpec.encoding.y.field = 'y';
+        console.log('Added y field from calculated field: "y"');
+      }
+    }
+
+    // Fix regular line charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+      console.log('Fixing line chart with fold transform missing y-axis encoding');
+      
+      // Find the fold transform to get the correct field name for the y-axis
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      if (!vegaSpec.encoding.y) {
+        vegaSpec.encoding.y = {};
+      }
+      vegaSpec.encoding.y = {
+        ...vegaSpec.encoding.y,
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      // Also add color encoding to distinguish the different lines if not already present
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix area charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing area chart with fold transform missing y-axis encoding');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      vegaSpec.encoding.y = {
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix line charts with y encoding missing field property
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.y.field) {
+      console.log('Fixing line chart with y encoding missing field property');
+      
+      // If there's a fold transform, use the value field from it
+      if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
+        const foldTransform = vegaSpec.transform.find(t => t.fold);
+        const valueField = foldTransform?.as?.[1] || 'value';
+        vegaSpec.encoding.y.field = valueField;
+        console.log(`Added y field from fold transform: "${valueField}"`);
+      } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
+        // If there's a calculated field 'y', use that
+        vegaSpec.encoding.y.field = 'y';
+        console.log('Added y field from calculated field: "y"');
+      }
+    }
+
+    // Fix regular line charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+      console.log('Fixing line chart with fold transform missing y-axis encoding');
+      
+      // Find the fold transform to get the correct field name for the y-axis
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      if (!vegaSpec.encoding.y) {
+        vegaSpec.encoding.y = {};
+      }
+      vegaSpec.encoding.y = {
+        ...vegaSpec.encoding.y,
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      // Also add color encoding to distinguish the different lines if not already present
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix area charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing area chart with fold transform missing y-axis encoding');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      vegaSpec.encoding.y = {
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix line charts with y encoding missing field property
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.y.field) {
+      console.log('Fixing line chart with y encoding missing field property');
+      
+      // If there's a fold transform, use the value field from it
+      if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
+        const foldTransform = vegaSpec.transform.find(t => t.fold);
+        const valueField = foldTransform?.as?.[1] || 'value';
+        vegaSpec.encoding.y.field = valueField;
+        console.log(`Added y field from fold transform: "${valueField}"`);
+      } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
+        // If there's a calculated field 'y', use that
+        vegaSpec.encoding.y.field = 'y';
+        console.log('Added y field from calculated field: "y"');
+      }
+    }
+
+    // Fix regular line charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+      console.log('Fixing line chart with fold transform missing y-axis encoding');
+      
+      // Find the fold transform to get the correct field name for the y-axis
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      if (!vegaSpec.encoding.y) {
+        vegaSpec.encoding.y = {};
+      }
+      vegaSpec.encoding.y = {
+        ...vegaSpec.encoding.y,
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      // Also add color encoding to distinguish the different lines if not already present
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix area charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing area chart with fold transform missing y-axis encoding');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      vegaSpec.encoding.y = {
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix line charts with y encoding missing field property
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.y.field) {
+      console.log('Fixing line chart with y encoding missing field property');
+      
+      // If there's a fold transform, use the value field from it
+      if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
+        const foldTransform = vegaSpec.transform.find(t => t.fold);
+        const valueField = foldTransform?.as?.[1] || 'value';
+        vegaSpec.encoding.y.field = valueField;
+        console.log(`Added y field from fold transform: "${valueField}"`);
+      } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
+        // If there's a calculated field 'y', use that
+        vegaSpec.encoding.y.field = 'y';
+        console.log('Added y field from calculated field: "y"');
+      }
+    }
+
+    // Fix regular line charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+      console.log('Fixing line chart with fold transform missing y-axis encoding');
+      
+      // Find the fold transform to get the correct field name for the y-axis
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      if (!vegaSpec.encoding.y) {
+        vegaSpec.encoding.y = {};
+      }
+      vegaSpec.encoding.y = {
+        ...vegaSpec.encoding.y,
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      // Also add color encoding to distinguish the different lines if not already present
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix area charts with fold transforms missing y-axis encoding
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
+        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      console.log('Fixing area chart with fold transform missing y-axis encoding');
+      
+      const foldTransform = vegaSpec.transform.find(t => t.fold);
+      const yFieldName = foldTransform?.as?.[1] || 'value';
+      
+      vegaSpec.encoding.y = {
+        field: yFieldName,
+        type: 'quantitative',
+        title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
+      };
+      
+      if (!vegaSpec.encoding.color) {
+        const colorFieldName = foldTransform?.as?.[0] || 'key';
+        vegaSpec.encoding.color = {
+          field: colorFieldName,
+          type: 'nominal',
+          title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
+        };
+      }
+    }
+
+    // Fix arc/pie charts missing theta encoding for segment sizing
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'arc' || vegaSpec.mark === 'arc') &&
+        vegaSpec.encoding && vegaSpec.encoding.color && !vegaSpec.encoding.theta) {
+      console.log('Fixing arc chart missing theta encoding for segment sizing');
+      
+      // Look for calculated fields first (like total_value)
+      const calculatedField = vegaSpec.transform?.find(t => t.calculate && t.as)?.as;
+      
+      if (calculatedField) {
+        vegaSpec.encoding.theta = {
+          field: calculatedField,
+          type: 'quantitative',
+          title: calculatedField.charAt(0).toUpperCase() + calculatedField.slice(1).replace('_', ' ')
+        };
+        console.log(`Added theta encoding with calculated field: "${calculatedField}"`);
       }
     }
 
@@ -2475,8 +3251,10 @@ ${svgData}`;
       console.log('Vega-Lite visualization rendered successfully');
     }
     }, 100);
-  } catch (error) {
-  console.error('Vega-Lite rendering error:', error);
+
+  } // End of try block
+  catch (error) {
+    console.error('Vega-Lite rendering error:', error);
 
   // Log streaming state during error for debugging
   console.log('Vega-Lite error context:', {
@@ -2638,8 +3416,6 @@ ${svgData}`;
       }
     }
   }, 100);
-}
-}
 };
 
 /**
@@ -2829,6 +3605,7 @@ function showVegaLiteDebugView(container: HTMLElement, spec: VegaLiteSpec, isDar
   if (forceButton) {
     forceButton.onclick = () => {
       const forceSpec = { ...spec, forceRender: true };
+      vegaLitePlugin.render(container, null, forceSpec, isDarkMode);
     };
   }
   
@@ -2858,4 +3635,8 @@ function showVegaLiteDebugView(container: HTMLElement, spec: VegaLiteSpec, isDar
       }
     }
   }, 100);
+}
+}
+
+// Close showVegaLiteDebugView function
 }
