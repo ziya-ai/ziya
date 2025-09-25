@@ -164,6 +164,15 @@ export const graphvizPlugin: D3RenderPlugin = {
             // Extract actual content from YAML wrapper if present
             let processedDefinition = extractDefinitionFromYAML(spec.definition, 'graphviz');
 
+            // Fix invalid arrow syntax and edge label format
+            processedDefinition = processedDefinition.replace(
+                /(\w+)\s*-\.->\s*(\w+)\s*\[([^\]]+)\]/g,
+                '$1 -> $2 [$3]'
+            );
+            
+            // Also fix any remaining -.-> arrows without attributes
+            processedDefinition = processedDefinition.replace(/(\w+)\s*-\.->\s*(\w+)/g, '$1 -> $2');
+
             // This converts all standard string labels to the more robust HTML-like label format.
             processedDefinition = processedDefinition.replace(/label\s*=\s*"((?:\\"|[^"])*)"/g, (match, content) => {
                 // First, unescape any `\"` that might be in the original content string.

@@ -83,6 +83,17 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             // Add the human message immediately
             addMessageToConversation(newHumanMessage, currentConversationId);
 
+            // Force scroll to bottom in top-down mode to show the echoed query
+            if (isTopToBottom) {
+                setTimeout(() => {
+                    const chatContainer = document.querySelector('.chat-container') as HTMLElement;
+                    if (chatContainer) {
+                        console.log('📜 Human message added - scrolling to show echo');
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }
+                }, 50); // Small delay to ensure DOM updates
+            }
+
             // Clear streamed content and add the human message immediately
             setStreamedContentMap(new Map());
             
