@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Any, Union, List
 import os
 import json
+import hashlib
 import botocore
 import boto3
 import gc
@@ -10,8 +11,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models import BaseChatModel
 from langchain.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
-import app.config as config
-from app.config import get_supported_parameters  # Import the function explicitly
+import app.config.models_config as config
+from app.config.models_config import get_supported_parameters  # Import the function explicitly
 import google.auth
 import google.auth.exceptions
 from dotenv import load_dotenv
@@ -30,7 +31,7 @@ from langchain.agents.format_scratchpad import format_xml
 from langchain_core.messages import HumanMessage
 
 # Import configuration from the central config module
-import app.config as config
+import app.config.models_config as config
 
 class ModelManager:
     """Manages model initialization and configuration."""
@@ -99,7 +100,11 @@ class ModelManager:
         'llm_with_stop': None,
         'agent': None,
         'agent_executor': None,
-        'last_auth_error': None  # Add this to store the last authentication error
+        'last_auth_error': None,  # Add this to store the last authentication error
+        # Model kwargs caching to eliminate redundant filtering
+        'filtered_kwargs_cache': {},  # Cache by (model_config_hash, kwargs_hash)
+        # Agent chain caching to eliminate redundant agent creation
+        'agent_chain_cache': {},  # Cache by (model_id, ast_enabled, mcp_enabled)
     }
     
     @classmethod
@@ -115,20 +120,29 @@ class ModelManager:
         gc.collect()
         
         logger.info("Resetting ModelManager state")
+        
+        # Clear AWS region environment variable to ensure clean region selection
+        if 'AWS_REGION' in os.environ:
+            del os.environ['AWS_REGION']
+            logger.info("Cleared AWS_REGION environment variable")
+        
         cls._state = {
             'model': None,
             'current_model_id': None,
             'persistent_bedrock_clients': {},
             'client_config_hash': None,
-            'llm_with_stop': None,  # Add storage for llm_with_stop
             'auth_checked': False,
             'auth_success': False,
             'google_credentials': None,
             'aws_profile': None,
             'aws_region': None,
-            'process_id': None,
+            'process_id': os.getpid(),
+            'llm_with_stop': None,
             'agent': None,
-            'agent_executor': None
+            'agent_executor': None,
+            'last_auth_error': None,
+            'filtered_kwargs_cache': {},  # Reset cache on state reset
+            'agent_chain_cache': {},  # Reset agent chain cache on state reset
         }
         
         # Reset boto3 in a safer way
@@ -157,22 +171,39 @@ class ModelManager:
             
             # Create a new session
             boto3.DEFAULT_SESSION = None
-            boto3.setup_default_session()
-            logger.info("Reset boto3 default session with complete module reload")
             
+            logger.info("Successfully reset boto3 session")
         except Exception as e:
-            logger.warning(f"Failed to reset boto3 session: {e}")
-            
-        # Clear any LangChain caches that might exist
-        try:
-            from langchain.globals import clear_langchain_cache
-            clear_langchain_cache()
-            logger.info("Cleared LangChain cache")
-        except (ImportError, AttributeError) as e:
-            logger.warning(f"Could not clear LangChain cache: {e}")
+            logger.warning(f"Error resetting boto3 session: {e}")
+        
+        logger.info("ModelManager state reset complete")
+        
+    @classmethod
+    def invalidate_kwargs_cache(cls):
+        """Invalidate the model kwargs cache to force fresh filtering."""
+        cls._state['filtered_kwargs_cache'] = {}
+        logger.info("ModelManager: Filtered kwargs cache invalidated")
+    
+    @classmethod
+    def invalidate_agent_chain_cache(cls):
+        """Invalidate the agent chain cache to force fresh agent creation."""
+        cls._state['agent_chain_cache'] = {}
+        logger.info("ModelManager: Agent chain cache invalidated")
+    
+    @classmethod
+    def get_state(cls):
+        """Get the current ModelManager state."""
+        return cls._state.copy()  # Return a copy to prevent external modification
             
         # Force garbage collection again to clean up any lingering references
         gc.collect()
+        
+        # Invalidate prompt extension cache
+        try:
+            from app.agents.prompts_manager import invalidate_prompt_cache
+            invalidate_prompt_cache()
+        except ImportError:
+            logger.debug("Could not invalidate prompt cache - module not available")
         
         logger.info("Model state completely reset")
         # Force garbage collection again after resetting state
@@ -298,7 +329,7 @@ class ModelManager:
     @classmethod
     def filter_model_kwargs(cls, model_kwargs, model_config):
         """
-        Filter model kwargs to only include parameters supported by the model.
+        Filter model kwargs to only include parameters supported by the model with caching.
         
         Args:
             model_kwargs: Dict of model kwargs to filter
@@ -307,7 +338,21 @@ class ModelManager:
         Returns:
             Dict: Filtered model kwargs
         """
-        logger.info(f"Filtering model kwargs: {model_kwargs}")
+        # Create cache keys
+        model_config_str = json.dumps(model_config, sort_keys=True)
+        model_config_hash = hashlib.md5(model_config_str.encode()).hexdigest()[:8]
+        
+        kwargs_str = json.dumps(model_kwargs, sort_keys=True)
+        kwargs_hash = hashlib.md5(kwargs_str.encode()).hexdigest()[:8]
+        
+        cache_key = f"{model_config_hash}_{kwargs_hash}"
+        
+        # Check cache
+        if cache_key in cls._state['filtered_kwargs_cache']:
+            logger.debug(f"Using cached filtered kwargs for {cache_key}")
+            return cls._state['filtered_kwargs_cache'][cache_key]
+        
+        logger.debug(f"Filtering model kwargs: {model_kwargs}")
         
         # Get supported parameters from the model config
         supported_params = []
@@ -358,11 +403,15 @@ class ModelManager:
         # Filter the kwargs
         filtered_kwargs = {}
         for key, value in model_kwargs.items():
-            if key in supported_params:
+            if key in supported_params and value is not None:
                 filtered_kwargs[key] = value
             else:
                 logger.debug(f"Ignoring unsupported parameter '{key}' for model")
-                
+        
+        # Cache the result
+        cls._state['filtered_kwargs_cache'][cache_key] = filtered_kwargs
+        logger.debug(f"Cached filtered kwargs for {cache_key}")
+        
         return filtered_kwargs
             
     @classmethod
@@ -586,7 +635,7 @@ class ModelManager:
         return hashlib.md5(config_string.encode()).hexdigest()[:8]
     
     @classmethod
-    def _get_persistent_bedrock_client(cls, aws_profile: str, region: str, model_id: str):
+    def _get_persistent_bedrock_client(cls, aws_profile: str, region: str, model_id: str, model_config: Optional[Dict[str, Any]] = None):
         """
         Get or create a persistent Bedrock client for the given configuration.
         Reuses existing clients when configuration matches.
@@ -605,22 +654,27 @@ class ModelManager:
         # Create new client
         logger.info(f"Creating new persistent Bedrock client for {aws_profile}/{region}/{model_id}")
         
-        # Check AWS credentials
-        creds_valid, error_msg = check_aws_credentials(profile_name=aws_profile)
-        if not creds_valid:
-            logger.error(f"AWS credentials check failed: {error_msg}")
-            cls._state['last_auth_error'] = error_msg
-            from app.utils.custom_exceptions import KnownCredentialException
-            raise KnownCredentialException(error_msg)
-        
         # Create fresh boto3 session and client
         try:
             session = create_fresh_boto3_session(profile_name=aws_profile)
+            
+            # Check AWS credentials using the same fresh session
+            try:
+                sts = session.client('sts', region_name=region)
+                identity = sts.get_caller_identity()
+                logger.debug(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
+            except Exception as cred_error:
+                error_msg = f"AWS credentials check failed: {cred_error}"
+                logger.error(error_msg)
+                cls._state['last_auth_error'] = error_msg
+                from app.utils.custom_exceptions import KnownCredentialException
+                raise KnownCredentialException(error_msg, is_server_startup=False)
+            
             bedrock_client = session.client('bedrock-runtime', region_name=region)
             logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
             
             # Wrap with CustomBedrockClient and ThrottleSafeBedrock
-            custom_client = CustomBedrockClient(bedrock_client)
+            custom_client = CustomBedrockClient(bedrock_client, model_config=model_config)
             throttle_safe_client = ThrottleSafeBedrock(custom_client)
             
             # Store in persistent cache
@@ -715,21 +769,39 @@ class ModelManager:
         
         # Initialize the model based on the endpoint - only authenticate with the specific endpoint
         logger.info(f"Starting authentication flow for endpoint: {endpoint}")
-        if endpoint == "bedrock":
-            logger.info("Using Bedrock authentication flow only")
-            model = cls._initialize_bedrock_model(model_config, settings_override=settings_override)
-        elif endpoint == "google":
-            logger.info("Using Google authentication flow only")
-            model = cls._initialize_google_model(model_config)
-        else:
-            raise ValueError(f"Unsupported endpoint: {endpoint}")
+        try:
+            if endpoint == "bedrock":
+                logger.info("Using Bedrock authentication flow only")
+                model = cls._initialize_bedrock_model(model_config, model_name, settings_override=settings_override)
+            elif endpoint == "google":
+                logger.info("Using Google authentication flow only")
+                model = cls._initialize_google_model(model_config)
+            else:
+                raise ValueError(f"Unsupported endpoint: {endpoint}")
+                
+            # Update state for successful initialization
+            cls._state['model'] = model
+            cls._state['current_model_id'] = model_id
+            cls._state['process_id'] = current_pid
+            cls._state['auth_checked'] = True
+            cls._state['auth_success'] = True
+        except KnownCredentialException as e:
+            # Handle credential exception without terminating the server
+            logger.warning(f"Authentication failed but continuing server operation: {str(e)}")
             
-        # Update state
-        cls._state['model'] = model
-        cls._state['current_model_id'] = model_id
-        cls._state['process_id'] = current_pid
-        cls._state['auth_checked'] = True
-        cls._state['auth_success'] = True
+            # Update state to indicate authentication failure
+            cls._state['model'] = None
+            cls._state['auth_checked'] = True
+            cls._state['auth_success'] = False
+            cls._state['last_auth_error'] = str(e)
+            
+            # Set environment variable to indicate auth was attempted but failed
+            os.environ["ZIYA_AUTH_CHECKED"] = "true"
+            os.environ["ZIYA_AUTH_FAILED"] = "true"
+            
+            # Return None - the server will continue running but model operations will fail
+            # with appropriate error messages
+            return None
         
         # Add region to state if available
         if "region" in model_config:
@@ -740,7 +812,7 @@ class ModelManager:
         return model
     
     @classmethod
-    def _get_region_specific_model_id_with_region_update(cls, model_id, region, model_config=None):
+    def _get_region_specific_model_id_with_region_update(cls, model_id, region, model_config=None, model_name=None):
         """
         Get the appropriate model ID and updated region based on model availability.
         
@@ -773,24 +845,41 @@ class ModelManager:
                 logger.info(f"Using {region_prefix} specific model ID for region {region}")
                 return model_id[region_prefix], region
             else:
-                # Need to switch regions
-                if region_prefix == "eu" and "us" in model_id:
-                    # Current region is EU but model only available in US - switch to US region
-                    new_region = model_config.get("region", "us-west-2") if model_config else "us-west-2"
-                    logger.warning(f"Model only available in US regions. Switching from {region} to {new_region}")
-                    os.environ["AWS_REGION"] = new_region
-                    return model_id["us"], new_region
-                elif region_prefix == "us" and "eu" in model_id:
-                    # Switch to EU region
-                    new_region = model_config.get("region", "eu-west-1") if model_config else "eu-west-1"
-                    logger.warning(f"Model only available in EU regions. Switching from {region} to {new_region}")
-                    os.environ["AWS_REGION"] = new_region
-                    return model_id["eu"], new_region
+                # Model not available in current region
+                is_region_restricted = model_config.get("region_restricted", False) if model_config else False
+                available_regions = model_config.get("available_regions", []) if model_config else []
+                
+                if is_region_restricted:
+                    # Model is truly restricted to specific regions - must switch
+                    if region_prefix == "eu" and "us" in model_id:
+                        # Current region is EU but model only available in US - switch to US region
+                        preferred_region = model_config.get("preferred_region", "us-west-2") if model_config else "us-west-2"
+                        logger.warning(f"Model {model_name} is only available in US regions. Switching from {region} to {preferred_region}")
+                        os.environ["AWS_REGION"] = preferred_region
+                        return model_id["us"], preferred_region
+                    elif region_prefix == "us" and "eu" in model_id:
+                        # Switch to EU region
+                        preferred_region = model_config.get("preferred_region", "eu-west-1") if model_config else "eu-west-1"
+                        logger.warning(f"Model {model_name} is only available in EU regions. Switching from {region} to {preferred_region}")
+                        os.environ["AWS_REGION"] = preferred_region
+                        return model_id["eu"], preferred_region
                 else:
-                    # Use fallback
-                    fallback_id = next(iter(model_id.values()))
-                    logger.warning(f"No matching region found, using fallback: {fallback_id}")
-                    return fallback_id, region
+                    # Model has regional preferences but can work in other regions
+                    if region in available_regions:
+                        # Current region is actually supported, use appropriate model ID
+                        logger.info(f"Using model {model_name} in region {region}")
+                        if region_prefix == "eu" and "us" in model_id:
+                            return model_id["us"], region  # Use US model ID but stay in EU region
+                        elif region_prefix == "us" and "eu" in model_id:
+                            return model_id["eu"], region  # Use EU model ID but stay in US region
+                    else:
+                        # Region not supported, inform user but don't force switch
+                        logger.warning(f"Model {model_name} may not be available in region {region}. Consider using one of: {', '.join(available_regions[:5])}")
+                
+                # Use fallback
+                fallback_id = next(iter(model_id.values()))
+                logger.info(f"Using fallback model ID: {fallback_id}")
+                return fallback_id, region
                     
         # Fallback for unexpected cases
         logger.warning(f"Unexpected model_id format: {model_id}, returning as is")
@@ -827,49 +916,7 @@ class ModelManager:
             else:
                 # Fall back to the first available ID
                 fallback_id = next(iter(model_id.values()))
-                logger.warning(f"No matching region found for {region_prefix}, using fallback: {fallback_id}")
-                return fallback_id
-                
-                # If we're in US but only have EU model ID, or vice versa, we need to switch regions
-                if region_prefix == "eu" and "us" in model_id:
-                    # We're in EU but the model is only available in US - switch to US
-                    new_region = "us-west-2"  # Default US region
-                    # Check if model config specifies a preferred region
-                    if model_config and "region" in model_config:
-                        new_region = model_config["region"]
-                    logger.warning(f"Model only available in US regions. Switching from {region} to {new_region}")
-                    
-                    # Update the region in environment variables
-                    os.environ["AWS_REGION"] = new_region
-                    # Also update the region variable for this initialization
-                    region = new_region
-                    
-                    # Return the US model ID
-                    return model_id["us"]
-                elif region_prefix == "us" and "eu" in model_id:
-                    # We're in US but the model is only available in EU - switch to EU
-                    new_region = "eu-west-1"  # Default EU region  
-                    if model_config and "region" in model_config:
-                        new_region = model_config["region"]
-                    logger.warning(f"Model only available in EU regions. Switching from {region} to {new_region}")
-                    
-                    # Update the region in environment variables
-                    os.environ["AWS_REGION"] = new_region
-                    logger.info(f"Updated AWS_REGION environment variable to: {new_region}")
-                    region = new_region
-                    
-                    # Also update the region in the ModelManager state
-                    cls._state['aws_region'] = new_region
-                    logger.info(f"Updated ModelManager state with new region: {new_region}")
-                    
-                    # Return the EU model ID
-                    return model_id["eu"]
-                else:
-                    # No matching region available, use the first available
-                    fallback_id = next(iter(model_id.values()))
-                    logger.warning(f"No matching region found for {region_prefix}, using fallback: {fallback_id}")
-                    return fallback_id
-                    
+                logger.info(f"No matching region found for {region_prefix}, using fallback: {fallback_id}")
                 return fallback_id
                 
         # Fallback for unexpected cases
@@ -877,7 +924,7 @@ class ModelManager:
         return model_id
     
     @classmethod
-    def _initialize_bedrock_model(cls, model_config: Dict[str, Any], settings_override: Optional[Dict[str, Any]] = None) -> BaseChatModel: # Add settings_override parameter
+    def _initialize_bedrock_model(cls, model_config: Dict[str, Any], model_name: str = None, settings_override: Optional[Dict[str, Any]] = None) -> BaseChatModel: # Add settings_override parameter
 
         """
         Initialize a Bedrock model with the given configuration.
@@ -912,7 +959,7 @@ class ModelManager:
         cls._state['aws_region'] = region
         # Get model ID with region-specific handling - THIS IS WHERE THE REGION GETS UPDATED
         raw_model_id = model_config.get("model_id")
-        model_id, updated_region = cls._get_region_specific_model_id_with_region_update(raw_model_id, region, model_config)
+        model_id, updated_region = cls._get_region_specific_model_id_with_region_update(raw_model_id, region, model_config, model_name)
         
         # Update the environment variable with the new region
         if updated_region != region:
@@ -938,10 +985,14 @@ class ModelManager:
         KnownCredentialException._error_displayed = False
         
         # Get persistent Bedrock client (handles credential checking internally)
-        persistent_client = cls._get_persistent_bedrock_client(aws_profile, region, model_id)
+        persistent_client = cls._get_persistent_bedrock_client(aws_profile, region, model_id, model_config)
         
         # Check if this is a Nova model
         family = model_config.get("family")
+        # Also check for wrapper_class directly in config
+        wrapper_class = model_config.get("wrapper_class")
+        
+        logger.info(f"Model family: {family}, wrapper_class: {wrapper_class}")
         
         # --- Determine Effective Parameters RIGHT BEFORE Initialization ---
         # Get base config values again for clarity
@@ -962,13 +1013,9 @@ class ModelManager:
                 # Update base_max_tokens to use the default
                 base_max_tokens = default_max_tokens
         
-        if settings_override:
+        if settings_override and isinstance(settings_override, dict):
             logger.info("Using settings_override for initialization parameters.")
             logger.info(f"  settings_override received: {settings_override}") # DEBUG LOG
-
-        # --- End Determine Effective Parameters ---+
-            logger.info("Using environment variables (or defaults) for initialization parameters.")
-            # Read environment variables *now*
 
             # Directly use settings_override, falling back to base config only if key is missing in override
             effective_temperature = float(settings_override.get("temperature", base_temperature))
@@ -977,25 +1024,9 @@ class ModelManager:
             effective_top_p = settings_override.get("top_p", base_top_p)
             effective_thinking_mode = bool(settings_override.get("thinking_mode", base_thinking_mode))
             logger.info(f"  >>> DEBUG: effective_max_tokens assigned value: {effective_max_tokens}")
-            effective_top_p_str = os.environ.get("ZIYA_TOP_P")
-            effective_top_p = None
-            if effective_top_p_str is not None:
-                try:
-                    effective_top_p = float(effective_top_p_str)
-                except ValueError:
-                    logger.warning(f"Invalid ZIYA_TOP_P value '{effective_top_p_str}', using default.")
-                    effective_top_p = base_top_p
-            else:
-                effective_top_p = base_top_p
- 
-            effective_thinking_mode_str = os.environ.get("ZIYA_THINKING_MODE")
-            effective_thinking_mode = base_thinking_mode
-            if effective_thinking_mode_str is not None:
-                effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes", "t", "y")
-
         else:
-            logger.info("No settings_override provided, using environment variables/defaults.")
-            # Read environment variables *now*+            # Fall back to base config values if environment variable is not set
+            logger.info("Using environment variables (or defaults) for initialization parameters.")
+            # Fall back to base config values if environment variable is not set
             effective_temperature = float(os.environ.get("ZIYA_TEMPERATURE", base_temperature))
             effective_top_k = int(os.environ.get("ZIYA_TOP_K", base_top_k))
             effective_max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", base_max_tokens))
@@ -1006,14 +1037,17 @@ class ModelManager:
                     effective_top_p = float(effective_top_p_str)
                 except ValueError:
                     logger.warning(f"Invalid ZIYA_TOP_P value '{effective_top_p_str}', using default.")
-
+                    effective_top_p = base_top_p
+            
             effective_thinking_mode_str = os.environ.get("ZIYA_THINKING_MODE")
-            effective_thinking_mode = base_thinking_mode # Default to base
+            effective_thinking_mode = base_thinking_mode
+            if effective_thinking_mode_str is not None:
+                effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes", "t", "y")
             if effective_thinking_mode_str is not None:
                 effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes")
 
         # Create the appropriate model based on family
-        if family == "nova":
+        if family in ["nova", "nova-pro", "nova-lite", "nova-premier"]:
             from app.agents.wrappers.nova_wrapper import NovaBedrock
             logger.info(f"Initializing Nova model: {model_id}")
             
@@ -1054,6 +1088,47 @@ class ModelManager:
                 logger.info(f"Temperature: {effective_temperature}")
             if hasattr(model, 'model_kwargs'):
                 logger.info(f"NovaBedrock model_kwargs: {model.model_kwargs}")
+        elif wrapper_class == "OpenAIBedrock":
+            # Handle OpenAI models on Bedrock
+            from app.agents.wrappers.openai_bedrock_wrapper import OpenAIBedrock
+            logger.info(f"Initializing OpenAI model on Bedrock: {model_id}")
+            
+            # OpenAI models require us-west-2 region
+            openai_region = "us-west-2"
+            if region != openai_region:
+                logger.warning(f"OpenAI models require us-west-2 region. Switching from {region} to {openai_region}")
+                region = openai_region
+                # Update environment variable
+                os.environ["AWS_REGION"] = openai_region
+                # Update state
+                cls._state['aws_region'] = openai_region
+            
+            # Create model_kwargs for OpenAI
+            openai_model_kwargs = {
+                "max_tokens": effective_max_tokens,
+                "temperature": effective_temperature
+            }
+            
+            # Add top_p if provided
+            if effective_top_p is not None:
+                openai_model_kwargs["top_p"] = effective_top_p
+            
+            # Filter out None values
+            openai_model_kwargs = {k: v for k, v in openai_model_kwargs.items() if v is not None}
+            logger.info(f"Creating OpenAIBedrock with model_kwargs: {openai_model_kwargs}")
+            
+            # Use the persistent client but ensure it's for the correct region
+            openai_client = cls._get_persistent_bedrock_client(aws_profile, openai_region, model_id, model_config)
+            
+            model = OpenAIBedrock(
+                model_id=model_id,
+                client=openai_client.client if hasattr(openai_client, 'client') else openai_client,
+                region_name=region,
+                model_kwargs=openai_model_kwargs,
+                streaming=True
+            )
+            
+            logger.info(f"OpenAIBedrock created with: model_id={model_id}, max_tokens={effective_max_tokens}")
         else:
             # Use ZiyaBedrock instead of standard ChatBedrock
             logger.info(f"Initializing ZiyaBedrock for model: {model_id}")
@@ -1098,26 +1173,23 @@ class ModelManager:
         return model
 
     @classmethod
-    def _initialize_google_model(cls, model_config: Dict[str, Any]) -> ChatGoogleGenerativeAI:
+    def _initialize_google_model(cls, model_config: Dict[str, Any]):
         """
-        Initialize a Google model with the given configuration.
+        Initialize a Google model with direct API (no langchain).
         
         Args:
             model_config: Model configuration
             
         Returns:
-            ChatGoogleGenerativeAI: The initialized Google model
+            DirectGoogleModel: The initialized Google model
         """
-        # Import here to avoid unnecessary imports when not using Google models
-        try:
-            from app.agents.wrappers.ziya_google_genai import ZiyaChatGoogleGenerativeAI
-        except ImportError:
-            raise ValueError("langchain_google_genai package is not installed. Please install it to use Google models.")
+        # Import the direct Google wrapper
+        from app.agents.wrappers.google_direct import DirectGoogleModel
             
         # Force garbage collection before creating new model
         gc.collect()
         
-        logger.info("Initializing Google model")
+        logger.info("Initializing Google model with direct API")
         
         # Load environment variables from .env file specifically for Google models
         dotenv_path = find_dotenv()
@@ -1129,7 +1201,6 @@ class ModelManager:
         model_id = model_config.get("model_id")
         temperature = model_config.get("temperature", 0.3)
         max_output_tokens = model_config.get("max_output_tokens", 2048)
-        convert_system_message = model_config.get("convert_system_message_to_human", True)
         
         # Apply environment variable overrides
         settings = cls.get_model_settings(model_config)
@@ -1150,22 +1221,15 @@ class ModelManager:
                 google_api_key = None
         else:
             logger.info("GOOGLE_API_KEY not found in environment. ADC will be used by the library if configured.")
-            # This case should ideally be caught by _check_google_credentials,
-            # but as a safeguard:
-            # If _check_google_credentials didn't raise an error, it means ADC might be available.
-            # So, we explicitly set google_api_key to None to let the library use ADC.
             google_api_key = None
         
         logger.info(f"Initializing Google model: {model_id} with kwargs: {{'temperature': {temperature}, 'max_output_tokens': {max_output_tokens}}}")
         
-        # Create the model
-        model = ZiyaChatGoogleGenerativeAI(
-            model=model_id,
+        # Create the model with direct API
+        model = DirectGoogleModel(
+            model_name=model_id,
             temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            convert_system_message_to_human=False, # Explicitly set to False for Gemini
-            callbacks=[EmptyMessageFilter()],
-            google_api_key=google_api_key # Pass it explicitly
+            max_output_tokens=max_output_tokens
         )
         
         return model

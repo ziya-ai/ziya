@@ -1,0 +1,6 @@
+{
+    "description": "Advanced XY chart with multiple data series showing business performance metrics over time",
+    "diagram_type": "xychart",
+    "expected_to_fail": false,
+    "target_issue": "Beta XY chart with multiple line series and complex data visualization"
+}

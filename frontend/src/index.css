@@ -384,6 +384,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 .message .message-content {
   padding: 4px 11px;
+  white-space: pre-wrap;
 }
 
 .dark .message.human {
@@ -1776,12 +1777,12 @@ body:not(.dark) .token.attr-name {
 /* Diagram Action Buttons Styling */
 .diagram-actions {
     position: absolute;
-    top: 5px;
-    right: 5px;
+    top: 0;
+    right: 0;
     z-index: 10; /* Ensure it's above the SVG */
     display: flex;
     gap: 5px;
-    background: rgba(240, 240, 240, 0.8); /* Light background for visibility */
+    background: rgba(240, 240, 240, 0.7); /* Light background for visibility */
     padding: 3px;
     border-radius: 4px;
     opacity: 0; /* Hidden by default */
@@ -1794,9 +1795,10 @@ body:not(.dark) .token.attr-name {
 
 .diagram-action-button {
     padding: 3px 8px;
-    font-size: 11px;
+    font-size: 10px;
+    line-height: 16px;
     background-color: rgba(200, 200, 200, 0.7);
-    border: 1px solid rgba(150, 150, 150, 0.8);
+    border: none;
     border-radius: 4px;
     cursor: pointer;
     transition: opacity 0.2s ease-in-out;
@@ -2087,4 +2089,89 @@ body:not(.dark) .token.attr-name {
  
 .message.human .ant-btn[title*="Resubmit"]:hover {
   transform: translateY(-1px);
+}
+/* VegaLite Error Display */
+.vega-lite-error {
+  padding: 16px;
+  margin: 16px 0;
+  border-radius: 6px;
+  background-color: #fff2f0;
+  border: 1px solid #ffa39e;
+  color: #cf1322;
+}
+
+.dark .vega-lite-error {
+  background-color: #2a1f1f;
+  border-color: #a61d24;
+  color: #ff7875;
+}
+
+.vega-lite-error p {
+  margin-bottom: 8px;
+}
+
+.vega-lite-error details {
+  margin-top: 12px;
+}
+
+.vega-lite-error summary {
+  cursor: pointer;
+  font-weight: bold;
+  color: inherit;
+}
+
+.vega-lite-error pre {
+  background-color: rgba(0,0,0,0.05);
+  padding: 8px;
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: auto;
+  max-height: 300px;
+}
+
+.dark .vega-lite-error pre {
+  background-color: rgba(255,255,255,0.1);
+}
+
+/* Mermaid Error Display */
+.mermaid-error {
+  padding: 16px;
+  margin: 16px 0;
+  border-radius: 6px;
+  background-color: #fff2f0;
+  border: 1px solid #ffa39e;
+  color: #cf1322;
+}
+
+.dark .mermaid-error {
+  background-color: #2a1f1f;
+  border-color: #a61d24;
+  color: #ff7875;
+}
+
+.mermaid-error p {
+  margin-bottom: 8px;
+}
+
+.mermaid-error details {
+  margin-top: 12px;
+}
+
+.mermaid-error summary {
+  cursor: pointer;
+  font-weight: bold;
+  color: inherit;
+}
+
+.mermaid-error pre {
+  background-color: rgba(0,0,0,0.05);
+  padding: 8px;
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: auto;
+  max-height: 300px;
+}
+
+.dark .mermaid-error pre {
+  background-color: rgba(255,255,255,0.1);
 }

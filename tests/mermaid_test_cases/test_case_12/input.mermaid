@@ -1,0 +1,223 @@
+erDiagram
+    TENANT {
+        uuid tenant_id PK
+        string tenant_name UK
+        string domain_name UK
+        enum subscription_tier
+        json configuration
+        timestamp created_at
+        timestamp updated_at
+        boolean is_active
+        integer max_users
+        integer max_storage_gb
+    }
+    
+    USER {
+        uuid user_id PK
+        uuid tenant_id FK
+        string username UK
+        string email UK
+        string password_hash
+        string first_name
+        string last_name
+        json profile_data
+        enum user_status
+        timestamp last_login
+        timestamp created_at
+        timestamp updated_at
+        boolean is_verified
+        string verification_token
+        timestamp token_expires_at
+    }
+    
+    ROLE {
+        uuid role_id PK
+        uuid tenant_id FK
+        string role_name
+        string description
+        json permissions
+        boolean is_system_role
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    USER_ROLE {
+        uuid user_id FK
+        uuid role_id FK
+        uuid assigned_by FK
+        timestamp assigned_at
+        timestamp expires_at
+        boolean is_active
+    }
+    
+    WORKSPACE {
+        uuid workspace_id PK
+        uuid tenant_id FK
+        uuid owner_id FK
+        string workspace_name
+        text description
+        json settings
+        enum visibility
+        timestamp created_at
+        timestamp updated_at
+        boolean is_archived
+    }
+    
+    WORKSPACE_MEMBER {
+        uuid workspace_id FK
+        uuid user_id FK
+        enum member_role
+        json permissions
+        timestamp joined_at
+        timestamp last_accessed
+        boolean is_active
+    }
+    
+    PROJECT {
+        uuid project_id PK
+        uuid workspace_id FK
+        uuid created_by FK
+        string project_name
+        text description
+        enum project_status
+        json metadata
+        date start_date
+        date end_date
+        timestamp created_at
+        timestamp updated_at
+        boolean is_template
+    }
+    
+    TASK {
+        uuid task_id PK
+        uuid project_id FK
+        uuid assigned_to FK
+        uuid created_by FK
+        uuid parent_task_id FK
+        string task_title
+        text description
+        enum priority
+        enum status
+        json custom_fields
+        timestamp due_date
+        timestamp completed_at
+        timestamp created_at
+        timestamp updated_at
+        integer estimated_hours
+        integer actual_hours
+    }
+    
+    COMMENT {
+        uuid comment_id PK
+        uuid task_id FK
+        uuid user_id FK
+        uuid parent_comment_id FK
+        text content
+        json attachments
+        timestamp created_at
+        timestamp updated_at
+        boolean is_edited
+        boolean is_deleted
+    }
+    
+    FILE_ATTACHMENT {
+        uuid attachment_id PK
+        uuid task_id FK
+        uuid uploaded_by FK
+        string file_name
+        string file_path
+        string mime_type
+        bigint file_size
+        string file_hash
+        json metadata
+        timestamp uploaded_at
+        boolean is_deleted
+    }
+    
+    ACTIVITY_LOG {
+        uuid activity_id PK
+        uuid tenant_id FK
+        uuid user_id FK
+        uuid entity_id
+        string entity_type
+        string action_type
+        json old_values
+        json new_values
+        string ip_address
+        string user_agent
+        timestamp created_at
+    }
+    
+    NOTIFICATION {
+        uuid notification_id PK
+        uuid user_id FK
+        uuid related_entity_id
+        string entity_type
+        string notification_type
+        string title
+        text message
+        json data
+        boolean is_read
+        timestamp read_at
+        timestamp created_at
+        timestamp expires_at
+    }
+    
+    API_KEY {
+        uuid api_key_id PK
+        uuid user_id FK
+        uuid tenant_id FK
+        string key_name
+        string key_hash
+        json permissions
+        timestamp last_used
+        timestamp created_at
+        timestamp expires_at
+        boolean is_active
+    }
+    
+    AUDIT_TRAIL {
+        uuid audit_id PK
+        uuid tenant_id FK
+        uuid user_id FK
+        string table_name
+        string operation_type
+        uuid record_id
+        json before_data
+        json after_data
+        timestamp operation_time
+        string session_id
+    }
+    
+    TENANT ||--o{ USER : contains
+    TENANT ||--o{ ROLE : defines
+    TENANT ||--o{ WORKSPACE : owns
+    TENANT ||--o{ ACTIVITY_LOG : tracks
+    TENANT ||--o{ API_KEY : manages
+    TENANT ||--o{ AUDIT_TRAIL : maintains
+    
+    USER ||--o{ USER_ROLE : has
+    USER ||--o{ WORKSPACE : owns
+    USER ||--o{ WORKSPACE_MEMBER : participates
+    USER ||--o{ PROJECT : creates
+    USER ||--o{ TASK : assigned
+    USER ||--o{ TASK : creates
+    USER ||--o{ COMMENT : writes
+    USER ||--o{ FILE_ATTACHMENT : uploads
+    USER ||--o{ ACTIVITY_LOG : generates
+    USER ||--o{ NOTIFICATION : receives
+    USER ||--o{ API_KEY : owns
+    USER ||--o{ AUDIT_TRAIL : triggers
+    
+    ROLE ||--o{ USER_ROLE : assigned_to
+    
+    WORKSPACE ||--o{ WORKSPACE_MEMBER : includes
+    WORKSPACE ||--o{ PROJECT : contains
+    
+    PROJECT ||--o{ TASK : contains
+    
+    TASK ||--o{ TASK : parent_of
+    TASK ||--o{ COMMENT : has
+    TASK ||--o{ FILE_ATTACHMENT : includes
+    
+    COMMENT ||--o{ COMMENT : replies_to

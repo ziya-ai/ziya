@@ -1,0 +1,138 @@
+requirementDiagram
+    requirement HighAvailability {
+        id: REQ-001
+        text: System shall maintain 99.99% uptime
+        risk: High
+        verifymethod: Test
+    }
+    
+    requirement DataConsistency {
+        id: REQ-002
+        text: All data operations shall maintain ACID properties
+        risk: High
+        verifymethod: Test
+    }
+    
+    requirement ScalabilityRequirement {
+        id: REQ-003
+        text: System shall handle 1M concurrent users
+        risk: Medium
+        verifymethod: Test
+    }
+    
+    requirement SecurityCompliance {
+        id: REQ-004
+        text: System shall comply with SOC2 and GDPR
+        risk: High
+        verifymethod: Inspection
+    }
+    
+    requirement PerformanceRequirement {
+        id: REQ-005
+        text: API response time shall be under 200ms
+        risk: Medium
+        verifymethod: Test
+    }
+    
+    requirement DisasterRecovery {
+        id: REQ-006
+        text: System shall recover from failures within 4 hours
+        risk: High
+        verifymethod: Demonstration
+    }
+    
+    requirement DataRetention {
+        id: REQ-007
+        text: User data shall be retained for 7 years
+        risk: Low
+        verifymethod: Inspection
+    }
+    
+    requirement AuditTrail {
+        id: REQ-008
+        text: All user actions shall be logged and auditable
+        risk: Medium
+        verifymethod: Inspection
+    }
+    
+    requirement AccessControl {
+        id: REQ-009
+        text: System shall implement role-based access control
+        risk: High
+        verifymethod: Test
+    }
+    
+    requirement DataEncryption {
+        id: REQ-010
+        text: All sensitive data shall be encrypted at rest and in transit
+        risk: High
+        verifymethod: Inspection
+    }
+    
+    element LoadBalancer {
+        type: Infrastructure
+        docref: LB-001
+    }
+    
+    element DatabaseCluster {
+        type: Infrastructure
+        docref: DB-001
+    }
+    
+    element CachingLayer {
+        type: Infrastructure
+        docref: CACHE-001
+    }
+    
+    element AuthenticationService {
+        type: Service
+        docref: AUTH-001
+    }
+    
+    element EncryptionModule {
+        type: Module
+        docref: ENC-001
+    }
+    
+    element AuditingService {
+        type: Service
+        docref: AUDIT-001
+    }
+    
+    element BackupSystem {
+        type: Infrastructure
+        docref: BACKUP-001
+    }
+    
+    element MonitoringSystem {
+        type: Infrastructure
+        docref: MON-001
+    }
+    
+    element ComplianceFramework {
+        type: Framework
+        docref: COMP-001
+    }
+    
+    HighAvailability - satisfies -> LoadBalancer
+    HighAvailability - satisfies -> DatabaseCluster
+    DataConsistency - satisfies -> DatabaseCluster
+    ScalabilityRequirement - satisfies -> LoadBalancer
+    ScalabilityRequirement - satisfies -> CachingLayer
+    SecurityCompliance - satisfies -> AuthenticationService
+    SecurityCompliance - satisfies -> EncryptionModule
+    SecurityCompliance - satisfies -> ComplianceFramework
+    PerformanceRequirement - satisfies -> CachingLayer
+    PerformanceRequirement - satisfies -> LoadBalancer
+    DisasterRecovery - satisfies -> BackupSystem
+    DisasterRecovery - satisfies -> MonitoringSystem
+    DataRetention - satisfies -> BackupSystem
+    AuditTrail - satisfies -> AuditingService
+    AccessControl - satisfies -> AuthenticationService
+    DataEncryption - satisfies -> EncryptionModule
+    
+    LoadBalancer - contains -> MonitoringSystem
+    DatabaseCluster - contains -> BackupSystem
+    AuthenticationService - contains -> AuditingService
+    ComplianceFramework - contains -> AuditingService
+    ComplianceFramework - contains -> EncryptionModule

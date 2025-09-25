@@ -2,24 +2,48 @@ import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffe
 import { Message } from '../utils/types';
 import { useFolderContext } from "../context/FolderContext";
 import { Tooltip, Spin, Progress, Typography, message, ProgressProps, Dropdown } from "antd";
+import { debounce } from "lodash";
 import { useTheme } from '../context/ThemeContext';
 import { ModelSettings } from './ModelConfigModal';
 import { useChatContext } from "../context/ChatContext";
 
+// Global request deduplication cache
+const activeRequests = new Map<string, Promise<any>>();
+
 const getTokenCount = async (text: string): Promise<number> => {
+    // Create a cache key based on the text content
+    const cacheKey = `token-count-${text.length}-${text.substring(0, 100)}`;
+    
+    // If there's already an active request for this text, return the same promise
+    if (activeRequests.has(cacheKey)) {
+        console.debug('Reusing existing token count request');
+        return activeRequests.get(cacheKey);
+    }
+    
     try {
-        const response = await fetch('/api/token-count', {
+        const requestPromise = fetch('/api/token-count', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text }),
+        }).then(async (response) => {
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Token count request failed');
+            }
+            const data = await response.json();
+            return data.token_count;
         });
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.detail || 'Token count request failed');
-        }
-        const data = await response.json();
-        return data.token_count;
+        
+        // Cache the promise
+        activeRequests.set(cacheKey, requestPromise);
+        
+        // Clean up cache when request completes
+        requestPromise.finally(() => activeRequests.delete(cacheKey));
+        
+        return requestPromise;
     } catch (error) {
+        // Clean up cache on error
+        activeRequests.delete(cacheKey);
         message.error({
             content: error instanceof Error ? error.message : 'An unknown error occurred',
             duration: 5
@@ -32,7 +56,8 @@ const getTokenCount = async (text: string): Promise<number> => {
 export const TokenCountDisplay = memo(() => {
     const [containerWidth, setContainerWidth] = useState(0);
 
-    const { folders, checkedKeys, getFolderTokenCount } = useFolderContext();
+    const tokenCalculationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const { folders, checkedKeys, getFolderTokenCount, accurateTokenCounts } = useFolderContext();
     const { currentMessages, currentConversationId, isStreaming, currentFolderId, folders: chatFolders, folderFileSelections } = useChatContext();
     const [totalTokenCount, setTotalTokenCount] = useState(0);
     const [chatTokenCount, setChatTokenCount] = useState(0);
@@ -41,7 +66,7 @@ export const TokenCountDisplay = memo(() => {
     const lastMessageCount = useRef<number>(0);
     const containerRef = useRef<HTMLDivElement>(null);
     const lastMessageContent = useRef<string>('');
-    const [tokenDetails, setTokenDetails] = useState<{ [key: string]: number }>({});
+    const tokenDetailsRef = useRef<{ [key: string]: number }>({});
     const [modelLimits, setModelLimits] = useState<{
         token_limit: number | null;
         max_input_tokens: number;
@@ -55,6 +80,7 @@ export const TokenCountDisplay = memo(() => {
     const [astResolutionLoading, setAstResolutionLoading] = useState(false);
 
     const lastMuteSignatureRef = useRef<string>('');
+    const lastTokenCalcRunRef = useRef<number>(0);
     const tokenLimit = modelLimits.max_input_tokens || modelLimits.token_limit || 4096;
     const warningThreshold = useMemo(() => Math.floor(tokenLimit * 0.7), [tokenLimit]);
     const dangerThreshold = useMemo(() => Math.floor(tokenLimit * 0.9), [tokenLimit]);
@@ -231,6 +257,7 @@ export const TokenCountDisplay = memo(() => {
     // One-time fetch of model capabilities
     useEffect(() => {
         // Use a ref to track if this component is mounted
+        const abortController = new AbortController();
         const isMounted = { current: true };
 
         const fetchModelCapabilities = async () => {
@@ -238,7 +265,10 @@ export const TokenCountDisplay = memo(() => {
             fetchAttemptedRef.current = true;
 
             try {
-                const response = await fetch('/api/current-model');
+                const response = await fetch('/api/current-model', {
+                    signal: abortController.signal
+                });
+                
                 if (!response.ok) {
                     throw new Error('Failed to fetch current model settings');
                 }
@@ -259,6 +289,10 @@ export const TokenCountDisplay = memo(() => {
 
                 console.debug('Model limits updated:', { capabilities, settings });
             } catch (error) {
+                if (error instanceof Error && error.name === 'AbortError') {
+                    console.debug('Model capabilities fetch aborted');
+                    return;
+                }
                 console.error('Failed to load model capabilities:', error);
             }
         };
@@ -269,6 +303,7 @@ export const TokenCountDisplay = memo(() => {
         // Cleanup function to prevent state updates after unmount
         return () => {
             isMounted.current = false;
+            abortController.abort();
         };
     }, []);
 
@@ -353,8 +388,21 @@ export const TokenCountDisplay = memo(() => {
     // Include AST tokens in the total when AST is enabled
     const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0);
 
-    // only calculate tokens when checked files change
+  // Optimized token calculation with better debouncing
     const tokenCalculationEffect = useCallback(() => {
+        // Clear any existing timeout
+        if (tokenCalculationTimeoutRef.current) {
+            clearTimeout(tokenCalculationTimeoutRef.current);
+        }
+        
+        // Schedule calculation for later - don't block UI
+        tokenCalculationTimeoutRef.current = setTimeout(() => {
+            performTokenCalculation();
+        }, 500); // Shorter delay but still batched
+    }, []);
+    
+    const performTokenCalculation = useCallback(() => {
+        console.log('Token calculation triggered');
         if (!folders) return;
 
         if (folders && checkedKeys.length > 0) {
@@ -362,16 +410,28 @@ export const TokenCountDisplay = memo(() => {
             const currentFolder = currentFolderId ? chatFolders.find(f => f.id === currentFolderId) : null;
 
             let total = 0;
+      
+      // Use a more efficient calculation approach
+      const checkedSet = new Set(checkedKeys.map(String));
             const details: { [key: string]: number } = {};
-
+            let accurateFileCount = 0;
+            
             // Use getFolderTokenCount for each checked path
             checkedKeys.forEach(key => {
                 const path = String(key);
                 if (!folders) {
-                    setTokenDetails({});
+                    tokenDetailsRef.current = {};
                     return;
                 }
-                const tokens = getFolderTokenCount(path, folders);
+                
+                // Use accurate count if available
+        let tokens = folders ? getFolderTokenCount(path, folders) : 0;
+                const accurateData = accurateTokenCounts[path];
+                if (accurateData && path.includes('.')) { // Only for files
+                    tokens = accurateData.count;
+                    accurateFileCount++;
+                }
+                
                 if (tokens > 0) {
                     details[path] = tokens;
                     total += tokens;
@@ -380,13 +440,18 @@ export const TokenCountDisplay = memo(() => {
             // Only log token details when debugging specific issues
             // console.debug('Token count details:', details);
 
-            setTokenDetails(details);
+            tokenDetailsRef.current = details;
             setTotalTokenCount(total);
+            
+            // Log accuracy info
+            if (accurateFileCount > 0 && accurateFileCount % 5 === 0) {
+                console.log(`Using accurate token counts for ${accurateFileCount} files`);
+            }
         } else {
-            setTokenDetails({});
+            tokenDetailsRef.current = {};
             setTotalTokenCount(0);
         }
-    }, [checkedKeys, folders, getFolderTokenCount, currentFolderId, chatFolders, folderFileSelections]);
+    }, [checkedKeys, folders, getFolderTokenCount, currentFolderId, chatFolders, folderFileSelections, accurateTokenCounts]);
 
     useEffect(() => {
         tokenCalculationEffect();
@@ -394,13 +459,16 @@ export const TokenCountDisplay = memo(() => {
 
     // Recalculate totalTokenCount based on top-level checked keys to avoid inflation
     useEffect(() => {
-        if (!folders) return;
+        if (!folders || checkedKeys.length === 0) return;
 
         const topLevelCheckedKeys = checkedKeys.filter(key => {
             const path = String(key);
             const parentPath = path.substring(0, path.lastIndexOf('/'));
             return !parentPath || !checkedKeys.some(k => String(k) === parentPath);
         });
+
+        // Skip recalculation if no top-level keys changed
+        if (topLevelCheckedKeys.length === 0) return;
 
         let newTotalTokenCount = 0;
         const newDetails: { [key: string]: number } = {};
@@ -413,7 +481,7 @@ export const TokenCountDisplay = memo(() => {
                 newTotalTokenCount += tokens;
             }
         });
-        setTokenDetails(newDetails);
+        tokenDetailsRef.current = newDetails;
         setTotalTokenCount(newTotalTokenCount);
 
     }, [checkedKeys, folders, getFolderTokenCount]);
@@ -557,8 +625,25 @@ export const TokenCountDisplay = memo(() => {
     // Create token display items with even spacing
     const tokenItems = [
         <Tooltip key="files" title="Tokens from selected files">
+            {(() => {
+                const accurateCount = Object.keys(accurateTokenCounts).length;
+                // Count actual files (not directories) in checked keys
+                const selectedFiles = checkedKeys.filter(key => {
+                    const keyStr = String(key);
+                    // More precise file detection: has extension and doesn't end with /
+                    return keyStr.includes('.') && !keyStr.endsWith('/') && 
+                           keyStr.split('/').pop()?.includes('.');
+                }).length;
+                
+                const isFullyAccurate = selectedFiles > 0 && accurateCount === selectedFiles;
+                const hasAnyAccurate = accurateCount > 0;
+                
+                return (
             <span>Files: <span style={getTokenStyle(totalTokenCount)}>
-                {totalTokenCount.toLocaleString()}</span></span>
+                {totalTokenCount.toLocaleString()}{isFullyAccurate ? '✓' : (hasAnyAccurate ? '~' : '~')}</span>
+            </span>
+                );
+            })()}
         </Tooltip>
     ];
 

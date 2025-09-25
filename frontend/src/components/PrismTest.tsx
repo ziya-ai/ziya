@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Card, Table, Tag, Button, Space, message } from 'antd';
 import { loadPrismLanguage } from '../utils/prismLoader';
+import { Card, Table, Tag, Button, Space, message, Row, Col } from 'antd';
 import './debug.css';
 
 // Comprehensive list of Prism-supported languages
@@ -135,6 +135,70 @@ const PrismTest: React.FC = () => {
         }
     ];
 
+    // Test function for Swift
+    const testSwift = async () => {
+        setTestResults([{
+            language: 'swift',
+            status: 'pending'
+        }]);
+
+        try {
+            const result = await testLanguage('swift');
+            setTestResults([result]);
+            
+            if (result.status === 'success') {
+                message.success(`Swift language loaded successfully in ${result.loadTime}ms`);
+            } else {
+                message.error(`Failed to load Swift: ${result.error}`);
+            }
+        } catch (error) {
+            message.error(`Error testing Swift: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    };
+
+    // Test function for Objective-C
+    const testObjectiveC = async () => {
+        setTestResults([{
+            language: 'objectivec',
+            status: 'pending'
+        }]);
+
+        try {
+            const result = await testLanguage('objectivec');
+            setTestResults([result]);
+            
+            if (result.status === 'success') {
+                message.success(`Objective-C language loaded successfully in ${result.loadTime}ms`);
+            } else {
+                message.error(`Failed to load Objective-C: ${result.error}`);
+            }
+        } catch (error) {
+            message.error(`Error testing Objective-C: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    };
+
+    // Test function for iOS/Mac development languages
+    const testAppleDevLanguages = async () => {
+        setTestResults([
+            { language: 'swift', status: 'pending' },
+            { language: 'objectivec', status: 'pending' },
+            { language: 'cpp', status: 'pending' },
+            { language: 'metal', status: 'pending' },
+            { language: 'plist', status: 'pending' }
+        ]);
+
+        const results: LanguageTestResult[] = [];
+        for (const language of ['swift', 'objectivec', 'cpp', 'metal', 'plist']) {
+            const result = await testLanguage(language);
+            results.push(result);
+            setTestResults([...results]);
+        }
+
+        const successful = results.filter(r => r.status === 'success').length;
+        const failed = results.filter(r => r.status === 'failed').length;
+        message.info(`Apple Dev Languages Test: ${successful} succeeded, ${failed} failed.`);
+    };
+
     const getStatistics = () => {
         const total = testResults.length;
         const successful = testResults.filter(r => r.status === 'success').length;
@@ -163,14 +227,35 @@ const PrismTest: React.FC = () => {
         <Card title="Debug View: Prism Language Support Test">
             <Space direction="vertical" style={{ width: '100%' }}>
                 <div style={{ marginBottom: 16 }}>
-                    <Button
-                        type="primary"
-                        onClick={runAllTests}
-                        loading={isTestingAll}
-                        style={{ marginBottom: 16 }}
-                    >
-                        {isTestingAll ? 'Testing...' : 'Test All Languages'}
-                    </Button>
+                    <Row gutter={[8, 8]}>
+                        <Col>
+                            <Button
+                                type="primary"
+                                onClick={runAllTests}
+                                loading={isTestingAll}
+                            >
+                                {isTestingAll ? 'Testing...' : 'Test All Languages'}
+                            </Button>
+                        </Col>
+                        <Col>
+                            <Button
+                                type="primary"
+                                onClick={testAppleDevLanguages}
+                            >
+                                Test Apple Dev Languages
+                            </Button>
+                        </Col>
+                        <Col>
+                            <Button onClick={testSwift}>
+                                Test Swift
+                            </Button>
+                        </Col>
+                        <Col>
+                            <Button onClick={testObjectiveC}>
+                                Test Objective-C
+                            </Button>
+                        </Col>
+                    </Row>
                 </div>
 
                 {testResults.length > 0 && (

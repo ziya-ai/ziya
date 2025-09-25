@@ -1,0 +1,61 @@
+stateDiagram-v2
+    [*] --> ApplicationStartup
+    
+    state ApplicationStartup {
+        [*] --> LoadingConfiguration
+        LoadingConfiguration --> ValidatingConfig
+        ValidatingConfig --> InitializingServices
+        InitializingServices --> ConnectingDatabase
+        ConnectingDatabase --> StartingServer
+        StartingServer --> [*]
+    }
+    
+    ApplicationStartup --> Running
+    
+    state Running {
+        [*] --> Idle
+        Idle --> ProcessingRequest : request_received
+        ProcessingRequest --> AuthenticatingUser
+        AuthenticatingUser --> ValidatingInput : auth_success
+        AuthenticatingUser --> Idle : auth_failed
+        ValidatingInput --> ExecutingBusinessLogic : validation_success
+        ValidatingInput --> Idle : validation_failed
+        ExecutingBusinessLogic --> AccessingDatabase
+        AccessingDatabase --> FormattingResponse : db_success
+        AccessingDatabase --> HandleError : db_error
+        FormattingResponse --> Idle : response_sent
+        HandleError --> Idle : error_handled
+        
+        state ExecutingBusinessLogic {
+            [*] --> CheckingPermissions
+            CheckingPermissions --> ApplyingBusinessRules : permissions_ok
+            CheckingPermissions --> [*] : permissions_denied
+            ApplyingBusinessRules --> ValidatingBusinessData
+            ValidatingBusinessData --> ProcessingData : data_valid
+            ValidatingBusinessData --> [*] : data_invalid
+            ProcessingData --> [*] : processing_complete
+        }
+    }
+    
+    Running --> Maintenance : maintenance_mode
+    Running --> Shutdown : shutdown_signal
+    
+    state Maintenance {
+        [*] --> DrainConnections
+        DrainConnections --> BackupData
+        BackupData --> ApplyUpdates
+        ApplyUpdates --> ValidateSystem
+        ValidateSystem --> [*]
+    }
+    
+    Maintenance --> Running : maintenance_complete
+    
+    state Shutdown {
+        [*] --> GracefulShutdown
+        GracefulShutdown --> ClosingConnections
+        ClosingConnections --> SavingState
+        SavingState --> CleanupResources
+        CleanupResources --> [*]
+    }
+    
+    Shutdown --> [*]

@@ -1,0 +1,6 @@
+{
+    "description": "Multi-layered architecture diagram with logos and complex service interconnections",
+    "diagram_type": "architecture",
+    "expected_to_fail": false,
+    "target_issue": "Beta architecture diagram with service groups, logos, and directional connections"
+}

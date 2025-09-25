@@ -18,7 +18,7 @@ from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff
 from ..validation.validators import is_new_file_creation, is_hunk_already_applied, normalize_line_for_comparison
 from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts
-from ..application.patch_apply import apply_diff_with_difflib, apply_diff_with_difflib_hybrid_forced
+from ..application.patch_apply import apply_diff_with_difflib, apply_diff_with_difflib_hybrid_forced, apply_diff_with_difflib_hybrid_forced_hunks
 from ..application.git_diff import parse_patch_output
 
 from .diff_pipeline import DiffPipeline, PipelineStage, HunkStatus, PipelineResult
@@ -67,11 +67,29 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     
     if len(individual_diffs) > 1:
         # Find the diff that matches our target file
-        matching_diff = next((diff for diff in individual_diffs 
-                            if extract_target_file_from_diff(diff) == file_path), None)
+        # Compare using basename to handle full paths vs relative paths
+        target_basename = os.path.basename(file_path)
+        matching_diff = None
+        
+        for diff in individual_diffs:
+            diff_target = extract_target_file_from_diff(diff)
+            if diff_target:
+                # Try exact match first
+                if diff_target == file_path or diff_target == target_basename:
+                    matching_diff = diff
+                    break
+                # Try basename match
+                elif os.path.basename(diff_target) == target_basename:
+                    matching_diff = diff
+                    break
+        
         if matching_diff:
+            logger.debug(f"Found matching diff for target file: {file_path}")
             git_diff = matching_diff
             pipeline.current_diff = git_diff
+        else:
+            logger.warning(f"No matching diff found for target file: {file_path}")
+            logger.debug(f"Available diff targets: {[extract_target_file_from_diff(d) for d in individual_diffs]}")
     
     # Get the base directory
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
@@ -175,7 +193,25 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # If force difflib flag is set, skip system patch and git apply
     if os.environ.get('ZIYA_FORCE_DIFFLIB'):
         logger.info("Force difflib mode enabled, bypassing system patch and git apply")
-        return run_difflib_stage(pipeline, file_path, git_diff, original_lines)
+        pipeline.update_stage(PipelineStage.DIFFLIB)
+        difflib_result = run_difflib_stage(pipeline, file_path, git_diff, original_lines)
+        
+        # Complete the pipeline and return the proper result dictionary
+        if difflib_result:
+            pipeline.result.changes_written = True
+        
+        # Set the final status based on hunk results
+        if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
+               for tracker in pipeline.result.hunks.values()):
+            pipeline.result.status = "success"
+        elif any(tracker.status == HunkStatus.SUCCEEDED 
+                for tracker in pipeline.result.hunks.values()):
+            pipeline.result.status = "partial"
+        else:
+            pipeline.result.status = "error"
+            
+        pipeline.complete()
+        return pipeline.result.to_dict()
     
     # Stage 1: System Patch
     pipeline.update_stage(PipelineStage.SYSTEM_PATCH)
@@ -228,7 +264,21 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             pipeline.complete(error="No hunks were applied")
             return pipeline.result.to_dict()
     
-    git_apply_result = run_git_apply_stage(pipeline, user_codebase_dir, remaining_diff)
+    # Check for problematic patterns that git apply handles poorly
+    if "\\ No newline at end of file" in remaining_diff:
+        logger.info("Detected 'No newline at end of file' pattern - skipping git apply due to known issues")
+        # Mark all pending hunks as failed so they go to difflib
+        for hunk_id, tracker in pipeline.result.hunks.items():
+            if tracker.status == HunkStatus.PENDING:
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.GIT_APPLY,
+                    status=HunkStatus.FAILED,
+                    error_details={"error": "skipped due to newline at EOF issue"}
+                )
+        git_apply_result = False
+    else:
+        git_apply_result = run_git_apply_stage(pipeline, user_codebase_dir, remaining_diff)
     
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
@@ -677,14 +727,26 @@ def run_git_apply_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff
         
         if git_result.returncode == 0:
             logger.info("Git apply succeeded")
-            # Mark all pending hunks as succeeded
-            for hunk_id, tracker in pipeline.result.hunks.items():
-                if tracker.status == HunkStatus.PENDING:
-                    pipeline.update_hunk_status(
-                        hunk_id=hunk_id,
-                        stage=PipelineStage.GIT_APPLY,
-                        status=HunkStatus.SUCCEEDED
-                    )
+            # Check if git apply reports clean application
+            if "Applied patch" in git_result.stderr and "cleanly" in git_result.stderr:
+                logger.info("Git apply reports clean application - marking all hunks as succeeded")
+                # Mark all hunks as succeeded when git apply cleanly applies the entire patch
+                for hunk_id, tracker in pipeline.result.hunks.items():
+                    if tracker.status in (HunkStatus.PENDING, HunkStatus.FAILED):
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.GIT_APPLY,
+                            status=HunkStatus.SUCCEEDED
+                        )
+            else:
+                # Only mark pending hunks as succeeded for partial success
+                for hunk_id, tracker in pipeline.result.hunks.items():
+                    if tracker.status == HunkStatus.PENDING:
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.GIT_APPLY,
+                            status=HunkStatus.SUCCEEDED
+                        )
             changes_written = True
         elif "already applied" in git_result.stderr:
             logger.info("Some hunks were already applied")
@@ -735,6 +797,39 @@ def run_git_apply_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff
         if 'temp_path' in locals() and os.path.exists(temp_path):
             os.unlink(temp_path)
 
+def update_merged_hunk_status(pipeline, merged_hunk_mapping, new_hunk_index, status, stage, error_details=None):
+    """
+    Update the status of all original hunks that were merged into a single new hunk.
+    
+    Args:
+        pipeline: The pipeline instance
+        merged_hunk_mapping: Dictionary mapping new hunk indices to lists of original hunk indices
+        new_hunk_index: Index of the new merged hunk (0-based)
+        status: Status to set for all original hunks
+        stage: Pipeline stage
+        error_details: Optional error details
+    """
+    if new_hunk_index in merged_hunk_mapping:
+        original_indices = merged_hunk_mapping[new_hunk_index]
+        logger.info(f"Updating status for merged hunk {new_hunk_index}: original hunks {original_indices} -> {status}")
+        
+        # Get the list of pending hunks to map indices to actual hunk IDs
+        original_hunk_ids = sorted(pipeline.result.hunks.keys())
+        pending_hunks = [hunk_id for hunk_id in original_hunk_ids 
+                        if pipeline.result.hunks[hunk_id].status == HunkStatus.PENDING]
+        
+        for orig_idx in original_indices:
+            if orig_idx < len(pending_hunks):
+                hunk_id = pending_hunks[orig_idx]
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=stage,
+                    status=status,
+                    error_details=error_details
+                )
+                logger.info(f"Updated original hunk #{hunk_id} (index {orig_idx}) to {status}")
+
+
 def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, original_lines: List[str]) -> bool:
     """
     Run the difflib stage of the pipeline.
@@ -773,6 +868,33 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
         logger.info(f"Parsed {len(hunks)} hunks for difflib stage")
         
+        # Fix overlapping hunks to prevent data corruption
+        from ..application.overlapping_hunks_fix import fix_overlapping_hunks
+        original_hunk_count = len(hunks)
+        original_hunks = hunks.copy()  # Keep original hunks for reference
+        
+        # Pass the original file content to ensure correct old_block reconstruction
+        original_file_content = ''.join(original_lines)
+        hunks = fix_overlapping_hunks(hunks, original_file_content)
+        
+        # Track which original hunks were merged into which new hunks
+        merged_hunk_mapping = {}  # new_hunk_index -> list of original hunk indices
+        if len(hunks) != original_hunk_count:
+            logger.info(f"Overlapping hunks fix: {original_hunk_count} -> {len(hunks)} hunks")
+            
+            # Build mapping from merged hunks back to original hunks
+            for new_idx, hunk in enumerate(hunks):
+                if 'merged_from' in hunk:
+                    merged_hunk_mapping[new_idx] = hunk['merged_from']
+                    logger.debug(f"Merged hunk {new_idx} contains original hunks: {hunk['merged_from']}")
+                else:
+                    # Find which original hunk this corresponds to
+                    for orig_idx, orig_hunk in enumerate(original_hunks):
+                        if (hunk['old_start'] == orig_hunk['old_start'] and 
+                            hunk['old_count'] == orig_hunk['old_count']):
+                            merged_hunk_mapping[new_idx] = [orig_idx]
+                            break
+        
         # CRITICAL FIX: Check for malformed hunks first
         malformed_hunks = []
         for i, hunk in enumerate(hunks, 1):
@@ -787,8 +909,15 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     continue
             
             # Check if essential hunk data is missing
-            if not hunk.get('old_block') or not hunk.get('new_lines'):
-                logger.warning(f"Malformed hunk detected: missing old_block or new_lines")
+            # Note: old_block can be an empty list for empty files, so check for key existence
+            if 'old_block' not in hunk or 'new_lines' not in hunk:
+                logger.warning(f"Malformed hunk detected: missing old_block or new_lines keys")
+                malformed_hunks.append(hunk_id)
+                continue
+            
+            # Also check that new_lines is not None (empty list is OK for deletions)
+            if hunk.get('new_lines') is None:
+                logger.warning(f"Malformed hunk detected: new_lines is None")
                 malformed_hunks.append(hunk_id)
                 continue
         
@@ -809,6 +938,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         already_applied_hunks = []
         
         # Map hunk numbers to their IDs in the pipeline
+        # After overlapping hunks fix, we need to account for merged hunks
         hunk_id_mapping = {}
 
         # Get the original hunk IDs in order
@@ -822,27 +952,50 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         logger.info(f"Pending hunks that need processing: {pending_hunks}")
 
         # Create mapping from current sequential index to original hunk ID
-        # This handles discontiguous mappings by using the actual pending hunks
-        if len(pending_hunks) == len(hunks):
-            # If the number of pending hunks matches the number of hunks in the diff,
-            # we can map them directly
-            for i, hunk_id in enumerate(pending_hunks, 1):
-                hunk_id_mapping[i] = hunk_id
-        else:
-            # If there's a mismatch in the number of hunks, log a warning
-            # and fall back to a best-effort mapping
-            logger.warning(f"Mismatch between pending hunks ({len(pending_hunks)}) and hunks in diff ({len(hunks)})")
+        # This handles both normal hunks and merged hunks
+        if merged_hunk_mapping:
+            # We have merged hunks, so we need to create a more complex mapping
+            logger.info(f"Creating hunk ID mapping with merged hunks: {merged_hunk_mapping}")
             
-            # Try to match hunks by content if possible
-            for i, hunk in enumerate(hunks, 1):
-                if i <= len(pending_hunks):
-                    hunk_id_mapping[i] = pending_hunks[i-1]
+            for new_idx, original_indices in merged_hunk_mapping.items():
+                # For merged hunks, we'll use the first original hunk's ID as the primary ID
+                # but we need to mark all the original hunks as handled
+                primary_original_idx = original_indices[0]
+                if primary_original_idx < len(pending_hunks):
+                    primary_hunk_id = pending_hunks[primary_original_idx]
+                    hunk_id_mapping[new_idx + 1] = primary_hunk_id  # +1 because enumerate starts at 1
+                    
+                    # Mark all the merged original hunks as handled by this new hunk
+                    for orig_idx in original_indices:
+                        if orig_idx < len(pending_hunks):
+                            orig_hunk_id = pending_hunks[orig_idx]
+                            # We'll handle the status updates for merged hunks later
+                            logger.debug(f"Original hunk {orig_hunk_id} (index {orig_idx}) merged into new hunk {new_idx + 1}")
                 else:
-                    # If we run out of pending hunks, use a fallback
-                    # Find the next available hunk ID
-                    next_id = max(original_hunk_ids) + 1 if original_hunk_ids else i
-                    hunk_id_mapping[i] = next_id
-                    logger.warning(f"No pending hunk available for diff hunk #{i}, using ID {next_id}")
+                    # Fallback if we can't find the original hunk
+                    hunk_id_mapping[new_idx + 1] = pending_hunks[0] if pending_hunks else new_idx + 1
+        else:
+            # No merged hunks, use the original logic
+            if len(pending_hunks) == len(hunks):
+                # If the number of pending hunks matches the number of hunks in the diff,
+                # we can map them directly
+                for i, hunk_id in enumerate(pending_hunks, 1):
+                    hunk_id_mapping[i] = hunk_id
+            else:
+                # If there's a mismatch in the number of hunks, log a warning
+                # and fall back to a best-effort mapping
+                logger.warning(f"Mismatch between pending hunks ({len(pending_hunks)}) and hunks in diff ({len(hunks)})")
+                
+                # Try to match hunks by content if possible
+                for i, hunk in enumerate(hunks, 1):
+                    if i <= len(pending_hunks):
+                        hunk_id_mapping[i] = pending_hunks[i-1]
+                    else:
+                        # If we run out of pending hunks, use a fallback
+                        # Find the next available hunk ID
+                        next_id = max(original_hunk_ids) + 1 if original_hunk_ids else i
+                        hunk_id_mapping[i] = next_id
+                        logger.warning(f"No pending hunk available for diff hunk #{i}, using ID {next_id}")
 
         # Log the mapping for debugging
         logger.info(f"Hunk ID mapping for discontiguous hunks: {hunk_id_mapping}")
@@ -867,8 +1020,58 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 continue
                 
             found_applied_at_any_pos = False
+            
+            # Skip "already applied" detection for merged hunks since they contain
+            # combined content from multiple original hunks that won't match the current file state
+            is_merged_hunk = merged_hunk_mapping and (i-1) in merged_hunk_mapping
+            if is_merged_hunk:
+                logger.info(f"Skipping 'already applied' detection for merged hunk #{i} - will apply directly")
+                logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) is not already applied")
+                all_hunks_found_applied = False
+                continue
+            
             # Check if this specific hunk is already applied anywhere in the file
-            for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
+            # OPTIMIZATION: Use smarter search instead of checking every position
+            search_positions = []
+            
+            # Strategy 1: Check around the expected position first (most likely)
+            expected_line = hunk.get('old_start_line', 1) - 1  # Convert to 0-based
+            search_radius = 50  # Check within 50 lines of expected position
+            start_search = max(0, expected_line - search_radius)
+            end_search = min(len(original_lines), expected_line + search_radius)
+            search_positions.extend(range(start_search, end_search + 1))
+            
+            # Strategy 2: If hunk has distinctive content, search for that first
+            if 'new_lines' in hunk and hunk.get('new_lines'):
+                # Look for the first distinctive line to narrow down search
+                distinctive_line = None
+                for line in hunk['new_lines']:
+                    stripped = line.strip()
+                    if len(stripped) > 10 and not stripped.startswith(('if ', 'for ', 'while ', 'def ', 'class ')):
+                        distinctive_line = stripped
+                        break
+                
+                if distinctive_line:
+                    # Find positions where this distinctive line appears
+                    for i, file_line in enumerate(original_lines):
+                        if file_line.strip() == distinctive_line:
+                            # Add positions around this match
+                            for offset in range(-5, 6):  # Check 5 lines before/after
+                                pos = i + offset
+                                if 0 <= pos <= len(original_lines) and pos not in search_positions:
+                                    search_positions.append(pos)
+            
+            # Strategy 3: Only do full file search as last resort and with sampling
+            if not search_positions:
+                # Sample every 10th position instead of checking every position
+                sample_step = max(1, len(original_lines) // 100)
+                search_positions = list(range(0, len(original_lines) + 1, sample_step))
+            
+            # Remove duplicates and sort
+            search_positions = sorted(set(search_positions))
+            logger.debug(f"Optimized already-applied check: searching {len(search_positions)} positions instead of {len(original_lines) + 1}")
+            
+            for pos in search_positions:
                 # CRITICAL FIX: First check if the target state (new_lines) is already present in the file
                 # This is the most important check - if the target state is already there, we can mark it as already applied
                 if 'new_lines' in hunk and pos + len(hunk.get('new_lines', [])) <= len(original_lines):
@@ -882,6 +1085,23 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     
                     # If the file already contains the target state, mark it as already applied
                     if normalized_file_slice == normalized_new_lines:
+                        # CRITICAL FIX: For deletion hunks, we need to check if the content to be deleted
+                        # still exists in the file. If it does, the hunk is NOT already applied.
+                        if 'removed_lines' in hunk:
+                            removed_lines = hunk.get('removed_lines', [])
+                            
+                            # If this is a deletion hunk (has lines to remove)
+                            if removed_lines:
+                                # Check if the content to be deleted still exists anywhere in the file
+                                removed_content = "\n".join([normalize_line_for_comparison(line) for line in removed_lines])
+                                file_content = "\n".join([normalize_line_for_comparison(line) for line in original_lines])
+                                
+                                # If the content to be deleted still exists in the file, 
+                                # then the hunk is NOT already applied
+                                if removed_content in file_content:
+                                    logger.debug(f"Deletion hunk not applied - content to be deleted still exists in file at pos {pos}")
+                                    continue
+                        
                         # CRITICAL FIX: Also check if the old_block matches what's in the file
                         # This prevents marking a hunk as "already applied" when the file has content
                         # that doesn't match what we're trying to remove
@@ -933,42 +1153,75 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                     logger.debug(f"Pure addition not found in file content")
                                     continue
                         
+                        # CRITICAL: Check for malformed state before marking as already applied
+                        from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
+                        if detect_malformed_state(original_lines, hunk):
+                            logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) detected in malformed state - not marking as already applied")
+                            all_hunks_found_applied = False
+                            continue
+                        
+                        # ADDITIONAL CHECK: For hunks with removals, ensure removal content actually exists
+                        removed_lines, _ = extract_diff_changes(hunk)
+                        if removed_lines and not _validate_removal_content(original_lines, removed_lines, pos):
+                            logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) removal validation failed - not marking as already applied")
+                            all_hunks_found_applied = False
+                            continue
+                        
                         found_applied_at_any_pos = True
                         # Use the correct hunk ID from the mapping
                         pipeline_hunk_id = hunk_id_mapping.get(i, original_hunk_id)
                         already_applied_hunks.append(pipeline_hunk_id)
                         
                         # Update the hunk status in the pipeline
-                        pipeline.update_hunk_status(
-                            hunk_id=pipeline_hunk_id,
-                            stage=PipelineStage.DIFFLIB,
-                            status=HunkStatus.ALREADY_APPLIED
-                        )
+                        # Check if this is a merged hunk and update all original hunks
+                        if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
+                            update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.ALREADY_APPLIED, PipelineStage.DIFFLIB)
+                        else:
+                            pipeline.update_hunk_status(
+                                hunk_id=pipeline_hunk_id,
+                                stage=PipelineStage.DIFFLIB,
+                                status=HunkStatus.ALREADY_APPLIED
+                            )
                         logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos}")
                         break
                 
                 # If we haven't found it already applied, use the standard check
                 if not found_applied_at_any_pos and is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=False):
+                    # CRITICAL: Double-check for malformed state before marking as already applied
+                    from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
+                    if detect_malformed_state(original_lines, hunk):
+                        logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) detected in malformed state - not marking as already applied")
+                        all_hunks_found_applied = False
+                        continue
+                    
+                    # ADDITIONAL CHECK: For hunks with removals, ensure removal content actually exists
+                    removed_lines, _ = extract_diff_changes(hunk)
+                    if removed_lines and not _validate_removal_content(original_lines, removed_lines, pos):
+                        logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) removal validation failed - not marking as already applied")
+                        all_hunks_found_applied = False
+                        continue
+                    
                     found_applied_at_any_pos = True
                     # Use the correct hunk ID from the mapping
                     pipeline_hunk_id = hunk_id_mapping.get(i, original_hunk_id)
                     already_applied_hunks.append(pipeline_hunk_id)
                     
                     # Update the hunk status in the pipeline
-                    pipeline.update_hunk_status(
-                        hunk_id=pipeline_hunk_id,
-                        stage=PipelineStage.DIFFLIB,
-                        status=HunkStatus.ALREADY_APPLIED
-                    )
+                    # Check if this is a merged hunk and update all original hunks
+                    if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
+                        update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.ALREADY_APPLIED, PipelineStage.DIFFLIB)
+                    else:
+                        pipeline.update_hunk_status(
+                            hunk_id=pipeline_hunk_id,
+                            stage=PipelineStage.DIFFLIB,
+                            status=HunkStatus.ALREADY_APPLIED
+                        )
                     logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos}")
                     break
             
             if not found_applied_at_any_pos:
                 logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) is not already applied")
                 all_hunks_found_applied = False
-                # Don't break here - continue checking other hunks
-                all_hunks_found_applied = False
-                # Don't break here - continue checking other hunks
                 
         # Special handling for misordered hunks and multi-hunk same function cases
         from ..application.hunk_ordering import is_misordered_hunks_case, is_multi_hunk_same_function_case
@@ -1028,16 +1281,53 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         
         # Apply the diff with difflib
         try:
+            # CRITICAL: Check for malformed hunks before application
+            from ..validation.validators import detect_malformed_state
+            malformed_hunks = []
+            for i, hunk in enumerate(hunks, 1):
+                if detect_malformed_state(original_lines, hunk):
+                    hunk_id = hunk.get('number', i)
+                    malformed_hunks.append(hunk_id)
+                    logger.info(f"Hunk #{hunk_id} detected as malformed - marking as failed")
+                    pipeline.update_hunk_status(
+                        hunk_id=hunk_id,
+                        stage=PipelineStage.DIFFLIB,
+                        status=HunkStatus.FAILED,
+                        error_details={"error": "Malformed state detected - both old and new content exist"}
+                    )
+            
+            # Add malformed hunks to the skip list
+            if malformed_hunks:
+                logger.info(f"Adding malformed hunks to skip list: {malformed_hunks}")
+                hunks_to_skip.extend(malformed_hunks)
+            
+            # If all hunks are malformed, return failure
+            if len(malformed_hunks) == len(hunks):
+                logger.warning("All hunks are malformed, cannot apply diff")
+                return False
+            
             # First try with the hybrid forced mode
             try:
                 logger.info("Attempting to apply diff with hybrid forced mode")
-                # Pass the list of hunks to skip to the hybrid forced mode
-                modified_lines = apply_diff_with_difflib_hybrid_forced(
-                    file_path, 
-                    git_diff, 
-                    original_lines,
-                    skip_hunks=hunks_to_skip
-                )
+                
+                # CRITICAL FIX: Use the merged hunks directly instead of re-parsing the original diff
+                if merged_hunk_mapping:
+                    logger.info("Using merged hunks for difflib application")
+                    modified_lines = apply_diff_with_difflib_hybrid_forced_hunks(
+                        file_path, 
+                        hunks,  # Use the merged hunks directly
+                        original_lines,
+                        skip_hunks=hunks_to_skip
+                    )
+                else:
+                    logger.info("Using original diff content for difflib application")
+                    # Pass the list of hunks to skip to the hybrid forced mode
+                    modified_lines = apply_diff_with_difflib_hybrid_forced(
+                        file_path, 
+                        git_diff, 
+                        original_lines,
+                        skip_hunks=hunks_to_skip
+                    )
                 modified_content = ''.join(modified_lines)
                 
                 # CRITICAL VERIFICATION: Check if the content actually changed
@@ -1051,6 +1341,20 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         hunk_id = hunk.get('number', i)
                         # Check if this hunk is already applied anywhere in the file
                         for pos in range(len(original_lines) + 1):
+                            # CRITICAL: Check for malformed state before marking as already applied
+                            from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
+                            if detect_malformed_state(original_lines, hunk):
+                                logger.info(f"Hunk #{hunk_id} detected in malformed state - not marking as already applied")
+                                hunk_applied = False
+                                break
+                            
+                            # ADDITIONAL CHECK: For hunks with removals, ensure removal content actually exists
+                            removed_lines, _ = extract_diff_changes(hunk)
+                            if removed_lines and not _validate_removal_content(original_lines, removed_lines, pos):
+                                logger.info(f"Hunk #{hunk_id} removal validation failed - not marking as already applied")
+                                hunk_applied = False
+                                break
+                            
                             if is_hunk_already_applied(original_lines, hunk, pos):
                                 hunk_applied = True
                                 logger.info(f"Verified hunk #{hunk_id} is already applied at position {pos}")
@@ -1152,6 +1456,20 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                 hunk_id = hunk.get('number', i)
                                 # Check if this hunk is already applied anywhere in the file
                                 for pos in range(len(original_lines) + 1):
+                                    # CRITICAL: Check for malformed state before marking as already applied
+                                    from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
+                                    if detect_malformed_state(original_lines, hunk):
+                                        logger.info(f"Hunk #{hunk_id} detected in malformed state - not marking as already applied")
+                                        hunk_applied = False
+                                        break
+                                    
+                                    # ADDITIONAL CHECK: For hunks with removals, ensure removal content actually exists
+                                    removed_lines, _ = extract_diff_changes(hunk)
+                                    if removed_lines and not _validate_removal_content(original_lines, removed_lines, pos):
+                                        logger.info(f"Hunk #{hunk_id} removal validation failed - not marking as already applied")
+                                        hunk_applied = False
+                                        break
+                                    
                                     if is_hunk_already_applied(original_lines, hunk, pos):
                                         hunk_applied = True
                                         logger.info(f"Verified hunk #{hunk_id} is already applied at position {pos}")
@@ -1338,7 +1656,7 @@ def verify_hunks_with_file_content(pipeline: DiffPipeline, hunk_status: Dict[int
     # Parse the hunks from the diff
     from ..parsing.diff_parser import parse_unified_diff_exact_plus
     try:
-        hunks = list(parse_unified_diff_exact_plus(pipeline.git_diff, pipeline.file_path))
+        hunks = list(parse_unified_diff_exact_plus(pipeline.current_diff, pipeline.file_path))
     except Exception as e:
         logger.error(f"Error parsing diff: {str(e)}")
         # Mark all needs_verification hunks as failed

@@ -13,3 +13,8 @@ frontend/node_modules
 node_modules/
 **/node_modules/
 templates/
+
+# Bug-specific analysis documents (keep local)
+DIRECTORY_READING_FIX_SUMMARY.md
+AmazonQ.md
+*_FIX_SUMMARY.md

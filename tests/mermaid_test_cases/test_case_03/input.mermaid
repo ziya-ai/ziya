@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as Web Client
+    participant Gateway as API Gateway
+    participant Auth as Auth Service
+    participant User as User Service
+    participant Order as Order Service
+    participant Payment as Payment Service
+    participant Inventory as Inventory Service
+    participant Queue as Message Queue
+    participant Email as Email Service
+    participant DB as Database
+    
+    Client->>Gateway: POST /api/orders
+    Gateway->>Auth: Validate JWT Token
+    Auth-->>Gateway: Token Valid
+    Gateway->>Order: Create Order Request
+    
+    Order->>User: Validate Customer
+    User->>DB: Query Customer Data
+    DB-->>User: Customer Details
+    User-->>Order: Customer Valid
+    
+    Order->>Inventory: Check Item Availability
+    Inventory->>DB: Query Stock Levels
+    DB-->>Inventory: Stock Data
+    
+    alt Items Available
+        Inventory-->>Order: Stock Confirmed
+        Order->>Inventory: Reserve Items
+        Inventory->>DB: Update Stock
+        DB-->>Inventory: Stock Updated
+        Inventory-->>Order: Items Reserved
+        
+        Order->>Payment: Process Payment
+        Payment->>Payment: Validate Card
+        Payment->>Payment: Charge Card
+        
+        alt Payment Successful
+            Payment-->>Order: Payment Confirmed
+            Order->>DB: Save Order
+            DB-->>Order: Order Saved
+            Order->>Queue: Publish Order Created Event
+            Queue->>Email: Send Confirmation Email
+            Email-->>Queue: Email Sent
+            Order-->>Gateway: Order Created Successfully
+            Gateway-->>Client: 201 Created
+        else Payment Failed
+            Payment-->>Order: Payment Failed
+            Order->>Inventory: Release Reserved Items
+            Inventory->>DB: Update Stock
+            DB-->>Inventory: Stock Released
+            Inventory-->>Order: Items Released
+            Order-->>Gateway: Payment Failed
+            Gateway-->>Client: 402 Payment Required
+        end
+    else Items Not Available
+        Inventory-->>Order: Insufficient Stock
+        Order-->>Gateway: Stock Unavailable
+        Gateway-->>Client: 409 Conflict
+    end

@@ -100,11 +100,21 @@ async def handle_streaming_error(request: Request, exc: Exception) -> AsyncItera
     retry_after = None
     
     # Check for common error patterns
-    if "ThrottlingException" in error_message or "Too many requests" in error_message:
+    if ("ThrottlingException" in error_message or 
+        "Too many requests" in error_message or 
+        ("reached max retries" in error_message and "ThrottlingException" in error_message)):
         error_type = ERROR_THROTTLING
-        detail = "Too many requests to AWS Bedrock. Please wait a moment before trying again."
+        
+        # Check if this indicates exhausted retries
+        if "reached max retries" in error_message:
+            detail = "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted. You can try again now, or wait 1-2 minutes for better success rate."
+            retry_after = "60"
+        else:
+            detail = "Too many requests to AWS Bedrock. The system will automatically retry."
+            retry_after = "5"
+            
         status_code = 429
-        retry_after = "5"
+        
     elif "validationException" in error_message and "Input is too long" in error_message:
         error_type = ERROR_VALIDATION
         detail = "Selected content is too large for the model. Please reduce the number of files."
@@ -112,6 +122,8 @@ async def handle_streaming_error(request: Request, exc: Exception) -> AsyncItera
     elif ("ExpiredToken" in error_message or "InvalidIdentityToken" in error_message or "InvalidClientTokenId" in error_message) and (
         "botocore" in error_message or "AWS" in error_message or "credentials" in error_message
     ):
+        error_type, detail, status_code, retry_after = _handle_aws_credential_error(error_message)
+    elif "CredentialRetrievalError" in error_message or "You may need to authenticate by running mwinit" in error_message:
         error_type, detail, status_code, retry_after = _handle_aws_credential_error(error_message)
     elif "Resource has been exhausted" in error_message and "check quota" in error_message:
         error_type = ERROR_QUOTA

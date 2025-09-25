@@ -1,0 +1,6 @@
+{
+    "description": "Comprehensive cloud infrastructure architecture with multiple tiers and external integrations",
+    "diagram_type": "graph",
+    "expected_to_fail": false,
+    "target_issue": "Complex multi-tier architecture with extensive subgraph nesting and connections"
+}

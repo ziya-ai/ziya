@@ -1,0 +1,19 @@
+classDiagram
+    class User {
+        +String name
+        +String email
+    }
+    
+    class Role {
+        +String title
+        +String permissions
+    }
+    
+    class Permission {
+        +String action
+        +String resource
+    }
+    
+    User --> Role : has
+    User --> Permission : granted
+    Role --> Permission : includes

@@ -1,0 +1,7 @@
+{
+    "description": "Flowchart with bullet characters that should be converted to hyphens",
+    "diagram_type": "flowchart",
+    "expected_to_fail": false,
+    "expected_warnings": ["bullet_characters"],
+    "target_issue": "Unicode bullet character preprocessing"
+}

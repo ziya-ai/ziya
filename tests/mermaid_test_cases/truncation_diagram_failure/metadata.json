@@ -1,0 +1,7 @@
+{
+  "description": "Graph diagram with quoted labels and special characters causing parsing failure",
+  "diagram_type": "graph",
+  "expected_to_fail": false,
+  "expected_errors": [],
+  "notes": "This diagram fails with 'empty SVG returned' error, likely due to quoted labels with special characters"
+}

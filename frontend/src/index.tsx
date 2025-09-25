@@ -1,3 +1,6 @@
+// Import environment utilities
+import './utils/logUtils';
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
@@ -27,7 +30,8 @@ const root = ReactDOM.createRoot(
     document.getElementById('root') as HTMLElement
 );
 root.render(
-    <React.StrictMode>
+    // StrictMode temporarily disabled to eliminate duplicate API calls in development
+    // <React.StrictMode>
         <ThemeProvider>
             <ChatProvider>
                 <FolderProvider>
@@ -45,5 +49,5 @@ root.render(
                 </FolderProvider>
             </ChatProvider>
         </ThemeProvider>
-    </React.StrictMode>
+    // </React.StrictMode>
 );

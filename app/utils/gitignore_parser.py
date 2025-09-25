@@ -182,12 +182,25 @@ def fnmatch_pathname_to_regex(
                 res.append('\\[')
             else:
                 stuff = pattern[i:j].replace('\\', '\\\\').replace('/', '')
-                i = j + 1
-                if stuff[0] == '!':
-                    stuff = ''.join(['^', stuff[1:]])
-                elif stuff[0] == '^':
-                    stuff = ''.join('\\' + stuff)
-                res.append('[{}]'.format(stuff))
+                # Validate character ranges to prevent regex errors
+                try:
+                    # Test if the character class is valid by compiling a test regex
+                    if stuff:
+                        test_pattern = f'[{stuff}]'
+                        re.compile(test_pattern)
+                        # If we get here, the pattern is valid - process it normally
+                        i = j + 1
+                        if stuff[0] == '!':
+                            stuff = ''.join(['^', stuff[1:]])
+                        elif stuff[0] == '^':
+                            stuff = ''.join('\\' + stuff)
+                        res.append('[{}]'.format(stuff))
+                except re.error:
+                    # If invalid, escape the original brackets
+                    res.append('\\[')
+                    res.append(re.escape(stuff))
+                    res.append('\\]')
+                    i = j + 1  # Still need to advance the position
         else:
             res.append(re.escape(c))
     if anchored:

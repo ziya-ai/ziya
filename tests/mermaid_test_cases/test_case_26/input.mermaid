@@ -1,0 +1,63 @@
+architecture-beta
+    group api(logos:aws-api-gateway)[API Gateway]
+    
+    service web(logos:react)[Web App] in api
+    service mobile(logos:android)[Mobile App] in api
+    service iot(logos:raspberry-pi)[IoT Devices] in api
+    
+    group services(logos:docker)[Microservices]
+    
+    service auth(logos:auth0)[Auth Service] in services
+    service user(logos:nodejs)[User Service] in services  
+    service order(logos:spring)[Order Service] in services
+    service product(logos:python)[Product Service] in services
+    service payment(logos:stripe)[Payment Service] in services
+    service notification(logos:twilio)[Notification Service] in services
+    
+    group data(logos:postgresql)[Data Layer]
+    
+    service postgres(logos:postgresql)[PostgreSQL] in data
+    service redis(logos:redis)[Redis Cache] in data
+    service elastic(logos:elasticsearch)[Elasticsearch] in data
+    service s3(logos:aws-s3)[S3 Storage] in data
+    service kafka(logos:apache-kafka)[Message Queue] in data
+    
+    group infra(logos:kubernetes)[Infrastructure]
+    
+    service k8s(logos:kubernetes)[Kubernetes] in infra
+    service prometheus(logos:prometheus)[Monitoring] in infra
+    service grafana(logos:grafana)[Dashboards] in infra
+    service jenkins(logos:jenkins)[CI/CD] in infra
+    
+    web:T -- B:auth
+    mobile:T -- B:auth
+    iot:T -- B:auth
+    
+    auth:R -- L:user
+    auth:R -- L:redis
+    
+    user:B -- T:postgres
+    order:B -- T:postgres
+    product:B -- T:postgres
+    payment:B -- T:postgres
+    
+    order:R -- L:kafka
+    notification:L -- R:kafka
+    
+    product:B -- T:elastic
+    
+    user:R -- L:redis
+    product:R -- L:redis
+    
+    payment:B -- T:s3
+    
+    k8s:T -- B:auth
+    k8s:T -- B:user
+    k8s:T -- B:order
+    k8s:T -- B:product
+    k8s:T -- B:payment
+    k8s:T -- B:notification
+    
+    prometheus:T -- B:k8s
+    grafana:L -- R:prometheus
+    jenkins:T -- B:k8s
