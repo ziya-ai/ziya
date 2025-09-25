@@ -497,6 +497,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test fixing SendChatContainer.tsx with proper diff application"""
         self.run_diff_test('send_chat_container_fix')
         
+    def test_send_chat_container_false_applied(self):
+        """Test case for SendChatContainer where second chunk is falsely detected as already applied"""
+        self.run_diff_test('send_chat_container_false_applied')
+        
     def test_included_inline_unicode(self):
         """Test handling of inline Unicode characters in TypeScript code"""
         self.run_diff_test('included_inline_unicode')

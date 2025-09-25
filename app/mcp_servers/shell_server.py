@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional
 
 # Import centralized shell configuration
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config.shell_config import DEFAULT_SHELL_CONFIG
+from app.config import DEFAULT_SHELL_CONFIG
 
 
 # Global timeout tracking

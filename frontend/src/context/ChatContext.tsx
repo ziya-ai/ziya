@@ -2,6 +2,7 @@ import React, { createContext, ReactNode, useContext, useState, useEffect, Dispa
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
+import { detectIncompleteResponse } from '../utils/responseUtils';
 import { message } from 'antd';
 
 export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'error';
@@ -18,6 +19,7 @@ interface ChatContext {
     streamedContentMap: Map<string, string>;
     reasoningContentMap: Map<string, string>;
     dynamicTitleLength: number;
+    lastResponseIncomplete: boolean;
     setDynamicTitleLength: (length: number) => void;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     setReasoningContentMap: Dispatch<SetStateAction<Map<string, string>>>;
@@ -100,6 +102,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [dynamicTitleLength, setDynamicTitleLength] = useState<number>(50); // Default reasonable length
     const processedModelChanges = useRef<Set<string>>(new Set());
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
+    const [lastResponseIncomplete, setLastResponseIncomplete] = useState<boolean>(false);
     const isRecovering = useRef<boolean>(false);
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
@@ -217,6 +220,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         // Debug logging to see when messages are added
         console.log('📝 Adding message:', { role: message.role, conversationId: targetConversationId, titleLength: dynamicTitleLength });
+
+        // Check if this is an assistant message and if it appears incomplete
+        if (message.role === 'assistant' && message.content) {
+            setLastResponseIncomplete(detectIncompleteResponse(message.content));
+        }
 
         messageUpdateCount.current += 1;
         setConversations(prevConversations => {
@@ -786,6 +794,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         streamedContentMap,
         reasoningContentMap,
         dynamicTitleLength,
+        lastResponseIncomplete,
         setDynamicTitleLength,
         setStreamedContentMap,
         setReasoningContentMap,
@@ -845,6 +854,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         currentMessages,
         editingMessageIndex,
         dynamicTitleLength,
+        lastResponseIncomplete,
         setDynamicTitleLength,
         setStreamedContentMap,
         getProcessingState,
