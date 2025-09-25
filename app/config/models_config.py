@@ -29,7 +29,7 @@ GLOBAL_MODEL_DEFAULTS = {
     "temperature": 0.3,
     "supports_thinking": False,
     "supports_max_input_tokens": False,
-    "default_max_output_tokens": 4096,  # Default value for max_output_tokens
+    "default_max_output_tokens": 32768,  # Default value for max_output_tokens
     "parameter_mappings": {
         "max_output_tokens": ["max_tokens"],  # Some APIs use max_tokens instead
         "temperature": ["temperature"],
@@ -175,7 +175,7 @@ MODEL_CONFIGS = {
             },
             "token_limit": 200000,  # Total context window size
             "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
+            "default_max_output_tokens": 32000,  # Increased from 10k to 32k for longer responses
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
             "family": "claude",
@@ -243,9 +243,16 @@ MODEL_CONFIGS = {
             "region_restricted": True,  # Only available in US regions
             "preferred_region": "us-east-1",
             "family": "claude",
-            "supports_context_caching": True,
-        }, 
+            "region": "us-east-1"  # Model-specific region preference
+        },
         "opus4": {
+            "max_output_tokens": 64000,  # Add explicit output token limits
+            "default_max_output_tokens": 32000,  # Higher default for opus4
+            "max_iterations": 8,  # Higher iteration limit for advanced model
+            "timeout_multiplier": 6,  # Longer timeouts for complex responses
+            "is_advanced_model": True,  # Flag for 4.0+ capabilities
+            "token_limit": 200000,  # Add context window
+            "supports_max_input_tokens": True,
             "model_id": {
                 "us": "us.anthropic.claude-opus-4-20250514-v1:0"
             },
@@ -269,6 +276,18 @@ MODEL_CONFIGS = {
             "supports_thinking": True,  # Override global default
             "family": "claude",
             "supports_context_caching": True,
+        },
+        "opus4.1": {
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
+            "token_limit": 200000,
+            "supports_max_input_tokens": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            # Model ID will be determined when available
         },
         "sonnet": {
             "model_id": {
@@ -425,6 +444,30 @@ DEFAULT_MAX_REQUEST_SIZE_MB = 10
 TOOL_SENTINEL_TAG = os.environ.get("ZIYA_TOOL_SENTINEL", "TOOL_SENTINEL")
 TOOL_SENTINEL_OPEN = f"<{TOOL_SENTINEL_TAG}>"
 TOOL_SENTINEL_CLOSE = f"</{TOOL_SENTINEL_TAG}>"
+
+# Shell command configuration
+DEFAULT_SHELL_CONFIG = {
+    "enabled": True,
+    "allowedCommands": [
+        "ls", "cat", "pwd", "grep", "wc", "touch", "find", "date", "od", "df", 
+        "netstat", "lsof", "ps", "sed", "awk", "cut", "sort", "which", "hexdump", 
+        "xxd", "tail", "head", "echo", "printf", "tr", "uniq", "column", "nl", 
+        "tee", "base64", "md5sum", "sha1sum", "sha256sum", "bc", "expr", "seq", 
+        "paste", "join", "fold", "expand", "cd", "tree", "less", "xargs", "curl", 
+        "ping", "du", "file"
+    ],
+    "gitOperationsEnabled": True,
+    "safeGitOperations": [
+        "status", "log", "show", "diff", "branch", "remote", "config --get",
+        "ls-files", "ls-tree", "blame", "tag", "stash list", "reflog", 
+        "rev-parse", "describe", "shortlog", "whatchanged"
+    ],
+    "timeout": 90  # Increased base timeout to support longer operations
+}
+
+def get_default_shell_config():
+    """Get the default shell configuration."""
+    return DEFAULT_SHELL_CONFIG.copy()
 
 # Helper functions for model parameter validation
 

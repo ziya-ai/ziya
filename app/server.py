@@ -540,7 +540,7 @@ async def startup_event():
             # Reinitialize the agent chain now that MCP is available
             # Invalidate agent chain cache since MCP tools are now available
             from app.agents.models import ModelManager
-            ModelManager.invalidate_agent_chain_cache()
+            # ModelManager.invalidate_agent_chain_cache()  # Method doesn't exist
             
             # Initialize secure MCP tools
             from app.mcp.enhanced_tools import get_connection_pool as get_secure_pool
@@ -1064,17 +1064,18 @@ async def stream_chunks(body):
     use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'true').lower() == 'true'
     
     # FORCE DIRECT STREAMING - Claude should use direct streaming, not LangChain
-    use_direct_streaming = True
+    use_direct_streaming = False  # Disabled due to missing DirectStreamingAgent
     logger.debug(f"🔍 STREAM_CHUNKS: FORCED use_direct_streaming = {use_direct_streaming}")
     
     logger.info(f"🚀 DIRECT_STREAMING: Environment check = {use_direct_streaming}")
-    logger.info(f"🚀 DIRECT_STREAMING: Import-time config = {USE_DIRECT_STREAMING}")
     logger.info(f"🚀 DIRECT_STREAMING: ZIYA_USE_DIRECT_STREAMING env var = '{os.getenv('ZIYA_USE_DIRECT_STREAMING', 'NOT_SET')}'")
     
     # Check if we should use direct streaming
     if use_direct_streaming:
-        logger.info("🚀 DIRECT_STREAMING: Using DirectStreamingAgent")
-        from app.agents.direct_streaming import DirectStreamingAgent
+        logger.info("🚀 DIRECT_STREAMING: DirectStreamingAgent not available, falling back to standard streaming")
+        # from app.agents.direct_streaming import DirectStreamingAgent
+        pass
+    else:
         
         # Extract messages from body
         messages = []
@@ -1190,71 +1191,72 @@ async def stream_chunks(body):
             logger.debug(f"First message type: {messages[0].get('type', 'unknown')}")
             logger.debug(f"System message length: {len(messages[0].get('content', '')) if messages[0].get('type') == 'system' else 'N/A'}")
         # Create DirectStreamingAgent and stream
-        try:
-            agent = DirectStreamingAgent()
-            
-            chunk_count = 0
-            tool_results_attempted = 0
-            total_data_sent = 0
-            
-            # Get available tools to pass to the agent
-            from app.mcp.enhanced_tools import create_secure_mcp_tools
-            mcp_tools = create_secure_mcp_tools()
-            logger.info(f"🚀 DIRECT_STREAMING: Passing {len(mcp_tools)} tools to DirectStreamingAgent")
-            
-            async for chunk in agent.stream_with_tools(messages, tools=mcp_tools, conversation_id=body.get('conversation_id')):
-                chunk_count += 1
-                
-                if chunk.get('type') == 'tool_execution':
-                    tool_results_attempted += 1
-                    logger.info(f"🔍 ATTEMPTING_TOOL_TRANSMISSION: #{tool_results_attempted} - {chunk.get('tool_name')}")
-                    
-                    # DEBUGGING: Test JSON serialization before transmission
-                    try:
-                        test_json = json.dumps(chunk)
-                        json_size = len(test_json)
-                        logger.info(f"🔍 JSON_SERIALIZATION: {chunk.get('tool_name')} serialized to {json_size} chars")
-                        
-                        if json_size > 100000:  # 100KB
-                            logger.warning(f"🔍 LARGE_JSON_PAYLOAD: {chunk.get('tool_name')} JSON is {json_size} chars")
-                            if json_size > 1000000:  # 1MB
-                                logger.error(f"🔍 JSON_TOO_LARGE: {chunk.get('tool_name')} JSON is {json_size} chars - may break transmission")
-                                
-                    except Exception as json_error:
-                        logger.error(f"🔍 JSON_SERIALIZATION_FAILED: {chunk.get('tool_name')} failed to serialize: {json_error}")
-                        continue  # Skip this chunk
-                
-                sse_data = f"data: {json.dumps(chunk)}\n\n"
-                chunk_size = len(sse_data)
-                total_data_sent += chunk_size
-                
-                # Log large chunks or tool results
-                if chunk.get('type') == 'tool_execution' or chunk_size > 1000:
-                    logger.info(f"🔍 CHUNK_TRANSMISSION: chunk #{chunk_count}, type={chunk.get('type')}, size={chunk_size}, total_sent={total_data_sent}")
-                    if chunk.get('type') == 'tool_execution':
-                        logger.info(f"🔍 TOOL_CHUNK: tool_name={chunk.get('tool_name')}, result_size={len(chunk.get('result', ''))}")
-                
-                yield sse_data
-                
-                # Force immediate delivery for tool results
-                if chunk.get('type') == 'tool_execution':
-                    import sys
-                    sys.stdout.flush()
-            
-            yield "data: [DONE]\n\n"
-            return
-        except CredentialRetrievalError as e:
-            # Handle credential errors (including mwinit failures) with proper SSE error response
-            from app.utils.error_handlers import handle_streaming_error
-            async for error_chunk in handle_streaming_error(None, e):
-                yield error_chunk
-            return
-        except ValueError as e:
-            if "OpenAI models should use LangChain path" in str(e):
-                logger.info("🚀 DIRECT_STREAMING: OpenAI model detected, falling back to LangChain path")
-                # Fall through to LangChain path below
-            else:
-                raise
+        # try:
+        #     agent = DirectStreamingAgent()
+        #     
+        #     chunk_count = 0
+        #     tool_results_attempted = 0
+        #     total_data_sent = 0
+        #     
+        #     # Get available tools to pass to the agent
+        #     from app.mcp.enhanced_tools import create_secure_mcp_tools
+        #     mcp_tools = create_secure_mcp_tools()
+        #     logger.info(f"🚀 DIRECT_STREAMING: Passing {len(mcp_tools)} tools to DirectStreamingAgent")
+        #     
+        #     async for chunk in agent.stream_with_tools(messages, tools=mcp_tools, conversation_id=body.get('conversation_id')):
+        #         chunk_count += 1
+        #         
+        #         if chunk.get('type') == 'tool_execution':
+        #             tool_results_attempted += 1
+        #             logger.info(f"🔍 ATTEMPTING_TOOL_TRANSMISSION: #{tool_results_attempted} - {chunk.get('tool_name')}")
+        #             
+        #             # DEBUGGING: Test JSON serialization before transmission
+        #             try:
+        #                 test_json = json.dumps(chunk)
+        #                 json_size = len(test_json)
+        #                 logger.info(f"🔍 JSON_SERIALIZATION: {chunk.get('tool_name')} serialized to {json_size} chars")
+        #                 
+        #                 if json_size > 100000:  # 100KB
+        #                     logger.warning(f"🔍 LARGE_JSON_PAYLOAD: {chunk.get('tool_name')} JSON is {json_size} chars")
+        #                     if json_size > 1000000:  # 1MB
+        #                         logger.error(f"🔍 JSON_TOO_LARGE: {chunk.get('tool_name')} JSON is {json_size} chars - may break transmission")
+        #                         
+        #             except Exception as json_error:
+        #                 logger.error(f"🔍 JSON_SERIALIZATION_FAILED: {chunk.get('tool_name')} failed to serialize: {json_error}")
+        #                 continue  # Skip this chunk
+        #         
+        #         sse_data = f"data: {json.dumps(chunk)}\n\n"
+        #         chunk_size = len(sse_data)
+        #         total_data_sent += chunk_size
+        #         
+        #         # Log large chunks or tool results
+        #         if chunk.get('type') == 'tool_execution' or chunk_size > 1000:
+        #             logger.info(f"🔍 CHUNK_TRANSMISSION: chunk #{chunk_count}, type={chunk.get('type')}, size={chunk_size}, total_sent={total_data_sent}")
+        #             if chunk.get('type') == 'tool_execution':
+        #                 logger.info(f"🔍 TOOL_CHUNK: tool_name={chunk.get('tool_name')}, result_size={len(chunk.get('result', ''))}")
+        #         
+        #         yield sse_data
+        #         
+        #         # Force immediate delivery for tool results
+        #         if chunk.get('type') == 'tool_execution':
+        #             import sys
+        #             sys.stdout.flush()
+        #     
+        #     yield "data: [DONE]\n\n"
+        #     return
+        # except CredentialRetrievalError as e:
+        #     # Handle credential errors (including mwinit failures) with proper SSE error response
+        #     from app.utils.error_handlers import handle_streaming_error
+        #     async for error_chunk in handle_streaming_error(None, e):
+        #         yield error_chunk
+        #     return
+        # except ValueError as e:
+        #     if "OpenAI models should use LangChain path" in str(e):
+        #         logger.info("🚀 DIRECT_STREAMING: OpenAI model detected, falling back to LangChain path")
+        #         # Fall through to LangChain path below
+        #     else:
+        #         raise
+        pass  # DirectStreamingAgent disabled
         
         # Check if model should use LangChain path instead of StreamingToolExecutor
         from app.agents.models import ModelManager
@@ -1402,8 +1404,9 @@ async def stream_chunks(body):
                         # Add shell tool if no MCP tools available
                         if not tools:
                             logger.debug("No MCP tools found, using shell tool")
-                            from app.agents.direct_streaming import get_shell_tool_schema
-                            tools = [get_shell_tool_schema()]
+                            # from app.agents.direct_streaming import get_shell_tool_schema
+                            # tools = [get_shell_tool_schema()]
+                            logger.debug("Shell tool functionality not available")
                         else:
                             logger.debug(f"Using {len(tools)} tools: {[t['name'] for t in tools]}")
                         
@@ -2797,28 +2800,30 @@ async def get_folder(request: FolderRequest):
         return {"error": str(e)}
 
 # Import scan progress from directory_util
-from app.utils.directory_util import get_scan_progress, cancel_scan, _scan_progress
+# from app.utils.directory_util import get_scan_progress, cancel_scan, _scan_progress
 
 @app.get("/folder-progress")
 async def get_folder_progress():
     """Get current folder scanning progress."""
-    progress = get_scan_progress()
+    # progress = get_scan_progress()
     # Only return active=True if there's actual progress to report
-    if progress["active"] and not progress["progress"]:
-        # No actual progress data, don't report as active
-        progress["active"] = False
-        progress["progress"] = {}
-    return progress
+    # if progress["active"] and not progress["progress"]:
+    #     # No actual progress data, don't report as active
+    #     progress["active"] = False
+    #     progress["progress"] = {}
+    # return progress
+    return {"active": False, "progress": {}}
 
 @app.post("/folder-cancel")
 async def cancel_folder_scan():
     """Cancel current folder scanning operation."""
-    was_active = cancel_scan()
-    if was_active:
-        logger.info("Folder scan cancellation requested")
-        return {"status": "cancellation_requested"}
-    else:
-        return {"status": "no_active_scan"}
+    # was_active = cancel_scan()
+    # if was_active:
+    #     logger.info("Folder scan cancellation requested")
+    logger.info("Folder scan cancellation not available")
+    return {"cancelled": False}
+
+@app.post("/file")
 async def get_file(request: FileRequest):
     """Get the content of a file."""
     try:

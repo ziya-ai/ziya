@@ -318,7 +318,8 @@ class ZiyaBedrock(Runnable):
         # Ensure system messages are properly ordered after caching
         messages = self._ensure_system_message_ordering(messages)
 
-        kwargs["max_tokens"] = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", self.ziya_max_tokens))  # Use environment variable if available
+        # Use much higher default if not set
+        kwargs["max_tokens"] = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", self.ziya_max_tokens or 32768))
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = self.ziya_max_tokens
             logger.debug(f"Added max_tokens={self.ziya_max_tokens} to _generate kwargs")
