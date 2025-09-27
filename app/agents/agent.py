@@ -1078,23 +1078,20 @@ class RetryingChatBedrock(Runnable):
                 
 
                 # Check if this is a throttling error wrapped in another exception
+                logger.error(f"🔍 ACTUAL_ERROR: {error_str}")
+                logger.error(f"🔍 ERROR_TYPE: {type(e)}")
                 if "ThrottlingException" in error_str or "Too many requests" in error_str:
                     logger.warning("Detected throttling error in exception")
-                    # Format error message for throttling
+                    # Simple error message for frontend
                     error_message = {
-                        "error": "throttling_error",
-                        "detail": "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.",
-                        "status_code": 429,
-                        "stream_id": stream_id,
-                        "retry_after": "60",
-                        "throttle_info": {
-                            "auto_attempts_exhausted": True,
-                            "total_auto_attempts": max_retries,
-                            "can_user_retry": True,
-                            "backoff_used": [5, 10, 20, 40][:attempt + 1]
-                        },
-                        "ui_action": "show_retry_button",
-                        "user_message": "Click 'Retry' to attempt again, or wait a few minutes for better success rate."
+                        "error": "⚠️ AWS rate limit exceeded. Please wait a moment and try again.",
+                        "type": "throttling"
+                    }
+                else:
+                    # Show the actual error instead of masking it
+                    error_message = {
+                        "error": f"⚠️ Error: {error_str}",
+                        "type": "general"
                     }
                     
                     # Include pre-streaming work in preservation
@@ -1412,19 +1409,10 @@ class RetryingChatBedrock(Runnable):
                         time.sleep(retry_delay)
                         continue
                     else:
-                        # Final attempt failed - enhance error response for frontend
+                        # Simple error response for frontend
                         error_message = {
-                            "error": "throttling_error",
-                            "detail": "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.",
-                            "status_code": 429,
-                            "throttle_info": {
-                                "auto_attempts_exhausted": True,
-                                "total_auto_attempts": max_retries,
-                                "can_user_retry": True,
-                                "backoff_used": [5.0, 10.0, 20.0, 40.0][:attempt + 1]
-                            },
-                            "ui_action": "show_retry_button",
-                            "user_message": "Click 'Retry' to attempt again, or wait a few minutes for better success rate."
+                            "error": "⚠️ AWS rate limit exceeded. Please wait a moment and try again.",
+                            "type": "throttling"
                         }
                         # Let this fall through to the final error handling
 

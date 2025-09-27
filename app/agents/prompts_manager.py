@@ -79,16 +79,20 @@ def get_extended_prompt(model_name: Optional[str] = None,
     logger.info(f"PROMPT_MANAGER: Template was modified: {len(extended_template) != len(original_template)}")
     
     # Create a new prompt template with the extended template
-    extended_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", extended_template),
-            MessagesPlaceholder(variable_name="chat_history", optional=True),
-            ("user", "{question}"),
-            # Add AST context if available
-            ("system", "{ast_context}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad", optional=True),
-        ]
-    )
+    # Build messages list dynamically
+    messages = [
+        ("system", extended_template),
+        MessagesPlaceholder(variable_name="chat_history", optional=True),
+        ("user", "{question}"),
+    ]
+    
+    # Only add AST context system message if AST is enabled
+    if os.environ.get("ZIYA_ENABLE_AST", "false").lower() in ("true", "1", "yes"):
+        messages.append(("system", "{ast_context}"))
+    
+    messages.append(MessagesPlaceholder(variable_name="agent_scratchpad", optional=True))
+    
+    extended_prompt = ChatPromptTemplate.from_messages(messages)
     
     # Cache the result
     _prompt_cache[cache_key] = extended_prompt

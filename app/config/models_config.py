@@ -169,19 +169,6 @@ ENDPOINT_DEFAULTS = {
 # Model-specific configs that override endpoint defaults
 MODEL_CONFIGS = {
     "bedrock": {
-        "opus4.1": {
-            "model_id": {
-                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0"
-            },
-            "token_limit": 200000,  # Total context window size
-            "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 32000,  # Increased from 10k to 32k for longer responses
-            "supports_max_input_tokens": True,
-            "supports_thinking": True,  # Override global default
-            "family": "claude",
-            "supports_context_caching": True,
-            "region": "us-east-1"  # Model-specific region preference
-        },
         "sonnet4.0": {
             "model_id": {
                 "us": "us.anthropic.claude-sonnet-4-20250514-v1:0",
@@ -271,23 +258,14 @@ MODEL_CONFIGS = {
             "preferred_region": "us-east-1",
             "token_limit": 200000,  # Total context window size
             "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
+            "default_max_output_tokens": 32000,  # Increased from 10k to 32k for longer responses
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
             "family": "claude",
             "supports_context_caching": True,
-        },
-        "opus4.1": {
-            "max_output_tokens": 64000,
-            "default_max_output_tokens": 32000,
-            "max_iterations": 8,
-            "timeout_multiplier": 6,
-            "is_advanced_model": True,
-            "token_limit": 200000,
-            "supports_max_input_tokens": True,
-            "family": "claude",
-            "supports_context_caching": True,
-            # Model ID will be determined when available
         },
         "sonnet": {
             "model_id": {
