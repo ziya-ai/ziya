@@ -82,9 +82,10 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     sentinel_open_escaped = re.escape(TOOL_SENTINEL_OPEN)
     sentinel_close_escaped = re.escape(TOOL_SENTINEL_CLOSE)
     
-    # Format 1: <n> format with complete closing tag
+    # Format 1: Handle both <name> and <n> formats
+    # Pattern: <TOOL_SENTINEL><name>tool_name</name><arguments>{...}</arguments></TOOL_SENTINEL>
     # Pattern: <TOOL_SENTINEL><n>tool_name</n><arguments>{...}</arguments></TOOL_SENTINEL>
-    complete_pattern = f'{sentinel_open_escaped}\\s*<n>([^<]+)</n>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>\\s*{sentinel_close_escaped}'
+    complete_pattern = f'{sentinel_open_escaped}\\s*<(?:name|n)>([^<]+)</(?:name|n)>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>\\s*{sentinel_close_escaped}'
     match = re.search(complete_pattern, content, re.DOTALL)
     if match:
         tool_name = match.group(1).strip()
@@ -93,11 +94,11 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             logger.info(f"🔍 PARSE_DEBUG: Raw arguments string: '{match.group(2)}'")
             logger.info(f"🔍 PARSE_DEBUG: Parsed arguments: {arguments}")
             print(f"🔍 PARSE_DEBUG: Raw arguments string: '{match.group(2)}', Parsed: {arguments}")
-            logger.debug(f"🔍 PARSE: Successfully parsed complete <n> format - tool: {tool_name}, args: {arguments}")
+            logger.debug(f"🔍 PARSE: Successfully parsed tool format - tool: {tool_name}, args: {arguments}")
             logger.info(f"🔍 PARSE SUCCESS: tool_name='{tool_name}', arguments={arguments}")
             print(f"🔍 PARSE SUCCESS: tool_name='{tool_name}', arguments={arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             # Try to fix common JSON parsing issues with shell commands
             try:
                 # Extract the raw arguments string and attempt to repair it
@@ -111,13 +112,11 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
                 print(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
                 logger.debug(f"🔍 PARSE: Successfully parsed repaired JSON - tool: {tool_name}, args: {arguments}")
                 return {"tool_name": tool_name, "arguments": arguments}
-            except Exception as e:
-                logger.error(f"🔍 PARSE_DEBUG: Both original and repair parsing failed: {e}")
-                print(f"🔍 PARSE_DEBUG: Both original and repair parsing failed: {e}")
+            except Exception as repair_error:
+                logger.error(f"🔍 PARSE_DEBUG: Both original and repair parsing failed: {repair_error}")
+                print(f"🔍 PARSE_DEBUG: Both original and repair parsing failed: {repair_error}")
             logger.warning(f"Failed to parse JSON arguments for tool {tool_name}: {e}")
             return None
-
-    # Format 1b: <name> format with complete closing tag (alternative format)
     # Pattern: <TOOL_SENTINEL><name>tool_name</name><arguments>{...}</arguments></TOOL_SENTINEL>
     complete_name_pattern = f'{sentinel_open_escaped}\\s*<name>([^<]+)</name>\\s*<arguments>\\s*(\\{{.*?\\}})\\s*</arguments>\\s*{sentinel_close_escaped}'
     match = re.search(complete_name_pattern, content, re.DOTALL)

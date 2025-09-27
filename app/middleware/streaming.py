@@ -86,7 +86,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         MAX_TOOL_OUTPUT_LENGTH = 5000
         successful_tool_outputs = []  # Track successful tool executions
         tool_sequence_count = 0
-        content_buffer = ""  # Buffer to hold content while checking for tool calls
+        # content_buffer = ""  # Disabled buffering for real-time streaming
         partial_response_preserved = False
         try:
             async for chunk in original_iterator:
@@ -156,46 +156,8 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                     yield content
                                     continue
                                 
-                                # Buffer content to check for tool calls
-                                content_buffer += content
-                                
-                                # Check if we have a complete tool call or if we should flush the buffer
-                                if self._should_flush_buffer(content_buffer):
-                                    # If this contains a complete tool call, execute it and send the result
-                                    if self._contains_complete_tool_call(content_buffer):
-                                        # First, send the complete tool call to the frontend as JSON
-                                        yield f"data: {json.dumps({'tool_call': content_buffer})}\n\n"
-                                        
-                                        try:
-                                            # Execute the tool call
-                                            logger.info(f"Executing tool call in streaming middleware: {content_buffer[:100]}...")
-                                            from app.mcp.consolidated import execute_mcp_tools_with_status
-                                            tool_result = await execute_mcp_tools_with_status(content_buffer)
-                                            logger.info(f"Tool execution result: {tool_result[:100]}...")
-                                            
-                                            # Send the tool result to the frontend
-                                            yield f"data: {json.dumps({'tool_result': tool_result})}\n\n"
-                                        except Exception as tool_error:
-                                            logger.error(f"Error executing tool call: {tool_error}")
-                                            # Send error message
-                                            error_msg = f"\n\n```tool:error\n❌ **Tool Error:** {str(tool_error)}\n```\n\n"
-                                            yield f"data: {json.dumps({'tool_error': error_msg})}\n\n"
-                                        
-                                        # Clear buffer
-                                        content_buffer = ""
-                                    else:
-                                        # Send buffered content as JSON, not raw content
-                                        yield f"data: {json.dumps({'content': content_buffer})}\n\n"
-                                        content_buffer = ""
-                                elif self._contains_partial(content_buffer):
-                                    # Still accumulate partial content
-                                    accumulated_content += content
-                                    # Hold the content in buffer, don't send yet
-                                    continue
-                                else:
-                                    # Safe to send immediately as raw content
-                                    yield f"data: {content}\n\n"
-                                    content_buffer = ""
+                                # Send content immediately for real-time streaming
+                                yield f"data: {json.dumps({'content': content})}\\n\\n"
                         
                         # Log chunk content preview
                         if len(chunk) > 200:

@@ -220,8 +220,39 @@ class CustomBedrockClient:
                         error_message = str(e)
                         self.last_error = error_message
                         
+                        # Check for throttling errors first and retry
+                        if ("ThrottlingException" in error_message or 
+                            "Too many tokens" in error_message or
+                            "rate limit" in error_message.lower() or
+                            "timeout" in error_message.lower()):
+                            
+                            # Implement retry with exponential backoff
+                            max_retries = 3
+                            for retry_attempt in range(max_retries):
+                                delays = [5, 10, 20]  # 5s, 10s, 20s
+                                delay = delays[retry_attempt]
+                                logger.warning(f"🔄 THROTTLING_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
+                                
+                                import time
+                                time.sleep(delay)
+                                
+                                try:
+                                    return self.original_invoke(**kwargs)
+                                except Exception as retry_error:
+                                    retry_error_str = str(retry_error)
+                                    if retry_attempt == max_retries - 1:  # Last attempt
+                                        logger.error(f"🔄 THROTTLING_RETRY: All {max_retries} retry attempts failed")
+                                        raise retry_error
+                                    elif not ("ThrottlingException" in retry_error_str or 
+                                            "Too many tokens" in retry_error_str or
+                                            "rate limit" in retry_error_str.lower() or
+                                            "timeout" in retry_error_str.lower()):
+                                        # Different error type, don't retry
+                                        raise retry_error
+                                    # Continue retrying for throttling/timeout errors
+                        
                         # Check if it's a context limit error
-                        if ("input length and `max_tokens` exceed context limit" in error_message or
+                        elif ("input length and `max_tokens` exceed context limit" in error_message or
                             "Input is too long" in error_message):
                             logger.warning(f"Context limit error detected: {error_message}")
                             

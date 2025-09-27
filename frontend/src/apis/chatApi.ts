@@ -420,7 +420,7 @@ export const sendPayload = async (
         // Process chunks as they arrive
         const processChunk = (chunk: string) => {
             // Split the chunk by newlines to handle multiple SSE events
-            const lines = chunk.split('\n');
+            const lines = chunk.split('\\n\\n');
 
             for (const line of lines) {
                 if (!line.trim()) continue;
@@ -662,6 +662,88 @@ export const sendPayload = async (
                             });
                         } else if (jsonData.content) {
                             currentContent += jsonData.content;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        // Handle nested tool events (new format)
+                        } else if (jsonData.tool_start) {
+                            const toolData = jsonData.tool_start;
+                            console.log('🔧 NESTED TOOL_START received:', toolData);
+                            
+                            let toolName = toolData.tool_name;
+                            if (!toolName.startsWith('mcp_')) {
+                                toolName = `mcp_${toolName}`;
+                            }
+                            toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
+                            
+                            let inputDisplay = '';
+                            if (toolData.args && toolData.args.command) {
+                                inputDisplay = `$ ${toolData.args.command}`;
+                            }
+                            
+                            const toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: ${inputDisplay}\n\`\`\`\n\n`;
+                            currentContent += toolStartDisplay;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else if (jsonData.tool_result) {
+                            const toolData = jsonData.tool_result;
+                            console.log('🔧 NESTED TOOL_RESULT received:', toolData);
+                            
+                            let toolName = toolData.tool_name;
+                            if (!toolName.startsWith('mcp_')) {
+                                toolName = `mcp_${toolName}`;
+                            }
+                            toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
+                            
+                            const result = toolData.result;
+                            const toolResultDisplay = `\n\`\`\`tool:${toolName}\n${result}\n\`\`\`\n\n`;
+                            
+                            // Replace the corresponding tool_start block if it exists
+                            const escapedToolName = toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                            const toolStartPattern = new RegExp(
+                                `\\n\`\`\`tool:${escapedToolName}[^\\n]*\\n⏳ Running: [^\\n]*\\n\`\`\`\\n\\n`,
+                                'g'
+                            );
+                            const toolStartMatch = currentContent.match(toolStartPattern);
+                            
+                            if (toolStartMatch) {
+                                console.log('🔧 Found matching tool_start block, replacing with result');
+                                
+                                // Extract the command from the match for error display
+                                const commandMatch = toolStartMatch[0].match(/⏳ Running: (.+)/);
+                                const command = commandMatch ? commandMatch[1].trim() : '';
+                                
+                                // Check if result contains an error
+                                const isError = result.toLowerCase().includes('error') ||
+                                              result.toLowerCase().includes('failed') ||
+                                              result.toLowerCase().includes('command not found') ||
+                                              result.toLowerCase().includes('permission denied') ||
+                                              result.toLowerCase().includes('timeout');
+                                
+                                if (isError && command) {
+                                    // For errors, preserve the command and add the error result
+                                    const errorDisplay = `\n\`\`\`tool:${toolName}\n⏳ Error: ${command}\n\n${result}\n\`\`\`\n\n`;
+                                    currentContent = currentContent.replace(toolStartPattern, errorDisplay);
+                                    console.log('🔧 TOOL_EXECUTION: Replaced tool_start with error result');
+                                } else {
+                                    // For success, replace with just the result
+                                    currentContent = currentContent.replace(toolStartPattern, toolResultDisplay);
+                                    console.log('🔧 TOOL_EXECUTION: Successfully replaced tool_start with result');
+                                }
+                            } else {
+                                // No matching tool_start found - this shouldn't happen in normal flow
+                                console.warn('🔧 TOOL_EXECUTION: No matching tool_start found for replacement');
+                                console.log('🔧 Tool name:', toolName);
+                                console.log('🔧 Pattern used:', toolStartPattern.source);
+                                console.log('🔧 Current content tail:', currentContent.slice(-300));
+                                currentContent += toolResultDisplay;
+                            }
+                            
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
                                 next.set(conversationId, currentContent);

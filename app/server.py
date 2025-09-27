@@ -39,7 +39,8 @@ from app.agents.agent import model, RetryingChatBedrock, initialize_langserve
 from app.agents.agent import get_or_create_agent, get_or_create_agent_executor, create_agent_chain, create_agent_executor
 from app.agents.agent import update_conversation_state, update_and_return, parse_output
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError 
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 # Direct streaming imports
@@ -81,7 +82,7 @@ from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
 from app.utils.custom_exceptions import ValidationError
 from app.utils.file_utils import read_file_content
-from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware
+from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware, StreamingMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
 from app.middleware.continuation import ContinuationMiddleware
@@ -91,6 +92,7 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     Build messages for streaming using the extended prompt template.
     This centralizes message construction to avoid duplication.
     """
+    logger.info(f"🔍 FUNCTION_START: build_messages_for_streaming called with {len(files)} files")
     
     from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
     from app.agents.agent import get_combined_docs_from_files, _format_chat_history
@@ -120,15 +122,24 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     # Get file context
     from app.agents.agent import extract_codebase
     file_context = extract_codebase({"config": {"files": files}, "conversation_id": conversation_id})
+    logger.info(f"🔍 BUILD_MESSAGES_DEBUG: file_context length = {len(file_context)} characters")
+    logger.info(f"🔍 BUILD_MESSAGES_DEBUG: file_context preview = {file_context[:200]}...")
     
-    # Apply post-instructions to the question once here
-    from app.utils.post_instructions import PostInstructionManager
-    modified_question = PostInstructionManager.apply_post_instructions(
-        query=question,
+    # Temporarily reduce context to test tool execution
+    if "distribution by file type" in question.lower():
+        logger.info("🔍 TEMP: Reducing context for tool execution test")
+        files = []  # Skip file context to avoid throttling
+    
+    # Get the extended prompt template  
+    extended_prompt = get_extended_prompt(
         model_name=model_info["model_name"],
         model_family=model_info["model_family"],
         endpoint=model_info["endpoint"]
     )
+    
+    # Check if template has codebase placeholder
+    template_text = extended_prompt.messages[0].prompt.template
+    has_codebase_placeholder = "{codebase}" in template_text
     
     # Get the extended prompt and format it properly
     extended_prompt = get_extended_prompt(
@@ -166,6 +177,13 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
     )
     
+    # Ensure file context is included - if template substitution failed, append it manually
+    if file_context and file_context not in system_content:
+        logger.info(f"🔍 TEMPLATE_FIX: File context not found in system message, appending manually")
+        system_content += f"\n\n{file_context}"
+    
+    logger.info(f"🔍 TEMPLATE_DEBUG: Final system_content length = {len(system_content)} characters")
+    
     if use_langchain_format:
         messages.append(SystemMessage(content=system_content))
     else:
@@ -192,16 +210,24 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
             else:
                 messages.append({"role": "assistant", "content": content})
     
+    # Apply post-instructions to the question once here
+    from app.utils.post_instructions import PostInstructionManager
+    modified_question = PostInstructionManager.apply_post_instructions(
+        query=question,
+        model_name=model_info["model_name"],
+        model_family=model_info["model_family"],
+        endpoint=model_info["endpoint"]
+    )
+    
     # Add current question
     if use_langchain_format:
         messages.append(HumanMessage(content=modified_question))
     else:
         messages.append({"role": "user", "content": modified_question})
     
-    return messages
     logger.info("CONTEXT CONSTRUCTION DETAILS:")
     logger.info(f"File context length: {len(file_context)} characters")
-    logger.info(f"Modified question length: {len(modified_question)} characters")
+    logger.info(f"Question length: {len(modified_question)} characters")
     logger.info(f"Chat history items: {len(chat_history)}")
     logger.info(f"Available tools: {len(tools_list)}")
     logger.info(f"MCP tools available: {mcp_context.get('mcp_tools_available', False)}")
@@ -213,25 +239,37 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     logger.debug(f"- question length: {len(modified_question)}")
     logger.debug(f"- chat_history items: {len(_format_chat_history(chat_history))}")
     logger.debug(f"- tools count: {len(tools_list)}")
+    logger.info(f"🔍 PRE_FORMAT: About to enter format_messages try block")
+    logger.info(f"🔍 PRE_FORMAT: extended_prompt type = {type(extended_prompt)}")
+    logger.info(f"🔍 PRE_FORMAT: file_context length = {len(file_context)}")
     
-    formatted_messages = extended_prompt.format_messages(
-        codebase=file_context,
-        question=modified_question,
-        chat_history=_format_chat_history(chat_history),
-        ast_context="",  # Will be enhanced if AST is enabled
-        tools="\n".join(tools_list) if tools_list else "No tools available",
-        TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
-        TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
-    )
-    
-    # Debug: Check if template substitution caused duplication
-    for i, msg in enumerate(formatted_messages):
-        if hasattr(msg, 'content'):
-            file_markers_count = msg.content.count('File: ')
-            if file_markers_count > 0:
-                logger.debug(f"Message {i} after template substitution has {file_markers_count} file markers")
-    
-    return formatted_messages
+    try:
+        logger.info(f"🔍 FORMAT_ATTEMPT: About to call format_messages with codebase length {len(file_context)}")
+        formatted_messages = extended_prompt.format_messages(
+            codebase=file_context,
+            question=modified_question,
+            chat_history=_format_chat_history(chat_history),
+            ast_context="",  # Will be enhanced if AST is enabled
+            tools="\n".join(tools_list) if tools_list else "No tools available",
+            TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
+            TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
+        )
+        
+        logger.info(f"🔍 FORMAT_SUCCESS: format_messages completed successfully")
+        
+        return formatted_messages
+            
+    except Exception as e:
+        logger.error(f"🔍 FORMAT_ERROR: Error formatting messages: {e}")
+        logger.error(f"🔍 FORMAT_ERROR: Exception type: {type(e).__name__}")
+        import traceback
+        logger.error(f"🔍 FORMAT_ERROR: Traceback: {traceback.format_exc()}")
+        # Fallback to basic messages
+        from langchain_core.messages import SystemMessage, HumanMessage
+        return [
+            SystemMessage(content=f"You are a helpful AI assistant.\n\n{file_context}"),
+            HumanMessage(content=modified_question)
+        ]
 
 # Dictionary to track active streaming tasks
 active_streams = {}
@@ -276,7 +314,7 @@ async def chat_endpoint(request: Request):
         
         # Extract data from the request
         messages = body.get('messages', [])
-        question = body.get('question', '')
+        question = body.get('question', '') or body.get('message', '')  # Check both question and message
         files = body.get('files', [])
         conversation_id = body.get('conversation_id')
         
@@ -291,6 +329,7 @@ async def chat_endpoint(request: Request):
         is_bedrock_deepseek = current_model and 'deepseek' in current_model.lower()
         is_bedrock_openai = current_model and 'openai' in current_model.lower()
         is_google_model = current_model and ('gemini' in current_model.lower() or 'google' in current_model.lower())
+        # Check if direct streaming is enabled globally - use direct streaming by default for Bedrock models like 0.3.1
         use_direct_streaming = is_bedrock_claude or is_bedrock_nova or is_bedrock_deepseek or is_bedrock_openai or is_google_model
         
         logger.info(f"🔍 CHAT_ENDPOINT: Current model = {current_model}, is_bedrock_claude = {is_bedrock_claude}")
@@ -335,14 +374,15 @@ async def chat_endpoint(request: Request):
                         elif role in ['assistant', 'ai']:
                             chat_history.append({'type': 'ai', 'content': content})
             
-            # Format the data for stream_chunks
+            # Format the data for stream_chunks - LangChain expects files at top level
             formatted_body = {
                 'question': question,
                 'conversation_id': conversation_id,
                 'chat_history': chat_history,
+                'files': files,  # LangChain expects files at top level
                 'config': {
                     'conversation_id': conversation_id,
-                    'files': files
+                    'files': files  # Also include in config for compatibility
                 }
             }
             
@@ -355,6 +395,10 @@ async def chat_endpoint(request: Request):
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
+                    "X-Content-Type-Options": "nosniff",
+                    "Transfer-Encoding": "chunked",
+                    "X-Nginx-Buffering": "no",
+                    "Proxy-Buffering": "off",
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "POST, OPTIONS",
                     "Access-Control-Allow-Headers": "Content-Type"
@@ -429,6 +473,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add streaming middleware
+app.add_middleware(StreamingMiddleware)
 
 # Add request size middleware
 app.add_middleware(
@@ -990,11 +1037,12 @@ async def handle_continuation(continuation_state: Dict[str, Any]):
         updated_messages.append(AIMessage(content=continuation_state["completed_response"]))
         
         # Add a marker for the continuation start
-        continuation_start_marker = "**📝 Continuing from previous response...**\n\n"
-        yield f"data: {json.dumps({'ops': [{'op': 'add', 'path': '/streamed_output_str/-', 'value': continuation_start_marker}]})}\n\n"
+        continuation_start_marker = "**📝 Continuing from previous response...**\\n\\n"
+        yield f"data: {json.dumps({'content': continuation_start_marker})}\\n\\n"
         
-        # Add continuation prompt
-        updated_messages.append(HumanMessage(content=continuation_prompt))
+        # Add continuation prompt with tool execution context
+        continuation_prompt_with_context = f"{continuation_prompt}\\n\\nIMPORTANT: Do not simulate or hallucinate tool calls. Only use actual tool execution when needed."
+        updated_messages.append(HumanMessage(content=continuation_prompt_with_context))
         
         # Stream continuation with clean buffer
         async for chunk in stream_continuation(updated_messages, continuation_state):
@@ -1003,8 +1051,7 @@ async def handle_continuation(continuation_state: Dict[str, Any]):
     except Exception as e:
         logger.error(f"🔄 CONTINUATION: Error in continuation {continuation_id}: {e}")
         # Yield error and complete the stream
-        error_chunk = {"op": "add", "path": "/streamed_output_str/-", "value": f"\n\n*[Continuation error: {str(e)}]*"}
-        yield f"data: {json.dumps({'ops': [error_chunk]})}\n\n"
+        yield f"data: {json.dumps({'error': f'Continuation error: {str(e)}'})}\\n\\n"
     finally:
         # Clean up continuation state
         with _continuation_lock:
@@ -1044,8 +1091,7 @@ async def stream_continuation(messages: List, continuation_state: Dict[str, Any]
                 content_str = str(content) if content else ""
                 
             if content_str:
-                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
-                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                yield f"data: {json.dumps({'content': content_str})}\\n\\n"
         
         yield f"data: {json.dumps({'done': True})}\n\n"
         
@@ -1059,22 +1105,91 @@ async def stream_chunks(body):
     logger.error("🔍 EXECUTION_TRACE: stream_chunks() called - ENTRY POINT")
     logger.info("🔍 STREAM_CHUNKS: Function called")
     
-    # Dynamic check for direct streaming (not relying on import-time config)
-    import os
-    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'true').lower() == 'true'
+    # Temporarily reduce context to test tool execution
+    if body.get("question") and "distribution by file type" in body.get("question", "").lower():
+        logger.info("🔍 TEMP: Reducing context for tool execution test")
+        if "config" in body and "files" in body["config"]:
+            body["config"]["files"] = []  # Skip file context to avoid throttling
     
-    # FORCE DIRECT STREAMING - Claude should use direct streaming, not LangChain
-    use_direct_streaming = False  # Disabled due to missing DirectStreamingAgent
-    logger.debug(f"🔍 STREAM_CHUNKS: FORCED use_direct_streaming = {use_direct_streaming}")
+    # Restore 0.3.0 direct streaming behavior
+    use_direct_streaming = True
+    
+    logger.debug(f"🔍 STREAM_CHUNKS: use_direct_streaming = {use_direct_streaming}")
     
     logger.info(f"🚀 DIRECT_STREAMING: Environment check = {use_direct_streaming}")
     logger.info(f"🚀 DIRECT_STREAMING: ZIYA_USE_DIRECT_STREAMING env var = '{os.getenv('ZIYA_USE_DIRECT_STREAMING', 'NOT_SET')}'")
     
     # Check if we should use direct streaming
     if use_direct_streaming:
-        logger.info("🚀 DIRECT_STREAMING: DirectStreamingAgent not available, falling back to standard streaming")
-        # from app.agents.direct_streaming import DirectStreamingAgent
-        pass
+        logger.info("🚀 DIRECT_STREAMING: Using StreamingToolExecutor for direct streaming")
+        logger.info(f"🔍 REQUEST_DEBUG: body keys = {list(body.keys())}")
+        logger.info(f"🔍 REQUEST_DEBUG: body = {body}")
+        
+        # Extract data from body for StreamingToolExecutor
+        question = body.get("question", "")
+        chat_history = body.get("chat_history", [])
+        files = body.get("config", {}).get("files", [])
+        conversation_id = body.get("conversation_id")
+        
+        logger.info(f"🔍 DIRECT_STREAMING_DEBUG: question='{question}', chat_history={len(chat_history)}, files={len(files)}")
+        
+        if question:
+            try:
+                from app.streaming_tool_executor import StreamingToolExecutor
+                from app.agents.models import ModelManager
+                
+                # Get current model state
+                state = ModelManager.get_state()
+                current_region = state.get('aws_region', 'us-east-1')
+                aws_profile = state.get('aws_profile', 'default')
+                
+                logger.info(f"🔍 DIRECT_STREAMING_DEBUG: About to call build_messages_for_streaming with {len(files)} files")
+                # Build messages with full context using the same function as LangChain path - use langchain format like 0.3.0
+                logger.info(f"🔍 CALLING_BUILD_MESSAGES: About to call build_messages_for_streaming")
+                messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
+                logger.info(f"🔍 DIRECT_STREAMING_PATH: Built {len(messages)} messages with full context")
+                
+                # Debug the system message content
+                if messages and hasattr(messages[0], 'content'):
+                    system_content_length = len(messages[0].content)
+                    logger.info(f"🔍 DIRECT_STREAMING_DEBUG: System message length = {system_content_length}")
+                    logger.info(f"🔍 DIRECT_STREAMING_DEBUG: System message preview = {messages[0].content[:200]}...")
+                
+                executor = StreamingToolExecutor(profile_name=aws_profile, region=current_region)
+                logger.info(f"🚀 DIRECT_STREAMING: Created StreamingToolExecutor with profile={aws_profile}, region={current_region}")
+                
+                # Send initial heartbeat
+                yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\\n\\n"
+                
+                chunk_count = 0
+                async for chunk in executor.stream_with_tools(messages):
+                    chunk_count += 1
+                    
+                    # Convert to expected format and yield all chunk types
+                    if chunk.get('type') == 'text':
+                        content = chunk.get('content', '')
+                        yield f"data: {json.dumps({'content': content})}\\n\\n"
+                    elif chunk.get('type') == 'tool_start':
+                        # Stream tool start notification
+                        yield f"data: {json.dumps({'tool_start': chunk})}\\n\\n"
+                    elif chunk.get('type') == 'tool_execution':
+                        logger.info(f"🔍 TOOL_EXECUTION: {chunk.get('tool_name')} completed")
+                        # Stream tool result
+                        yield f"data: {json.dumps({'tool_result': chunk})}\\n\\n"
+                    elif chunk.get('type') == 'stream_end':
+                        break
+                
+                # Always send done message at the end
+                yield f"data: {json.dumps({'done': True})}\\n\\n"
+                
+                logger.info(f"🚀 DIRECT_STREAMING: Completed streaming with {chunk_count} chunks")
+                return
+                
+            except Exception as e:
+                logger.error(f"🚀 DIRECT_STREAMING: Error in StreamingToolExecutor: {e}")
+                # Fall through to LangChain path
+        
+        logger.info("🚀 DIRECT_STREAMING: No question found or error occurred, falling back to LangChain")
     else:
         
         # Extract messages from body
@@ -1321,8 +1436,7 @@ async def stream_chunks(body):
                         if hasattr(chunk, 'content') and chunk.content:
                             content_str = chunk.content
                             if content_str:
-                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
-                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                yield f"data: {json.dumps({'content': content_str})}\\n\\n"
                     
                     yield f"data: {json.dumps({'done': True})}\n\n"
                     return
@@ -1678,8 +1792,8 @@ async def stream_chunks(body):
                 break
         
         if agent_chain:
-            logger.info("🔍 STREAM_CHUNKS: Using Google function calling agent")
-            # Use Google function calling agent directly
+            logger.info("🔍 STREAM_CHUNKS: Using agent chain with file context")
+            # Use agent chain with proper file context
             try:
                 input_data = {
                     "question": question,
@@ -1687,7 +1801,7 @@ async def stream_chunks(body):
                     "chat_history": chat_history,
                     "config": {
                         "conversation_id": conversation_id,
-                        "files": []
+                        "files": files  # Include the actual files
                     }
                 }
                 
@@ -1700,8 +1814,8 @@ async def stream_chunks(body):
                 return
                 
             except Exception as e:
-                logger.error(f"Google function calling failed: {e}")
-                # Fall back to XML approach
+                logger.error(f"Agent chain failed: {e}")
+                # Fall back to direct model approach
         
         # Use the messages that were already built correctly above with build_messages_for_streaming()
         # Don't rebuild them here - this was causing the context history loss for OpenAI models
@@ -1737,6 +1851,8 @@ async def stream_chunks(body):
 
         token_throttling_retries = 0
         max_token_throttling_retries = 2  # Allow 2 fresh connection attempts
+        within_stream_retries = 0
+        max_within_stream_retries = 3  # Quick retries within same stream first
 
         # Context overflow detection state
         overflow_checked = False
@@ -1754,9 +1870,7 @@ async def stream_chunks(body):
         except Exception as e:
             logger.warning(f"Failed to get MCP tools for iteration: {e}")
         # Allow tool calls to complete - only stop at the END of tool calls
-        model_with_stop = model_instance.bind(stop=[
-            "</TOOL_SENTINEL>",  # Stop AFTER the tool call completes
-        ])
+        model_with_stop = model_instance.bind(stop=["</TOOL_SENTINEL>"])
         logger.info(f"🔍 STREAM_CHUNKS: model_with_stop type: {type(model_with_stop)}")
 
         # Agent iteration loop for tool execution
@@ -1790,7 +1904,7 @@ async def stream_chunks(body):
                 tool_execution_completed = False  # Track if we've executed and need model to continue
                 
                 # Store stream reference for potential closure
-                stream_generator = model_to_use.astream(messages, config=config)
+                stream_generator = model_to_use.astream(messages_for_model, config=config)
                 async for chunk in stream_generator:
                     # Log the actual messages being sent to model on first iteration
                     if iteration == 1 and not hasattr(stream_chunks, '_logged_model_input'):
@@ -1868,11 +1982,10 @@ async def stream_chunks(body):
                             # Stream the completed part
                             
                             # Add visual marker that continuation is happening
-                            marker_ops = [{"op": "add", "path": "/streamed_output_str/-", "value": "\n\n---\n**⏳ Response is long, preparing continuation...**\n---\n\n"}]
-                            yield f"data: {json.dumps({'ops': marker_ops})}\n\n"
+                            marker_msg = "\\n\\n---\\n**⏳ Response is long, preparing continuation...**\\n---\\n\\n"
+                            yield f"data: {json.dumps({'content': marker_msg})}\\n\\n"
                             
-                            completed_ops = [{"op": "add", "path": "/streamed_output_str/-", "value": overflow_info["completed_response"]}]
-                            yield f"data: {json.dumps({'ops': completed_ops})}\n\n"
+                            yield f"data: {json.dumps({'content': overflow_info['completed_response']})}\\n\\n"
                             
                             # Start continuation
                             async for continuation_chunk in handle_continuation(overflow_info):
@@ -1896,21 +2009,17 @@ async def stream_chunks(body):
                             ops = [{"op": "add", "path": "/reasoning_content/-", "value": reasoning}]
                             yield f"data: {json.dumps({'ops': ops})}\n\n"
 
-                    # AGGRESSIVE: If we see ANY hint of a tool call starting, stop everything
-                    # Check for tool markers in the content
-                    if any(marker in content_str for marker in ["<TOOL_SENTINEL>", "</TOOL_SENTINEL>", "<name>mcp_"]):
+                    # Check for complete tool calls - need both opening and closing sentinels
+                    # and proper structure with name and arguments
+                    if ("<TOOL_SENTINEL>" in current_response and 
+                        "</TOOL_SENTINEL>" in current_response and
+                        "<name>" in current_response and 
+                        "</name>" in current_response and
+                        "<arguments>" in current_response and
+                        "</arguments>" in current_response):
                         tool_call_detected = True
-                        logger.info(f"🔍 STREAM: AGGRESSIVE STOP - detected tool marker in: {content_str[:50]}")
-                        # CRITICAL: Break immediately to stop accumulating more chunks
-                        # This prevents the model from generating multiple tool calls
-                        logger.info("🔍 STREAM: BREAKING IMMEDIATELY after detecting tool marker")
-                        # Force close the stream to prevent hanging
-                        if hasattr(stream_generator, 'aclose'):
-                            try:
-                                await stream_generator.aclose()
-                            except:
-                                pass
-                        break  # Exit the streaming loop immediately
+                        logger.info(f"🔍 STREAM: Complete tool call detected, stopping stream")
+                        break
                     
                     # If we've just executed tools, the model should now be generating the response
                     if tool_execution_completed:
@@ -1926,11 +2035,26 @@ async def stream_chunks(body):
                         if TOOL_SENTINEL_OPEN in content_str:
                             inside_tool_call = True
                             tool_call_buffer = ""
-                            # Stream any content before the tool call, but not the sentinel itself
+                            # Stream any content before the tool call
                             before_tool = content_str[:content_str.find(TOOL_SENTINEL_OPEN)]
                             if before_tool:
-                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": before_tool}]
-                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                text_msg = {
+                                    'type': 'text',
+                                    'content': before_tool
+                                }
+                                yield f"data: {json.dumps(text_msg)}\\n\\n"
+                                import asyncio
+                                await asyncio.sleep(0.01)  # Longer delay to prevent batching
+                            
+                            # Send tool_start message
+                            tool_start_msg = {
+                                'type': 'tool_start',
+                                'message': 'Tool execution starting...'
+                            }
+                            yield f"data: {json.dumps(tool_start_msg)}\\n\\n"
+                            logger.info("🔍 STREAM: Sent tool_start message to frontend")
+                            await asyncio.sleep(0.01)  # Delay after tool_start
+                            
                             tool_call_detected = True  # Set flag to suppress all further output
                             buffered_content = ""  # Start buffering from tool call
                             logger.info("🔍 STREAM: Entering tool call - suppressing all output")
@@ -1949,7 +2073,13 @@ async def stream_chunks(body):
                             continue
                         
                     else:
-                        content_str = str(chunk)
+                        # Extract content properly from LangChain chunks
+                        if hasattr(chunk, 'content'):
+                            content_str = chunk.content
+                        elif hasattr(chunk, 'text'):
+                            content_str = chunk.text
+                        else:
+                            content_str = ""
                     if not content_str: 
                         continue
 
@@ -1993,73 +2123,40 @@ async def stream_chunks(body):
                     # Check if the current code block is a diff block
                     is_in_diff_block = in_code_block and '```diff' in current_response
                     
+                    # Ultra-aggressive tool suppression - catch any fragment that could be part of a tool call
                     should_suppress = (
-                        # Only suppress if not in a diff block AND matches suppression patterns
                         not is_in_diff_block and (
                         inside_tool_call or
-                        TOOL_SENTINEL_OPEN in content_str or 
-                        TOOL_SENTINEL_CLOSE in content_str or
-                        content_str.strip().startswith('<TOOL') or
-                        content_str.strip().endswith('_call') or
-                        TOOL_SENTINEL_CLOSE.lstrip('<') in content_str or
-                        # Only suppress internal tool sentinels, not frontend tool blocks
-                        '<TOOL_' in content_str or
-                        '<TOOL_SENTINEL' in content_str or
-                        '</TOOL_SENTINEL' in content_str or
-                        # Suppress partial tool sentinel fragments
-                        'SENTINEL>' in content_str or
-                        '<SENTINEL' in content_str or
-                        '_run' in content_str or  # Catch _run fragments
-                        '_shell' in content_str or  # Catch _shell fragments
-                        '_comman' in content_str or  # Catch _command fragments
-                        '_SENTINEL' in content_str or
-                        # Suppress JSON fragments that commonly leak
-                        ('"d": "' in content_str) or  # Catch "d": "pwd"
-                        ('": "' in content_str and current_response.count(TOOL_SENTINEL_OPEN) > 0) or  # Catch ": "1"
-                        ('"pwd"' in content_str and current_response.count(TOOL_SENTINEL_OPEN) > 0) or
-                        "mcp_" in content_str and ("\"command\"" in content_str or "\"format\"" in content_str or "\"timeout\"" in content_str) or
-                        # Enhanced tool call detection
-                        content_str.strip().startswith("mcp_") or
-                        "mcp_run" in content_str or
-                        "mcp_get" in content_str or
-                        # Catch argument patterns (only suppress if inside tool call)
-                        ("\"comman" in content_str) or  # Catch partial "command"
-                        ("d\": \"" in content_str and tool_call_detected) or  # Catch command value
-                        ("pwd\"" in content_str and tool_call_detected) or  # Catch pwd command
-                        ("timeout" in content_str and tool_call_detected) or  # Catch timeout
-                        (": \"" in content_str and tool_call_detected) or  # Catch JSON patterns
-                        ("\"command\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
-                        ("\"format\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
-                        ("\"timeout\":" in content_str and TOOL_SENTINEL_OPEN in current_response and not tool_executed) or
-                        # Catch partial tool fragments that leak through
-                        content_str.strip().endswith(">mcp_") or
-                        content_str.strip().endswith("1>") or
-                        # Catch mixed tool content
-                        ("mcp_" in content_str and any(char in content_str for char in ["\"", ":", "{", "}"])) or
-                        any(marker in content_str for marker in ["<name>", "</name>", "<arguments>", "</arguments>"]) or
-                        # NEW: Catch specific leaked fragments we're seeing in frontend
-                        "_run_shell_command" in content_str or
-                        "_run_" in content_str or
-                        "shell_command" in content_str or
-                        "</name" in content_str or
-                        "command\":" in content_str or
-                        "timeout\":" in content_str or
-                        # Catch JSON-like fragments
-                        (content_str.strip().startswith('\"') and ('command' in content_str or 'timeout' in content_str)) or
-                        # Catch partial XML closing tags
-                        content_str.strip().endswith('</') or
-                        content_str.strip().startswith('</') or
-                        # Catch comma-separated values that look like JSON
-                        (content_str.strip().endswith(',') and ('command' in content_str or 'timeout' in content_str)) or
-                        # CRITICAL: Suppress ALL content after tool calls but before execution
-                        # This prevents hallucinated responses from leaking through
-                        has_pending_tools
+                        TOOL_SENTINEL_OPEN in current_response or  # If we've seen the start of a tool call anywhere
+                        '<TOOL' in content_str or  # Catch partial tool sentinels
+                        'TOOL_' in content_str or  # Catch fragments like "_modules.\n\n<TOOL_"
+                        '</TOOL' in content_str or
+                        'SENTINEL' in content_str or
+                        '<name>' in content_str or
+                        '</name>' in content_str or
+                        '<arguments>' in content_str or
+                        '</arguments>' in content_str or
+                        'mcp_run_shell_command' in content_str or
+                        'mcp_get_current_time' in content_str or
+                        ('"command"' in content_str and TOOL_SENTINEL_OPEN in current_response) or
+                        ('"timeout"' in content_str and TOOL_SENTINEL_OPEN in current_response) or
+                        ('find .' in content_str and TOOL_SENTINEL_OPEN in current_response) or
+                        # Catch split fragments
+                        content_str.strip().endswith('<TOOL') or
+                        content_str.strip().endswith('_modules.\\n\\n<TOOL') or
+                        content_str.strip().startswith('_') and TOOL_SENTINEL_OPEN in current_response
                         )
                     )
-                    
+
                     if not should_suppress:
-                        ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
-                        yield f"data: {json.dumps({'ops': ops})}\n\n"
+                        text_msg = {
+                            'type': 'text',
+                            'content': content_str
+                        }
+                        yield f"data: {json.dumps(text_msg)}\\n\\n"
+                        # Force task scheduling to ensure individual processing
+                        import asyncio
+                        await asyncio.sleep(0)
                     else:
                         logger.debug(f"🔍 AGENT: Suppressed tool call content from frontend")
                     # Check for tool calls and execute when model has finished generating them
@@ -2118,10 +2215,15 @@ async def stream_chunks(body):
                                             tool_blocks.append(tool_block)
                                             start_pos = tool_end + 3
                                         
-                                        # Stream tool results to frontend
+                                        # Stream tool results to frontend with proper message type
                                         for tool_block in tool_blocks:
-                                            tool_result = "\n" + tool_block + "\n"
-                                            ops = [{"op": "add", "path": "/streamed_output_str/-", "value": tool_result}]
+                                            tool_result = "\\n" + tool_block + "\\n"
+                                            tool_execution_msg = {
+                                                'type': 'tool_execution',
+                                                'content': tool_result,
+                                                'tool_name': 'mcp_tool'
+                                            }
+                                            yield f"data: {json.dumps(tool_execution_msg)}\\n\\n"
                                             # Don't send markdown tool blocks when we're using structured tool_execution events
                                             # The structured events are already handled by the frontend
                                             logger.info(f"🔍 STREAM: Skipping markdown tool block (using structured events)")
@@ -2161,8 +2263,7 @@ async def stream_chunks(body):
                             except Exception as tool_error:
                                 logger.error(f"🔍 STREAM: Tool execution error: {tool_error}")
                                 error_msg = f"**Tool Error:** {str(tool_error)}"
-                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": error_msg}]
-                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                yield f"data: {json.dumps({'content': error_msg})}\\n\\n"
                                 tool_executed = True
                                 tool_call_detected = False
                                 pending_tool_execution = False
@@ -2189,11 +2290,15 @@ async def stream_chunks(body):
                                             tool_blocks.append(tool_block)
                                             start_pos = tool_end + 3
                                         
-                                        # Stream ALL tool results to frontend
+                                        # Stream ALL tool results to frontend with proper message type
                                         for tool_block in tool_blocks:
-                                            tool_result = "\n" + tool_block + "\n"
-                                            ops = [{"op": "add", "path": "/streamed_output_str/-", "value": tool_result}]
-                                            yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                            tool_result = "\\n" + tool_block + "\\n"
+                                            tool_execution_msg = {
+                                                'type': 'tool_execution',
+                                                'content': tool_result,
+                                                'tool_name': 'mcp_tool'
+                                            }
+                                            yield f"data: {json.dumps(tool_execution_msg)}\\n\\n"
                                             logger.info(f"🔍 STREAM: Tool result streamed: {tool_result[:50]}...")
                                     
                                     # Add ALL tool results to conversation context for model continuation
@@ -2238,8 +2343,7 @@ async def stream_chunks(body):
                             except Exception as tool_error:
                                 logger.error(f"🔍 STREAM: Tool execution error: {tool_error}")
                                 error_msg = f"**Tool Error:** {str(tool_error)}"
-                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": error_msg}]
-                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                yield f"data: {json.dumps({'content': error_msg})}\\n\\n"
                                 tool_executed = True
 
                 logger.info(f"🔍 AGENT: Finished streaming loop for iteration {iteration}")
@@ -2289,11 +2393,15 @@ async def stream_chunks(body):
                                 tool_blocks.append(tool_block)
                                 start_pos = tool_end + 3
                             
-                            # Stream ALL tool results to frontend
+                            # Stream ALL tool results to frontend with proper message type
                             for tool_block in tool_blocks:
-                                tool_result = "\n" + tool_block + "\n"
-                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": tool_result}]
-                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                tool_result = "\\n" + tool_block + "\\n"
+                                tool_execution_msg = {
+                                    'type': 'tool_execution',
+                                    'content': tool_result,
+                                    'tool_name': 'mcp_tool'
+                                }
+                                yield f"data: {json.dumps(tool_execution_msg)}\\n\\n"
                                 logger.info(f"🔍 STREAM: Tool result streamed: {tool_result[:50]}...")
                         
                         # Add ALL tool results to conversation context for model continuation
@@ -2379,12 +2487,78 @@ async def stream_chunks(body):
                 logger.error(f"Error in agent iteration {iteration}: {str(e)}", exc_info=True)
                 processed_response = current_response  # Initialize before use
 
+                # Handle timeout errors with retry logic
+                error_str = str(e)
+                is_timeout_error = ("Read timeout" in error_str or 
+                                  "ReadTimeoutError" in error_str or
+                                  "timeout" in error_str.lower())
                 
                 # Check for token-based throttling specifically
-                error_str = str(e)
                 is_token_throttling = ("Too many tokens" in error_str and 
                                      "ThrottlingException" in error_str and
                                      "reached max retries" in error_str)
+                
+                # Use two-tier retry: first within stream, then new stream
+                if (is_timeout_error or is_token_throttling):
+                    # Tier 1: Quick retries within same stream
+                    if within_stream_retries < max_within_stream_retries:
+                        within_stream_retries += 1
+                        wait_time = min(2 ** within_stream_retries, 8)  # 2s, 4s, 8s
+                        error_type = "timeout" if is_timeout_error else "token throttling"
+                        
+                        logger.info(f"🔄 WITHIN-STREAM: {error_type} retry {within_stream_retries}/{max_within_stream_retries} in {wait_time}s")
+                        
+                        retry_msg = f"\\n🔄 {error_type.title()} detected, retrying in {wait_time}s...\\n"
+                        yield f"data: {json.dumps({'content': retry_msg})}\\n\\n"
+                        
+                        await asyncio.sleep(wait_time)
+                        
+                        # Retry same iteration within stream
+                        iteration -= 1
+                        if iteration < 1:
+                            iteration = 1
+                        continue
+                    
+                    # Tier 2: Fresh connection/new stream
+                    elif token_throttling_retries < max_token_throttling_retries:
+                        token_throttling_retries += 1
+                        within_stream_retries = 0  # Reset within-stream counter
+                        wait_time = min(10 * (2 ** (token_throttling_retries - 1)), 30)  # 10s, 20s, 30s
+                        error_type = "timeout" if is_timeout_error else "token throttling"
+                        
+                        logger.info(f"🔄 NEW-STREAM: {error_type} retry {token_throttling_retries}/{max_token_throttling_retries} with fresh connection in {wait_time}s")
+                        
+                        fresh_conn_msg = f"\\n🔄 Starting fresh connection... (attempt {token_throttling_retries}/{max_token_throttling_retries})\\n"
+                        yield f"data: {json.dumps({'content': fresh_conn_msg})}\\n\\n"
+                        
+                        await asyncio.sleep(wait_time)
+                        
+                        # End current stream and trigger new one via recursive call
+                        yield f"data: {json.dumps({'retry_with_fresh_stream': True})}\\n\\n"
+                        
+                        # Start completely new stream
+                        async for chunk in stream_chunks(body):
+                            yield chunk
+                        return
+                
+                # Gracefully close stream with error message
+                if is_timeout_error:
+                    error_msg = "⚠️ Request timed out. The response may be incomplete."
+                elif is_token_throttling:
+                    error_msg = "⚠️ Rate limit exceeded. Please try again in a moment."
+                else:
+                    error_msg = f"⚠️ An error occurred: {str(e)}"
+                
+                # Send error to client
+                error_content = f"\\n\\n{error_msg}\\n"
+                yield f"data: {json.dumps({'content': error_content})}\\n\\n"
+                
+                # Send completion signal
+                yield f"data: {json.dumps({'done': True})}\\n\\n"
+                
+                # Clean up and exit gracefully
+                await cleanup_stream(conversation_id)
+                return
                 
                 if is_token_throttling and token_throttling_retries < max_token_throttling_retries:
                     token_throttling_retries += 1
@@ -2397,8 +2571,8 @@ async def stream_chunks(body):
                         "retry_attempt": token_throttling_retries,
                         "wait_time": 20
                     }
-                    ops = [{"op": "add", "path": "/streamed_output_str/-", "value": f"\n🔄 Retrying with fresh connection... (attempt {token_throttling_retries}/{max_token_throttling_retries})\n"}]
-                    yield f"data: {json.dumps({'ops': ops})}\n\n"
+                    final_retry_msg = f"\\n🔄 Retrying with fresh connection... (attempt {token_throttling_retries}/{max_token_throttling_retries})\\n"
+                    yield f"data: {json.dumps({'content': final_retry_msg})}\\n\\n"
                     
                     # Wait 20 seconds and retry with fresh connection
                     await asyncio.sleep(20)
@@ -2415,12 +2589,11 @@ async def stream_chunks(body):
                     logger.debug(f"PARTIAL RESPONSE PRESERVED (AGENT ERROR):\n{current_response}")
                     
                     # Send the partial content to the frontend
-                    ops = [{"op": "add", "path": "/streamed_output_str/-", "value": current_response}]
-                    yield f"data: {json.dumps({'ops': ops})}\n\n"
+                    yield f"data: {json.dumps({'content': current_response})}\\n\\n"
                     
                     # Send warning about partial response
-                    warning_signal = {"op": "add", "path": "/warning", "value": f"Server encountered an error after generating {len(current_response)} characters. The partial response has been preserved."}
-                    yield f"data: {json.dumps({'ops': [warning_signal]})}\n\n"
+                    warning_msg = f"Server encountered an error after generating {len(current_response)} characters. The partial response has been preserved."
+                    yield f"data: {json.dumps({'warning': warning_msg})}\\n\\n"
                     
                     full_response = current_response  # Ensure it's preserved in full_response
                 
