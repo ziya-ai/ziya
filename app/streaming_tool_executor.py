@@ -132,13 +132,26 @@ class StreamingToolExecutor:
         conversation = []
         system_content = None
 
-        for msg in messages:
-            role = msg.get('role', '')
-            content = msg.get('content', '')
+        logger.info(f"🔍 STREAMING_TOOL_EXECUTOR: Received {len(messages)} messages")
+        for i, msg in enumerate(messages):
+            # Handle both dict format and LangChain message objects
+            if hasattr(msg, 'type') and hasattr(msg, 'content'):
+                # LangChain message object
+                role = msg.type if msg.type != 'human' else 'user'
+                content = msg.content
+            else:
+                # Dict format
+                role = msg.get('role', '')
+                content = msg.get('content', '')
+            
+            logger.info(f"🔍 STREAMING_TOOL_EXECUTOR: Message {i}: role={role}, content_length={len(content)}")
             if role == 'system':
                 system_content = content
-            elif role in ['user', 'assistant']:
-                conversation.append({"role": role, "content": content})
+                logger.info(f"🔍 STREAMING_TOOL_EXECUTOR: Found system message with {len(content)} characters")
+            elif role in ['user', 'assistant', 'ai']:
+                # Normalize ai role to assistant for Bedrock
+                bedrock_role = 'assistant' if role == 'ai' else role
+                conversation.append({"role": bedrock_role, "content": content})
 
         # Iterative execution with proper tool result handling
         recent_commands = []  # Track recent commands to prevent duplicates
@@ -170,11 +183,13 @@ class StreamingToolExecutor:
                 # Remove only MCP tools list, not visualization tools
                 system_content = re.sub(r'- mcp_[^:]+:[^\n]*\n?', '', system_content)
                 body["system"] = system_content + "\n\nCRITICAL: Use ONLY native tool calling. Never generate markdown like ```tool:mcp_run_shell_command or ```bash. Use the provided tools directly."
+                logger.info(f"🔍 SYSTEM_DEBUG: Final system prompt length: {len(body['system'])}")
 
             if bedrock_tools:
                 body["tools"] = bedrock_tools
                 # Use "auto" to allow model to decide when to stop
                 body["tool_choice"] = {"type": "auto"}
+                logger.info(f"🔍 TOOL_DEBUG: Sending {len(bedrock_tools)} tools to model: {[t['name'] for t in bedrock_tools]}")
 
             try:
                 # Exponential backoff for rate limiting
@@ -220,6 +235,9 @@ class StreamingToolExecutor:
                 from app.config.shell_config import DEFAULT_SHELL_CONFIG
                 chunk_timeout = int(os.environ.get('COMMAND_TIMEOUT', DEFAULT_SHELL_CONFIG["timeout"]))
 
+                # Initialize content buffer for proper ordering
+                content_buffer = ""
+                
                 for event in response['body']:
                     # Timeout protection
                     if time.time() - start_time > chunk_timeout:
@@ -233,9 +251,37 @@ class StreamingToolExecutor:
                         content_block = chunk.get('content_block', {})
                         logger.info(f"🔍 CHUNK_DEBUG: content_block_start - type: {content_block.get('type')}, id: {content_block.get('id')}")
                         if content_block.get('type') == 'tool_use':
+                            # FLUSH any buffered content before tool starts
+                            if content_buffer.strip():
+                                if hasattr(self, '_content_optimizer'):
+                                    remaining = self._content_optimizer.flush_remaining()
+                                    if remaining:
+                                        yield {
+                                            'type': 'text',
+                                            'content': remaining,
+                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                        }
+                                yield {
+                                    'type': 'text',
+                                    'content': content_buffer,
+                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                }
+                                content_buffer = ""
+                            
                             tool_id = content_block.get('id')
                             tool_name = content_block.get('name')
                             if tool_id and tool_name:
+                                # IMMEDIATELY send tool_start event
+                                yield {
+                                    'tool_start': {
+                                        'type': 'tool_start',
+                                        'tool_id': tool_id,
+                                        'tool_name': tool_name,
+                                        'args': {},
+                                        'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                    }
+                                }
+                                
                                 # Collect tool call instead of executing immediately
                                 all_tool_calls.append({
                                     'id': tool_id,
@@ -243,8 +289,6 @@ class StreamingToolExecutor:
                                     'args': {}
                                 })
                                 logger.info(f"🔍 COLLECTED_TOOL: {tool_name} (id: {tool_id})")
-                                
-
                                 
                                 active_tools[tool_id] = {
                                     'name': tool_name,
@@ -297,13 +341,27 @@ class StreamingToolExecutor:
                             if 'tool:' in text:
                                 # Skip fake tool patterns
                                 continue
-                                
-                            yield {
-                                'type': 'text', 
-                                'content': text,
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            }
-                            yielded_text_length += len(text)  # Track yielded text
+                            
+                            # Initialize content optimizer if not exists
+                            if not hasattr(self, '_content_optimizer'):
+                                from app.utils.streaming_optimizer import StreamingContentOptimizer
+                                self._content_optimizer = StreamingContentOptimizer()
+                            
+                            # Skip fake tool patterns
+                            if 'tool:' in text:
+                                continue
+                            
+                            # Buffer content to ensure proper ordering before tool calls
+                            content_buffer += text
+                            
+                            # Flush buffer periodically to maintain streaming feel
+                            if len(content_buffer) > 50:  # Flush every ~50 chars
+                                yield {
+                                    'type': 'text',
+                                    'content': content_buffer,
+                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                }
+                                content_buffer = ""
                         elif delta.get('type') == 'input_json_delta':
                             # Find tool by index
                             tool_id = None
@@ -388,15 +446,15 @@ class StreamingToolExecutor:
                                         result = await mcp_manager.call_tool(actual_tool_name, args)
 
                                         # Check if result contains an error or was blocked
-                                        if isinstance(result, dict) and result.get('error'):
+                                        if isinstance(result, dict) and result.get('error') and result.get('error') != False:
                                             error_msg = result.get('message', 'Unknown error')
                                             result_text = f"ERROR: {error_msg}. Please try a different approach or fix the command."
                                         elif isinstance(result, dict) and 'content' in result:
                                             content = result['content']
                                             if isinstance(content, list) and len(content) > 0:
                                                 result_text = content[0].get('text', str(result))
-                                                # Check if this was a blocked repetitive call
-                                                if 'blocked' in result_text.lower() or len(result_text) < 100:
+                                                # Only mark as blocked if explicitly blocked, not just short
+                                                if 'blocked' in result_text.lower() and 'security' in result_text.lower():
                                                     blocked_tools_this_iteration += 1
                                             else:
                                                 result_text = str(result)
@@ -433,12 +491,20 @@ class StreamingToolExecutor:
                                 yield {'type': 'error', 'content': error_msg}
 
                     elif chunk['type'] == 'message_stop':
+                        # Flush any remaining content from buffer before stopping
+                        if content_buffer.strip():
+                            yield {
+                                'type': 'text',
+                                'content': content_buffer,
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                            }
                         # Just break out of chunk processing, handle completion logic below
                         break
 
                 # Add assistant response to conversation
                 if assistant_text.strip():
                     conversation.append({"role": "assistant", "content": assistant_text})
+                    logger.info(f"🤖 MODEL_RESPONSE: {assistant_text}")
 
                 # Skip duplicate execution - tools are already executed in content_block_stop
                 # This section was causing duplicate tool execution
