@@ -1306,9 +1306,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                             }}>
                                 {isApplied ?
                                     isAlreadyApplied ?
-                                        <><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</> :
-                                        <><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</> :
-                                    <><CloseCircleOutlined /> Failed: {statusReason}</>
+                                        <span><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</span> :
+                                        <span><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</span> :
+                                    <span><CloseCircleOutlined /> Failed: {statusReason}</span>
                                 }
                             </span>
                         );
@@ -1726,9 +1726,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 }}>
                                     {isApplied ?
                                         isAlreadyApplied ?
-                                            <><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</> :
-                                            <><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</> :
-                                        <><CloseCircleOutlined /> Failed: {statusReason}</>
+                                            <span><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</span> :
+                                            <span><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</span> :
+                                        <span><CloseCircleOutlined /> Failed: {statusReason}</span>
                                     }
                                 </span>
                             );
@@ -3914,8 +3914,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         }
                     }
 
-                    // If all tags are known, render as HTML
-                    return <div key={index} dangerouslySetInnerHTML={{ __html: decodeHtmlEntities(htmlContent) }} />;
+                    // Render as text content to avoid HTML parsing issues with angle brackets
+                    return <div key={index}>{decodeHtmlEntities(htmlContent)}</div>;
 
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
@@ -3948,10 +3948,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
                     if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
                         // If it has nested tokens, render them recursively
-                        return <>{renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode)}</>;
+                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode);
                     } else {
-                        // Otherwise, just render the decoded text content (use fragment)
-                        return <>{decodedText}</>; // Use fragment to avoid extra spans
+                        // Otherwise, just render the decoded text content directly
+                        return decodedText; // Direct text rendering prevents JSX interpretation
                     }
 
                 // --- Handle Inline Markdown Elements (Recursively) ---
@@ -3962,8 +3962,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'codespan':
                     if (!hasText(tokenWithText)) return null;
                     const decodedCode = decodeHtmlEntities(tokenWithText.text);
-                    // Basic escaping for codespan content
-                    return <code key={index} dangerouslySetInnerHTML={{ __html: decodedCode }} />;
+                    // Use text content instead of dangerouslySetInnerHTML to prevent HTML parsing issues
+                    return <code key={index}>{decodedCode}</code>;
                 case 'br':
                     return <br key={index} />;
                 case 'del':
@@ -3975,7 +3975,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'escape':
                     if (!hasText(tokenWithText)) return null;
-                    return <>{decodeHtmlEntities(tokenWithText.text || '')}</>;
+                    return decodeHtmlEntities(tokenWithText.text || '');
 
                 case 'image':
                     const imageToken = token as Tokens.Image;

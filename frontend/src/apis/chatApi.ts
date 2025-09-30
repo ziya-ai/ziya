@@ -416,18 +416,26 @@ export const sendPayload = async (
         // Use ReadableStream API for more reliable streaming
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        let buffer = ''; // Buffer for incomplete SSE messages
 
         // Process chunks as they arrive
         const processChunk = (chunk: string) => {
-            // Split the chunk by newlines to handle multiple SSE events
-            const lines = chunk.split('\\n\\n');
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
+            // Add chunk to buffer
+            buffer += chunk;
+            
+            // Split by double newlines to get complete SSE messages
+            const messages = buffer.split('\n\n');
+            
+            // Keep the last potentially incomplete message in buffer
+            buffer = messages.pop() || '';
+            
+            // Process complete messages
+            for (const sseMessage of messages) {
+                if (!sseMessage.trim()) continue;
 
                 // Check if it's an SSE data line
-                if (line.startsWith('data:')) {
-                    const data = line.slice(5).trim();
+                if (sseMessage.startsWith('data:')) {
+                    const data = sseMessage.slice(5).trim();
 
                     // Check if this chunk contains diff syntax and set the flag
                     if (!containsDiff && (
@@ -529,7 +537,7 @@ export const sendPayload = async (
                             ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
                             : errorResponse.detail || 'An error occurred';
 
-                        message.warning({
+                        message[isPartialResponse ? 'warning' : 'error']({
                             content: errorMessage,
                             duration: isPartialResponse ? 15 : 10,
                             key: `stream-error-${conversationId}`
@@ -561,116 +569,78 @@ export const sendPayload = async (
                     }
 
                     try {
+                        // Parse the JSON data
                         const jsonData = JSON.parse(data);
-
-                        // Handle throttling status messages
-                        if (jsonData.type === 'throttling_status') {
-                            console.log('Throttling status:', jsonData.message);
-                            // Show throttling status in UI
-                            message.info({
-                                content: jsonData.message,
-                                duration: jsonData.delay + 1, // Show for delay duration + 1 second
-                                key: `throttling-${conversationId}`
-                            });
-                            continue;
-                        }
-
-                        // Handle throttling failure with continue button
-                        if (jsonData.type === 'throttling_failed') {
-                            console.log('Throttling failed:', jsonData.message);
-
-                            // Show error with continue button option
-                            const errorResponse = {
-                                error: 'throttling_failed',
-                                detail: jsonData.message,
-                                show_continue_button: true
-                            };
-
-                            message.error({
-                                content: jsonData.message + ' Click to retry.',
-                                duration: 0, // Don't auto-dismiss
-                                key: `throttling-failed-${conversationId}`,
-                                onClick: () => {
-                                    window.location.reload(); // Simple retry
-                                }
-                            });
-
-                            errorOccurred = true;
-                            return;
-                        }
-
-                        // Handle done marker
-                        if (jsonData.done) {
-                            console.log("Received done marker in JSON data");
-                            return;
-                        }
-
-                        // Skip heartbeat messages
+                        
+                        // Process the JSON object
                         if (jsonData.heartbeat) {
                             console.log("Received heartbeat, skipping");
                             continue;
                         }
 
-                        // Extract text content from the response
-                        if (jsonData.type === 'text' && jsonData.content) {
-                            // Handle new streaming format with type field
-                            if (currentThinkingContent) {
-                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
-                                currentThinkingContent = ''; // Clear after using
-                            }
-                            // Always add the current text content
-                            currentContent += jsonData.content;
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
+                        // Handle done marker
+                        if (jsonData.done) {
+                            console.log("Received done marker in JSON data");
+                            // Don't return here - let the stream complete naturally
+                            // The done marker just indicates no more content chunks
+                            continue;
+                        }
+
+                        // Handle throttling status messages
+                        if (jsonData.type === 'throttling_status') {
+                            console.log('Throttling status:', jsonData.message);
+                            message.info({
+                                content: jsonData.message,
+                                duration: jsonData.delay + 1,
+                                key: `throttling-${conversationId}`
                             });
+                            continue;
+                        }
+
+                        // Handle throttling failure
+                        if (jsonData.type === 'throttling_failed') {
+                            console.log('Throttling failed:', jsonData.message);
+                            message.error({
+                                content: jsonData.message + ' Click to retry.',
+                                duration: 0,
+                                key: `throttling-failed-${conversationId}`,
+                                onClick: () => {
+                                    window.location.reload();
+                                }
+                            });
+                            errorOccurred = true;
+                            return;
+                        }
+
+                        // SIMPLIFIED CONTENT PROCESSING - Single path for all content
+                        let contentToAdd = '';
+                        
+                        if (jsonData.content) {
+                            // Handle any content field - this covers most cases
+                            contentToAdd = jsonData.content;
                         } else if (jsonData.text) {
-                            // Handle text content - check for accumulated thinking first
-                            console.log('Text via jsonData.text, thinking content length:', currentThinkingContent?.length || 0);
-                            if (currentThinkingContent) {
-                                console.log('Adding thinking content via text branch:', currentThinkingContent.substring(0, 50) + '...');
-                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
-                                currentThinkingContent = ''; // Clear after using
-                            }
-                            currentContent += jsonData.text;
+                            // Handle legacy text field
+                            contentToAdd = jsonData.text;
+                        }
+
+                        // Add content if we found any
+                        if (contentToAdd) {
+                            console.log('Adding content chunk:', contentToAdd.substring(0, 50) + '...');
+                            currentContent += contentToAdd;
+                            
+                            // Use functional update to prevent race conditions
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
+                                // Always use the latest currentContent value
                                 next.set(conversationId, currentContent);
                                 return next;
                             });
-                        } else if (jsonData.type === 'thinking') {
-                            // Handle thinking content - display immediately
-                            const thinkingContent = `<thinking-data>${jsonData.content}</thinking-data>\n\n`;
-                            currentContent += thinkingContent;
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
-                        } else if (jsonData.type === 'text') {
-                            // When we get text, prepend any accumulated thinking content
-                            if (currentThinkingContent) {
-                                currentContent += `<thinking-data>${currentThinkingContent}</thinking-data>\n\n`;
-                                currentThinkingContent = ''; // Clear after using
-                            }
-                            currentContent += jsonData.content;
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
-                        } else if (jsonData.content) {
-                            currentContent += jsonData.content;
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
-                        // Handle nested tool events (new format)
-                        } else if (jsonData.tool_start) {
+                        }
+
+                        // Handle tool events separately (simplified)
+                        if (jsonData.tool_start) {
                             const toolData = jsonData.tool_start;
-                            console.log('🔧 NESTED TOOL_START received:', toolData);
+                            console.log('🔧 TOOL_START received:', toolData);
                             
                             let toolName = toolData.tool_name;
                             if (!toolName.startsWith('mcp_')) {
@@ -690,9 +660,11 @@ export const sendPayload = async (
                                 next.set(conversationId, currentContent);
                                 return next;
                             });
-                        } else if (jsonData.tool_result) {
+                        }
+
+                        if (jsonData.tool_result) {
                             const toolData = jsonData.tool_result;
-                            console.log('🔧 NESTED TOOL_RESULT received:', toolData);
+                            console.log('🔧 TOOL_RESULT received:', toolData);
                             
                             let toolName = toolData.tool_name;
                             if (!toolName.startsWith('mcp_')) {
@@ -703,45 +675,19 @@ export const sendPayload = async (
                             const result = toolData.result;
                             const toolResultDisplay = `\n\`\`\`tool:${toolName}\n${result}\n\`\`\`\n\n`;
                             
-                            // Replace the corresponding tool_start block if it exists
+                            // Simple replacement logic
                             const escapedToolName = toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                             const toolStartPattern = new RegExp(
                                 `\\n\`\`\`tool:${escapedToolName}[^\\n]*\\n⏳ Running: [^\\n]*\\n\`\`\`\\n\\n`,
                                 'g'
                             );
-                            const toolStartMatch = currentContent.match(toolStartPattern);
                             
-                            if (toolStartMatch) {
-                                console.log('🔧 Found matching tool_start block, replacing with result');
-                                
-                                // Extract the command from the match for error display
-                                const commandMatch = toolStartMatch[0].match(/⏳ Running: (.+)/);
-                                const command = commandMatch ? commandMatch[1].trim() : '';
-                                
-                                // Check if result contains an error
-                                const isError = result.toLowerCase().includes('error') ||
-                                              result.toLowerCase().includes('failed') ||
-                                              result.toLowerCase().includes('command not found') ||
-                                              result.toLowerCase().includes('permission denied') ||
-                                              result.toLowerCase().includes('timeout');
-                                
-                                if (isError && command) {
-                                    // For errors, preserve the command and add the error result
-                                    const errorDisplay = `\n\`\`\`tool:${toolName}\n⏳ Error: ${command}\n\n${result}\n\`\`\`\n\n`;
-                                    currentContent = currentContent.replace(toolStartPattern, errorDisplay);
-                                    console.log('🔧 TOOL_EXECUTION: Replaced tool_start with error result');
-                                } else {
-                                    // For success, replace with just the result
-                                    currentContent = currentContent.replace(toolStartPattern, toolResultDisplay);
-                                    console.log('🔧 TOOL_EXECUTION: Successfully replaced tool_start with result');
-                                }
+                            if (currentContent.match(toolStartPattern)) {
+                                currentContent = currentContent.replace(toolStartPattern, toolResultDisplay);
+                                console.log('🔧 Replaced tool_start with result');
                             } else {
-                                // No matching tool_start found - this shouldn't happen in normal flow
-                                console.warn('🔧 TOOL_EXECUTION: No matching tool_start found for replacement');
-                                console.log('🔧 Tool name:', toolName);
-                                console.log('🔧 Pattern used:', toolStartPattern.source);
-                                console.log('🔧 Current content tail:', currentContent.slice(-300));
                                 currentContent += toolResultDisplay;
+                                console.log('🔧 Added new tool result');
                             }
                             
                             setStreamedContentMap((prev: Map<string, string>) => {
@@ -976,15 +922,15 @@ export const sendPayload = async (
 
                                     if (errorResponse) {
                                         console.log("Error detected in message content:", errorResponse);
-                                        message.error({
-                                            content: errorResponse.detail || 'An error occurred',
-                                            duration: errorResponse.status_code === 429 ? 15 : 10,
+                                        const isPartialResponse = currentContent.length > 0;
+                                        const errorMessage = isPartialResponse
+                                            ? `${errorResponse.detail || 'An error occurred'} (Partial response preserved - ${currentContent.length} characters)`
+                                            : errorResponse.detail || 'An error occurred';
+
+                                        message[isPartialResponse ? 'warning' : 'error']({
+                                            content: errorMessage,
+                                            duration: isPartialResponse ? 15 : 10,
                                             key: `stream-error-${conversationId}`
-                                        });
-                                        message.warning({
-                                            content: `${errorResponse.detail || 'An error occurred'} (Partial response preserved - ${currentContent.length} characters)`,
-                                            duration: 15,
-                                            key: 'stream-error'
                                         });
                                         errorOccurred = true;
 
@@ -1012,6 +958,26 @@ export const sendPayload = async (
                 const e = error as Error;
                 console.error('Error parsing JSON chunk:', { error: e, rawData: data });
                 console.error('Error parsing JSON:', e);
+                
+                // FALLBACK: Try simple JSON.parse for basic content chunks
+                try {
+                    const simpleJson = JSON.parse(data);
+                    console.log('Fallback JSON parse succeeded:', simpleJson);
+                    
+                    // Handle simple content objects
+                    if (simpleJson.content) {
+                        console.log('Processing fallback content:', simpleJson.content);
+                        currentContent += simpleJson.content;
+                        setStreamedContentMap((prev: Map<string, string>) => {
+                            const next = new Map(prev);
+                            next.set(conversationId, currentContent);
+                            return next;
+                        });
+                    }
+                } catch (fallbackError) {
+                    console.warn('Fallback JSON parse also failed:', fallbackError);
+                    console.warn('Lost content chunk:', data);
+                }
             }
         }
     }
@@ -1043,7 +1009,7 @@ const readStream = async () => {
                     console.log("Stream read aborted due to error");
                     break;
                 }
-                const chunk = decoder.decode(value);
+                const chunk = decoder.decode(value, { stream: true });
                 if (!chunk) {
                     // Check if the stream was aborted during processing
                     if (isAborted) {
@@ -1136,6 +1102,20 @@ const readStream = async () => {
         setIsStreaming(false);
         throw error;
     } finally {
+        // Flush any remaining bytes in the decoder
+        try {
+            const finalChunk = decoder.decode();
+            if (finalChunk) {
+                processChunk(finalChunk);
+            }
+            
+            // Process any remaining buffered message
+            if (buffer.trim()) {
+                processChunk('');  // This will process the final buffer content
+            }
+        } catch (error) {
+            console.warn("Error flushing decoder:", error);
+        }
         setIsStreaming(false);
         return !errorOccurred && currentContent ? currentContent : '';
     }

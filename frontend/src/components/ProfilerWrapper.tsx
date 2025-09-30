@@ -25,7 +25,7 @@ export const ProfilerWrapper: React.FC<ProfilerWrapperProps> = ({
   enabled = process.env.NODE_ENV === 'development' 
 }) => {
   if (!enabled) {
-    return <>{children}</>;
+    return <span>{children}</span>;
   }
 
   return <Profiler id={id} onRender={onRenderCallback}>{children}</Profiler>;
