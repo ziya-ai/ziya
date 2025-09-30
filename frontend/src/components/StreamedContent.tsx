@@ -38,8 +38,8 @@ export const StreamedContent: React.FC<{}> = () => {
     } = useChatContext();
 
 
-    // Use a ref to track the last rendered content to avoid unnecessary re-renders
-    const streamedContent = useMemo(() => streamedContentMap.get(currentConversationId) ?? '', [streamedContentMap, currentConversationId]);
+    // Get the latest streamed content directly without memoization to avoid stale content
+    const streamedContent = streamedContentMap.get(currentConversationId) ?? '';
     const streamedContentRef = useRef<string>(streamedContent);
     const currentConversationRef = useRef<string>(currentConversationId);
     const thinkingTimeoutRef = useRef<NodeJS.Timeout>();
@@ -655,7 +655,7 @@ return (
                             <ReasoningDisplay conversationId={currentConversationId} />
 
                             {/* Only render if we have actual content */}
-                            {error && <><ErrorDisplay message={error} /><br /></>}
+                            {error && <div><ErrorDisplay message={error} /><br /></div>}
                             {!error && streamedContent && streamedContent.trim() && (
                                 <div className="message-content">
                                     {/* Show preservation notice if this content was preserved */}
