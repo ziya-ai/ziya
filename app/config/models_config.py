@@ -192,6 +192,26 @@ MODEL_CONFIGS = {
             "extended_context_limit": 1000000,  # Extended context window size
             "extended_context_header": "context-1m-2025-08-07"  # Beta header for extended context
         },
+        "sonnet4.5": {
+            "model_id": {
+                "us": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "eu": "anthropic.claude-sonnet-4-5-20250929-v1:0"
+            },
+            "available_regions": [
+                "us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"
+            ],
+            "preferred_region": "us-east-1",  # Default preference
+            "token_limit": 200000,  # Total context window size
+            "max_output_tokens": 64000,  # Maximum output tokens
+            "default_max_output_tokens": 36000,  # Default value for max_output_tokens
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,  # Override global default
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_extended_context": True,  # Supports 1M token context window
+            "extended_context_limit": 1000000,  # Extended context window size
+            "extended_context_header": "context-1m-2025-08-07"  # Same header as sonnet4.0
+        },
         "sonnet3.7": {
             "model_id": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
             "available_regions": ["eu-west-1", "eu-central-1"],
