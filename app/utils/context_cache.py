@@ -44,6 +44,8 @@ class ContextCacheManager:
     def __init__(self):
         self.cache_store: Dict[str, CachedContext] = {}
         self.default_ttl = 3600  # 1 hour default TTL
+        self.max_cache_entries = 1000  # Prevent unbounded growth
+        self.max_cache_memory_mb = 500  # Memory limit
         self.min_cache_size = 10000  # Minimum tokens to cache
         self.file_state_manager = FileStateManager()
         self.cache_stats = {"hits": 0, "misses": 0, "splits": 0, "tokens_cached": 0}
@@ -316,6 +318,15 @@ class ContextCacheManager:
         )
         
         self.cache_store[cache_key] = cached_context
+        
+        # Enforce cache limits
+        if len(self.cache_store) > self.max_cache_entries:
+            # Remove oldest entries
+            oldest_keys = sorted(self.cache_store.keys(), 
+                               key=lambda k: self.cache_store[k].created_at)[:100]
+            for key in oldest_keys:
+                del self.cache_store[key]
+        
         logger.info(f"Cached context for conversation {conversation_id}: {token_count} tokens, TTL {ttl_seconds}s")
         
         return cached_context

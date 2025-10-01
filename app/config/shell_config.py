@@ -1,5 +1,9 @@
 """
 Single source of truth for shell command configuration.
+
+IMPORTANT: All commands must be complete, non-interactive operations.
+Do not use tools in interactive mode (e.g., 'bc' without expression, 'python' REPL).
+Always provide complete command with all arguments needed for one-shot execution.
 """
 
 # SINGLE SOURCE OF TRUTH for shell command configuration
