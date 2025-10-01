@@ -9,7 +9,7 @@ import os
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
-    "bedrock": "sonnet4.0",
+    "bedrock": "sonnet4.5",
     "google": "gemini-pro"
 }
 

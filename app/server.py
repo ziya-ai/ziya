@@ -386,7 +386,7 @@ async def chat_endpoint(request: Request):
                 }
             }
             
-            logger.info("[CHAT_ENDPOINT] Calling stream_chunks directly for Bedrock models")
+            logger.info("[CHAT_ENDPOINT] Using StreamingToolExecutor via stream_chunks for unified execution")
             
             return StreamingResponse(
                 stream_chunks(formatted_body),
@@ -563,6 +563,9 @@ if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     logger.info(f"Mounted static files from {static_dir}")
 
+# Global flag to prevent multiple LangServe initializations
+_langserve_initialized = False
+
 # Initialize MCP manager on startup
 @app.on_event("startup")
 async def startup_event():
@@ -601,9 +604,10 @@ async def startup_event():
             agent = create_agent_chain(model.get_model())
             agent_executor = create_agent_executor(agent)
             
-            # Reinitialize langserve routes with the updated agent
-            initialize_langserve(app, agent_executor)
-            logger.info("Agent chain reinitialized with MCP tools")
+            # COMPLETELY DISABLED: LangServe routes cause duplicate execution with /api/chat
+            # initialize_langserve(app, agent_executor)
+            # _langserve_initialized = True
+            logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
         else:
             logger.warning("MCP initialization failed or no servers configured")
         logger.info("MCP manager initialized successfully during startup")
@@ -652,104 +656,9 @@ logger.info("=== END /ziya ROUTES ===")
 # DISABLED: LangServe routes bypass custom streaming and extended context handling
 # add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log", "stream", "invoke"], path="/ziya")
 
-# Add custom stream_log endpoint for compatibility
-@app.post("/ziya/stream_log")
-async def stream_log_endpoint(request: Request, body: dict):
-    """Stream log endpoint with proper diff parameter handling."""
-    try:
-        # Debug logging
-        logger.info("Stream log endpoint request body:")
-        
-        # Extract and store diff parameter if present
-        diff_content = None
-        if 'diff' in body:
-            diff_content = body['diff']
-            # Create a copy of the body without the diff parameter
-            body_copy = {k: v for k, v in body.items() if k != 'diff'}
-        else:
-            body_copy = body
-            
-        # Extract input from body if present
-        if 'input' in body_copy:
-            input_data = body_copy['input']
-            
-            # Get the question from input_data
-            question = input_data.get('question', 'EMPTY')
-            logger.info(f"Question from input: '{question}'")
-            
-            # Handle chat_history
-            chat_history = input_data.get('chat_history', [])
-            if not isinstance(chat_history, list):
-                logger.warning(f"Chat history is not a list: {type(chat_history)}")
-                chat_history = []
-            
-            # Log chat history details for debugging
-            logger.info(f"Chat history length: {len(chat_history)}")
-            for i, msg in enumerate(chat_history):
-                if isinstance(msg, dict):
-                    logger.info(f"Input chat history item {i}: type={msg.get('type', 'unknown')}")
-                else:
-                    logger.info(f"Input chat history item {i}: type={type(msg)}")
-            
-            input_data['chat_history'] = chat_history
-            
-            # Handle config and files
-            config = input_data.get('config', {})
-            files = []
-            if isinstance(config, dict):
-                files = config.get("files", [])
-            elif isinstance(config, list):
-                logger.warning("Config is a list, assuming it's the files list")
-                files = config
-            
-            if not isinstance(files, list):
-                logger.warning(f"Files is not a list: {type(files)}")
-                files = []
-                
-            # Count string files for summary logging
-            string_file_count = sum(1 for f in files if isinstance(f, str))
-            if string_file_count > 0:
-                logger.info(f"Files count: {len(files)} ({string_file_count} are strings)")
-            else:
-                logger.info(f"Files count: {len(files)}")
-            # Don't log individual file details here - too verbose
-            
-            # Update input_data with normalized values
-            input_data['chat_history'] = chat_history
-            input_data['config'] = {'files': files} if isinstance(config, list) else config
-            
-            # Ensure we use the current question from input_data
-            input_data['question'] = question
-            body_copy = input_data
-        
-        # Use direct streaming with StreamingResponse
-        return StreamingResponse(
-            stream_chunks(body_copy),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*",
-                "Content-Type": "text/event-stream"
-            }
-        )
-    except Exception as e:
-        logger.error(f"Error in stream_log_endpoint: {str(e)}")
-        # Return error as streaming response
-        error_json = json.dumps({"error": str(e)})
-        return StreamingResponse(
-            (f"data: {error_json}\n\ndata: {json.dumps({'done': True})}\n\n" for _ in range(1)),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*",
-                "Content-Type": "text/event-stream"
-            }
-        )
-
+# DISABLED: Manual /ziya endpoints conflict with /api/chat
+# @app.post("/ziya/stream_log")
+# async def stream_log_endpoint(request: Request, body: dict):
 async def cleanup_stream(conversation_id: str):
     """Clean up resources when a stream ends or is aborted."""
     if conversation_id in active_streams:
@@ -1037,11 +946,11 @@ async def handle_continuation(continuation_state: Dict[str, Any]):
         updated_messages.append(AIMessage(content=continuation_state["completed_response"]))
         
         # Add a marker for the continuation start
-        continuation_start_marker = "**📝 Continuing from previous response...**\\n\\n"
-        yield f"data: {json.dumps({'content': continuation_start_marker})}\\n\\n"
+        continuation_start_marker = "**📝 Continuing from previous response...**\n\n"
+        yield f"data: {json.dumps({'content': continuation_start_marker})}\n\n"
         
         # Add continuation prompt with tool execution context
-        continuation_prompt_with_context = f"{continuation_prompt}\\n\\nIMPORTANT: Do not simulate or hallucinate tool calls. Only use actual tool execution when needed."
+        continuation_prompt_with_context = f"{continuation_prompt}\n\nIMPORTANT: Do not simulate or hallucinate tool calls. Only use actual tool execution when needed."
         updated_messages.append(HumanMessage(content=continuation_prompt_with_context))
         
         # Stream continuation with clean buffer
@@ -1051,7 +960,7 @@ async def handle_continuation(continuation_state: Dict[str, Any]):
     except Exception as e:
         logger.error(f"🔄 CONTINUATION: Error in continuation {continuation_id}: {e}")
         # Yield error and complete the stream
-        yield f"data: {json.dumps({'error': f'Continuation error: {str(e)}'})}\\n\\n"
+        yield f"data: {json.dumps({'error': f'Continuation error: {str(e)}'})}\n\n"
     finally:
         # Clean up continuation state
         with _continuation_lock:
@@ -1091,7 +1000,7 @@ async def stream_continuation(messages: List, continuation_state: Dict[str, Any]
                 content_str = str(content) if content else ""
                 
             if content_str:
-                yield f"data: {json.dumps({'content': content_str})}\\n\\n"
+                yield f"data: {json.dumps({'content': content_str})}\n\n"
         
         yield f"data: {json.dumps({'done': True})}\n\n"
         
@@ -1159,7 +1068,7 @@ async def stream_chunks(body):
                 logger.info(f"🚀 DIRECT_STREAMING: Created StreamingToolExecutor with profile={aws_profile}, region={current_region}")
                 
                 # Send initial heartbeat
-                yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\\n\\n"
+                yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
                 
                 chunk_count = 0
                 async for chunk in executor.stream_with_tools(messages):
@@ -1168,19 +1077,28 @@ async def stream_chunks(body):
                     # Convert to expected format and yield all chunk types
                     if chunk.get('type') == 'text':
                         content = chunk.get('content', '')
-                        yield f"data: {json.dumps({'content': content})}\\n\\n"
+                        yield f"data: {json.dumps({'content': content})}\n\n"
                     elif chunk.get('type') == 'tool_start':
                         # Stream tool start notification
-                        yield f"data: {json.dumps({'tool_start': chunk})}\\n\\n"
-                    elif chunk.get('type') == 'tool_execution':
-                        logger.info(f"🔍 TOOL_EXECUTION: {chunk.get('tool_name')} completed")
+                        yield f"data: {json.dumps({'tool_start': chunk})}\n\n"
+                    elif chunk.get('type') == 'tool_display':
+                        logger.info(f"🔍 TOOL_DISPLAY: {chunk.get('tool_name')} completed")
                         # Stream tool result
-                        yield f"data: {json.dumps({'tool_result': chunk})}\\n\\n"
+                        yield f"data: {json.dumps({'tool_result': chunk})}\n\n"
+                    elif chunk.get('type') == 'tool_execution':  # Legacy support
+                        logger.info(f"🔍 TOOL_EXECUTION (legacy): {chunk.get('tool_name')} completed")
                     elif chunk.get('type') == 'stream_end':
                         break
+                    elif chunk.get('type') == 'error':
+                        yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error')})}\n\n"
+                    elif chunk.get('type') == 'tool_result_for_model':
+                        # Don't stream to frontend - this is for model conversation only
+                        logger.debug(f"Tool result for model conversation: {chunk.get('tool_use_id')}")
+                    else:
+                        logger.debug(f"Unknown chunk type: {chunk.get('type')}")
                 
                 # Always send done message at the end
-                yield f"data: {json.dumps({'done': True})}\\n\\n"
+                yield f"data: {json.dumps({'done': True})}\n\n"
                 
                 logger.info(f"🚀 DIRECT_STREAMING: Completed streaming with {chunk_count} chunks")
                 return
@@ -1436,7 +1354,7 @@ async def stream_chunks(body):
                         if hasattr(chunk, 'content') and chunk.content:
                             content_str = chunk.content
                             if content_str:
-                                yield f"data: {json.dumps({'content': content_str})}\\n\\n"
+                                yield f"data: {json.dumps({'content': content_str})}\n\n"
                     
                     yield f"data: {json.dumps({'done': True})}\n\n"
                     return
@@ -1445,12 +1363,9 @@ async def stream_chunks(body):
                     logger.error(f"🚀 DIRECT_STREAMING: Error in OpenAI message construction: {e}")
                     # Fall through to regular LangChain path
             else:
-                # Use StreamingToolExecutor for other models
-                # Extract variables from request body
-                question = body.get("question", "")
-                chat_history = body.get("chat_history", [])
-                config_data = body.get("config", {})
-                files = config_data.get("files", [])
+                # DISABLED: Redundant StreamingToolExecutor path - causes duplicate execution
+                logger.info("🚀 DIRECT_STREAMING: Skipping redundant StreamingToolExecutor path - using primary path only")
+                pass
                 
                 # Debug: Log what we received
                 logger.debug(f"Received question: '{question}'")
@@ -1524,16 +1439,9 @@ async def stream_chunks(body):
                         else:
                             logger.debug(f"Using {len(tools)} tools: {[t['name'] for t in tools]}")
                         
-                        # Stream with proper tool execution
-                        async for chunk in executor.stream_with_tools(messages, tools):
-                            # Debug: Log all chunks being yielded
-                            if chunk.get('type') == 'tool_start':
-                                logger.info(f"🔧 SERVER: Yielding tool_start chunk: {chunk}")
-                            elif chunk.get('type') == 'tool_execution':
-                                logger.info(f"🔧 SERVER: Yielding tool_execution chunk: {chunk.get('tool_name')}")
-                            yield f"data: {json.dumps(chunk)}\n\n"
-                        
-                        # Return after successful streaming
+                        # DISABLED: Redundant StreamingToolExecutor call - causes duplicate execution
+                        # async for chunk in executor.stream_with_tools(messages, tools):
+                        logger.info("🚀 DIRECT_STREAMING: Skipping redundant StreamingToolExecutor call")
                         return
                         
                     except Exception as e:
@@ -1613,16 +1521,9 @@ async def stream_chunks(body):
                     
                     logger.debug(f"Built {len(messages)} messages for Nova StreamingToolExecutor")
                     
-                    # Use StreamingToolExecutor for Nova
-                    async for chunk in executor.stream_with_tools(messages):
-                        # Debug: Log all chunks being yielded
-                        if chunk.get('type') == 'tool_start':
-                            logger.info(f"🔧 SERVER_NOVA: Yielding tool_start chunk: {chunk}")
-                        elif chunk.get('type') == 'tool_execution':
-                            logger.info(f"🔧 SERVER_NOVA: Yielding tool_execution chunk: {chunk.get('tool_name')}")
-                        yield f"data: {json.dumps(chunk)}\n\n"
-                    
-                    yield f"data: {json.dumps({'done': True})}\n\n"
+                    # DISABLED: Redundant Nova StreamingToolExecutor call - causes duplicate execution  
+                    # async for chunk in executor.stream_with_tools(messages):
+                    logger.info("🚀 DIRECT_STREAMING: Skipping redundant Nova StreamingToolExecutor call")
                     return
                     
                 except Exception as e:
@@ -1809,8 +1710,8 @@ async def stream_chunks(body):
                 response_content = result.get("output", "")
                 
                 # Stream the response
-                yield f"data: {json.dumps({'type': 'text', 'content': response_content})}\\n\\n"
-                yield f"data: {json.dumps({'type': 'done'})}\\n\\n"
+                yield f"data: {json.dumps({'type': 'text', 'content': response_content})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
                 
             except Exception as e:
@@ -1900,11 +1801,9 @@ async def stream_chunks(body):
                 tool_call_buffer = ""
                 tool_call_detected = False  # Flag to suppress ALL output after tool detection
                 pending_tool_execution = False  # Flag to indicate we need to execute tools
-                buffered_content = ""  # Buffer ALL content after tool call detection
-                tool_execution_completed = False  # Track if we've executed and need model to continue
-                
-                # Store stream reference for potential closure
-                stream_generator = model_to_use.astream(messages_for_model, config=config)
+                # DISABLED: LangChain streaming path - causes duplicate execution with StreamingToolExecutor
+                logger.info("🚀 DIRECT_STREAMING: LangChain path disabled - using StreamingToolExecutor only")
+                return
                 async for chunk in stream_generator:
                     # Log the actual messages being sent to model on first iteration
                     if iteration == 1 and not hasattr(stream_chunks, '_logged_model_input'):
@@ -1982,10 +1881,10 @@ async def stream_chunks(body):
                             # Stream the completed part
                             
                             # Add visual marker that continuation is happening
-                            marker_msg = "\\n\\n---\\n**⏳ Response is long, preparing continuation...**\\n---\\n\\n"
-                            yield f"data: {json.dumps({'content': marker_msg})}\\n\\n"
+                            marker_msg = "\n\n---\\n**⏳ Response is long, preparing continuation...**\\n---\n\n"
+                            yield f"data: {json.dumps({'content': marker_msg})}\n\n"
                             
-                            yield f"data: {json.dumps({'content': overflow_info['completed_response']})}\\n\\n"
+                            yield f"data: {json.dumps({'content': overflow_info['completed_response']})}\n\n"
                             
                             # Start continuation
                             async for continuation_chunk in handle_continuation(overflow_info):
@@ -2042,7 +1941,7 @@ async def stream_chunks(body):
                                     'type': 'text',
                                     'content': before_tool
                                 }
-                                yield f"data: {json.dumps(text_msg)}\\n\\n"
+                                yield f"data: {json.dumps(text_msg)}\n\n"
                                 import asyncio
                                 await asyncio.sleep(0.01)  # Longer delay to prevent batching
                             
@@ -2051,7 +1950,7 @@ async def stream_chunks(body):
                                 'type': 'tool_start',
                                 'message': 'Tool execution starting...'
                             }
-                            yield f"data: {json.dumps(tool_start_msg)}\\n\\n"
+                            yield f"data: {json.dumps(tool_start_msg)}\n\n"
                             logger.info("🔍 STREAM: Sent tool_start message to frontend")
                             await asyncio.sleep(0.01)  # Delay after tool_start
                             
@@ -2143,7 +2042,7 @@ async def stream_chunks(body):
                         ('find .' in content_str and TOOL_SENTINEL_OPEN in current_response) or
                         # Catch split fragments
                         content_str.strip().endswith('<TOOL') or
-                        content_str.strip().endswith('_modules.\\n\\n<TOOL') or
+                        content_str.strip().endswith('_modules.\n\n<TOOL') or
                         content_str.strip().startswith('_') and TOOL_SENTINEL_OPEN in current_response
                         )
                     )
@@ -2153,7 +2052,7 @@ async def stream_chunks(body):
                             'type': 'text',
                             'content': content_str
                         }
-                        yield f"data: {json.dumps(text_msg)}\\n\\n"
+                        yield f"data: {json.dumps(text_msg)}\n\n"
                         # Force task scheduling to ensure individual processing
                         import asyncio
                         await asyncio.sleep(0)
@@ -2219,11 +2118,11 @@ async def stream_chunks(body):
                                         for tool_block in tool_blocks:
                                             tool_result = "\\n" + tool_block + "\\n"
                                             tool_execution_msg = {
-                                                'type': 'tool_execution',
+                                                'type': 'tool_display',
                                                 'content': tool_result,
                                                 'tool_name': 'mcp_tool'
                                             }
-                                            yield f"data: {json.dumps(tool_execution_msg)}\\n\\n"
+                                            yield f"data: {json.dumps(tool_execution_msg)}\n\n"
                                             # Don't send markdown tool blocks when we're using structured tool_execution events
                                             # The structured events are already handled by the frontend
                                             logger.info(f"🔍 STREAM: Skipping markdown tool block (using structured events)")
@@ -2263,7 +2162,7 @@ async def stream_chunks(body):
                             except Exception as tool_error:
                                 logger.error(f"🔍 STREAM: Tool execution error: {tool_error}")
                                 error_msg = f"**Tool Error:** {str(tool_error)}"
-                                yield f"data: {json.dumps({'content': error_msg})}\\n\\n"
+                                yield f"data: {json.dumps({'content': error_msg})}\n\n"
                                 tool_executed = True
                                 tool_call_detected = False
                                 pending_tool_execution = False
@@ -2294,11 +2193,11 @@ async def stream_chunks(body):
                                         for tool_block in tool_blocks:
                                             tool_result = "\\n" + tool_block + "\\n"
                                             tool_execution_msg = {
-                                                'type': 'tool_execution',
+                                                'type': 'tool_display',
                                                 'content': tool_result,
                                                 'tool_name': 'mcp_tool'
                                             }
-                                            yield f"data: {json.dumps(tool_execution_msg)}\\n\\n"
+                                            yield f"data: {json.dumps(tool_execution_msg)}\n\n"
                                             logger.info(f"🔍 STREAM: Tool result streamed: {tool_result[:50]}...")
                                     
                                     # Add ALL tool results to conversation context for model continuation
@@ -2343,7 +2242,7 @@ async def stream_chunks(body):
                             except Exception as tool_error:
                                 logger.error(f"🔍 STREAM: Tool execution error: {tool_error}")
                                 error_msg = f"**Tool Error:** {str(tool_error)}"
-                                yield f"data: {json.dumps({'content': error_msg})}\\n\\n"
+                                yield f"data: {json.dumps({'content': error_msg})}\n\n"
                                 tool_executed = True
 
                 logger.info(f"🔍 AGENT: Finished streaming loop for iteration {iteration}")
@@ -2397,11 +2296,11 @@ async def stream_chunks(body):
                             for tool_block in tool_blocks:
                                 tool_result = "\\n" + tool_block + "\\n"
                                 tool_execution_msg = {
-                                    'type': 'tool_execution',
+                                    'type': 'tool_display',
                                     'content': tool_result,
                                     'tool_name': 'mcp_tool'
                                 }
-                                yield f"data: {json.dumps(tool_execution_msg)}\\n\\n"
+                                yield f"data: {json.dumps(tool_execution_msg)}\n\n"
                                 logger.info(f"🔍 STREAM: Tool result streamed: {tool_result[:50]}...")
                         
                         # Add ALL tool results to conversation context for model continuation
@@ -2509,7 +2408,7 @@ async def stream_chunks(body):
                         logger.info(f"🔄 WITHIN-STREAM: {error_type} retry {within_stream_retries}/{max_within_stream_retries} in {wait_time}s")
                         
                         retry_msg = f"\\n🔄 {error_type.title()} detected, retrying in {wait_time}s...\\n"
-                        yield f"data: {json.dumps({'content': retry_msg})}\\n\\n"
+                        yield f"data: {json.dumps({'content': retry_msg})}\n\n"
                         
                         await asyncio.sleep(wait_time)
                         
@@ -2529,12 +2428,12 @@ async def stream_chunks(body):
                         logger.info(f"🔄 NEW-STREAM: {error_type} retry {token_throttling_retries}/{max_token_throttling_retries} with fresh connection in {wait_time}s")
                         
                         fresh_conn_msg = f"\\n🔄 Starting fresh connection... (attempt {token_throttling_retries}/{max_token_throttling_retries})\\n"
-                        yield f"data: {json.dumps({'content': fresh_conn_msg})}\\n\\n"
+                        yield f"data: {json.dumps({'content': fresh_conn_msg})}\n\n"
                         
                         await asyncio.sleep(wait_time)
                         
                         # End current stream and trigger new one via recursive call
-                        yield f"data: {json.dumps({'retry_with_fresh_stream': True})}\\n\\n"
+                        yield f"data: {json.dumps({'retry_with_fresh_stream': True})}\n\n"
                         
                         # Start completely new stream
                         async for chunk in stream_chunks(body):
@@ -2550,11 +2449,11 @@ async def stream_chunks(body):
                     error_msg = f"⚠️ An error occurred: {str(e)}"
                 
                 # Send error to client
-                error_content = f"\\n\\n{error_msg}\\n"
-                yield f"data: {json.dumps({'content': error_content})}\\n\\n"
+                error_content = f"\n\n{error_msg}\\n"
+                yield f"data: {json.dumps({'content': error_content})}\n\n"
                 
                 # Send completion signal
-                yield f"data: {json.dumps({'done': True})}\\n\\n"
+                yield f"data: {json.dumps({'done': True})}\n\n"
                 
                 # Clean up and exit gracefully
                 await cleanup_stream(conversation_id)
@@ -2572,7 +2471,7 @@ async def stream_chunks(body):
                         "wait_time": 20
                     }
                     final_retry_msg = f"\\n🔄 Retrying with fresh connection... (attempt {token_throttling_retries}/{max_token_throttling_retries})\\n"
-                    yield f"data: {json.dumps({'content': final_retry_msg})}\\n\\n"
+                    yield f"data: {json.dumps({'content': final_retry_msg})}\n\n"
                     
                     # Wait 20 seconds and retry with fresh connection
                     await asyncio.sleep(20)
@@ -2589,11 +2488,11 @@ async def stream_chunks(body):
                     logger.debug(f"PARTIAL RESPONSE PRESERVED (AGENT ERROR):\n{current_response}")
                     
                     # Send the partial content to the frontend
-                    yield f"data: {json.dumps({'content': current_response})}\\n\\n"
+                    yield f"data: {json.dumps({'content': current_response})}\n\n"
                     
                     # Send warning about partial response
                     warning_msg = f"Server encountered an error after generating {len(current_response)} characters. The partial response has been preserved."
-                    yield f"data: {json.dumps({'warning': warning_msg})}\\n\\n"
+                    yield f"data: {json.dumps({'warning': warning_msg})}\n\n"
                     
                     full_response = current_response  # Ensure it's preserved in full_response
                 
@@ -2672,118 +2571,8 @@ async def stream_chunks(body):
             await cleanup_stream(conversation_id)
 
 # Override the stream endpoint with our error handling
-@app.post("/ziya/stream")
-async def stream_endpoint(request: Request, body: dict):
-    """Stream endpoint with centralized error handling."""
-    logger.info(f"🔍 STREAM_ENDPOINT: Direct /ziya/stream called - this should be using stream_chunks")
-    logger.info(f"🔍 STREAM_ENDPOINT: Request body keys: {body.keys()}")
-    
-    # Check for direct streaming mode
-    import os
-    use_direct_streaming = os.getenv('ZIYA_USE_DIRECT_STREAMING', 'true').lower() == 'true'
-    logger.info(f"🚀 DIRECT_STREAMING: stream_endpoint check = {use_direct_streaming}")
-    
-    if use_direct_streaming:
-        logger.info("🚀 DIRECT_STREAMING: Using direct streaming in stream_endpoint")
-        return StreamingResponse(
-            stream_chunks(body),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type"
-            }
-        )
-    
-    try:
-        # Debug logging
-        logger.info("[INSTRUMENTATION] /ziya/stream received request")
-        logger.info(f"[INSTRUMENTATION] /ziya/stream question: '{body.get('question', 'EMPTY')[:50]}...' (truncated)")
-        logger.info(f"[INSTRUMENTATION] /ziya/stream chat_history length: {len(body.get('chat_history', []))}")
-        logger.info(f"[INSTRUMENTATION] /ziya/stream files count: {len(body.get('config', {}).get('files', []))}")
-        
-        # Log body structure
-        logger.info(f"[INSTRUMENTATION] /ziya/stream body keys: {body.keys() if isinstance(body, dict) else type(body)}")
-        
-        # Log chat history structure if present
-        chat_history = body.get('chat_history', [])
-        if chat_history and len(chat_history) > 0:
-            logger.info(f"[INSTRUMENTATION] /ziya/stream first history item type: {type(chat_history[0])}")
-            if isinstance(chat_history[0], list) and len(chat_history[0]) >= 2:
-                logger.info(f"[INSTRUMENTATION] /ziya/stream first history format: ['{chat_history[0][0][:20]}...', '{chat_history[0][1][:20]}...'] (truncated)")
-            elif isinstance(chat_history[0], dict):
-                logger.info(f"[INSTRUMENTATION] /ziya/stream first history keys: {chat_history[0].keys()}")
-
-        # Check if the question is empty or missing
-        if not body.get("question") or not body.get("question").strip():
-            logger.warning("[INSTRUMENTATION] /ziya/stream empty question detected")
-            raise ValidationError("Please provide a question to continue.")
-            
-        # Clean chat history if present
-        if "chat_history" in body:
-            logger.info(f"[INSTRUMENTATION] /ziya/stream cleaning chat history of length {len(chat_history)}")
-            cleaned_history = []
-            for pair in body["chat_history"]:
-                try:
-                    # Handle both tuple format [role, content] and dict format {"type": role, "content": content}
-                    if isinstance(pair, dict) and 'type' in pair and 'content' in pair:
-                        role, content = pair['type'], pair['content']
-                    elif isinstance(pair, (list, tuple)) and len(pair) == 2:
-                        role, content = pair[0], pair[1]
-                    else:
-                        logger.warning(f"[INSTRUMENTATION] /ziya/stream invalid chat history pair format: {type(pair)}")
-                        continue
-                    
-                    if not isinstance(role, str) or not isinstance(content, str):
-                        logger.warning(f"[INSTRUMENTATION] /ziya/stream non-string message: role={type(role)}, content={type(content)}")
-                        continue
-                    
-                    if role.strip() and content.strip():
-                        cleaned_history.append((role.strip(), content.strip()))
-                        logger.info(f"[INSTRUMENTATION] /ziya/stream added valid message: role='{role}', content='{content[:20]}...' (truncated)")
-                    else:
-                        logger.warning(f"[INSTRUMENTATION] /ziya/stream empty message content")
-                except Exception as e:
-                    logger.error(f"[INSTRUMENTATION] /ziya/stream error processing chat history item: {str(e)}")
-            
-            logger.info(f"[INSTRUMENTATION] /ziya/stream cleaned chat history from {len(body['chat_history'])} to {len(cleaned_history)} pairs")
-            body["chat_history"] = cleaned_history
-            
-        logger.info("[INSTRUMENTATION] /ziya/stream starting stream endpoint with body size: %d", len(str(body)))
-        
-        # Convert to ChatPromptValue if needed
-        if isinstance(body, dict) and "messages" in body:
-            logger.info(f"[INSTRUMENTATION] /ziya/stream converting {len(body['messages'])} messages to ChatPromptValue")
-            from langchain_core.prompt_values import ChatPromptValue
-            from langchain_core.messages import HumanMessage
-            messages = [HumanMessage(content=msg) for msg in body["messages"]]
-            prompt_value = ChatPromptValue(messages=messages)
-            # Keep body as dict but store the prompt value for later use if needed
-            logger.info(f"[INSTRUMENTATION] /ziya/stream created ChatPromptValue with {len(messages)} messages")
-        
-        # Return the streaming response
-        logger.info("[INSTRUMENTATION] /ziya/stream calling stream_chunks()")
-        return StreamingResponse(
-            stream_chunks(body),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type"
-            }
-        )
-    except Exception as e:
-        # Handle any exceptions using the centralized error handler
-        logger.error(f"Exception in stream_endpoint: {str(e)}")
-        return handle_request_exception(request, e)
-
-async def stream_agent_response(body, request):
+# DISABLED: Manual /ziya/stream endpoint conflicts with /api/chat
+# @app.post("/ziya/stream")
     """Stream the agent's response with centralized error handling."""
     try:
         first_chunk = True
@@ -3787,13 +3576,10 @@ async def set_model(request: SetModelRequest):
                 logger.error(f"Failed to create agent: {str(agent_error)}", exc_info=True)
                 raise agent_error
 
-            # Reinitialize langserve routes with new agent_executor
-            try:
-                initialize_langserve(app, agent_executor)
-                logger.info("Reinitialized langserve routes")
-            except Exception as langserve_error:
-                logger.error(f"Failed to initialize langserve: {str(langserve_error)}", exc_info=True)
-                raise langserve_error
+            # COMPLETELY DISABLED: LangServe routes cause duplicate execution with /api/chat
+            # initialize_langserve(app, agent_executor)
+            # _langserve_initialized = True
+            logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
 
             # Force garbage collection after successful model change
             import gc

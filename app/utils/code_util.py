@@ -3,8 +3,11 @@ Legacy module for backward compatibility.
 This module re-exports all functionality from the diff_utils package.
 """
 
-# Re-export everything from diff_utils
-from app.utils.diff_utils import *
+from typing import List, Dict, Any, Optional
+from app.utils.diff_utils.pipeline import apply_diff_pipeline
+from app.utils.diff_utils.application.git_diff import use_git_to_apply_code_diff
+from app.utils.diff_utils.parsing.diff_parser import parse_unified_diff
+# Import only what's needed, not everything
 
 # For backward compatibility
 from app.utils.diff_utils.core.exceptions import PatchApplicationError

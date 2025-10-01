@@ -2358,15 +2358,15 @@ def initialize_langserve(app, executor):
         new_app.routes.append(route)
  
     # Add LangServe routes for non-Bedrock models (Gemini, Nova, etc.)
-    # The priority /api/chat endpoint will intercept Bedrock requests
-    add_routes(
-        new_app,
-        executor,
-        disabled_endpoints=["playground"],  # Keep stream and invoke for non-Bedrock models
-        path="/ziya"
-    )
+    # DISABLED: LangServe /ziya routes cause duplicate execution with /api/chat
+    # add_routes(
+    #     new_app,
+    #     executor,
+    #     disabled_endpoints=["playground"],  # Keep stream and invoke for non-Bedrock models
+    #     path="/ziya"
+    # )
     
-    logger.info("Added LangServe routes - priority /api/chat will handle Bedrock routing")
+    logger.info("DISABLED LangServe /ziya routes - using /api/chat only to prevent duplicate execution")
 
     # Clear all routes from original app
     while app.routes:

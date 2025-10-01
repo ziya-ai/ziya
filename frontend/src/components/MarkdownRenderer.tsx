@@ -4122,17 +4122,22 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
         const html = katex.renderToString(math, {
             displayMode,
             throwOnError: false,
-            strict: false
+            strict: false,
+            errorColor: '#cc0000',
+            macros: {
+                "\\f": "#1f(#2)"
+            }
         });
 
         return displayMode ?
             <div className="math-display" dangerouslySetInnerHTML={{ __html: html }} /> :
             <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />;
     } catch (error) {
-        console.warn('KaTeX rendering error:', error);
+        // Silently handle math errors and render as plain text instead of showing error
+        console.debug('KaTeX rendering error (handled):', error);
         return displayMode ?
-            <div className="math-error">Math Error: {math}</div> :
-            <span className="math-error">Math Error: {math}</span>;
+            <div className="math-fallback" style={{ fontFamily: 'monospace', padding: '4px' }}>{math}</div> :
+            <span className="math-fallback" style={{ fontFamily: 'monospace' }}>{math}</span>;
     }
 };
 
@@ -4245,6 +4250,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     /<TOOL_SENTINEL>[\s\S]*?<\/TOOL_SENTINEL>/,
                     formattedToolCall
                 );
+            } else if (isStreamingState && processedMarkdown.includes('<TOOL_SENTINEL>')) {
+                // During streaming, if we have an incomplete tool call, don't try to parse it yet
+                // This prevents showing malformed content while the tool call is being streamed
+                const incompleteToolMatch = processedMarkdown.match(/<TOOL_SENTINEL>[\s\S]*$/);
+                if (incompleteToolMatch && !processedMarkdown.includes('</TOOL_SENTINEL>')) {
+                    // Remove the incomplete tool call from display until it's complete
+                    processedMarkdown = processedMarkdown.replace(/<TOOL_SENTINEL>[\s\S]*$/, '');
+                    // Add a placeholder to show tool execution is starting
+                    processedMarkdown += '\n\n🔧 Preparing tool execution...\n';
+                }
             }
 
             // Pre-process thinking content to extract and handle separately (only once)
@@ -4283,51 +4298,67 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Only process math expressions if this doesn't look like a diff
             if (!isDiff) {
-                // Split the markdown into code blocks and non-code blocks
-                const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
+                try {
+                    // Split the markdown into code blocks and non-code blocks
+                    const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
 
-                // Process each segment separately
-                processedMarkdown = segments.map((segment, index) => {
-                    // Skip math processing for code blocks (odd indices in the split)
-                    if (index % 2 === 1 && segment.startsWith('```')) {
-                        return segment;
-                    }
-
-                    // Process math only in non-code segments
-                    let processed = segment;
-
-                    // Handle display math $$...$$
-                    processed = processed.replace(
-                        /\$\$([\s\S]+?)\$\$/g,
-                        '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
-                    );
-
-                    // Handle inline math $...$
-                    processed = processed.replace(
-                        /\$([^⟩]+?)\$/g,
-                        (match, p1) => {
-                            // Skip processing if this looks like a regex replacement ($1, $2, etc.)
-                            if (/^\d+$/.test(p1.trim())) {
-                                return match; // Keep $1, $2, etc. as is
-                            }
-
-                            // Skip processing if this is inside code-like contexts
-                            const surroundingText = match.substring(0, 50) + match.substring(match.length - 50);
-                            if (surroundingText.includes('replace(') ||
-                                surroundingText.includes('processedDef') ||
-                                surroundingText.includes('regex')) {
-                                return match; // Keep as is in code contexts
-                            }
-
-                            // Only treat as math if it contains LaTeX commands or mathematical symbols
-                            const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
-                            const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
-                            return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                    // Process each segment separately
+                    processedMarkdown = segments.map((segment, index) => {
+                        // Skip math processing for code blocks (odd indices in the split)
+                        if (index % 2 === 1 && segment.startsWith('```')) {
+                            return segment;
                         }
-                    );
 
-                    return processed;
-                }).join('');
+                        // Process math only in non-code segments
+                        let processed = segment;
+
+                        try {
+                            // Handle display math $$...$$
+                            processed = processed.replace(
+                                /\$\$([\s\S]+?)\$\$/g,
+                                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
+                            );
+
+                            // Handle inline math $...$
+                            processed = processed.replace(
+                                /\$([^⟩$\n]+?)\$/g,
+                                (match, p1) => {
+                                    // Skip processing if this looks like a regex replacement ($1, $2, etc.)
+                                    if (/^\d+$/.test(p1.trim())) {
+                                        return match; // Keep $1, $2, etc. as is
+                                    }
+
+                                    // Skip processing if this is inside code-like contexts
+                                    const surroundingText = match.substring(0, 50) + match.substring(match.length - 50);
+                                    if (surroundingText.includes('replace(') ||
+                                        surroundingText.includes('processedDef') ||
+                                        surroundingText.includes('regex') ||
+                                        surroundingText.includes('command') ||
+                                        surroundingText.includes('shell')) {
+                                        return match; // Keep as is in code contexts
+                                    }
+
+                                    // Only treat as math if it contains LaTeX commands or mathematical symbols
+                                    const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
+                                    const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
+                                    const hasComplexMath = /[{}^_]/.test(p1) && p1.length > 2; // Subscripts, superscripts, braces
+                                    
+                                    // Be more conservative - only process if it really looks like math
+                                    return (hasLatex || hasMathSymbols || hasComplexMath) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                                }
+                            );
+                        } catch (mathError) {
+                            console.debug('Math processing error (handled):', mathError);
+                            // Return original segment if math processing fails
+                            return segment;
+                        }
+
+                        return processed;
+                    }).join('');
+                } catch (mathProcessingError) {
+                    console.debug('Math segment processing error (handled):', mathProcessingError);
+                    // Continue without math processing if there's an error
+                }
             }
 
             // Pre-process MathML blocks to prevent fragmentation
