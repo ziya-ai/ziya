@@ -84,7 +84,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
     const [isTopToBottom, setIsTopToBottom] = useState(() => {
         const saved = localStorage.getItem('ZIYA_TOP_DOWN_MODE');
-        return saved ? JSON.parse(saved) : false;
+        return saved ? JSON.parse(saved) : true;
     });
     const [isInitialized, setIsInitialized] = useState(false);
     const [userHasScrolled, setUserHasScrolled] = useState(false);
@@ -174,6 +174,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             });
             return next;
         });
+        
     }, []);
 
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {

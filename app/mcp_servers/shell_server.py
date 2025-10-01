@@ -185,13 +185,13 @@ class ShellServer:
                     "tools": [
                         {
                             "name": "run_shell_command",
-                            "description": f"Execute a shell command. Allowed commands: {self.get_allowed_commands_description()}",
+                            "description": f"Execute a complete, non-interactive shell command. Commands must be self-contained with all arguments provided - do NOT use interactive mode (e.g., use 'echo \"2+2\" | bc' not just 'bc'). Allowed commands: {self.get_allowed_commands_description()}",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "command": {
                                         "type": "string",
-                                        "description": "A complete shell command with all required arguments (e.g., 'ls -la', 'grep pattern file', 'find . -name \"*.py\"'). Do not use incomplete commands like 'grep' alone."
+                                        "description": "A complete, non-interactive shell command with all required arguments (e.g., 'ls -la', 'grep pattern file', 'echo \"2+2\" | bc'). CRITICAL: Commands must be complete operations that do not require interactive input. For calculators like bc, pipe the expression: 'echo \"expression\" | bc'. Do not use incomplete commands or interactive modes."
                                     },
                                     "timeout": {
                                         "type": "number",

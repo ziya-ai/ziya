@@ -155,7 +155,7 @@ class DirectGoogleModel:
                     tool_result_obj = await self.mcp_manager.call_tool(tool_name, tool_args)
                     tool_result_str = self._extract_text_from_mcp_result(tool_result_obj)
 
-                    yield {"type": "tool_execution", "tool_name": tool_name, "result": tool_result_str}
+                    yield {"type": "tool_display", "tool_name": tool_name, "result": tool_result_str}
 
                     tool_results.append(
                         {"function_response": {"name": tool_name, "response": {"content": tool_result_str}}}

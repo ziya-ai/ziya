@@ -554,7 +554,7 @@ class NovaWrapper(BaseChatModel):
                 
                 if result:
                     results.append({
-                        'type': 'tool_execution',
+                        'type': 'tool_display',
                         'tool_id': f'nova_text_{hash(f"{tool_name}_{command}") % 10000}',
                         'tool_name': f'mcp_{tool_name.replace("mcp_", "")}',
                         'result': result
