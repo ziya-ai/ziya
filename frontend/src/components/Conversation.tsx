@@ -435,31 +435,29 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                                 isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
                                             />
                                         </div>
-                                    ) : msg.role === 'assistant' && msg.content && (
-                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                            <div className="message-sender">AI:</div>
-                                            <div style={{
-                                                display: 'flex',
-                                                gap: '8px',
-                                                alignItems: 'center',
-                                                marginRight: '8px'
-                                            }}>
-                                                {renderMuteButton(actualIndex)}
+                                    ) : msg.role === 'assistant' && msg.content ? (
+                                        <>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                <div className="message-sender">AI:</div>
+                                                <div style={{
+                                                    display: 'flex',
+                                                    gap: '8px',
+                                                    alignItems: 'center',
+                                                    marginRight: '8px'
+                                                }}>
+                                                    {renderMuteButton(actualIndex)}
+                                                </div>
+                                                {renderRetryButton(actualIndex)}
                                             </div>
-                                            {renderRetryButton(actualIndex)}
-                                        </div>
-                                    )}
-
-                                    {/* Only show message content for assistant messages or non-editing human messages */}
-                                    {msg.role === 'assistant' && msg.content && (
-                                        <div className="message-content">
-                                            <MarkdownRenderer
-                                                markdown={msg.content}
-                                                enableCodeApply={enableCodeApply}
-                                                isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                            />
-                                        </div>
-                                    )}
+                                            <div className="message-content">
+                                                <MarkdownRenderer
+                                                    markdown={msg.content}
+                                                    enableCodeApply={enableCodeApply}
+                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                />
+                                            </div>
+                                        </>
+                                    ) : null}
                                 </>
                             ) : null
                         )}
