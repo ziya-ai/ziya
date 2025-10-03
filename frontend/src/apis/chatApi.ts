@@ -675,19 +675,30 @@ export const sendPayload = async (
                             const result = toolData.result;
                             const toolResultDisplay = `\n\`\`\`tool:${toolName}\n${result}\n\`\`\`\n\n`;
                             
-                            // Simple replacement logic
+                            // Improved replacement logic to handle tool_start -> tool_result transition
                             const escapedToolName = toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                            const toolStartPattern = new RegExp(
-                                `\\n\`\`\`tool:${escapedToolName}[^\\n]*\\n⏳ Running: [^\\n]*\\n\`\`\`\\n\\n`,
-                                'g'
-                            );
                             
-                            if (currentContent.match(toolStartPattern)) {
-                                currentContent = currentContent.replace(toolStartPattern, toolResultDisplay);
-                                console.log('🔧 Replaced tool_start with result');
+                            // Look for the most recent tool_start block for this tool using string search
+                            const toolStartPrefix = `\n\`\`\`tool:${toolName}\n⏳ Running:`;
+                            const toolStartSuffix = `\n\`\`\`\n\n`;
+                            
+                            // Find the last occurrence of this tool's start block
+                            const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
+                            
+                            if (lastStartIndex !== -1) {
+                                // Find the end of this tool block
+                                const blockEndIndex = currentContent.indexOf(toolStartSuffix, lastStartIndex);
+                                if (blockEndIndex !== -1) {
+                                    // Replace the entire tool_start block with the result
+                                    const beforeBlock = currentContent.substring(0, lastStartIndex);
+                                    const afterBlock = currentContent.substring(blockEndIndex + toolStartSuffix.length);
+                                    currentContent = beforeBlock + toolResultDisplay + afterBlock;
+                                    console.log('🔧 Replaced tool_start with result for:', toolName);
+                                }
                             } else {
+                                // No matching tool_start found, just append the result
                                 currentContent += toolResultDisplay;
-                                console.log('🔧 Added new tool result');
+                                console.log('🔧 Added new tool result (no matching tool_start):', toolName);
                             }
                             
                             setStreamedContentMap((prev: Map<string, string>) => {

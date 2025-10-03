@@ -12,9 +12,29 @@ logger = logging.getLogger(__name__)
 
 class StreamingToolExecutor:
     def __init__(self, profile_name: str = 'ziya', region: str = 'us-west-2', model_id: str = None):
-        session = boto3.Session(profile_name=profile_name)
-        self.bedrock = session.client('bedrock-runtime', region_name=region)
-        self.model_id = model_id or os.environ.get('DEFAULT_MODEL_ID', 'us.anthropic.claude-sonnet-4-20250514-v1:0')
+        self.model_id = model_id or os.environ.get('DEFAULT_MODEL_ID', 'us.anthropic.claude-sonnet-4-20250514-v1:0')\
+        
+        # Use ModelManager's wrapped bedrock client for proper extended context handling
+        try:
+            from app.agents.models import ModelManager
+            endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+            model_name = os.environ.get("ZIYA_MODEL")
+            self.model_config = ModelManager.get_model_config(endpoint, model_name)
+            
+            # Get the wrapped bedrock client from ModelManager
+            self.bedrock = ModelManager._get_persistent_bedrock_client(
+                aws_profile=profile_name,
+                region=region,
+                model_id=self.model_id,
+                model_config=self.model_config
+            )
+            logger.info(f"🔍 Using ModelManager's wrapped bedrock client with extended context support")
+        except Exception as e:
+            logger.warning(f"🔍 Could not get wrapped client, falling back to direct client: {e}")
+            # Fallback to direct client creation
+            session = boto3.Session(profile_name=profile_name)
+            self.bedrock = session.client('bedrock-runtime', region_name=region)
+            self.model_config = None
 
     def _convert_tool_schema(self, tool):
         """Convert tool schema to JSON-serializable format"""
@@ -22,20 +42,19 @@ class StreamingToolExecutor:
             # Already a dict, but check input_schema
             result = tool.copy()
             input_schema = result.get('input_schema')
-            if hasattr(input_schema, 'model_json_schema'):
+            if isinstance(input_schema, dict):
+                # Already a dict, use as-is
+                pass
+            elif hasattr(input_schema, 'model_json_schema'):
                 # Pydantic class - convert to JSON schema
                 result['input_schema'] = input_schema.model_json_schema()
-            elif hasattr(input_schema, '__dict__') and not isinstance(input_schema, dict):
-                # Some other class object - try to convert
+            elif input_schema is not None:
+                # Some other object - try to convert
                 try:
                     result['input_schema'] = input_schema.model_json_schema()
                 except:
-                    # Fallback to basic schema
-                    result['input_schema'] = {
-                        "type": "object",
-                        "properties": {"command": {"type": "string"}},
-                        "required": ["command"]
-                    }
+                    logger.warning(f"🔍 TOOL_SCHEMA: Could not convert input_schema, using fallback")
+                    result['input_schema'] = {"type": "object", "properties": {}}
             return result
         else:
             # Tool object - extract properties
@@ -43,25 +62,35 @@ class StreamingToolExecutor:
             description = getattr(tool, 'description', 'No description')
             input_schema = getattr(tool, 'input_schema', getattr(tool, 'inputSchema', {}))
             
-            # Convert input_schema if it's a Pydantic class
-            if hasattr(input_schema, 'model_json_schema'):
+            logger.info(f"🔍 TOOL_SCHEMA: Converting tool '{name}', input_schema type: {type(input_schema)}")
+            
+            # Handle different input_schema types
+            if isinstance(input_schema, dict):
+                # Already a dict, use as-is
+                logger.info(f"🔍 TOOL_SCHEMA: Tool '{name}' has dict schema with keys: {list(input_schema.keys())}")
+            elif hasattr(input_schema, 'model_json_schema'):
+                # Pydantic class - convert to JSON schema
                 input_schema = input_schema.model_json_schema()
-            elif hasattr(input_schema, '__dict__') and not isinstance(input_schema, dict):
-                # Some other class object
+                logger.info(f"🔍 TOOL_SCHEMA: Converted Pydantic schema for '{name}'")
+            elif input_schema:
+                # Some other object - try to convert
                 try:
                     input_schema = input_schema.model_json_schema()
+                    logger.info(f"🔍 TOOL_SCHEMA: Converted object schema for '{name}'")
                 except:
-                    input_schema = {
-                        "type": "object", 
-                        "properties": {"command": {"type": "string"}},
-                        "required": ["command"]
-                    }
+                    logger.warning(f"🔍 TOOL_SCHEMA: Failed to convert schema for '{name}', using empty schema")
+                    input_schema = {"type": "object", "properties": {}}
+            else:
+                logger.warning(f"🔍 TOOL_SCHEMA: Tool '{name}' has no input_schema, using empty schema")
+                input_schema = {"type": "object", "properties": {}}
             
-            return {
+            result = {
                 'name': name,
                 'description': description,
                 'input_schema': input_schema
             }
+            logger.info(f"🔍 TOOL_SCHEMA: Final schema for '{name}': {json.dumps(result, indent=2)}")
+            return result
 
     def _commands_similar(self, cmd1: str, cmd2: str) -> bool:
         """Check if two shell commands are functionally similar"""
@@ -107,7 +136,18 @@ class StreamingToolExecutor:
                 logger.error(f"Error executing intercepted tool call: {e}")
                 return None
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        # Extended context handling for sonnet4.5
+        if conversation_id:
+            logger.info(f"🔍 EXTENDED_CONTEXT: Processing conversation_id = {conversation_id}")
+            # Set conversation_id in custom_bedrock module global so CustomBedrockClient can use it
+            try:
+                import app.utils.custom_bedrock as custom_bedrock_module
+                custom_bedrock_module._current_conversation_id = conversation_id
+                logger.info(f"🔍 EXTENDED_CONTEXT: Set module global conversation_id")
+            except Exception as e:
+                logger.warning(f"🔍 EXTENDED_CONTEXT: Could not set conversation_id: {e}")
+        
         # Get MCP tools
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
@@ -160,12 +200,24 @@ class StreamingToolExecutor:
 
         # Iterative execution with proper tool result handling
         recent_commands = []  # Track recent commands to prevent duplicates
+        using_extended_context = False  # Track if we've enabled extended context
+        consecutive_empty_tool_calls = 0  # Track empty tool calls to break loops
         
         for iteration in range(50):  # Increased from 20 to support more complex tasks
             logger.info(f"🔍 ITERATION_START: Beginning iteration {iteration}")
+            
+            # Log last 2 messages to debug conversation state
+            if len(conversation) >= 2:
+                for i, msg in enumerate(conversation[-2:]):
+                    role = msg.get('role', msg.get('type', 'unknown'))
+                    content = msg.get('content', '')
+                    content_preview = str(content)[:150] if content else 'empty'
+                    logger.info(f"🔍 CONV_DEBUG: Message -{2-i}: role={role}, content_preview={content_preview}")
+            
             tools_executed_this_iteration = False  # Track if tools were executed in this iteration
             blocked_tools_this_iteration = 0  # Track blocked tools to prevent runaway loops
             commands_this_iteration = []  # Track commands executed in this specific iteration
+            empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
             
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
@@ -174,28 +226,47 @@ class StreamingToolExecutor:
             }
 
             if system_content:
-                # Remove ALL tool instructions to prevent confusion
-                import re
-                system_content = re.sub(r'## MCP Tool Usage.*?(?=##|$)', '', system_content, flags=re.DOTALL)
-                system_content = re.sub(r'<TOOL_SENTINEL>.*?</TOOL_SENTINEL>', '', system_content, flags=re.DOTALL)
-                system_content = re.sub(r'<invoke.*?</invoke>', '', system_content, flags=re.DOTALL)
-                system_content = re.sub(r'<tool_input.*?</tool_input>', '', system_content, flags=re.DOTALL)
-                system_content = re.sub(r'<mcp_tool.*?</mcp_tool>', '', system_content, flags=re.DOTALL)
-                # Remove any remaining XML-like tool patterns
-                system_content = re.sub(r'<[^>]*tool[^>]*>.*?</[^>]*>', '', system_content, flags=re.DOTALL | re.IGNORECASE)
-                # Remove markdown tool patterns that cause hallucinations
-                system_content = re.sub(r'```tool:.*?```', '', system_content, flags=re.DOTALL)
-                system_content = re.sub(r'```.*?mcp_.*?```', '', system_content, flags=re.DOTALL)
-                # Remove only MCP tools list, not visualization tools
-                system_content = re.sub(r'- mcp_[^:]+:[^\n]*\n?', '', system_content)
-                body["system"] = system_content + "\n\nCRITICAL: Use ONLY native tool calling. Never generate markdown like ```tool:mcp_run_shell_command or ```bash. Use the provided tools directly."
-                logger.info(f"🔍 SYSTEM_DEBUG: Final system prompt length: {len(body['system'])}")
+                # With precision prompts, system content is already clean - no regex needed
+                logger.info(f"🔍 SYSTEM_DEBUG: Using clean system content length: {len(system_content)}")
+                logger.info(f"🔍 SYSTEM_DEBUG: File count in system content: {system_content.count('File:')}")
+                
+                system_text = system_content + "\n\nCRITICAL: Use ONLY native tool calling. Never generate markdown like ```tool:mcp_run_shell_command or ```bash. Use the provided tools directly.\n\nIMPORTANT: Only use tools when you need to interact with the system (run commands, check time, etc). If you can answer from the provided context or your reasoning, do so directly without using tools. Don't use echo commands just to show your thinking - just answer directly."
+                
+                # Use prompt caching for large system prompts to speed up iterations
+                if len(system_text) > 1024:
+                    body["system"] = [
+                        {
+                            "type": "text",
+                            "text": system_text,
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                    logger.info(f"🔍 CACHE: Enabled prompt caching for {len(system_text)} char system prompt")
+                else:
+                    body["system"] = system_text
+                
+                logger.info(f"🔍 SYSTEM_DEBUG: Final system prompt length: {len(system_text)}")
+                logger.info(f"🔍 SYSTEM_CONTENT_DEBUG: First 500 chars of system prompt: {system_text[:500]}")
+                logger.info(f"🔍 SYSTEM_CONTENT_DEBUG: System prompt contains 'File:' count: {system_text.count('File:')}")
+                logger.info(f"🔍 SYSTEM_CONTENT_DEBUG: Last 500 chars of system prompt: {system_text[-500:]}")
+            
+            # If we've already enabled extended context, keep using it
+            if using_extended_context and self.model_config:
+                header_value = self.model_config.get('extended_context_header')
+                if header_value:
+                    body['anthropic_beta'] = [header_value]
+                    logger.info(f"🔍 EXTENDED_CONTEXT: Continuing with extended context header")
 
             if bedrock_tools:
-                body["tools"] = bedrock_tools
-                # Use "auto" to allow model to decide when to stop
-                body["tool_choice"] = {"type": "auto"}
-                logger.info(f"🔍 TOOL_DEBUG: Sending {len(bedrock_tools)} tools to model: {[t['name'] for t in bedrock_tools]}")
+                # Don't send tools if we've had too many consecutive empty calls
+                if consecutive_empty_tool_calls >= 5:
+                    logger.warning(f"🔍 TOOL_SUPPRESSION: Suppressing tools due to {consecutive_empty_tool_calls} consecutive empty calls")
+                    # Don't add tools to body - force model to respond without them
+                else:
+                    body["tools"] = bedrock_tools
+                    # Use "auto" to allow model to decide when to stop
+                    body["tool_choice"] = {"type": "auto"}
+                    logger.info(f"🔍 TOOL_DEBUG: Sending {len(bedrock_tools)} tools to model: {[t['name'] for t in bedrock_tools]}")
 
             try:
                 # Exponential backoff for rate limiting
@@ -205,16 +276,35 @@ class StreamingToolExecutor:
                 
                 for retry_attempt in range(max_retries + 1):
                     try:
-                        response = self.bedrock.invoke_model_with_response_stream(
-                            modelId=self.model_id,
-                            body=json.dumps(body)
-                        )
+                        api_params = {
+                            'modelId': self.model_id,
+                            'body': json.dumps(body)
+                        }
+                        
+                        response = self.bedrock.invoke_model_with_response_stream(**api_params)
                         break  # Success, exit retry loop
                     except Exception as e:
                         error_str = str(e)
                         is_rate_limit = ("Too many tokens" in error_str or 
                                        "ThrottlingException" in error_str or
                                        "Too many requests" in error_str)
+                        is_context_limit = "Input is too long" in error_str or "too large" in error_str
+                        
+                        # On context limit error, enable extended context and retry
+                        if is_context_limit and not using_extended_context and self.model_config:
+                            if self.model_config.get('supports_extended_context'):
+                                header_value = self.model_config.get('extended_context_header')
+                                if header_value:
+                                    logger.info(f"🔍 EXTENDED_CONTEXT: Context limit hit, enabling extended context with header {header_value}")
+                                    body['anthropic_beta'] = [header_value]
+                                    api_params['body'] = json.dumps(body)
+                                    using_extended_context = True  # Set flag to keep using it
+                                    try:
+                                        response = self.bedrock.invoke_model_with_response_stream(**api_params)
+                                        break
+                                    except Exception as retry_error:
+                                        logger.error(f"🔍 EXTENDED_CONTEXT: Retry with extended context failed: {retry_error}")
+                                        raise
                         
                         if is_rate_limit and retry_attempt < max_retries:
                             # Exponential backoff: 2s, 4s, 8s, 16s, 32s (max >20s)
@@ -227,6 +317,7 @@ class StreamingToolExecutor:
                 # Process this iteration's stream - collect ALL tool calls first
                 assistant_text = ""
                 tool_results = []
+                tool_use_blocks = []  # Store actual tool_use blocks from Bedrock
                 yielded_text_length = 0  # Track how much text we've yielded
                 all_tool_calls = []  # Collect all tool calls from this response
                 
@@ -249,9 +340,11 @@ class StreamingToolExecutor:
                 for event in response['body']:
                     # Timeout protection
                     if time.time() - start_time > chunk_timeout:
-                        logger.warning(f"🚨 STREAM TIMEOUT after {chunk_timeout}s")
-                        yield {'type': 'stream_end'}
-                        break
+                        logger.warning(f"🚨 STREAM TIMEOUT after {chunk_timeout}s - ending this iteration")
+                        # Add timeout message to assistant text so model knows what happened
+                        if not assistant_text.strip():
+                            assistant_text = f"[Stream timeout after {chunk_timeout}s - no response received]"
+                        break  # Break from chunk loop, but continue to next iteration
                         
                     chunk = json.loads(event['chunk']['bytes'])
 
@@ -431,9 +524,33 @@ class StreamingToolExecutor:
                             tool_data = active_tools[tool_id]
                             tool_name = tool_data['name']
                             args_json = tool_data['partial_json']
+                            
+                            logger.info(f"🔍 TOOL_ARGS: Tool '{tool_name}' (id: {tool_id}) has args_json: '{args_json}'")
 
                             try:
                                 args = json.loads(args_json) if args_json.strip() else {}
+                                
+                                # Detect empty tool calls for tools that require arguments
+                                actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+                                if actual_tool_name == 'run_shell_command' and not args.get('command'):
+                                    logger.warning(f"🔍 EMPTY_TOOL_CALL: Model called {tool_name} without required 'command' argument")
+                                    logger.warning(f"🔍 EMPTY_TOOL_CONTEXT: Assistant text before call: '{assistant_text[-200:]}'")
+                                    empty_tool_calls_this_iteration += 1
+                                    consecutive_empty_tool_calls += 1
+                                    
+                                    # Return helpful error immediately without executing
+                                    error_result = f"Error: Tool call failed - the 'command' parameter is required but was not provided. You must call run_shell_command with a JSON object containing the command string. Example: {{\"command\": \"ls -la\"}}. Please retry with the correct format."
+                                    
+                                    tool_results.append({
+                                        'tool_id': tool_id,
+                                        'tool_name': tool_name,
+                                        'result': error_result
+                                    })
+                                    
+                                    completed_tools.add(tool_id)
+                                    tools_executed_this_iteration = True
+                                    logger.info(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
+                                    continue
                                 
                                 # Update the corresponding entry in all_tool_calls with parsed arguments
                                 for tool_call in all_tool_calls:
@@ -573,20 +690,32 @@ class StreamingToolExecutor:
                         # Just break out of chunk processing, handle completion logic below
                         break
 
-                # Add assistant response to conversation
-                if assistant_text.strip():
-                    conversation.append({"role": "assistant", "content": assistant_text})
+                # Add assistant response to conversation with proper tool_use blocks
+                if assistant_text.strip() or tools_executed_this_iteration:
+                    # Build content as list with text and tool_use blocks
+                    content_blocks = []
+                    if assistant_text.strip():
+                        content_blocks.append({"type": "text", "text": assistant_text})
+                    
+                    # Add tool_use blocks for each tool that was executed with actual args
+                    for tool_result in tool_results:
+                        # Find the corresponding tool call to get the actual args
+                        tool_args = {}
+                        for tool_call in all_tool_calls:
+                            if tool_call['id'] == tool_result['tool_id']:
+                                tool_args = tool_call.get('args', {})
+                                break
+                        
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": tool_result['tool_id'],
+                            "name": tool_result['tool_name'],
+                            "input": tool_args
+                        })
+                    
+                    conversation.append({"role": "assistant", "content": content_blocks})
             
-                # Filter conversation before next iteration to prevent contamination
-                original_length = len(conversation)
-                conversation = filter_conversation_for_model(conversation)
-                logger.info(f"🤖 MODEL_RESPONSE: {assistant_text}")
-                logger.info(f"Filtered conversation: {original_length} -> {len(conversation)} messages")
-
-                # Skip duplicate execution - tools are already executed in content_block_stop
-                # This section was causing duplicate tool execution
-
-                # Add tool results to conversation - continue rounds until throttle hit
+                # Add tool results to conversation BEFORE filtering
                 logger.info(f"🔍 ITERATION_END_CHECK: tools_executed_this_iteration = {tools_executed_this_iteration}, tool_results count = {len(tool_results)}")
                 if tools_executed_this_iteration:
                     logger.info(f"🔍 TOOL_RESULTS_PROCESSING: Adding {len(tool_results)} tool results to conversation")
@@ -597,13 +726,46 @@ class StreamingToolExecutor:
                             clean_lines = [line for line in lines if not line.startswith('$ ')]
                             raw_result = '\n'.join(clean_lines).strip()
                         
+                        # Add in tool_result_for_model format so filter can convert to proper Bedrock format
                         conversation.append({
-                            "role": "user", 
-                            "content": f"Tool execution completed. Result: {raw_result}"
+                            'type': 'tool_result_for_model',
+                            'tool_use_id': tool_result['tool_id'],
+                            'content': raw_result
                         })
+                
+                # Filter conversation to convert tool results to proper format
+                original_length = len(conversation)
+                conversation = filter_conversation_for_model(conversation)
+                logger.info(f"🤖 MODEL_RESPONSE: {assistant_text}")
+                logger.info(f"Filtered conversation: {original_length} -> {len(conversation)} messages")
+
+                # Skip duplicate execution - tools are already executed in content_block_stop
+                # This section was causing duplicate tool execution
+
+                # Continue to next iteration if tools were executed
+                if tools_executed_this_iteration:
+                    # Warn about consecutive empty tool calls but don't break
+                    if consecutive_empty_tool_calls >= 5:
+                        logger.warning(f"🔍 EMPTY_TOOL_WARNING: {consecutive_empty_tool_calls} consecutive empty tool calls detected")
+                        # Add a message to guide the model to respond without tools
+                        conversation.append({
+                            "role": "user",
+                            "content": "Please provide your response based on the information available. Do not attempt to use tools."
+                        })
+                    elif consecutive_empty_tool_calls >= 3:
+                        logger.warning(f"🔍 EMPTY_TOOL_WARNING: {consecutive_empty_tool_calls} consecutive empty tool calls detected, adding delay")
+                        # Add a small delay to slow down the loop
+                        await asyncio.sleep(0.5)
+                    
+                    # Reset consecutive counter if we had successful tool calls
+                    if empty_tool_calls_this_iteration == 0:
+                        consecutive_empty_tool_calls = 0
                     
                     logger.info(f"🔍 CONTINUING_ROUND: Tool results added, model will continue in same stream (round {iteration + 1})")
-                    # Let model continue in same stream until throttle hit
+                    # Yield heartbeat to flush stream before next iteration
+                    yield {'type': 'iteration_continue', 'iteration': iteration + 1}
+                    await asyncio.sleep(0)
+                    continue  # Immediately start next iteration
                 else:
                     # Check if too many tools were blocked (indicates runaway loop)
                     if blocked_tools_this_iteration >= 3:

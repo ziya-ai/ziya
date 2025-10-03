@@ -68,6 +68,44 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Monitor FolderProvider render performance
   // Remove performance monitoring that's causing overhead
 
+  // Cleanup function to remove non-existent files from checkedKeys
+  const cleanupCheckedKeys = useCallback(async () => {
+    if (!folders || checkedKeys.length === 0) return;
+
+    try {
+      // Check which files actually exist
+      const response = await fetch('/api/files/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: checkedKeys.map(String) })
+      });
+      
+      if (response.ok) {
+        const { existingFiles } = await response.json();
+        const existingSet = new Set(existingFiles);
+        
+        // Filter out non-existent files
+        const cleanedKeys = checkedKeys.filter(key => existingSet.has(String(key)));
+        
+        if (cleanedKeys.length !== checkedKeys.length) {
+          console.log(`🧹 CLEANUP: Removed ${checkedKeys.length - cleanedKeys.length} non-existent files from selection`);
+          setCheckedKeys(cleanedKeys);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to cleanup checked keys:', error);
+    }
+  }, [folders, checkedKeys, setCheckedKeys]);
+
+  // Run cleanup when folders are loaded
+  useEffect(() => {
+    if (folders && checkedKeys.length > 0) {
+      // Debounce cleanup to avoid excessive API calls
+      const timeoutId = setTimeout(cleanupCheckedKeys, 2000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [folders, cleanupCheckedKeys]);
+
   const getFolderTokenCount = useCallback((path: string, folderData: Folders | undefined): number => {
     if (!folderData) {
       // console.warn(`getFolderTokenCount: folderData is undefined for path "${path}"`);

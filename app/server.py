@@ -93,7 +93,48 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     This centralizes message construction to avoid duplication.
     """
     logger.info(f"🔍 FUNCTION_START: build_messages_for_streaming called with {len(files)} files")
-    
+
+    # Check for precision prompt system feature flag
+    use_precision_system = os.environ.get("ZIYA_PRECISION_PROMPTS", "true").lower() == "true"
+
+    if use_precision_system:
+        try:
+            from app.utils.precision_prompt_system import precision_system
+            from app.agents.prompts_manager import get_model_info_from_config
+
+            model_info = get_model_info_from_config()
+            request_path = "/streaming_tools"  # Default for streaming
+
+            # Use precision system for 100% equivalence
+            messages = precision_system.build_messages(
+                request_path=request_path,
+                model_info=model_info,
+                files=files,
+                question=question,
+                chat_history=chat_history
+            )
+
+            logger.info(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
+
+            # Convert to LangChain format if needed
+            if use_langchain_format:
+                from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+                langchain_messages = []
+                for msg in messages:
+                    if msg["role"] == "system":
+                        langchain_messages.append(SystemMessage(content=msg["content"]))
+                    elif msg["role"] == "user":
+                        langchain_messages.append(HumanMessage(content=msg["content"]))
+                    elif msg["role"] == "assistant":
+                        langchain_messages.append(AIMessage(content=msg["content"]))
+                return langchain_messages
+
+            return messages
+
+        except Exception as e:
+            logger.warning(f"🎯 PRECISION_SYSTEM: Fallback to original system due to error: {e}")
+            # Fall through to original system
+
     from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
     from app.agents.agent import get_combined_docs_from_files, _format_chat_history
     from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -107,7 +148,8 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     # Get MCP context, including endpoint and model_id for extensions
     mcp_context = {
         "model_id": model_id,
-        "endpoint": model_info["endpoint"]
+        "endpoint": model_info["endpoint"],
+        "native_tools_available": model_info["endpoint"] == "bedrock"  # Bedrock uses native tool calling
     }
     try:
         from app.mcp.manager import get_mcp_manager
@@ -1071,7 +1113,7 @@ async def stream_chunks(body):
                 yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
                 
                 chunk_count = 0
-                async for chunk in executor.stream_with_tools(messages):
+                async for chunk in executor.stream_with_tools(messages, conversation_id=conversation_id):
                     chunk_count += 1
                     
                     # Convert to expected format and yield all chunk types
@@ -1094,6 +1136,9 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'tool_result_for_model':
                         # Don't stream to frontend - this is for model conversation only
                         logger.debug(f"Tool result for model conversation: {chunk.get('tool_use_id')}")
+                    elif chunk.get('type') == 'iteration_continue':
+                        # Send heartbeat to flush stream before next iteration
+                        yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
                     else:
                         logger.debug(f"Unknown chunk type: {chunk.get('type')}")
                 

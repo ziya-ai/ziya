@@ -80,6 +80,12 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         self._recent_lines = []
         accumulated_content = ""
         accumulated_chunks = []  # Track all chunks for better preservation
+
+        # Code block state tracking for frontend
+        frontend_code_block_state = {
+            'in_block': False,
+            'block_type': None
+        }
         
         # Limits for preserved content to prevent context bloat
         MAX_PRESERVED_TOOLS = 10
