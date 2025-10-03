@@ -288,7 +288,6 @@ export const StreamedContent: React.FC<{}> = () => {
                 order: isTopToBottom ? 0 : -1  // Place at top if bottom-up view
             }} className="loading-indicator">
                 <Space align="center">
-                    <div className="ressage-sender" style={{ marginRight: '8px' }}>AI:</div>
                     <RobotOutlined style={{ fontSize: '20px', animation: 'pulse 2s infinite' }} />
                     <LoadingOutlined
                         spin
@@ -739,23 +738,24 @@ export const StreamedContent: React.FC<{}> = () => {
             flexDirection: isTopToBottom ? 'column' : 'column-reverse',
         }}>
 
-        {(hasStreamedContent || !hasShownContent) && (
+        {hasStreamedContent && (
                 <div className="message assistant">
                     {connectionLost && (
                         <ConnectionLostAlert />
                     )}
-                    <div className="message-sender" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span>AI:</span>
-                        {/* Only show stop button here once we have content */}
-                        {streamingConversations.has(currentConversationId) && hasStreamedContent && (
-                            <StopStreamButton
-                                conversationId={currentConversationId}
-                                // Pass direct stop function as a prop
-                                onStop={stopStreaming}
-                                style={{ marginLeft: 'auto' }}
-                            />
-                        )}
-                    </div>
+                    {streamedContent && streamedContent.trim() && (
+                        <div className="message-sender" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <span>AI:</span>
+                            {/* Only show stop button here once we have content */}
+                            {streamingConversations.has(currentConversationId) && (
+                                <StopStreamButton
+                                    conversationId={currentConversationId}
+                                    onStop={stopStreaming}
+                                    style={{ marginLeft: 'auto' }}
+                                />
+                            )}
+                        </div>
+                    )}
                     <Suspense fallback={<div>Loading content...</div>}>
                         <>
                             {/* Show reasoning content for OpenAI models */}
@@ -782,6 +782,16 @@ export const StreamedContent: React.FC<{}> = () => {
                                         isStreaming={streamingConversations.has(currentConversationId)}
                                         enableCodeApply={enableCodeApply}
                                     />
+                                </div>
+                            )}
+                            {error && streamedContent && streamedContent.trim() && (
+                                <div className="message-content" style={{ opacity: 0.8 }}>
+                                    <MarkdownRenderer
+                                        key={`stream-${currentConversationId}-with-error`}
+                                        markdown={streamedContent}
+                                        enableCodeApply={enableCodeApply}
+                                    />
+
                                     {/* Show preservation notices */}
                                     {streamedContent.includes('Successful Tool Executions Before Error:') && (
                                         <Alert
@@ -820,41 +830,6 @@ export const StreamedContent: React.FC<{}> = () => {
                                     )}
                                 </div>
                             )}
-                                    {streamedContent.includes('Successful Tool Executions Before Error:') && (
-                                        <Alert
-                                            message="⚠️ Partial Response Preserved"
-                                            description="Some content was preserved from a previous error. You can continue the conversation."
-                                            type="info"
-                                            showIcon
-                                            style={{ 
-                                                marginBottom: '16px',
-                                                maxWidth: '100%',
-                                                wordBreak: 'break-word',
-                                                overflow: 'hidden'
-                                            }}
-                                            closable
-                                        />
-                                    )}
-                                    {streamedContent.includes('Response was interrupted by an error') && (
-                                        <Alert
-                                            message="⚠️ Partial Response Preserved"
-                                            description="The response was interrupted by an error, but the content generated before the error has been preserved."
-                                            type="warning"
-                                            showIcon
-                                            style={{ 
-                                                marginBottom: '16px',
-                                                maxWidth: '100%',
-                                                wordBreak: 'break-word',
-                                                overflow: 'hidden'
-                                            }}
-                                            closable
-                                            action={
-                                                <span style={{ fontSize: '12px', opacity: 0.7 }}>
-                                                    You can continue the conversation or regenerate the response.
-                                                </span>
-                                            }
-                                        />
-                                    )}
                             {error && streamedContent && streamedContent.trim() && (
                                 <div className="message-content" style={{ opacity: 0.8 }}>
                                     <MarkdownRenderer
