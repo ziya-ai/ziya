@@ -430,10 +430,79 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         };
 
         // Enhanced function to improve text visibility in dark mode
+        const fixTextVisibilityForClassDef = (svgElement: SVGElement) => {
+            console.log('🔍 FIXING TEXT VISIBILITY: Starting classDef text visibility fix');
+            
+            // Find all text elements
+            const textElements = svgElement.querySelectorAll('text');
+            console.log(`Found ${textElements.length} text elements to process`);
+            
+            textElements.forEach(textEl => {
+                const textContent = textEl.textContent?.trim();
+                if (!textContent) return;
+
+                // Look for the parent node/cluster group
+                let parentGroup = textEl.closest('g.node, g.cluster');
+                if (!parentGroup) {
+                    // Fallback: check if parent has any background shapes
+                    parentGroup = textEl.parentElement;
+                }
+
+                if (parentGroup) {
+                    // Find any background shape in this group
+                    const backgroundShape = parentGroup.querySelector('rect, polygon, circle, path');
+                    if (backgroundShape) {
+                        const fill = backgroundShape.getAttribute('fill');
+                        console.log(`Text "${textContent}" has background fill: ${fill}`);
+                        
+                        if (fill && isLightBackground(fill)) {
+                            console.log(`🔧 FIXING: Setting black text for "${textContent}" on light background ${fill}`);
+                            textEl.setAttribute('fill', '#000000');
+                            textEl.style.fill = '#000000';
+                        }
+                    }
+                }
+            });
+        };
+
+        // Helper function to detect light backgrounds
+        const isLightBackground = (color: string): boolean => {
+            if (!color || color === 'none' || color === 'transparent') return false;
+            
+            // Handle the specific problematic colors from classDef
+            const lightColors = [
+                '#e3f2fd', '#e1f5fe', // Light blue variants
+                '#e8f5e8', '#f3e5f5', // Light green/purple variants  
+                '#fff3e0', '#fce4ec'  // Light orange/pink variants
+            ];
+            
+            const normalizedColor = color.toLowerCase();
+            if (lightColors.includes(normalizedColor)) {
+                return true;
+            }
+            
+            // Convert hex to RGB for luminance calculation
+            const hexToRgb = (hex: string) => {
+                const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+                return result ? {
+                    r: parseInt(result[1], 16),
+                    g: parseInt(result[2], 16),
+                    b: parseInt(result[3], 16)
+                } : null;
+            };
+            
+            const rgb = hexToRgb(color);
+            if (!rgb) return false;
+            
+            // Calculate luminance - if > 0.6, it's a light background
+            const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+            return luminance > 0.6;
+        };
+
+        // Enhanced function to improve text visibility in dark mode
         const enhanceDarkModeTextVisibility = (svgElement: SVGElement) => {
             // Get all text elements
             const textElements = svgElement.querySelectorAll('text');
-
             textElements.forEach(textEl => {
                 // Find the parent node to get its styling context
                 let parentNode = textEl.parentElement;
@@ -508,10 +577,28 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
                 // Apply enhanced text visibility improvements
                 enhanceDarkModeTextVisibility(svgElement);
+                
+                // Apply classDef text visibility fixes
+                fixTextVisibilityForClassDef(svgElement);
 
                 svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
                     el.setAttribute('stroke', '#88c0d0');
                     el.setAttribute('stroke-width', '1.5px');
+                });
+
+                // Additional fix: Force text color on nodes with light backgrounds
+                svgElement.querySelectorAll('g.node text, g.cluster text').forEach(textEl => {
+                    const parentGroup = textEl.closest('g.node, g.cluster');
+                    if (parentGroup) {
+                        const rect = parentGroup.querySelector('rect, polygon, circle');
+                        if (rect) {
+                            const fill = rect.getAttribute('fill');
+                            if (fill && isLightBackground(fill)) {
+                                textEl.setAttribute('fill', '#000000');
+                                (textEl as SVGElement).style.fill = '#000000';
+                            }
+                        }
+                    }
                 });
 
                 svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
@@ -529,8 +616,34 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             });
         } else {
             // Even in light mode, apply custom styles
+            requestAnimationFrame(() => {
+                // Apply classDef text visibility fixes even in light mode
+                fixTextVisibilityForClassDef(svgElement);
+                // Apply custom styles from the diagram definition
+                applyCustomStyles(svgElement);
+            });
             applyCustomStyles(svgElement);
         }
+
+        // CRITICAL: Add a delayed fix to ensure text visibility is applied after all other processing
+        setTimeout(() => {
+            console.log('🔍 DELAYED TEXT FIX: Applying final text visibility fixes');
+            const allTextElements = svgElement.querySelectorAll('text');
+            allTextElements.forEach(textEl => {
+                const parentGroup = textEl.closest('g.node, g.cluster');
+                if (parentGroup) {
+                    const backgroundShape = parentGroup.querySelector('rect, polygon, circle, path');
+                    if (backgroundShape) {
+                        const fill = backgroundShape.getAttribute('fill');
+                        if (fill && isLightBackground(fill)) {
+                            console.log(`🔧 DELAYED FIX: Setting black text for light background ${fill}`);
+                            textEl.setAttribute('fill', '#000000');
+                            (textEl as SVGElement).style.setProperty('fill', '#000000', 'important');
+                        }
+                    }
+                }
+            });
+        }, 500);
 
         // Helper functions for contrast calculation
         const getColorLuminance = (color: string): number => {
@@ -1296,12 +1409,21 @@ function getOptimalTextColor(backgroundColor: string): string {
     const rgb = hexToRgb(backgroundColor);
     if (!rgb) return '#000000';
 
-    // Special handling for yellow and yellow-ish colors
+    // Special handling for very light colors that appear in classDef
+    const lightBlue = /^#e[0-9a-f]f[0-9a-f]fd$/i;  // Matches #e3f2fd and similar
+    const lightGreen = /^#e[0-9a-f]f[0-9a-f]e[0-9a-f]$/i; // Matches #e8f5e8 and similar  
+    const lightOrange = /^#fff[0-9a-f]e[0-9a-f]$/i; // Matches #fff3e0 and similar
+    
+    if (lightBlue.test(backgroundColor) || lightGreen.test(backgroundColor) || lightOrange.test(backgroundColor)) {
+        return '#000000'; // Always use black on these very light backgrounds
+    }
+    
+    // Handle yellow and yellow-ish colors
     if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
         return '#000000'; // Always use black on yellow/yellow-ish
     }
 
-    // Special handling for beige/cream colors
+    // Handle beige/cream colors
     if (rgb.r > 220 && rgb.g > 200 && rgb.b > 150) {
         return '#000000'; // Always use black on beige/cream
     }
@@ -1342,7 +1464,8 @@ function isProblematicBackground(color: string): boolean {
     // The exact list of problematic background colors you identified
     const problematicColors = [
         'FFEA2E', 'FFB50D', 'FFF58C', 'FFF59D', 'FFF0D9', 'E2F4E2', 'F0DDF3',
-        'DBF2FE', 'FFF7DA', 'DDEFFD', 'FDC0C8', 'F5A9D1', 'D4EA8C',
+        'DBF2FE', 'FFF7DA', 'DDEFFD', 'FDC0C8', 'F5A9D1', 'D4EA8C', 
+        'E3F2FD', 'E8F5E8', 'FFF3E0', // Add the specific colors from user's example
         'FFEB3B'
     ];
 
