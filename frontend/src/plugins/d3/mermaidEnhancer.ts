@@ -2625,6 +2625,34 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['*']
   });
 
+  // Add a preprocessor to fix classDef statements for better text contrast
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 CLASSDEF-TEXT-FIX: Processing classDef statements for text contrast');
+
+      let result = definition;
+      
+      // Add color property to classDef statements with light backgrounds
+      const lightBackgrounds = ['#e1f5fe', '#e3f2fd', '#f3e5f5', '#e8f5e8', '#fff3e0', '#fce4ec'];
+      
+      lightBackgrounds.forEach(bgColor => {
+        const regex = new RegExp(`classDef\\s+(\\w+)\\s+fill:${bgColor.replace('#', '#?')}(?!.*color:)`, 'gi');
+        result = result.replace(regex, `classDef $1 fill:${bgColor},color:#000000`);
+      });
+
+      console.log('🔍 CLASSDEF-TEXT-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'classdef-text-contrast-fix',
+    priority: 750, // Very high priority to run before other fixes
+    diagramTypes: ['flowchart', 'graph']
+  });
+
   // Default error handler (lowest priority)
   registerErrorHandler((error: Error, context: ErrorContext) => {
     const { container, definition, diagramType } = context;
