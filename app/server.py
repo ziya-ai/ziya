@@ -94,224 +94,39 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     """
     logger.info(f"🔍 FUNCTION_START: build_messages_for_streaming called with {len(files)} files")
 
-    # Check for precision prompt system feature flag
-    use_precision_system = os.environ.get("ZIYA_PRECISION_PROMPTS", "true").lower() == "true"
+    # Always use precision prompt system
+    from app.utils.precision_prompt_system import precision_system
+    from app.agents.prompts_manager import get_model_info_from_config
 
-    if use_precision_system:
-        try:
-            from app.utils.precision_prompt_system import precision_system
-            from app.agents.prompts_manager import get_model_info_from_config
-
-            model_info = get_model_info_from_config()
-            request_path = "/streaming_tools"  # Default for streaming
-
-            # Use precision system for 100% equivalence
-            messages = precision_system.build_messages(
-                request_path=request_path,
-                model_info=model_info,
-                files=files,
-                question=question,
-                chat_history=chat_history
-            )
-
-            logger.info(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
-
-            # Convert to LangChain format if needed
-            if use_langchain_format:
-                from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-                langchain_messages = []
-                for msg in messages:
-                    if msg["role"] == "system":
-                        langchain_messages.append(SystemMessage(content=msg["content"]))
-                    elif msg["role"] == "user":
-                        langchain_messages.append(HumanMessage(content=msg["content"]))
-                    elif msg["role"] == "assistant":
-                        langchain_messages.append(AIMessage(content=msg["content"]))
-                return langchain_messages
-
-            return messages
-
-        except Exception as e:
-            logger.warning(f"🎯 PRECISION_SYSTEM: Fallback to original system due to error: {e}")
-            # Fall through to original system
-
-    from app.agents.prompts_manager import get_extended_prompt, get_model_info_from_config
-    from app.agents.agent import get_combined_docs_from_files, _format_chat_history
-    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-    
     model_info = get_model_info_from_config()
-    
-    # Get model_id for MCP guidelines exclusion
-    from app.agents.models import ModelManager
-    model_id = ModelManager.get_model_id()
+    request_path = "/streaming_tools"  # Default for streaming
 
-    # Get MCP context, including endpoint and model_id for extensions
-    mcp_context = {
-        "model_id": model_id,
-        "endpoint": model_info["endpoint"],
-        "native_tools_available": model_info["endpoint"] == "bedrock"  # Bedrock uses native tool calling
-    }
-    try:
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        if mcp_manager.is_initialized:
-            available_tools = [tool.name for tool in mcp_manager.get_all_tools()]
-            mcp_context["mcp_tools_available"] = len(available_tools) > 0
-            mcp_context["available_mcp_tools"] = available_tools
-    except Exception as e:
-        logger.warning(f"Could not get MCP tools: {e}")
-    
-    # Get file context
-    from app.agents.agent import extract_codebase
-    file_context = extract_codebase({"config": {"files": files}, "conversation_id": conversation_id})
-    logger.info(f"🔍 BUILD_MESSAGES_DEBUG: file_context length = {len(file_context)} characters")
-    logger.info(f"🔍 BUILD_MESSAGES_DEBUG: file_context preview = {file_context[:200]}...")
-    
-    # Temporarily reduce context to test tool execution
-    if "distribution by file type" in question.lower():
-        logger.info("🔍 TEMP: Reducing context for tool execution test")
-        files = []  # Skip file context to avoid throttling
-    
-    # Get the extended prompt template  
-    extended_prompt = get_extended_prompt(
-        model_name=model_info["model_name"],
-        model_family=model_info["model_family"],
-        endpoint=model_info["endpoint"]
+    # Use precision system for 100% equivalence
+    messages = precision_system.build_messages(
+        request_path=request_path,
+        model_info=model_info,
+        files=files,
+        question=question,
+        chat_history=chat_history
     )
-    
-    # Check if template has codebase placeholder
-    template_text = extended_prompt.messages[0].prompt.template
-    has_codebase_placeholder = "{codebase}" in template_text
-    
-    # Get the extended prompt and format it properly
-    extended_prompt = get_extended_prompt(
-        model_name=model_info["model_name"],
-        model_family=model_info["model_family"],
-        endpoint=model_info["endpoint"],
-        context=mcp_context
-    )
-    
-    # Get available tools for the template
-    tools_list = []
-    # Check if MCP is enabled before loading tools
-    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
-        try:
-            from app.mcp.manager import get_mcp_manager
-            mcp_manager = get_mcp_manager()
-            if mcp_manager.is_initialized:
-                all_tools = mcp_manager.get_all_tools()
-                tools_list = [f"- {tool.name}: {tool.description}" for tool in all_tools]
-                logger.info(f"🔍 SYSTEM_PROMPT_TOOLS: Including {len(all_tools)} tools in system prompt: {[t.name for t in all_tools]}")
-        except Exception as e:
-            logger.warning(f"Could not get tools for template: {e}")
-    else:
-        logger.debug("MCP is disabled, no tools will be loaded for template")
-    
-    # Build messages manually to ensure proper conversation history
-    messages = []
-    
-    # Add system message with context
-    system_content = extended_prompt.messages[0].prompt.template.format(
-        codebase=file_context,
-        ast_context="",
-        tools="\n".join(tools_list) if tools_list else "No tools available",
-        TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
-        TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
-    )
-    
-    # Ensure file context is included - if template substitution failed, append it manually
-    if file_context and file_context not in system_content:
-        logger.info(f"🔍 TEMPLATE_FIX: File context not found in system message, appending manually")
-        system_content += f"\n\n{file_context}"
-    
-    logger.info(f"🔍 TEMPLATE_DEBUG: Final system_content length = {len(system_content)} characters")
-    
-    if use_langchain_format:
-        messages.append(SystemMessage(content=system_content))
-    else:
-        messages.append({"role": "system", "content": system_content})
-    
-    # Add conversation history
-    for item in chat_history:
-        if isinstance(item, dict):
-            role = item.get('type', item.get('role', 'human'))
-            content = item.get('content', '')
-        elif isinstance(item, (list, tuple)) and len(item) >= 2:
-            role, content = item[0], item[1]
-        else:
-            continue
-            
-        if role in ['human', 'user']:
-            if use_langchain_format:
-                messages.append(HumanMessage(content=content))
-            else:
-                messages.append({"role": "user", "content": content})
-        elif role in ['assistant', 'ai']:
-            if use_langchain_format:
-                messages.append(AIMessage(content=content))
-            else:
-                messages.append({"role": "assistant", "content": content})
-    
-    # Apply post-instructions to the question once here
-    from app.utils.post_instructions import PostInstructionManager
-    modified_question = PostInstructionManager.apply_post_instructions(
-        query=question,
-        model_name=model_info["model_name"],
-        model_family=model_info["model_family"],
-        endpoint=model_info["endpoint"]
-    )
-    
-    # Add current question
-    if use_langchain_format:
-        messages.append(HumanMessage(content=modified_question))
-    else:
-        messages.append({"role": "user", "content": modified_question})
-    
-    logger.info("CONTEXT CONSTRUCTION DETAILS:")
-    logger.info(f"File context length: {len(file_context)} characters")
-    logger.info(f"Question length: {len(modified_question)} characters")
-    logger.info(f"Chat history items: {len(chat_history)}")
-    logger.info(f"Available tools: {len(tools_list)}")
-    logger.info(f"MCP tools available: {mcp_context.get('mcp_tools_available', False)}")
 
-    # Debug: Check template substitution
-    logger.debug("=== TEMPLATE SUBSTITUTION DEBUG ===")
-    logger.debug("Template variables being substituted:")
-    logger.debug(f"- codebase length: {len(file_context)}")
-    logger.debug(f"- question length: {len(modified_question)}")
-    logger.debug(f"- chat_history items: {len(_format_chat_history(chat_history))}")
-    logger.debug(f"- tools count: {len(tools_list)}")
-    logger.info(f"🔍 PRE_FORMAT: About to enter format_messages try block")
-    logger.info(f"🔍 PRE_FORMAT: extended_prompt type = {type(extended_prompt)}")
-    logger.info(f"🔍 PRE_FORMAT: file_context length = {len(file_context)}")
-    
-    try:
-        logger.info(f"🔍 FORMAT_ATTEMPT: About to call format_messages with codebase length {len(file_context)}")
-        formatted_messages = extended_prompt.format_messages(
-            codebase=file_context,
-            question=modified_question,
-            chat_history=_format_chat_history(chat_history),
-            ast_context="",  # Will be enhanced if AST is enabled
-            tools="\n".join(tools_list) if tools_list else "No tools available",
-            TOOL_SENTINEL_OPEN=TOOL_SENTINEL_OPEN,
-            TOOL_SENTINEL_CLOSE=TOOL_SENTINEL_CLOSE
-        )
-        
-        logger.info(f"🔍 FORMAT_SUCCESS: format_messages completed successfully")
-        
-        return formatted_messages
-            
-    except Exception as e:
-        logger.error(f"🔍 FORMAT_ERROR: Error formatting messages: {e}")
-        logger.error(f"🔍 FORMAT_ERROR: Exception type: {type(e).__name__}")
-        import traceback
-        logger.error(f"🔍 FORMAT_ERROR: Traceback: {traceback.format_exc()}")
-        # Fallback to basic messages
-        from langchain_core.messages import SystemMessage, HumanMessage
-        return [
-            SystemMessage(content=f"You are a helpful AI assistant.\n\n{file_context}"),
-            HumanMessage(content=modified_question)
-        ]
+    logger.info(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
+
+    # Convert to LangChain format if needed
+    if use_langchain_format:
+        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+        langchain_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                langchain_messages.append(SystemMessage(content=msg["content"]))
+            elif msg["role"] == "user":
+                langchain_messages.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                langchain_messages.append(AIMessage(content=msg["content"]))
+        return langchain_messages
+
+    return messages
+
 
 # Dictionary to track active streaming tasks
 active_streams = {}
