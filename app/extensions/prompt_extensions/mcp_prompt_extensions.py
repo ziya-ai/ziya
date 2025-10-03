@@ -121,16 +121,17 @@ If you catch yourself about to modify a file with a tool - STOP and provide a di
 """ + _get_tool_call_formats_from_mcp(available_tools) + """
 
 **Usage Rules:**
-0. **Prefer local context and AST over tools when either can provide similar information**
-1. **Always use actual tool results** - Never fabricate output
+0. **Answer from context first** - Only use tools when you need information not available in the provided context
+1. **Prefer local context and AST over tools** when either can provide similar information
+2. **When using tools, use actual results** - Never fabricate output
 
 ⚠️  BEFORE EVERY TOOL CALL ASK YOURSELF: ⚠️
-"Am I about to modify a file? If yes, I must provide a Git diff patch instead!"
-2. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
-3. **Time queries**: Always use tool rather than guessing current time
-4. **Error handling**: Show actual errors and try alternatives
-5. **Verification**: Use tools to verify system state rather than making assumptions
-6. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
+"Do I need information not in the context? Am I about to modify a file? If modifying files, I must provide a Git diff patch instead!"
+3. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
+4. **Time queries**: Use tool only when current time is actually needed
+5. **Error handling**: Show actual errors and try alternatives
+6. **Verification**: Use tools to verify system state only when assumptions aren't sufficient
+7. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
 """
 
         # Add shell-specific warning if shell command tool is available
