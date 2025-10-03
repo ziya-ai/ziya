@@ -499,28 +499,28 @@ const extractAllFilesFromDiff = (diffContent: string): string[] => {
 const checkFilesInContext = (filePaths: string[], currentFiles: string[] = []): { missingFiles: string[], availableFiles: string[] } => {
     const missingFiles: string[] = [];
     const availableFiles: string[] = [];
-    
+
     for (const filePath of filePaths) {
         // Clean up the file path (remove a/ or b/ prefixes from git diffs)
         let cleanPath = filePath.trim();
         if (cleanPath.startsWith('a/') || cleanPath.startsWith('b/')) {
             cleanPath = cleanPath.substring(2);
         }
-        
+
         // Check if the file is in the current selected context
-        const isInContext = currentFiles.some(currentFile => 
-            currentFile === cleanPath || 
+        const isInContext = currentFiles.some(currentFile =>
+            currentFile === cleanPath ||
             cleanPath.startsWith(currentFile + '/') ||
             (currentFile.endsWith('/') && cleanPath.startsWith(currentFile))
         );
-        
+
         if (isInContext) {
             availableFiles.push(cleanPath);
         } else {
             missingFiles.push(cleanPath);
         }
     }
-    
+
     console.log('🔄 CONTEXT_ENHANCEMENT: Local check result:', { filePaths, currentFiles: currentFiles.slice(0, 5), missingFiles, availableFiles });
     return { missingFiles, availableFiles };
 };
@@ -2637,7 +2637,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
             // Mark as checked BEFORE doing the work to prevent race conditions
             hasCheckedFilesRef.current = true;
             setIsCheckingFiles(true);
-            
+
             try {
                 const currentFiles = Array.from(checkedKeys).map(String);
                 const response = checkFilesInContext(referencedFiles, currentFiles);
@@ -2769,8 +2769,8 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
     // Show context enhancement overlay when files are missing
     const contextEnhancementOverlay = (isCheckingFiles || needsContextEnhancement) ? (
         <div style={{
-            position: 'relative', width: '100%', 
-            backgroundColor: needsContextEnhancement ? 'rgba(255,193,7,0.9)' : 'rgba(0,0,0,0.7)', 
+            position: 'relative', width: '100%',
+            backgroundColor: needsContextEnhancement ? 'rgba(255,193,7,0.9)' : 'rgba(0,0,0,0.7)',
             color: needsContextEnhancement ? '#000' : 'white',
             padding: '12px', textAlign: 'center',
             borderRadius: '4px'
@@ -2782,9 +2782,9 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
                     <div style={{ marginBottom: '8px' }}>
                         ⚠️ This diff references files not in context: <strong>{missingFilesList.join(', ')}</strong>
                     </div>
-                    <Button 
-                        type="primary" 
-                        size="small" 
+                    <Button
+                        type="primary"
+                        size="small"
                         onClick={retryWithEnhancedContext}
                         style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
                     >
@@ -2847,14 +2847,34 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             if (line.startsWith('diff --git')) {
                 const match = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
                 if (match) {
-                    return match[2] || match[1]; // Prefer new path, fallback to old path
+                    const oldPath = match[1];
+                    const newPath = match[2];
+
+                    // Handle new file creation (old path is /dev/null)
+                    if (oldPath === '/dev/null') {
+                        return `Create: ${newPath}`;
+                    }
+                    // Handle file deletion (new path is /dev/null)  
+                    if (newPath === '/dev/null') {
+                        return `Delete: ${oldPath}`;
+                    }
+                    // Regular file modification - prefer new path, fallback to old path
+                    return newPath || oldPath;
                 }
             }
             // Look for unified diff headers
             if (line.startsWith('+++ b/')) {
                 return line.substring(6);
             }
+            // Handle new file creation from unified diff headers
+            if (line.startsWith('+++ b/') && lines.some(l => l.startsWith('--- /dev/null'))) {
+                return `Create: ${line.substring(6)}`;
+            }
             if (line.startsWith('--- a/')) {
+                // Check if this is a deletion diff
+                if (lines.some(l => l.startsWith('+++ /dev/null'))) {
+                    return `Delete: ${line.substring(6)}`;
+                }
                 return line.substring(6);
             }
         }
@@ -4342,7 +4362,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                                     const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
                                     const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
                                     const hasComplexMath = /[{}^_]/.test(p1) && p1.length > 2; // Subscripts, superscripts, braces
-                                    
+
                                     // Be more conservative - only process if it really looks like math
                                     return (hasLatex || hasMathSymbols || hasComplexMath) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
                                 }
