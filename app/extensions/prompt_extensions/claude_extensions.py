@@ -71,7 +71,7 @@ When you have determined that a tool is necessary:
 6. **DO NOT** write "Based on the result..." or similar text
 7. **WAIT** for the actual tool result to be provided
 
-CRITICAL: Use ONLY native tool calling. Never generate markdown like ```_command or ```bash. Use the provided tools directly.
+CRITICAL: Use ONLY native tool calling. Never generate fake tool calling syntax like ```tool:mcp_run_shell_command. Use the provided tools directly. Regular markdown code blocks like ```bash for examples are perfectly fine.
 
 If the provided context doesn't fully answer the user's request, use tools to gather the missing information. However, if file contents or directory structures are already shown in the context, work with that information directly instead of re-examining files. When you find relevant files through exploration, examine their contents. Check that all the required parameters for each tool call are provided or can reasonably be inferred from context. IF there are no relevant tools or there are missing values for required parameters, ask the user to supply these values; otherwise proceed with the tool calls. If the user provides a specific value for a parameter (for example provided in quotes), make sure to use that value EXACTLY. DO NOT make up values for or ask about optional parameters. Carefully analyze descriptive terms in the request as they may indicate required parameter values that should be included even if not explicitly quoted.
 """

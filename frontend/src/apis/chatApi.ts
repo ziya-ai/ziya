@@ -51,6 +51,11 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
         try {
             const parsed = JSON.parse(dataContent);
 
+            // Skip tool results - they're not errors even if they contain error text
+            if (parsed.tool_result || parsed.type === 'tool_start' || parsed.type === 'tool_display') {
+                return null;
+            }
+
             // Only treat as error if it's actually structured as an error response
             // This prevents false positives from content that mentions error keywords
             if (!parsed.error && !parsed.detail && !parsed.status_code) {

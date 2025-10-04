@@ -117,12 +117,13 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
         langchain_messages = []
         for msg in messages:
-            if msg["role"] == "system":
-                langchain_messages.append(SystemMessage(content=msg["content"]))
-            elif msg["role"] == "user":
-                langchain_messages.append(HumanMessage(content=msg["content"]))
-            elif msg["role"] == "assistant":
-                langchain_messages.append(AIMessage(content=msg["content"]))
+            if isinstance(msg, dict) and "role" in msg:
+                if msg["role"] == "system":
+                    langchain_messages.append(SystemMessage(content=msg["content"]))
+                elif msg["role"] == "user":
+                    langchain_messages.append(HumanMessage(content=msg["content"]))
+                elif msg["role"] == "assistant":
+                    langchain_messages.append(AIMessage(content=msg["content"]))
         return langchain_messages
 
     return messages

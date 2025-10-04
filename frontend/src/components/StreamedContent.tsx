@@ -141,10 +141,12 @@ export const StreamedContent: React.FC<{}> = () => {
     useEffect(() => {
         const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
         const justStartedStreaming = isCurrentlyStreaming && !hasShownContent;
-        
-        // Only auto-scroll if this is a brand new streaming session AND we have no streamed content yet
-        // This ensures it only triggers for new messages, not conversation switches
+
+        // When streaming just started (new message sent), reset scroll state and enable following
         if (justStartedStreaming && !streamedContent) {
+            console.log('📜 New streaming session started - resetting scroll state and enabling auto-follow');
+            setUserHasScrolled(false); // Critical: Reset user scroll state for new messages
+            
             const scrollTimeout = setTimeout(() => {
                 const container = document.querySelector('.chat-container') as HTMLElement;
                 if (container) {
@@ -152,7 +154,11 @@ export const StreamedContent: React.FC<{}> = () => {
                         // In top-down mode, scroll to bottom when new streaming starts
                         container.scrollTo({
                             top: container.scrollHeight,
-                            behavior: 'smooth'
+                            behavior: 'auto'
+                        });
+                        // Ensure we're at the bottom
+                        requestAnimationFrame(() => {
+                            container.scrollTop = container.scrollHeight;
                         });
                     } else {
                         // In bottom-up mode, scroll to top when new streaming starts
@@ -163,10 +169,10 @@ export const StreamedContent: React.FC<{}> = () => {
                     }
                 }
             }, 200); // Small delay to let content render
-            
+
             return () => clearTimeout(scrollTimeout);
         }
-    }, [streamingConversations, currentConversationId, hasShownContent, isTopToBottom, streamedContent]);
+    }, [streamingConversations, currentConversationId, hasShownContent, isTopToBottom, streamedContent, setUserHasScrolled]);
     // Track when we've shown content for this conversation
     useEffect(() => {
         if (hasStreamedContent && !hasShownContent) {
@@ -201,7 +207,7 @@ export const StreamedContent: React.FC<{}> = () => {
 
             removeStreamingConversation(currentConversationId);
             setIsStreaming(false);
-            
+
             // Prevent jarring scroll jumps when streaming ends
             // Preserve current scroll position
             const container = document.querySelector('.chat-container') as HTMLElement;
@@ -339,7 +345,7 @@ export const StreamedContent: React.FC<{}> = () => {
             type="error"
             showIcon
             className="stream-error"
-            style={{ 
+            style={{
                 margin: '20px 0',
                 maxWidth: '100%',
                 wordBreak: 'break-word',
@@ -356,7 +362,7 @@ export const StreamedContent: React.FC<{}> = () => {
             type="warning"
             showIcon
             className="connection-lost"
-            style={{ 
+            style={{
                 margin: '20px 0',
                 maxWidth: '100%',
                 wordBreak: 'break-word',
@@ -382,480 +388,429 @@ export const StreamedContent: React.FC<{}> = () => {
         const { scrollTop, scrollHeight, clientHeight } = container;
         return Math.abs(scrollHeight - scrollTop - clientHeight) <= 50; // 50px tolerance from bottom
     };
-
-
-    // Function to smoothly scroll to keep the streaming content in view
+    
     const scrollToKeepInView = useCallback(() => {
-        if (!contentRef.current) return;
+            if (!contentRef.current) return;
 
-        // Only auto-scroll if we're currently streaming
-        if (!streamingConversations.has(currentConversationId)) return;
-        if (userHasScrolled) {
-            console.log('📜 StreamedContent: Skipping auto-scroll - user has manually scrolled');
-            return;
-        }
+            // Only auto-scroll if we're currently streaming AND have actual content
+            if (!streamingConversations.has(currentConversationId)) return;
 
-        const container = contentRef.current.closest('.chat-container');
-        if (!container) return;
+            // Don't auto-scroll if user has manually scrolled or if we only have loading state
+            const hasActualContent = streamedContent && streamedContent.trim().length > 0;
+            if (!hasActualContent) return;
 
-        if (isTopToBottom) {
-            // In top-down mode, scroll to bottom to follow new content
-            const BOTTOM_THRESHOLD = 50;
-            const { scrollTop, scrollHeight, clientHeight } = container;
-            const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < BOTTOM_THRESHOLD;
-
-            if (!isAtBottom) {
-                console.log('📜 StreamedContent: Auto-scrolling to bottom in top-down mode');
-                container.scrollTo({
-                    top: container.scrollHeight,
-                    behavior: 'smooth'
-                });
-            }
-        } else {
-            // In bottom-up mode, scroll to keep the top of the content visible
-            const contentRect = contentRef.current.getBoundingClientRect();
-            const containerRect = container.getBoundingClientRect();
-
-            if (contentRect.top < containerRect.top) {
-                console.log('📜 StreamedContent: Adjusting scroll in bottom-up mode');
-                container.scrollBy({
-                    top: contentRect.top - containerRect.top,
-                    behavior: 'smooth'
-                });
-            }
-        }
-
-        // Update last scroll position
-        lastScrollPositionRef.current = container.scrollTop;
-    }, [currentConversationId, streamingConversations, userHasScrolled, isTopToBottom]);
-
-    // Trigger scroll when streamed content updates
-    useEffect(() => {
-        // Only auto-scroll during active streaming
-        if (!streamingConversations.has(currentConversationId)) return;
-        
-        // Allow auto-scroll if user hasn't manually scrolled OR if this is the start of streaming
-        const allowAutoScroll = !userHasScrolled || !hasShownContent;
-        if (!allowAutoScroll) return;
-        
-        if (!streamedContent || !streamedContent.trim()) return;
-
-        // Use appropriate delay based on whether this is initial content or ongoing
-        const delay = hasShownContent ? 100 : 50; // Shorter delay for initial content
-        
-        const scrollTimeout = setTimeout(() => {
-            // Re-check conditions before auto-scrolling
-            const allowAutoScrollNow = !userHasScrolled || !hasShownContent;
-            
-            if (streamingConversations.has(currentConversationId) && 
-                allowAutoScrollNow && 
-                streamedContent && 
-                streamedContent.trim()) {
-                scrollToKeepInView();
-            } else {
-                console.log('📜 StreamedContent: Skipping auto-scroll - conditions not met');
-            }
-        }, delay);
-
-        return () => clearTimeout(scrollTimeout);
-    }, [streamedContent, currentConversationId, streamingConversations, userHasScrolled, hasShownContent]);
-
-    // Enhanced scroll position monitoring for resume-following behavior
-    useEffect(() => {
-        const container = contentRef.current?.closest('.chat-container') as HTMLElement;
-        if (!container) return;
-
-        let scrollCheckInterval: NodeJS.Timeout;
-        const ACTIVE_END_THRESHOLD = 50; // Consistent threshold for both modes
-        let consecutiveAtActiveEndChecks = 0; // Counter to prevent flicker
-        const REQUIRED_CONSECUTIVE_CHECKS = 2; // Must be at active end for 2 checks before re-enabling
-
-        // Only monitor for return to active end if user has scrolled away during streaming
-        if (streamingConversations.has(currentConversationId) && userHasScrolled) {
-            scrollCheckInterval = setInterval(() => {
-                let isAtActiveEnd = false;
-                
-                if (isTopToBottom) {
-                    // Top-down mode: check if at bottom
-                    const { scrollTop, scrollHeight, clientHeight } = container;
-                    isAtActiveEnd = Math.abs(scrollHeight - scrollTop - clientHeight) < ACTIVE_END_THRESHOLD;
-                } else {
-                    // Bottom-up mode: check if at top
-                    isAtActiveEnd = container.scrollTop <= ACTIVE_END_THRESHOLD;
-                }
-
-                if (isAtActiveEnd) {
-                    consecutiveAtActiveEndChecks++;
-                    // Only re-enable auto-scroll after consecutive checks to prevent flicker
-                    if (consecutiveAtActiveEndChecks >= REQUIRED_CONSECUTIVE_CHECKS && 
-                        userHasScrolled && 
-                        streamingConversations.has(currentConversationId)) {
-                        console.log(`📜 StreamedContent: User returned to active end (${isTopToBottom ? 'bottom' : 'top'}) during streaming - resuming auto-scroll`);
-                        setUserHasScrolled(false);
-                        clearInterval(scrollCheckInterval);
-                    }
-                } else {
-                    // Reset counter if user moves away from active end
-                    consecutiveAtActiveEndChecks = 0;
-                }
-            }, 800); // Check every 800ms - responsive but not too aggressive
-        }
-
-        return () => {
-            if (scrollCheckInterval) clearInterval(scrollCheckInterval);
-        };
-    }, [currentConversationId, streamingConversations, userHasScrolled, setUserHasScrolled, isTopToBottom]);
-
-    // Clean up streaming state when conversation changes
-    useEffect(() => {
-        // When switching conversations, don't let old streaming state affect new conversation
-        if (!streamingConversations.has(currentConversationId)) {
-            // Reset user scroll state for non-streaming conversations to allow fresh start
-            const wasStreaming = Array.from(streamingConversations).length > 0;
-            if (!wasStreaming) {
-                // Only reset if no conversations are currently streaming
-                setUserHasScrolled(false);
-            }
-        }
-    }, [currentConversationId, streamingConversations, setUserHasScrolled]);
-
-    // Update loading state based on streaming status
-    useEffect(() => {
-        if (!isStreaming) {
-            setIsLoading(false);
-        }
-    }, [isStreaming]);
-
-    // Update loading state based on streaming status
-
-    // Listen for preserved content events from streaming errors
-    useEffect(() => {
-        const handlePreservedContent = (event: CustomEvent) => {
-            // Create a unique key for this event to prevent duplicates
-            const eventKey = `${event.detail.error_detail || 'unknown'}_${event.detail.conversation_id || 'unknown'}_${event.detail.preservation_timestamp || Date.now()}`;
-            if (processedPreservedEvents.current.has(eventKey)) {
-                console.log('Skipping duplicate preserved content event:', eventKey);
+            if (userHasScrolled) {
                 return;
             }
-            processedPreservedEvents.current.add(eventKey);
 
-            // Clean up old events (keep only last 10)
-            if (processedPreservedEvents.current.size > 10) {
-                const entries = Array.from(processedPreservedEvents.current);
-                processedPreservedEvents.current = new Set(entries.slice(-10));
+
+            const container = contentRef.current.closest('.chat-container');
+            if (!container) return;
+
+            if (isTopToBottom) {
+                // In top-down mode, scroll to bottom to follow new content
+                const BOTTOM_THRESHOLD = 50;
+                const { scrollTop, scrollHeight, clientHeight } = container;
+                const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < BOTTOM_THRESHOLD;
+
+                if (!isAtBottom) {
+                    console.log('📜 StreamedContent: Auto-scrolling to bottom in top-down mode');
+                    container.scrollTo({
+                        top: container.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                }
+            } else {
+                // In bottom-up mode, scroll to keep the top of the content visible
+                const contentRect = contentRef.current.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+
+                if (contentRect.top < containerRect.top) {
+                    console.log('📜 StreamedContent: Adjusting scroll in bottom-up mode');
+                    container.scrollBy({
+                        top: contentRect.top - containerRect.top,
+                        behavior: 'smooth'
+                    });
+                }
             }
 
-            const {
-                preserved_content,
-                pre_streaming_work,
-                existing_streamed_content,
-                processing_context,
-                successful_tool_results,
-                tool_execution_summary,
-                error_detail
-            } = event.detail;
+            // Update last scroll position
+            lastScrollPositionRef.current = container.scrollTop;
+        }, [currentConversationId, streamingConversations, userHasScrolled, isTopToBottom, streamedContent]);
 
-            console.log('Received preserved content event:', {
-                eventType: 'preservedContent',
-                preservedContentLength: preserved_content?.length || 0,
-                successfulTools: successful_tool_results?.length || 0,
-                preStreamingWork: pre_streaming_work?.length || 0,
-                existingStreamedContent: existing_streamed_content?.length || 0,
-                processingContext: processing_context,
-                executionSummary: tool_execution_summary
-            });
+        // Trigger scroll when streamed content updates
+        useEffect(() => {
+            // Only auto-scroll during active streaming
+            if (!streamingConversations.has(currentConversationId)) return;
 
-            // Debug: log the full event detail
-            console.log('Full preserved content event detail:', event.detail);
-            // Only create preserved message if we have content or successful tools
-            if (preserved_content || existing_streamed_content || (successful_tool_results && successful_tool_results.length > 0) || (pre_streaming_work && pre_streaming_work.length > 0)) {
-                let preservedContent = preserved_content || '';
-                // Use the existing streamed content from the error data, or fall back to what's in the map
-                const actualExistingContent = existing_streamed_content || streamedContentMap.get(currentConversationId) || '';
+            // Don't auto-scroll if we're just showing loading indicators
+            const hasActualContent = streamedContent && streamedContent.trim().length > 0;
+            if (!hasActualContent) return;
 
-                if (actualExistingContent && actualExistingContent.trim()) {
-                    // If we have existing streamed content, preserve it at the top
-                    preservedContent = actualExistingContent + '\n\n---\n\n**⚠️ Response was interrupted by an error, but content above was successfully generated.**\n\n' + preservedContent;
-                    console.log('Preserving existing streamed content:', actualExistingContent.length, 'characters');
+            // Only allow auto-scroll if user hasn't manually scrolled away
+            // Remove the "start of streaming" exception that was overriding user scroll intent
+            const allowAutoScroll = !userHasScrolled;
+            if (!allowAutoScroll) return;
+
+            // Use shorter delay to make scrolling more responsive to content updates
+            // but not so short that it interferes with user scrolling
+            const delay = 150; // Consistent delay that allows user scroll gestures to be detected
+
+            const scrollTimeout = setTimeout(() => {
+                // Re-check conditions before auto-scrolling
+                const allowAutoScrollNow = !userHasScrolled;
+
+                if (streamingConversations.has(currentConversationId) &&
+                    allowAutoScrollNow && hasActualContent) {
+                    scrollToKeepInView();
                 }
+            }, delay);
 
-                // Add pre-streaming work if available and meaningful
-                if (pre_streaming_work && pre_streaming_work.length > 0) {
-                    // Filter out generic steps, keep only meaningful ones  
-                    const meaningfulWork = pre_streaming_work.filter(work =>
-                        work.includes('💾 Cache') ||
-                        work.includes('📝 Prepared') ||
-                        work.includes('✅ Validated') ||
-                        work.includes('tokens')
-                    );
+            return () => clearTimeout(scrollTimeout);
+        }, [streamedContent, currentConversationId, streamingConversations, userHasScrolled, scrollToKeepInView]);
 
-                    if (meaningfulWork.length > 0) {
-                        const workSection = '\n\n---\n**🔄 Processing Completed Before Error:**\n\n' +
-                            meaningfulWork.map((work, index) => `• ${work}`).join('\n');
-                        preservedContent += workSection;
-                    } else if (processing_context?.cache_benefit) {
-                        // If no meaningful work but we have cache info, show that
-                        preservedContent += `\n\n---\n**💾 Cache Status:** ${processing_context.cache_benefit}`;
+        // Enhanced scroll position monitoring for resume-following behavior
+        useEffect(() => {
+            const container = contentRef.current?.closest('.chat-container') as HTMLElement;
+            if (!container) return;
+
+            let scrollCheckInterval: NodeJS.Timeout;
+            const ACTIVE_END_THRESHOLD = 100; // Increased threshold to be more forgiving
+            let consecutiveAtActiveEndChecks = 0; // Counter to prevent flicker
+            const REQUIRED_CONSECUTIVE_CHECKS = 3; // Increased to prevent premature re-enabling
+
+            // Only monitor for return to active end if user has scrolled away during streaming
+            // But not if we're just showing loading indicators
+            const hasActualContent = streamedContent && streamedContent.trim().length > 0;
+            if (streamingConversations.has(currentConversationId) &&
+                userHasScrolled &&
+                hasActualContent) {
+
+                scrollCheckInterval = setInterval(() => {
+                    let isAtActiveEnd = false;
+
+                    if (isTopToBottom) {
+                        // Top-down mode: check if at bottom
+                        const { scrollTop, scrollHeight, clientHeight } = container;
+                        isAtActiveEnd = Math.abs(scrollHeight - scrollTop - clientHeight) < ACTIVE_END_THRESHOLD;
+                    } else {
+                        // Bottom-up mode: check if at top
+                        isAtActiveEnd = container.scrollTop <= ACTIVE_END_THRESHOLD;
                     }
-                }
 
-                // If we have successful tool results, format them nicely
-                if (successful_tool_results && successful_tool_results.length > 0) {
-                    const toolResultsSection = '\n\n---\n**✅ Successful Tool Executions Before Error:**\n\n' +
-                        successful_tool_results.map((result, index) => {
-                            const content = typeof result === 'string' ? result : (result.content || JSON.stringify(result));
-                            return `**Tool ${index + 1}:**\n${content}`;
-                        }).join('\n\n');
-                    preservedContent += toolResultsSection;
-                }
-
-                // Add error context
-                const actualError = error_detail || 'Too many requests to AWS Bedrock. Please wait a moment before trying again.';
-                const errorContext = `\n\n---\n**❌ Error Occurred:** ${actualError}\n` +
-                    (tool_execution_summary ?
-                        `**📊 Execution Summary:** ${tool_execution_summary.successful_executions}/${tool_execution_summary.total_attempts} tools completed successfully`
-                        : '');
-                preservedContent += errorContext;
-
-                console.log('Creating preserved message with content length:', preservedContent.length);
-                console.log('First 200 chars:', preservedContent.substring(0, 200));
-                console.log('Contains existing streamed content:', !!existing_streamed_content);
-
-                const preservedMessage = {
-                    id: uuidv4(),
-                    role: 'assistant' as const,
-                    content: preservedContent,
-                    _timestamp: Date.now(),
-                    preservedContent: {
-                        successful_tools: successful_tool_results || [],
-                        pre_streaming_work: pre_streaming_work || [],
-                        processing_context: processing_context || {},
-                        execution_summary: tool_execution_summary,
-                        error_detail: actualError,
-                        was_preserved: true
+                    if (isAtActiveEnd) {
+                        consecutiveAtActiveEndChecks++;
+                        // Only re-enable auto-scroll after consecutive checks to prevent flicker
+                        if (consecutiveAtActiveEndChecks >= REQUIRED_CONSECUTIVE_CHECKS &&
+                            userHasScrolled &&
+                            streamingConversations.has(currentConversationId)) {
+                            setUserHasScrolled(false);
+                            clearInterval(scrollCheckInterval);
+                        }
+                    } else {
+                        // Reset counter if user moves away from active end
+                        consecutiveAtActiveEndChecks = 0;
                     }
-                };
-
-                addMessageToConversation(preservedMessage, currentConversationId);
-                console.log('Added preserved message with successful tool results');
-
-                // Now remove the streaming conversation since we've preserved the content
-                removeStreamingConversation(currentConversationId);
+                }, 1200); // Increased interval - less aggressive checking
             }
-        };
 
-        document.addEventListener('preservedContent', handlePreservedContent as EventListener);
-        return () => document.removeEventListener('preservedContent', handlePreservedContent as EventListener);
-    }, [currentConversationId, addMessageToConversation]);
+            return () => {
+                if (scrollCheckInterval) clearInterval(scrollCheckInterval);
+            };
+        }, [currentConversationId, streamingConversations, userHasScrolled, setUserHasScrolled, isTopToBottom, streamedContent]);
 
-    // Reset error when new content starts streaming
-    useEffect(() => {
-        if (isStreaming) {
-            setError(null);
-            setIsLoading(true);
-        }
+        // Clean up streaming state when conversation changes
+        useEffect(() => {
+            // When switching conversations, don't let old streaming state affect new conversation
+            if (!streamingConversations.has(currentConversationId)) {
+                // Reset user scroll state for non-streaming conversations to allow fresh start
+                const wasStreaming = Array.from(streamingConversations).length > 0;
+                if (!wasStreaming) {
+                    // Only reset if no conversations are currently streaming
+                    setUserHasScrolled(false);
+                }
+            }
+        }, [currentConversationId, streamingConversations, setUserHasScrolled]);
 
-        // Listen for network errors during streaming
-        const handleStreamError = (event: ErrorEvent) => {
-            if (streamingConversations.has(currentConversationId)) {
-                if (event.message.includes('network error') ||
-                    event.message.includes('ERR_INCOMPLETE_CHUNKED_ENCODING')) {
-                    setError('Connection interrupted. Please try again.');
+        // Update loading state based on streaming status
+        useEffect(() => {
+            if (!isStreaming) {
+                setIsLoading(false);
+            }
+        }, [isStreaming]);
+
+        // Update loading state based on streaming status
+
+        // Listen for preserved content events from streaming errors
+        useEffect(() => {
+            const handlePreservedContent = (event: CustomEvent) => {
+                // Create a unique key for this event to prevent duplicates
+                const eventKey = `${event.detail.error_detail || 'unknown'}_${event.detail.conversation_id || 'unknown'}_${event.detail.preservation_timestamp || Date.now()}`;
+                if (processedPreservedEvents.current.has(eventKey)) {
+                    console.log('Skipping duplicate preserved content event:', eventKey);
+                    return;
+                }
+                processedPreservedEvents.current.add(eventKey);
+
+                // Clean up old events (keep only last 10)
+                if (processedPreservedEvents.current.size > 10) {
+                    const entries = Array.from(processedPreservedEvents.current);
+                    processedPreservedEvents.current = new Set(entries.slice(-10));
+                }
+
+                const {
+                    preserved_content,
+                    pre_streaming_work,
+                    existing_streamed_content,
+                    processing_context,
+                    successful_tool_results,
+                    tool_execution_summary,
+                    error_detail
+                } = event.detail;
+
+                console.log('Received preserved content event:', {
+                    eventType: 'preservedContent',
+                    preservedContentLength: preserved_content?.length || 0,
+                    successfulTools: successful_tool_results?.length || 0,
+                    preStreamingWork: pre_streaming_work?.length || 0,
+                    existingStreamedContent: existing_streamed_content?.length || 0,
+                    processingContext: processing_context,
+                    executionSummary: tool_execution_summary
+                });
+
+                // Debug: log the full event detail
+                console.log('Full preserved content event detail:', event.detail);
+                // Only create preserved message if we have content or successful tools
+                if (preserved_content || existing_streamed_content || (successful_tool_results && successful_tool_results.length > 0) || (pre_streaming_work && pre_streaming_work.length > 0)) {
+                    let preservedContent = preserved_content || '';
+                    // Use the existing streamed content from the error data, or fall back to what's in the map
+                    const actualExistingContent = existing_streamed_content || streamedContentMap.get(currentConversationId) || '';
+
+                    if (actualExistingContent && actualExistingContent.trim()) {
+                        // If we have existing streamed content, preserve it at the top
+                        preservedContent = actualExistingContent + '\n\n---\n\n**⚠️ Response was interrupted by an error, but content above was successfully generated.**\n\n' + preservedContent;
+                        console.log('Preserving existing streamed content:', actualExistingContent.length, 'characters');
+                    }
+
+                    // Add pre-streaming work if available and meaningful
+                    if (pre_streaming_work && pre_streaming_work.length > 0) {
+                        // Filter out generic steps, keep only meaningful ones  
+                        const meaningfulWork = pre_streaming_work.filter(work =>
+                            work.includes('💾 Cache') ||
+                            work.includes('📝 Prepared') ||
+                            work.includes('✅ Validated') ||
+                            work.includes('tokens')
+                        );
+
+                        if (meaningfulWork.length > 0) {
+                            const workSection = '\n\n---\n**🔄 Processing Completed Before Error:**\n\n' +
+                                meaningfulWork.map((work, index) => `• ${work}`).join('\n');
+                            preservedContent += workSection;
+                        } else if (processing_context?.cache_benefit) {
+                            // If no meaningful work but we have cache info, show that
+                            preservedContent += `\n\n---\n**💾 Cache Status:** ${processing_context.cache_benefit}`;
+                        }
+                    }
+
+                    // If we have successful tool results, format them nicely
+                    if (successful_tool_results && successful_tool_results.length > 0) {
+                        const toolResultsSection = '\n\n---\n**✅ Successful Tool Executions Before Error:**\n\n' +
+                            successful_tool_results.map((result, index) => {
+                                const content = typeof result === 'string' ? result : (result.content || JSON.stringify(result));
+                                return `**Tool ${index + 1}:**\n${content}`;
+                            }).join('\n\n');
+                        preservedContent += toolResultsSection;
+                    }
+
+                    // Add error context
+                    const actualError = error_detail || 'Too many requests to AWS Bedrock. Please wait a moment before trying again.';
+                    const errorContext = `\n\n---\n**❌ Error Occurred:** ${actualError}\n` +
+                        (tool_execution_summary ?
+                            `**📊 Execution Summary:** ${tool_execution_summary.successful_executions}/${tool_execution_summary.total_attempts} tools completed successfully`
+                            : '');
+                    preservedContent += errorContext;
+
+                    console.log('Creating preserved message with content length:', preservedContent.length);
+                    console.log('First 200 chars:', preservedContent.substring(0, 200));
+                    console.log('Contains existing streamed content:', !!existing_streamed_content);
+
+                    const preservedMessage = {
+                        id: uuidv4(),
+                        role: 'assistant' as const,
+                        content: preservedContent,
+                        _timestamp: Date.now(),
+                        preservedContent: {
+                            successful_tools: successful_tool_results || [],
+                            pre_streaming_work: pre_streaming_work || [],
+                            processing_context: processing_context || {},
+                            execution_summary: tool_execution_summary,
+                            error_detail: actualError,
+                            was_preserved: true
+                        }
+                    };
+
+                    addMessageToConversation(preservedMessage, currentConversationId);
+                    console.log('Added preserved message with successful tool results');
+
+                    // Now remove the streaming conversation since we've preserved the content
                     removeStreamingConversation(currentConversationId);
-                    setIsStreaming(false);
-                    setIsLoading(false);
                 }
+            };
+
+            document.addEventListener('preservedContent', handlePreservedContent as EventListener);
+            return () => document.removeEventListener('preservedContent', handlePreservedContent as EventListener);
+        }, [currentConversationId, addMessageToConversation]);
+
+        // Reset error when new content starts streaming
+        useEffect(() => {
+            if (isStreaming) {
+                setError(null);
+                setIsLoading(true);
             }
-        };
 
-        window.addEventListener('error', handleStreamError);
-
-        return () => {
-            window.removeEventListener('error', handleStreamError);
-        };
-    }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
-
-    // Set up observer to detect when user is viewing the bottom of content
-    const observerRef = useRef<IntersectionObserver>();
-
-    useEffect(() => {
-        if (!contentRef.current) return;
-
-        if (observerRef.current) {
-            observerRef.current.disconnect();
-        }
-
-        observerRef.current = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    isAutoScrollingRef.current = !userHasScrolled;
-                } else {
-                    isAutoScrollingRef.current = false;
+            // Listen for network errors during streaming
+            const handleStreamError = (event: ErrorEvent) => {
+                if (streamingConversations.has(currentConversationId)) {
+                    if (event.message.includes('network error') ||
+                        event.message.includes('ERR_INCOMPLETE_CHUNKED_ENCODING')) {
+                        setError('Connection interrupted. Please try again.');
+                        removeStreamingConversation(currentConversationId);
+                        setIsStreaming(false);
+                        setIsLoading(false);
+                    }
                 }
+            };
+
+            window.addEventListener('error', handleStreamError);
+
+            return () => {
+                window.removeEventListener('error', handleStreamError);
+            };
+        }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
+
+        // Set up observer to detect when user is viewing the bottom of content
+        const observerRef = useRef<IntersectionObserver>();
+
+        useEffect(() => {
+            if (!contentRef.current) return;
+
+            if (observerRef.current) {
+                observerRef.current.disconnect();
+            }
+
+            observerRef.current = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        isAutoScrollingRef.current = !userHasScrolled;
+                    } else {
+                        isAutoScrollingRef.current = false;
+                    }
+                });
+            }, { threshold: 0.1, rootMargin: '0px' });
+
+            observerRef.current.observe(contentRef.current);
+
+            return () => {
+                observerRef.current?.disconnect();
+            };
+        }, [currentConversationId, streamingConversations]);
+
+        // Add effect to handle conversation switches
+        useEffect(() => {
+            // Remove scroll event dispatching that was causing layout changes
+        }, [currentConversationId, streamedContentMap]);
+
+        // Effect to handle auto-scrolling during streaming
+        useEffect(() => {
+            if (!streamingConversations.has(currentConversationId)) return;
+            // Enable auto-scrolling for the current streaming conversation
+            const shouldAutoScroll = !userHasScrolled && streamingConversations.has(currentConversationId);
+            isAutoScrollingRef.current = shouldAutoScroll;
+
+            console.log('📜 StreamedContent: Auto-scroll state updated', {
+                conversationId: currentConversationId,
+                isStreaming: streamingConversations.has(currentConversationId),
+                userHasScrolled,
+                shouldAutoScroll,
+                contentLength: streamedContent?.length || 0
             });
-        }, { threshold: 0.1, rootMargin: '0px' });
+        }, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
 
-        observerRef.current.observe(contentRef.current);
+        // Update loading state based on streaming status
+        useEffect(() => {
+            if (!isStreaming) {
+                setIsLoading(false);
+            }
+        }, [isStreaming]);
 
-        return () => {
-            observerRef.current?.disconnect();
-        };
-    }, [currentConversationId, streamingConversations]);
+        const enableCodeApply = window.enableCodeApply === 'true';
+        return (
+            <div style={{
+                display: 'flex',
+                // In bottom-up view, reverse the order of elements  
+                flexDirection: isTopToBottom ? 'column' : 'column-reverse',
+            }}>
 
-    // Add effect to handle conversation switches
-    useEffect(() => {
-        // Remove scroll event dispatching that was causing layout changes
-    }, [currentConversationId, streamedContentMap]);
-
-    // Effect to handle auto-scrolling during streaming
-    useEffect(() => {
-        if (!streamingConversations.has(currentConversationId)) return;
-        // Enable auto-scrolling for the current streaming conversation
-        const shouldAutoScroll = !userHasScrolled && streamingConversations.has(currentConversationId);
-        isAutoScrollingRef.current = shouldAutoScroll;
-
-        console.log('📜 StreamedContent: Auto-scroll state updated', {
-            conversationId: currentConversationId,
-            isStreaming: streamingConversations.has(currentConversationId),
-            userHasScrolled,
-            shouldAutoScroll,
-            contentLength: streamedContent?.length || 0
-        });
-    }, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
-
-    // Update loading state based on streaming status
-    useEffect(() => {
-        if (!isStreaming) {
-            setIsLoading(false);
-        }
-    }, [isStreaming]);
-
-    const enableCodeApply = window.enableCodeApply === 'true';
-    return (
-        <div style={{
-            display: 'flex',
-            // In bottom-up view, reverse the order of elements  
-            flexDirection: isTopToBottom ? 'column' : 'column-reverse',
-        }}>
-
-        {hasStreamedContent && (
-                <div className="message assistant">
-                    {connectionLost && (
-                        <ConnectionLostAlert />
-                    )}
-                    {streamedContent && streamedContent.trim() && (
-                        <div className="message-sender" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <span>AI:</span>
-                            {/* Only show stop button here once we have content */}
-                            {streamingConversations.has(currentConversationId) && (
-                                <StopStreamButton
-                                    conversationId={currentConversationId}
-                                    onStop={stopStreaming}
-                                    style={{ marginLeft: 'auto' }}
-                                />
-                            )}
-                        </div>
-                    )}
-                    <Suspense fallback={<div>Loading content...</div>}>
-                        <>
-                            {/* Show reasoning content for OpenAI models */}
-                            <ReasoningDisplay conversationId={currentConversationId} />
-
-                            {/* Only render if we have actual content */}
-                            {error && <div><ErrorDisplay message={error} /><br /></div>}
-                            {!error && streamedContent && streamedContent.trim() && (
-                                <div className="message-content">
-                                    {/* Show preservation notice if this content was preserved */}
-                                    {streamedContent.includes('Successful Tool Executions Before Error:') && (
-                                        <Alert
-                                            message="⚠️ Partial Response Preserved"
-                                            description="Some tool executions completed successfully before an error occurred. Results are shown below."
-                                            type="warning"
-                                            showIcon
-                                            style={{ marginBottom: '16px' }}
-                                        />
-                                    )}
-                                    <MarkdownRenderer
-                                        key={`stream-${currentConversationId}`}
-                                        markdown={streamedContent}
-                                        forceRender={streamingConversations.has(currentConversationId)}
-                                        isStreaming={streamingConversations.has(currentConversationId)}
-                                        enableCodeApply={enableCodeApply}
+                {hasStreamedContent && (
+                    <div className="message assistant">
+                        {connectionLost && (
+                            <ConnectionLostAlert />
+                        )}
+                        {streamedContent && streamedContent.trim() && (
+                            <div className="message-sender" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span>AI:</span>
+                                {/* Only show stop button here once we have content */}
+                                {streamingConversations.has(currentConversationId) && (
+                                    <StopStreamButton
+                                        conversationId={currentConversationId}
+                                        onStop={stopStreaming}
+                                        style={{ marginLeft: 'auto' }}
                                     />
-                                </div>
-                            )}
-                            {error && streamedContent && streamedContent.trim() && (
-                                <div className="message-content" style={{ opacity: 0.8 }}>
-                                    <MarkdownRenderer
-                                        key={`stream-${currentConversationId}-with-error`}
-                                        markdown={streamedContent}
-                                        enableCodeApply={enableCodeApply}
-                                    />
+                                )}
+                            </div>
+                        )}
+                        <Suspense fallback={<div>Loading content...</div>}>
+                            <>
+                                {/* Show reasoning content for OpenAI models */}
+                                <ReasoningDisplay conversationId={currentConversationId} />
 
-                                    {/* Show preservation notices */}
-                                    {streamedContent.includes('Successful Tool Executions Before Error:') && (
-                                        <Alert
-                                            message="⚠️ Partial Response Preserved"
-                                            description="Some content was preserved from a previous error. You can continue the conversation."
-                                            type="info"
-                                            showIcon
-                                            style={{ 
-                                                marginBottom: '16px',
-                                                maxWidth: '100%',
-                                                wordBreak: 'break-word',
-                                                overflow: 'hidden'
-                                            }}
-                                            closable
+                                {/* Only render if we have actual content */}
+                                {error && <div><ErrorDisplay message={error} /><br /></div>}
+                                {!error && streamedContent && streamedContent.trim() && (
+                                    <div className="message-content">
+                                        {/* Show preservation notice if this content was preserved */}
+                                        {streamedContent.includes('Successful Tool Executions Before Error:') && (
+                                            <Alert
+                                                message="⚠️ Partial Response Preserved"
+                                                description="Some tool executions completed successfully before an error occurred. Results are shown below."
+                                                type="warning"
+                                                showIcon
+                                                style={{ marginBottom: '16px' }}
+                                            />
+                                        )}
+                                        <MarkdownRenderer
+                                            key={`stream-${currentConversationId}`}
+                                            markdown={streamedContent}
+                                            forceRender={streamingConversations.has(currentConversationId)}
+                                            isStreaming={streamingConversations.has(currentConversationId)}
+                                            enableCodeApply={enableCodeApply}
                                         />
-                                    )}
-                                    {streamedContent.includes('Response was interrupted by an error') && (
-                                        <Alert
-                                            message="⚠️ Partial Response Preserved"
-                                            description="The response was interrupted by an error, but the content generated before the error has been preserved."
-                                            type="warning"
-                                            showIcon
-                                            style={{ 
-                                                marginBottom: '16px',
-                                                maxWidth: '100%',
-                                                wordBreak: 'break-word',
-                                                overflow: 'hidden'
-                                            }}
-                                            closable
-                                            action={
-                                                <span style={{ fontSize: '12px', opacity: 0.7 }}>
-                                                    You can continue the conversation or regenerate the response.
-                                                </span>
-                                            }
-                                        />
-                                    )}
-                                </div>
-                            )}
-                            {error && streamedContent && streamedContent.trim() && (
-                                <div className="message-content" style={{ opacity: 0.8 }}>
-                                    <MarkdownRenderer
-                                        key={`stream-${currentConversationId}-with-error`}
-                                        markdown={streamedContent}
-                                        forceRender={streamingConversations.has(currentConversationId)}
-                                        isStreaming={streamingConversations.has(currentConversationId)}
-                                        enableCodeApply={enableCodeApply}
-                                    />
-                                </div>
-                            )}
+                                    </div>
+                                )}
 
-                        </>
-                    </Suspense>
-                </div>
-            )}
-
-        <div ref={contentRef} style={{ minHeight: '10px' }} />
-        {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
-        {streamingConversations.has(currentConversationId) &&
-            !error && (isLoading || isPendingResponse) && // don't show loading if there's an error
-            // Only show loading indicator if we don't have any streamed content yet and haven't started rendering
-            (!streamedContentMap.has(currentConversationId) ||
-                streamedContentMap.get(currentConversationId) === '') && (
-                <LoadingIndicator />
-            )}
-    </div>
-);
-};
+                            </>
+                        </Suspense>
+                    </div>
+                )}
+                <div ref={contentRef} style={{ minHeight: '10px' }} />
+                {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
+                {streamingConversations.has(currentConversationId) &&
+                    !error && (isLoading || isPendingResponse) && // don't show loading if there's an error
+                    // Only show loading indicator if we don't have any streamed content yet and haven't started rendering
+                    (!streamedContentMap.has(currentConversationId) ||
+                        streamedContentMap.get(currentConversationId) === '') && (
+                    <LoadingIndicator />
+                )}
+            </div>
+        );
+    };

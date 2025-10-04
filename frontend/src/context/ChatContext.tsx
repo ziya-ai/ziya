@@ -174,7 +174,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             });
             return next;
         });
-        
+
     }, []);
 
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {
@@ -443,16 +443,38 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.log('Current conversation changed:', {
                 from: currentConversationId,
                 to: conversationId,
-                streamingConversations: Array.from(streamingConversations),
-                hasStreamingContent: Array.from(streamedContentMap.keys())
+                streamingConversations: Array.from(streamingConversations)
             });
         } finally {
             // Always clear loading state, even if folder operations are pending
             console.log('✅ Conversation loading complete:', conversationId);
             setIsLoadingConversation(false);
+            
+            // Scroll to appropriate position after conversation loads with multiple attempts
+            const scrollToPosition = () => {
+                const chatContainer = document.querySelector('.chat-container') as HTMLElement;
+                if (chatContainer) {
+                    if (isTopToBottom) {
+                        // For top-down, scroll to the very bottom
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                        // Force a second update after DOM settles
+                        requestAnimationFrame(() => {
+                            chatContainer.scrollTop = chatContainer.scrollHeight;
+                        });
+                    } else {
+                        // For bottom-up, scroll to the very top
+                        chatContainer.scrollTop = 0;
+                    }
+                }
+            };
+            
+            // Multiple scroll attempts to ensure we reach the end
+            setTimeout(scrollToPosition, 100);
+            setTimeout(scrollToPosition, 200);
+            setTimeout(scrollToPosition, 400);
         }
         setStreamedContentMap(new Map());
-    }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave]);
+    }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave, isTopToBottom]);
 
     // Folder management functions
     const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
@@ -535,6 +557,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
         try {
             // First update the conversation in memory with a new version
             const newVersion = Date.now();
+            console.log('🔧 CHATCONTEXT: moveConversationToFolder called:', {
+                conversationId,
+                folderId,
+                newVersion
+            });
+            
             setConversations(prev => prev.map(conv =>
                 conv.id === conversationId
                     ? { ...conv, folderId, _version: newVersion }
@@ -543,6 +571,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Then update in the database
             await db.moveConversationToFolder(conversationId, folderId);
+            
+            // Check if the state was preserved
+            setTimeout(() => {
+                const checkConv = conversations.find(c => c.id === conversationId);
+                console.log('🔍 CHATCONTEXT: State check after database update:', {
+                    conversationId,
+                    actualFolderId: checkConv?.folderId,
+                    expectedFolderId: folderId,
+                    statePreserved: checkConv?.folderId === folderId
+                });
+                
+                // If the move was overwritten, force it back to the correct state
+                if (checkConv && checkConv.folderId !== folderId) {
+                    console.log('🔧 FIXING OVERWRITTEN MOVE: Re-applying folder ID');
+                    setConversations(prev => prev.map(conv =>
+                        conv.id === conversationId ? { ...conv, folderId, _version: Date.now() } : conv
+                    ));
+                }
+            }, 50);
 
             return;
         } catch (error) {
