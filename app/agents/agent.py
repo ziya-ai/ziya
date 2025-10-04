@@ -820,9 +820,12 @@ class RetryingChatBedrock(Runnable):
                 model_config = config.copy() if config else {}
                 if conversation_id:
                     model_config["conversation_id"] = conversation_id
+                
+                # Merge model_config into kwargs for compatibility with all model types
+                merged_kwargs = {**kwargs, **model_config}
                     
-                async for chunk in self.model.astream(messages, model_config, **kwargs):
-                    logger.error(f"🔍 AGENT_MODEL_ASTREAM: Received chunk type: {type(chunk)}, content: {getattr(chunk, 'content', str(chunk))[:100]}")
+                async for chunk in self.model.astream(messages, **merged_kwargs):
+                    logger.debug(f"🔍 AGENT_MODEL_ASTREAM: Received chunk type: {type(chunk)}, content: {getattr(chunk, 'content', str(chunk))[:100]}")
                     # Check if this is an error chunk that should terminate this specific stream
                     # If we reach here, we've successfully started streaming
                     

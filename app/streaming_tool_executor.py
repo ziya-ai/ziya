@@ -12,29 +12,33 @@ logger = logging.getLogger(__name__)
 
 class StreamingToolExecutor:
     def __init__(self, profile_name: str = 'ziya', region: str = 'us-west-2', model_id: str = None):
-        self.model_id = model_id or os.environ.get('DEFAULT_MODEL_ID', 'us.anthropic.claude-sonnet-4-20250514-v1:0')\
+        self.model_id = model_id or os.environ.get('DEFAULT_MODEL_ID', 'us.anthropic.claude-sonnet-4-20250514-v1:0')
         
-        # Use ModelManager's wrapped bedrock client for proper extended context handling
-        try:
-            from app.agents.models import ModelManager
-            endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-            model_name = os.environ.get("ZIYA_MODEL")
-            self.model_config = ModelManager.get_model_config(endpoint, model_name)
-            
-            # Get the wrapped bedrock client from ModelManager
-            self.bedrock = ModelManager._get_persistent_bedrock_client(
-                aws_profile=profile_name,
-                region=region,
-                model_id=self.model_id,
-                model_config=self.model_config
-            )
-            logger.info(f"🔍 Using ModelManager's wrapped bedrock client with extended context support")
-        except Exception as e:
-            logger.warning(f"🔍 Could not get wrapped client, falling back to direct client: {e}")
-            # Fallback to direct client creation
-            session = boto3.Session(profile_name=profile_name)
-            self.bedrock = session.client('bedrock-runtime', region_name=region)
-            self.model_config = None
+        # Only initialize Bedrock client for Bedrock endpoints
+        from app.agents.models import ModelManager
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        model_name = os.environ.get("ZIYA_MODEL")
+        self.model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        if endpoint == "bedrock":
+            # Use ModelManager's wrapped bedrock client for proper extended context handling
+            try:
+                self.bedrock = ModelManager._get_persistent_bedrock_client(
+                    aws_profile=profile_name,
+                    region=region,
+                    model_id=self.model_id,
+                    model_config=self.model_config
+                )
+                logger.info(f"🔍 Using ModelManager's wrapped bedrock client with extended context support")
+            except Exception as e:
+                logger.warning(f"🔍 Could not get wrapped client, falling back to direct client: {e}")
+                # Fallback to direct client creation
+                session = boto3.Session(profile_name=profile_name)
+                self.bedrock = session.client('bedrock-runtime', region_name=region)
+        else:
+            # Non-Bedrock endpoints don't need a bedrock client
+            self.bedrock = None
+            logger.info(f"🔍 Skipping Bedrock client initialization for endpoint: {endpoint}")
 
     def _convert_tool_schema(self, tool):
         """Convert tool schema to JSON-serializable format"""

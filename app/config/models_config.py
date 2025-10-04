@@ -369,7 +369,7 @@ MODEL_CONFIGS = {
             "model_id": "gemini-2.5-pro",
             "token_limit": 1048576,
             "family": "gemini-pro",
-            "max_output_tokens": 8192,
+            "max_output_tokens": 65536,  # Gemini 2.5 Pro supports up to 65K output tokens
             "convert_system_message_to_human": False,
             "supports_function_calling": True,
             "native_function_calling": True,
