@@ -52,6 +52,35 @@ export const DiffLine = React.memo(({
 
         let result = '';
 
+        // Check if this is already Prism-highlighted HTML
+        const isPrismHtml = text.includes('<span class="token');
+        
+        if (isPrismHtml) {
+            // For Prism HTML, we need to be careful not to corrupt the HTML structure
+            // Only add whitespace markers at the very end if there's trailing whitespace
+            // We detect this by checking if the text ends with whitespace after the last HTML tag
+            const lastTagEnd = text.lastIndexOf('>');
+            if (lastTagEnd !== -1 && lastTagEnd < text.length - 1) {
+                const afterLastTag = text.substring(lastTagEnd + 1);
+                if (afterLastTag.match(/^([ \t]+)$/)) {
+                    // There's trailing whitespace after the last HTML tag
+                    const markers = Array.from(afterLastTag)
+                        .map(c => c === ' ' ? '\u2591' : (c === '\t' ? '→' : c))
+                        .join('');
+                    const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
+                    result = text.substring(0, lastTagEnd + 1) + 
+                             `<span class="ws-marker ${wsClass}">${markers}</span>` + 
+                             afterLastTag;
+                    whitespaceCache.set(cacheKey, result);
+                    return result;
+                }
+            }
+            // No trailing whitespace or can't safely add markers, return as-is
+            whitespaceCache.set(cacheKey, text);
+            return text;
+        }
+
+        // For non-HTML text (plain text fallback), do normal processing
         // For completely empty or whitespace-only lines
         if (!text.trim()) {
             const markers = text.replace(/[ \t]/g, c => c === ' ' ? '\u2591' : '→');
@@ -69,14 +98,6 @@ export const DiffLine = React.memo(({
             const markers = Array.from(trailingWs)
                 .map(c => c === ' ' ? '\u2591' : (c === '\t' ? '→' : c))
                 .join('');
-            // Only apply markers if we're not inside a JSX/HTML tag
-            if (language === 'jsx' || language === 'tsx') {
-                const openBracket = baseText.lastIndexOf('<');
-                const closeBracket = baseText.lastIndexOf('>');
-                if (openBracket > closeBracket) {
-                    return text;  // Inside a tag, don't mark whitespace
-                }
-            }
             const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
             result = `${baseText}<span class="ws-marker ${wsClass}">${markers}</span>${trailingWs}`;
         } else {
