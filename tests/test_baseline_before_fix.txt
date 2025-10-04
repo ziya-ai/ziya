@@ -1,0 +1,293 @@
+
+================================================================================
+Running tests in normal mode...
+================================================================================
+
+======================================================================
+Normal Mode Summary
+======================================================================
++----------------------------------------+--------------------+
+| Test Name                              |       Status       |
++----------------------------------------+--------------------+
+| [92mtest_MRE_binary_file_changes[0m           |        [92mPASS[0m        |
+| [91mtest_MRE_closing_braces_false_applied[0m  |        [91mFAIL[0m        |
+| [91mtest_MRE_comment_only_changes[0m          |        [91mFAIL[0m        |
+| [92mtest_MRE_context_empty_line[0m            |        [92mPASS[0m        |
+| [91mtest_MRE_css_padding_already_applied[0m   |        [91mFAIL[0m        |
+| [92mtest_MRE_css_padding_real_file[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_css_property_already_applied[0m  |        [92mPASS[0m        |
+| [92mtest_MRE_css_property_mismatch[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_empty_file_changes[0m            |        [92mPASS[0m        |
+| [92mtest_MRE_escape_sequence_regression[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_folder_button_removal[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_fuzzy_context_modification[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_fuzzy_mismatch_wrong_lines[0m    |        [92mPASS[0m        |
+| [91mtest_MRE_hunk_context_mismatch[0m         |        [91mFAIL[0m        |
+| [92mtest_MRE_hunk_header_parsing_error[0m     |        [92mPASS[0m        |
+| [91mtest_MRE_identical_adjacent_blocks[0m     |        [91mFAIL[0m        |
+| [92mtest_MRE_inconsistent_indentation[0m      |        [92mPASS[0m        |
+| [92mtest_MRE_inconsistent_line_endings[0m     |        [92mPASS[0m        |
+| [91mtest_MRE_incorrect_hunk_offsets[0m        |        [91mFAIL[0m        |
+| [92mtest_MRE_incorrect_line_numbers[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_interleaved_changes[0m           |        [92mPASS[0m        |
+| [92mtest_MRE_invisible_unicode[0m             |        [92mPASS[0m        |
+| [92mtest_MRE_large_indentation_shifts[0m      |        [92mPASS[0m        |
+| [92mtest_MRE_malformed_diff_header[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_missing_newline_at_eof[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_mixed_line_endings[0m            |        [92mPASS[0m        |
+| [92mtest_MRE_mixed_line_endings_crlf_lf[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_multiple_file_changes[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_nested_indentation_mismatch[0m   |        [92mPASS[0m        |
+| [92mtest_MRE_no_diff_git_header[0m            |        [92mPASS[0m        |
+| [92mtest_MRE_non_existent_file[0m             |        [92mPASS[0m        |
+| [92mtest_MRE_overlapping_hunks[0m             |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_false_already_applied[0m |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_wrapper[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_wrapper_already_applied_detection[0m |        [92mPASS[0m        |
+| [92mtest_MRE_recursive_function_changes[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_special_regex_characters[0m      |        [92mPASS[0m        |
+| [92mtest_MRE_throttling_error_handling[0m     |        [92mPASS[0m        |
+| [92mtest_MRE_trailing_whitespace_issues[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_unicode_characters[0m            |        [92mPASS[0m        |
+| [92mtest_MRE_whitespace_only_changes[0m       |        [92mPASS[0m        |
+| [92mtest_MRE_zero_context_hunks[0m            |        [92mPASS[0m        |
+| [91mtest_alarm_actions_refactor[0m            |        [91mFAIL[0m        |
+| [92mtest_already_applied_complex[0m           |        [92mPASS[0m        |
+| [92mtest_already_applied_simple[0m            |        [92mPASS[0m        |
+| [92mtest_chained_method_calls[0m              |        [92mPASS[0m        |
+| [92mtest_constant_duplicate_check[0m          |        [92mPASS[0m        |
+| [91mtest_d3_network_typescript[0m             |        [91mFAIL[0m        |
+| [92mtest_delete_end_block[0m                  |        [92mPASS[0m        |
+| [91mtest_duplicate_state_declaration[0m       |        [91mFAIL[0m        |
+| [92mtest_embedded_diff_markers[0m             |        [92mPASS[0m        |
+| [92mtest_escape_sequence_content[0m           |        [92mPASS[0m        |
+| [92mtest_folder_context_fix[0m                |        [92mPASS[0m        |
+| [92mtest_function_collision[0m                |        [92mPASS[0m        |
+| [92mtest_gemini_extensions_cleanup[0m         |        [92mPASS[0m        |
+| [92mtest_import_line_order[0m                 |        [92mPASS[0m        |
+| [91mtest_included_inline_unicode[0m           |        [91mFAIL[0m        |
+| [92mtest_indentation_change[0m                |        [92mPASS[0m        |
+| [92mtest_indentation_changes[0m               |        [92mPASS[0m        |
+| [91mtest_json_escape_sequence[0m              |        [91mFAIL[0m        |
+| [92mtest_line_calculation_fix[0m              |        [92mPASS[0m        |
+| [91mtest_long_multipart_emptylines[0m         |        [91mFAIL[0m        |
+| [91mtest_markdown_renderer_language_cache[0m  |        [91mFAIL[0m        |
+| [92mtest_misordered_hunks[0m                  |        [92mPASS[0m        |
+| [91mtest_multi_chunk_changes[0m               |        [91mFAIL[0m        |
+| [92mtest_multi_hunk_line_adjustment[0m        |        [92mPASS[0m        |
+| [91mtest_multi_hunk_same_function[0m          |        [91mFAIL[0m        |
+| [92mtest_nested_function[0m                   |        [92mPASS[0m        |
+| [92mtest_network_diagram_plugin[0m            |        [92mPASS[0m        |
+| [92mtest_new_file_creation[0m                 |        [92mPASS[0m        |
+| [92mtest_new_file_existing_dir[0m             |        [92mPASS[0m        |
+| [92mtest_new_file_new_dir[0m                  |        [92mPASS[0m        |
+| [92mtest_react_question_provider[0m           |        [92mPASS[0m        |
+| [92mtest_send_chat_container_false_applied[0m |        [92mPASS[0m        |
+| [92mtest_send_chat_container_fix[0m           |        [92mPASS[0m        |
+| [92mtest_simple_comma_addition[0m             |        [92mPASS[0m        |
+| [92mtest_simple_nested[0m                     |        [92mPASS[0m        |
+| [92mtest_single_line_replace[0m               |        [92mPASS[0m        |
+| [92mtest_two_functions[0m                     |        [92mPASS[0m        |
+| [91mtest_vega_lite_fold_transform_fix[0m      |        [91mFAIL[0m        |
++----------------------------------------+--------------------+
+| TOTAL                                  | [92m64[0m/80 passed ([91m16[0m failed) |
++----------------------------------------+--------------------+
+======================================================================
+
+================================================================================
+Running tests in force-difflib mode...
+================================================================================
+DEBUG: Indentation adaptation triggered, type=fuzzy_mismatch
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=fuzzy_mismatch
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+DEBUG: Indentation adaptation triggered, type=systematic_loss
+
+======================================================================
+Force Difflib Mode Summary
+======================================================================
++----------------------------------------+--------------------+
+| Test Name                              |       Status       |
++----------------------------------------+--------------------+
+| [92mtest_MRE_binary_file_changes[0m           |        [92mPASS[0m        |
+| [91mtest_MRE_closing_braces_false_applied[0m  |        [91mFAIL[0m        |
+| [91mtest_MRE_comment_only_changes[0m          |        [91mFAIL[0m        |
+| [92mtest_MRE_context_empty_line[0m            |        [92mPASS[0m        |
+| [91mtest_MRE_css_padding_already_applied[0m   |        [91mFAIL[0m        |
+| [92mtest_MRE_css_padding_real_file[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_css_property_already_applied[0m  |        [92mPASS[0m        |
+| [92mtest_MRE_css_property_mismatch[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_empty_file_changes[0m            |        [92mPASS[0m        |
+| [92mtest_MRE_escape_sequence_regression[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_folder_button_removal[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_fuzzy_context_modification[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_fuzzy_mismatch_wrong_lines[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_hunk_context_mismatch[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_hunk_header_parsing_error[0m     |        [92mPASS[0m        |
+| [91mtest_MRE_identical_adjacent_blocks[0m     |        [91mFAIL[0m        |
+| [92mtest_MRE_inconsistent_indentation[0m      |        [92mPASS[0m        |
+| [92mtest_MRE_inconsistent_line_endings[0m     |        [92mPASS[0m        |
+| [91mtest_MRE_incorrect_hunk_offsets[0m        |        [91mFAIL[0m        |
+| [92mtest_MRE_incorrect_line_numbers[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_interleaved_changes[0m           |        [92mPASS[0m        |
+| [92mtest_MRE_invisible_unicode[0m             |        [92mPASS[0m        |
+| [92mtest_MRE_large_indentation_shifts[0m      |        [92mPASS[0m        |
+| [92mtest_MRE_malformed_diff_header[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_missing_newline_at_eof[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_mixed_line_endings[0m            |        [92mPASS[0m        |
+| [92mtest_MRE_mixed_line_endings_crlf_lf[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_multiple_file_changes[0m         |        [92mPASS[0m        |
+| [92mtest_MRE_nested_indentation_mismatch[0m   |        [92mPASS[0m        |
+| [92mtest_MRE_no_diff_git_header[0m            |        [92mPASS[0m        |
+| [92mtest_MRE_non_existent_file[0m             |        [92mPASS[0m        |
+| [92mtest_MRE_overlapping_hunks[0m             |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_false_already_applied[0m |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_wrapper[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_wrapper_already_applied_detection[0m |        [92mPASS[0m        |
+| [92mtest_MRE_recursive_function_changes[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_special_regex_characters[0m      |        [92mPASS[0m        |
+| [92mtest_MRE_throttling_error_handling[0m     |        [92mPASS[0m        |
+| [92mtest_MRE_trailing_whitespace_issues[0m    |        [92mPASS[0m        |
+| [92mtest_MRE_unicode_characters[0m            |        [92mPASS[0m        |
+| [92mtest_MRE_whitespace_only_changes[0m       |        [92mPASS[0m        |
+| [92mtest_MRE_zero_context_hunks[0m            |        [92mPASS[0m        |
+| [91mtest_alarm_actions_refactor[0m            |        [91mFAIL[0m        |
+| [92mtest_already_applied_complex[0m           |        [92mPASS[0m        |
+| [92mtest_already_applied_simple[0m            |        [92mPASS[0m        |
+| [92mtest_chained_method_calls[0m              |        [92mPASS[0m        |
+| [92mtest_constant_duplicate_check[0m          |        [92mPASS[0m        |
+| [91mtest_d3_network_typescript[0m             |        [91mFAIL[0m        |
+| [92mtest_delete_end_block[0m                  |        [92mPASS[0m        |
+| [91mtest_duplicate_state_declaration[0m       |        [91mFAIL[0m        |
+| [92mtest_embedded_diff_markers[0m             |        [92mPASS[0m        |
+| [92mtest_escape_sequence_content[0m           |        [92mPASS[0m        |
+| [92mtest_folder_context_fix[0m                |        [92mPASS[0m        |
+| [92mtest_function_collision[0m                |        [92mPASS[0m        |
+| [92mtest_gemini_extensions_cleanup[0m         |        [92mPASS[0m        |
+| [92mtest_import_line_order[0m                 |        [92mPASS[0m        |
+| [91mtest_included_inline_unicode[0m           |        [91mFAIL[0m        |
+| [92mtest_indentation_change[0m                |        [92mPASS[0m        |
+| [92mtest_indentation_changes[0m               |        [92mPASS[0m        |
+| [91mtest_json_escape_sequence[0m              |        [91mFAIL[0m        |
+| [92mtest_line_calculation_fix[0m              |        [92mPASS[0m        |
+| [91mtest_long_multipart_emptylines[0m         |        [91mFAIL[0m        |
+| [91mtest_markdown_renderer_language_cache[0m  |        [91mFAIL[0m        |
+| [92mtest_misordered_hunks[0m                  |        [92mPASS[0m        |
+| [91mtest_multi_chunk_changes[0m               |        [91mFAIL[0m        |
+| [92mtest_multi_hunk_line_adjustment[0m        |        [92mPASS[0m        |
+| [91mtest_multi_hunk_same_function[0m          |        [91mFAIL[0m        |
+| [92mtest_nested_function[0m                   |        [92mPASS[0m        |
+| [92mtest_network_diagram_plugin[0m            |        [92mPASS[0m        |
+| [92mtest_new_file_creation[0m                 |        [92mPASS[0m        |
+| [92mtest_new_file_existing_dir[0m             |        [92mPASS[0m        |
+| [92mtest_new_file_new_dir[0m                  |        [92mPASS[0m        |
+| [92mtest_react_question_provider[0m           |        [92mPASS[0m        |
+| [92mtest_send_chat_container_false_applied[0m |        [92mPASS[0m        |
+| [92mtest_send_chat_container_fix[0m           |        [92mPASS[0m        |
+| [92mtest_simple_comma_addition[0m             |        [92mPASS[0m        |
+| [92mtest_simple_nested[0m                     |        [92mPASS[0m        |
+| [92mtest_single_line_replace[0m               |        [92mPASS[0m        |
+| [92mtest_two_functions[0m                     |        [92mPASS[0m        |
+| [91mtest_vega_lite_fold_transform_fix[0m      |        [91mFAIL[0m        |
++----------------------------------------+--------------------+
+| TOTAL                                  | [92m65[0m/80 passed ([91m15[0m failed) |
++----------------------------------------+--------------------+
+======================================================================
+
+================================================================================
+Test Results Comparison
+================================================================================
++----------------------------------------+--------------------+--------------------+
+| Test Name                              |    Normal Mode     |   Force Difflib    |
++----------------------------------------+--------------------+--------------------+
+| [92mtest_MRE_binary_file_changes[0m           |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_MRE_closing_braces_false_applied[0m  |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [91mtest_MRE_comment_only_changes[0m          |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_MRE_context_empty_line[0m            |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_MRE_css_padding_already_applied[0m   |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_MRE_css_padding_real_file[0m         |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_css_property_already_applied[0m  |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_css_property_mismatch[0m         |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_empty_file_changes[0m            |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_escape_sequence_regression[0m    |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_folder_button_removal[0m         |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_fuzzy_context_modification[0m    |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_fuzzy_mismatch_wrong_lines[0m    |        [92mPASS[0m        |        [92mPASS[0m        |
+| [93mtest_MRE_hunk_context_mismatch[0m         |        [91mFAIL[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_hunk_header_parsing_error[0m     |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_MRE_identical_adjacent_blocks[0m     |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_MRE_inconsistent_indentation[0m      |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_inconsistent_line_endings[0m     |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_MRE_incorrect_hunk_offsets[0m        |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_MRE_incorrect_line_numbers[0m        |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_interleaved_changes[0m           |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_invisible_unicode[0m             |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_large_indentation_shifts[0m      |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_malformed_diff_header[0m         |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_missing_newline_at_eof[0m        |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_mixed_line_endings[0m            |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_mixed_line_endings_crlf_lf[0m    |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_multiple_file_changes[0m         |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_nested_indentation_mismatch[0m   |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_no_diff_git_header[0m            |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_non_existent_file[0m             |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_overlapping_hunks[0m             |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_false_already_applied[0m |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_wrapper[0m        |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_react_suspense_wrapper_already_applied_detection[0m |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_recursive_function_changes[0m    |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_special_regex_characters[0m      |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_throttling_error_handling[0m     |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_trailing_whitespace_issues[0m    |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_unicode_characters[0m            |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_whitespace_only_changes[0m       |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_MRE_zero_context_hunks[0m            |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_alarm_actions_refactor[0m            |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_already_applied_complex[0m           |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_already_applied_simple[0m            |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_chained_method_calls[0m              |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_constant_duplicate_check[0m          |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_d3_network_typescript[0m             |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_delete_end_block[0m                  |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_duplicate_state_declaration[0m       |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_embedded_diff_markers[0m             |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_escape_sequence_content[0m           |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_folder_context_fix[0m                |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_function_collision[0m                |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_gemini_extensions_cleanup[0m         |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_import_line_order[0m                 |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_included_inline_unicode[0m           |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_indentation_change[0m                |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_indentation_changes[0m               |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_json_escape_sequence[0m              |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_line_calculation_fix[0m              |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_long_multipart_emptylines[0m         |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [91mtest_markdown_renderer_language_cache[0m  |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_misordered_hunks[0m                  |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_multi_chunk_changes[0m               |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_multi_hunk_line_adjustment[0m        |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_multi_hunk_same_function[0m          |        [91mFAIL[0m        |        [91mFAIL[0m        |
+| [92mtest_nested_function[0m                   |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_network_diagram_plugin[0m            |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_new_file_creation[0m                 |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_new_file_existing_dir[0m             |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_new_file_new_dir[0m                  |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_react_question_provider[0m           |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_send_chat_container_false_applied[0m |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_send_chat_container_fix[0m           |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_simple_comma_addition[0m             |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_simple_nested[0m                     |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_single_line_replace[0m               |        [92mPASS[0m        |        [92mPASS[0m        |
+| [92mtest_two_functions[0m                     |        [92mPASS[0m        |        [92mPASS[0m        |
+| [91mtest_vega_lite_fold_transform_fix[0m      |        [91mFAIL[0m        |        [91mFAIL[0m        |
++----------------------------------------+--------------------+--------------------+
+| TOTAL                                  |    [92m64[0m/80 passed    |    [92m65[0m/80 passed    |
++----------------------------------------+--------------------+--------------------+
+================================================================================
