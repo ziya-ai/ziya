@@ -76,7 +76,12 @@ class PrecisionPromptSystem:
                 # Insert chat history before the last message (the question)
                 question_msg = messages.pop() if messages else None
                 for msg in chat_history:
-                    messages.append(msg)
+                    if isinstance(msg, dict):
+                        if 'type' in msg:
+                            role = 'user' if msg['type'] in ['human', 'user'] else 'assistant'
+                            messages.append({"role": role, "content": msg.get('content', '')})
+                        elif 'role' in msg:
+                            messages.append(msg)
                 if question_msg:
                     messages.append(question_msg)
             

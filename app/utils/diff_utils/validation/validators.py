@@ -291,9 +291,9 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     if not removed_lines and not added_lines:
         return True
     
-    # For pure additions, check if content already exists in file
+    # For pure additions, check if content already exists at the expected position
     if len(removed_lines) == 0 and len(added_lines) > 0:
-        return _check_pure_addition_already_applied(file_lines, added_lines)
+        return _check_pure_addition_already_applied(file_lines, added_lines, hunk, pos)
     
     # CRITICAL: For hunks with removals, validate that the content to be removed matches
     # If removal validation fails, the hunk cannot be already applied
@@ -314,38 +314,48 @@ def _is_valid_hunk_header(hunk: Dict[str, Any]) -> bool:
     return True
 
 
-def _check_pure_addition_already_applied(file_lines: List[str], added_lines: List[str]) -> bool:
-    """Check if a pure addition (no removals) is already applied."""
+def _check_pure_addition_already_applied(file_lines: List[str], added_lines: List[str], hunk: Dict[str, Any], pos: int) -> bool:
+    """Check if a pure addition (no removals) is already applied with context validation."""
     
     logger.debug(f"Checking pure addition - added_lines: {added_lines}")
     
-    # Check if the added lines exist as a contiguous block anywhere in the file
-    # This is more precise than checking individual lines scattered throughout
     if not added_lines:
         return True
     
-    # CRITICAL FIX: For very common patterns like closing braces, be more conservative
-    # Don't mark as already applied if the added content consists only of common syntax elements
-    normalized_added = [normalize_line_for_comparison(line).strip() for line in added_lines]
+    # Get context lines from the hunk
+    hunk_lines = hunk.get('lines', [])
+    context_lines = [line[1:] for line in hunk_lines if line.startswith(' ')]
     
-    # Check if all added lines are just common syntax elements (braces, semicolons, etc.)
-    common_syntax_patterns = {'}', '};', '{', ')', '(', ']', '[', ',', ';'}
-    if all(line in common_syntax_patterns for line in normalized_added):
-        logger.debug("Added lines contain only common syntax elements, being conservative")
+    if not context_lines:
+        logger.debug("No context lines in hunk - cannot validate if pure addition is already applied")
         return False
     
     added_block = [normalize_line_for_comparison(line) for line in added_lines]
+    context_normalized = [normalize_line_for_comparison(line) for line in context_lines]
+    first_context_line = context_normalized[0]
     
-    # Look for the exact sequence of added lines in the file
-    for start_pos in range(len(file_lines) - len(added_lines) + 1):
-        file_block = [normalize_line_for_comparison(file_lines[start_pos + i]) 
-                     for i in range(len(added_lines))]
+    # Search for context lines in the file, then check if added lines follow
+    for context_pos in range(len(file_lines) - len(context_lines) + 1):
+        # Quick check: skip if first context line doesn't match
+        if normalize_line_for_comparison(file_lines[context_pos]) != first_context_line:
+            continue
+            
+        file_context = [normalize_line_for_comparison(file_lines[context_pos + i]) 
+                       for i in range(len(context_lines))]
         
-        if file_block == added_block:
-            logger.debug(f"Found contiguous block of added lines at position {start_pos}")
-            return True
+        if file_context == context_normalized:
+            # Found matching context, check if added lines are right after
+            check_pos = context_pos + len(context_lines)
+            
+            if check_pos + len(added_lines) <= len(file_lines):
+                file_block = [normalize_line_for_comparison(file_lines[check_pos + i]) 
+                             for i in range(len(added_lines))]
+                
+                if file_block == added_block:
+                    logger.debug(f"Found added lines at position {check_pos} with matching context at {context_pos}")
+                    return True
     
-    logger.debug("Added lines not found as contiguous block in file")
+    logger.debug("Added lines not found at expected position after context")
     return False
 
 
