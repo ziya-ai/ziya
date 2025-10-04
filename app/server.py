@@ -909,6 +909,12 @@ async def stream_chunks(body):
                 state = ModelManager.get_state()
                 current_region = state.get('aws_region', 'us-east-1')
                 aws_profile = state.get('aws_profile', 'default')
+                endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                
+                # Only use StreamingToolExecutor for Bedrock models
+                if endpoint != 'bedrock':
+                    logger.info(f"🚀 DIRECT_STREAMING: Endpoint {endpoint} not supported by StreamingToolExecutor, falling back to LangChain")
+                    raise ValueError(f"StreamingToolExecutor only supports bedrock endpoint, got {endpoint}")
                 
                 logger.info(f"🔍 DIRECT_STREAMING_DEBUG: About to call build_messages_for_streaming with {len(files)} files")
                 # Build messages with full context using the same function as LangChain path - use langchain format like 0.3.0
@@ -964,11 +970,27 @@ async def stream_chunks(body):
                 logger.info(f"🚀 DIRECT_STREAMING: Completed streaming with {chunk_count} chunks")
                 return
                 
+            except ValueError as ve:
+                # Expected error for non-Bedrock endpoints - fall through to LangChain silently
+                logger.info(f"🚀 DIRECT_STREAMING: {ve} - falling back to LangChain")
             except Exception as e:
+                import traceback
+                error_details = traceback.format_exc()
                 logger.error(f"🚀 DIRECT_STREAMING: Error in StreamingToolExecutor: {e}")
+                logger.error(f"🚀 DIRECT_STREAMING: Full traceback:\n{error_details}")
                 # Fall through to LangChain path
         
         logger.info("🚀 DIRECT_STREAMING: No question found or error occurred, falling back to LangChain")
+    
+    # Build messages properly for non-Bedrock models
+    question = body.get("question", "")
+    chat_history = body.get("chat_history", [])
+    files = body.get("config", {}).get("files", [])
+    conversation_id = body.get("conversation_id")
+    
+    if question:
+        messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
+        logger.info(f"🔍 LANGCHAIN_PATH: Built {len(messages)} messages for non-Bedrock model")
     else:
         
         # Extract messages from body
@@ -1651,6 +1673,7 @@ async def stream_chunks(body):
 
             current_response = ""
             tool_executed = False
+            tool_execution_completed = False  # Initialize the variable
         
             try:                
                 # Use model instance for tool detection
@@ -1662,10 +1685,16 @@ async def stream_chunks(body):
                 tool_call_buffer = ""
                 tool_call_detected = False  # Flag to suppress ALL output after tool detection
                 pending_tool_execution = False  # Flag to indicate we need to execute tools
-                # DISABLED: LangChain streaming path - causes duplicate execution with StreamingToolExecutor
-                logger.info("🚀 DIRECT_STREAMING: LangChain path disabled - using StreamingToolExecutor only")
-                return
-                async for chunk in stream_generator:
+                
+                # DISABLED for Bedrock: LangChain streaming path - causes duplicate execution with StreamingToolExecutor
+                # But ENABLED for non-Bedrock endpoints like Google
+                endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                if endpoint == "bedrock":
+                    logger.info("🚀 DIRECT_STREAMING: LangChain path disabled for Bedrock - using StreamingToolExecutor only")
+                    return
+                
+                # Stream from model for non-Bedrock endpoints (use simple streaming like 0.3.0)
+                async for chunk in model_instance.astream(messages):
                     # Log the actual messages being sent to model on first iteration
                     if iteration == 1 and not hasattr(stream_chunks, '_logged_model_input'):
                         stream_chunks._logged_model_input = True
@@ -1689,6 +1718,23 @@ async def stream_chunks(body):
                     if not connection_active:
                         logger.info("Connection lost during agent iteration")
                         break
+                    
+                    # Handle dict chunks from DirectGoogleModel
+                    if isinstance(chunk, dict):
+                        if chunk.get('type') == 'text':
+                            content_str = chunk.get('content', '')
+                            if content_str:
+                                current_response += content_str
+                                ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
+                                yield f"data: {json.dumps({'ops': ops})}\n\n"
+                                chunk_count += 1
+                        elif chunk.get('type') == 'error':
+                            error_msg = chunk.get('content', 'Unknown error')
+                            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                            yield f"data: {json.dumps({'done': True})}\n\n"
+                            return
+                        continue
+                    
                     # Process chunk content - always process chunks, don't check for 'content' attribute first
                     
                     # Check if this is an error response chunk
