@@ -1,0 +1,7 @@
+{
+    "target_file": "frontend/src/components/MUIChatHistory.tsx",
+    "description": "Test case for closing braces incorrectly marked as already applied when they are NOT already applied",
+    "date_added": "2025-10-03",
+    "issue_reference": "false_already_applied_closing_braces",
+    "expected_behavior": "Diff should be applied successfully, not marked as already applied"
+}

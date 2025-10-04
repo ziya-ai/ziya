@@ -1,0 +1,10 @@
+diff --git a/frontend/src/components/MUIChatHistory.tsx b/frontend/src/components/MUIChatHistory.tsx
+@@ -728,6 +728,8 @@ const MUIChatHistory = () => {
+     } catch (error) {
+       message.error('Failed to move folder');
+       console.error('Move folder error:', error);
++    }
++  };
++
+   const startCustomDrag = useCallback((nodeId: string, nodeType: 'folder' | 'conversation', text: string) => {
+     const ghostElement = createDragGhost(text);

@@ -902,6 +902,10 @@ class DiffRegressionTest(unittest.TestCase):
         """
         self.run_diff_test('google_direct_malformed_method')
 
+    def test_MRE_closing_braces_false_applied(self):
+        """Test case for closing braces incorrectly marked as already applied"""
+        self.run_diff_test('MRE_closing_braces_false_applied')
+
 
 class PrettyTestResult(unittest.TestResult):
     def __init__(self):
