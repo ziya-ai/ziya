@@ -473,6 +473,118 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
       
+      // Fix 1.75: Convert boolean values to strings in data
+      if (spec.data?.values && Array.isArray(spec.data.values)) {
+        spec.data.values = spec.data.values.map((row: any) => {
+          const newRow = { ...row };
+          Object.keys(newRow).forEach(key => {
+            if (typeof newRow[key] === 'boolean') {
+              newRow[key] = newRow[key] ? 'Yes' : 'No';
+            }
+          });
+          return newRow;
+        });
+        console.log('🔧 VEGA-PREPROCESS: Converted boolean values to strings');
+      }
+
+      // Fix 1.8: Convert boolean values in hconcat/vconcat/layer specs
+      const processNestedSpecs = (specs: any[]) => {
+        specs.forEach((nestedSpec: any) => {
+          if (nestedSpec.data?.values && Array.isArray(nestedSpec.data.values)) {
+            nestedSpec.data.values = nestedSpec.data.values.map((row: any) => {
+              const newRow = { ...row };
+              Object.keys(newRow).forEach(key => {
+                if (typeof newRow[key] === 'boolean') {
+                  newRow[key] = newRow[key] ? 'Yes' : 'No';
+                }
+              });
+              return newRow;
+            });
+          }
+        });
+      };
+      
+      if (spec.hconcat) processNestedSpecs(spec.hconcat);
+      if (spec.vconcat) processNestedSpecs(spec.vconcat);
+      if (spec.layer) processNestedSpecs(spec.layer);
+
+      // Fix 1.9: Convert deprecated 'ordinal' type to 'nominal'
+      const convertOrdinalToNominal = (encoding: any) => {
+        if (!encoding) return;
+        Object.keys(encoding).forEach(channel => {
+          const channelSpec = encoding[channel];
+          if (Array.isArray(channelSpec)) {
+            channelSpec.forEach(c => {
+              if (c?.type === 'ordinal') {
+                c.type = 'nominal';
+                console.log(`🔧 VEGA-PREPROCESS: Converted ${channel} type from ordinal to nominal`);
+              }
+            });
+          } else if (channelSpec?.type === 'ordinal') {
+            channelSpec.type = 'nominal';
+            console.log(`🔧 VEGA-PREPROCESS: Converted ${channel} type from ordinal to nominal`);
+          }
+        });
+      };
+
+      convertOrdinalToNominal(spec.encoding);
+      if (spec.hconcat) spec.hconcat.forEach((s: any) => convertOrdinalToNominal(s.encoding));
+      if (spec.vconcat) spec.vconcat.forEach((s: any) => convertOrdinalToNominal(s.encoding));
+      if (spec.layer) spec.layer.forEach((s: any) => convertOrdinalToNominal(s.encoding));
+
+      // Fix 1.95: Add explicit domain for nominal scales with range but no domain
+      const addDomainForNominalScales = (encoding: any, dataValues: any[]) => {
+        if (!encoding || !dataValues || dataValues.length === 0) return;
+        
+        ['color', 'fill', 'stroke', 'size', 'shape', 'opacity'].forEach(channel => {
+          const channelSpec = encoding[channel];
+          if (channelSpec?.field && channelSpec?.type === 'nominal' && channelSpec?.scale?.range && !channelSpec?.scale?.domain) {
+            const uniqueValues = [...new Set(dataValues.map(d => d[channelSpec.field]))].filter(v => v !== null && v !== undefined).sort();
+            if (uniqueValues.length > 0) {
+              channelSpec.scale.domain = uniqueValues;
+              console.log(`🔧 VEGA-PREPROCESS: Added domain ${JSON.stringify(uniqueValues)} for ${channel} channel`);
+              
+              // Fix range length to match domain length
+              if (Array.isArray(channelSpec.scale.range) && channelSpec.scale.range.length !== uniqueValues.length) {
+                if (uniqueValues.length === 1) {
+                  channelSpec.scale.range = [channelSpec.scale.range[channelSpec.scale.range.length - 1]];
+                  console.log(`🔧 VEGA-PREPROCESS: Adjusted ${channel} range to match single-value domain`);
+                } else if (channelSpec.scale.range.length < uniqueValues.length) {
+                  // Extend range by repeating last value
+                  const lastValue = channelSpec.scale.range[channelSpec.scale.range.length - 1];
+                  while (channelSpec.scale.range.length < uniqueValues.length) {
+                    channelSpec.scale.range.push(lastValue);
+                  }
+                  console.log(`🔧 VEGA-PREPROCESS: Extended ${channel} range to match domain length`);
+                }
+              }
+            }
+          }
+        });
+      };
+
+      if (spec.data?.values) {
+        addDomainForNominalScales(spec.encoding, spec.data.values);
+      }
+      if (spec.hconcat) {
+        spec.hconcat.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) addDomainForNominalScales(s.encoding, dataValues);
+        });
+      }
+      if (spec.vconcat) {
+        spec.vconcat.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) addDomainForNominalScales(s.encoding, dataValues);
+        });
+      }
+      if (spec.layer) {
+        spec.layer.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) addDomainForNominalScales(s.encoding, dataValues);
+        });
+      }
+
       // Fix 2: Validate all encoding field references
       if (spec.encoding && spec.data?.values && Array.isArray(spec.data.values) && spec.data.values.length > 0) {
         const availableFields = Object.keys(spec.data.values[0]);
@@ -538,7 +650,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
     } else {
       // Use the spec object directly, but remove our custom properties
       const rawSpec = sanitizeSpec({ ...spec });
-      ['type', 'isStreaming', 'forceRender', 'definition'].forEach(prop => delete rawSpec[prop]);
+      ['type', 'isStreaming', 'forceRender', 'definition', 'isMarkdownBlockClosed'].forEach(prop => delete rawSpec[prop]);
       vegaSpec = preprocessVegaSpec(rawSpec);
     }
 
@@ -2386,7 +2498,11 @@ export const vegaLitePlugin: D3RenderPlugin = {
     // This removes any non-plain-object properties that might be causing issues.
     const finalSpec = JSON.parse(JSON.stringify(sanitizedSpec));
 
+    // Make finalSpec available globally for debugging
+    (window as any).__lastVegaSpec = finalSpec;
+
     console.log('Vega-Lite: About to call vegaEmbed with finalSpec:', finalSpec);
+    console.log('Vega-Lite: finalSpec available as window.__lastVegaSpec');
 
     // Log final spec before rendering for violin plots
     if (finalSpec.transform && finalSpec.transform.some((t: any) => t.density)) {
@@ -2421,7 +2537,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
       console.warn('Spec validation warning:', validationError);
     }
 
-    const result = await vegaEmbed(renderContainer, finalSpec, embedOptions);
+    // WORKAROUND: Remove $schema as it can cause parser issues in some Vega versions
+    const embedSpec = { ...finalSpec };
+    delete embedSpec.$schema;
+    console.log('🔧 VEGA-EMBED: Removed $schema for compatibility');
+
+    const result = await vegaEmbed(renderContainer, embedSpec, embedOptions);
 
     console.log('Vega-Lite: vegaEmbed completed successfully:', result);
 
