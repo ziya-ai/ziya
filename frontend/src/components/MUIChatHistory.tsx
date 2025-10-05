@@ -190,8 +190,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     className,
     style,
     onDragOver,
-    onDrop,
     onDragLeave,
+    onDrop,
     ...other
   } = props;
 
@@ -553,9 +553,6 @@ const MUIChatHistory = () => {
   const [isLoading, setIsLoading] = useState(false);
   const initialExpandedRef = useRef<boolean>(false);
   const [folderConfigForm] = Form.useForm();
-
-  // Add drag and drop state management at component level
-  const [dragOverStates, setDragOverStates] = useState<Map<string, boolean>>(new Map());
 
   const [moveToMenuState, setMoveToMenuState] =
     useState<{
@@ -1127,30 +1124,6 @@ const MUIChatHistory = () => {
       return newPinned;
     });
   }
-
-  // Drag and drop handlers at component level
-  const handleDragOver = useCallback((e: React.DragEvent, nodeId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = 'move';
-
-    // Get drag data to validate drop target
-    try {
-      const dragDataStr = e.dataTransfer.getData('application/ziya-node');
-      if (dragDataStr) {
-        const { nodeId: draggedNodeId } = JSON.parse(dragDataStr);
-        if (draggedNodeId !== nodeId) {
-          setDragOverStates(prev => new Map(prev).set(nodeId, true));
-        }
-      }
-    } catch (error) {
-      // Invalid drag data, ignore
-    }
-  }, []);
-
-  const handleDragLeave = useCallback((nodeId: string) => {
-    setDragOverStates(prev => new Map(prev).set(nodeId, false));
-  }, []);
 
   // Handle edit actions
   const handleEdit = (id: string) => {
@@ -1736,43 +1709,7 @@ const MUIChatHistory = () => {
     };
 
     return sortRecursive(rootItems);
-  }, [folders, conversations, pinnedFolders]);
-
-  // Handle drag and drop
-
-  const handleDrop = async (event: React.DragEvent, nodeId: string) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setDragOverStates(prev => new Map(prev).set(nodeId, false));
-
-    try {
-      const dragDataStr = event.dataTransfer.getData('application/ziya-node');
-      if (!dragDataStr) return;
-
-      const { nodeId: sourceNodeId, nodeType } = JSON.parse(dragDataStr);
-
-      if (sourceNodeId === nodeId) return; // Can't drop on itself
-
-      console.log(`🎯 HTML5 Drop: Dropping ${sourceNodeId} (${nodeType}) onto ${nodeId}`);
-
-      // For HTML5 drag and drop, we need to determine if we're dropping into a folder or at root level
-      const targetFolderId = nodeId.startsWith('conv-') ?
-        null : // Dropping on a conversation means move to root
-        nodeId; // Dropping on a folder means move into that folder
-
-      if (nodeType === 'conversation') {
-        await handleMoveConversation(sourceNodeId, targetFolderId);
-      } else if (nodeType === 'folder') {
-        const targetParentId = nodeId.startsWith('conv-') ?
-          null : // Dropping on a conversation means move to root level
-          nodeId; // Dropping on a folder means make it a child of that folder
-        await handleMoveFolder(sourceNodeId, targetParentId);
-      }
-    } catch (error) {
-      console.error('Drop error:', error);
-      message.error('Failed to move item');
-    }
-  };
+  }, [conversations, folders, pinnedFolders]);
 
   // Create a unified folder configuration dialog that works for both creation and editing
   const showFolderConfigDialog = (folderId?: string) => {
@@ -2016,7 +1953,7 @@ const MUIChatHistory = () => {
   };
 
   // Render the tree recursively
-  const renderTree = (nodes: any[]) => {
+  const renderTree = (nodes: any[]): React.ReactNode[] => {
     return nodes.map(node => {
       const isFolder = Boolean(node.folder);
       const nodeId = node.id;
@@ -2034,8 +1971,6 @@ const MUIChatHistory = () => {
 
       const conversationCount = isFolder ? node.conversationCount : 0;
       const isEditing = editingId === (isFolder ? node.id : node.id.substring(5));
-
-      const isDragOver = dragOverStates.get(nodeId) || false;
 
       // Custom drag handler that doesn't interfere with text editing
       const handleCustomMouseDown = (e: React.MouseEvent) => {
@@ -2107,15 +2042,11 @@ const MUIChatHistory = () => {
           onEditChange={handleEditChange}
           onEditSubmit={handleEditSubmit}
           onMouseDown={handleCustomMouseDown}
-          className={isDragOver ? 'drag-over' : undefined}
           style={{
             cursor: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 'grabbing' : 'grab',
             opacity: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 0.6 : 1,
             transition: 'opacity 0.2s ease'
           }}
-          onDragOver={(e) => handleDragOver(e, nodeId)}
-          onDragLeave={() => handleDragLeave(nodeId)}
-          onDrop={(e) => handleDrop(e, nodeId)}
         >
           {isFolder && node.children && node.children.length > 0 ? renderTree(node.children) : null}
         </ChatTreeItem>
@@ -2170,23 +2101,6 @@ const MUIChatHistory = () => {
                 onNodeSelect={handleTreeNodeSelect}
                 disableSelection={false}
                 className="chat-history-tree"
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  // Handle drop on root (move to no folder)
-                  const dragDataStr = e.dataTransfer.getData('application/ziya-node');
-                  if (dragDataStr) {
-                    const { nodeId: sourceNodeId, nodeType } = JSON.parse(dragDataStr);
-                    if (nodeType === 'conversation') {
-                      handleMoveConversation(sourceNodeId, null);
-                    } else if (nodeType === 'folder') {
-                      handleMoveFolder(sourceNodeId, null);
-                    }
-                  }
-                }}
               >
                 {renderTree(treeData)}
               </TreeView>
