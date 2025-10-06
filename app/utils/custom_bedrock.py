@@ -49,6 +49,7 @@ class CustomBedrockClient:
         self.last_extended_context_notification = None
         self.model_config = model_config or {}
         self.extended_context_manager = get_extended_context_manager()
+        self.throttled = False  # Track if we've hit throttling
         
         # Get the region from the client
         self.region = self.client.meta.region_name if hasattr(self.client, 'meta') else None
@@ -226,6 +227,18 @@ class CustomBedrockClient:
                         if ("ThrottlingException" in error_message or 
                             "Too many tokens" in error_message or
                             "rate limit" in error_message.lower()):
+                            # Mark as throttled and recreate client without boto3 retries
+                            if not self.throttled:
+                                self.throttled = True
+                                logger.info("🔄 THROTTLE_DETECTED: Disabling boto3 retries for subsequent attempts")
+                                from botocore.config import Config
+                                import boto3
+                                retry_config = Config(retries={'max_attempts': 1, 'mode': 'standard'})
+                                new_client = boto3.client('bedrock-runtime', region_name=self.region, config=retry_config)
+                                self.client = new_client
+                                self.original_invoke = new_client.invoke_model_with_response_stream
+                                if hasattr(new_client, 'invoke_model'):
+                                    self.original_invoke_model = new_client.invoke_model
                             # Don't retry here, let streaming_tool_executor handle throttling retries
                             raise
                         
