@@ -332,8 +332,9 @@ class StreamingToolExecutor:
                                         raise
                         
                         if is_rate_limit and retry_attempt < max_retries:
-                            # Exponential backoff: 2s, 4s, 8s, 16s, 32s (max >20s)
-                            delay = base_delay * (2 ** retry_attempt)
+                            # Exponential backoff with longer delays to allow token bucket refill
+                            # boto3 already did fast retries, so we need longer waits
+                            delay = base_delay * (2 ** retry_attempt) + 4  # Add 4s base to account for boto3 retries
                             logger.warning(f"Rate limit hit, retrying in {delay}s (attempt {retry_attempt + 1}/{max_retries + 1})")
                             await asyncio.sleep(delay)
                         else:
@@ -507,25 +508,25 @@ class StreamingToolExecutor:
                                     if hasattr(self, '_content_optimizer'):
                                         remaining = self._content_optimizer.flush_remaining()
                                         if remaining:
-                                            yield {
+                                            yield track_yield({
                                                 'type': 'text',
                                                 'content': remaining,
                                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                            }
+                                            })
                                     if content_buffer.strip():
-                                        yield {
+                                        yield track_yield({
                                             'type': 'text',
                                             'content': content_buffer,
                                             'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                        }
+                                        })
                                         content_buffer = ""
                                     
                                     # Send complete visualization block
-                                    yield {
+                                    yield track_yield({
                                         'type': 'text',
                                         'content': viz_buffer,
                                         'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                    }
+                                    })
                                     viz_buffer = ""
                                     in_viz_block = False
                                 continue
@@ -533,11 +534,11 @@ class StreamingToolExecutor:
                             # Use content optimizer to prevent mid-word splits
                             for optimized_chunk in self._content_optimizer.add_content(text):
                                 self._update_code_block_tracker(optimized_chunk, code_block_tracker)
-                                yield {
+                                yield track_yield({
                                     'type': 'text',
                                     'content': optimized_chunk,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                }
+                                })
                         elif delta.get('type') == 'input_json_delta':
                             # Find tool by index
                             tool_id = None
@@ -702,28 +703,28 @@ class StreamingToolExecutor:
                     elif chunk['type'] == 'message_stop':
                         # Flush any remaining content from buffers before stopping
                         if viz_buffer.strip():
-                            yield {
+                            yield track_yield({
                                 'type': 'text',
                                 'content': viz_buffer,
                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            }
+                            })
                         # Flush any remaining content from optimizer
                         if hasattr(self, '_content_optimizer'):
                             remaining = self._content_optimizer.flush_remaining()
                             if remaining:
                                 self._update_code_block_tracker(remaining, code_block_tracker)
-                                yield {
+                                yield track_yield({
                                     'type': 'text',
                                     'content': remaining,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                }
+                                })
                         if content_buffer.strip():
                             self._update_code_block_tracker(content_buffer, code_block_tracker)
-                            yield {
+                            yield track_yield({
                                 'type': 'text',
                                 'content': content_buffer,
                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            }
+                            })
                         
                         # Check if we ended mid-code-block and auto-continue
                         continuation_count = 0
