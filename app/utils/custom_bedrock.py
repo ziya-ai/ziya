@@ -219,19 +219,23 @@ class CustomBedrockClient:
                     except Exception as e:
                         error_message = str(e)
                         self.last_error = error_message
+                        logger.warning(f"🔄 INITIAL_ERROR: {error_message}")
                         
-                        # Check for throttling errors first and retry
+                        # Check for throttling errors - let higher level retry handle it
+                        # But keep timeout retries here since they need immediate retry
                         if ("ThrottlingException" in error_message or 
                             "Too many tokens" in error_message or
-                            "rate limit" in error_message.lower() or
-                            "timeout" in error_message.lower()):
-                            
-                            # Implement retry with exponential backoff
-                            max_retries = 3
+                            "rate limit" in error_message.lower()):
+                            # Don't retry here, let streaming_tool_executor handle throttling retries
+                            raise
+                        
+                        if "timeout" in error_message.lower():
+                            # Retry timeouts immediately with short delays
+                            max_retries = 2
                             for retry_attempt in range(max_retries):
-                                delays = [5, 10, 20]  # 5s, 10s, 20s
+                                delays = [1, 2]
                                 delay = delays[retry_attempt]
-                                logger.warning(f"🔄 THROTTLING_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
+                                logger.warning(f"🔄 TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
                                 
                                 import time
                                 time.sleep(delay)
@@ -239,17 +243,11 @@ class CustomBedrockClient:
                                 try:
                                     return self.original_invoke(**kwargs)
                                 except Exception as retry_error:
-                                    retry_error_str = str(retry_error)
-                                    if retry_attempt == max_retries - 1:  # Last attempt
-                                        logger.error(f"🔄 THROTTLING_RETRY: All {max_retries} retry attempts failed")
+                                    if retry_attempt == max_retries - 1:
+                                        logger.error(f"🔄 TIMEOUT_RETRY: All {max_retries} retry attempts failed")
                                         raise retry_error
-                                    elif not ("ThrottlingException" in retry_error_str or 
-                                            "Too many tokens" in retry_error_str or
-                                            "rate limit" in retry_error_str.lower() or
-                                            "timeout" in retry_error_str.lower()):
-                                        # Different error type, don't retry
+                                    elif "timeout" not in str(retry_error).lower():
                                         raise retry_error
-                                    # Continue retrying for throttling/timeout errors
                         
                         # Check if it's a context limit error
                         elif ("input length and `max_tokens` exceed context limit" in error_message or

@@ -425,11 +425,13 @@ export const sendPayload = async (
 
         // Process chunks as they arrive
         const processChunk = (chunk: string) => {
+            console.log('🔧 processChunk called with chunk length:', chunk.length);
             // Add chunk to buffer
             buffer += chunk;
             
             // Split by double newlines to get complete SSE messages
             const messages = buffer.split('\n\n');
+            console.log('📬 Split into', messages.length, 'messages, buffer remaining:', buffer.length);
             
             // Keep the last potentially incomplete message in buffer
             buffer = messages.pop() || '';
@@ -438,9 +440,12 @@ export const sendPayload = async (
             for (const sseMessage of messages) {
                 if (!sseMessage.trim()) continue;
 
+                console.log('📨 Processing SSE message, length:', sseMessage.length, 'starts with:', sseMessage.substring(0, 50));
+
                 // Check if it's an SSE data line
                 if (sseMessage.startsWith('data:')) {
                     const data = sseMessage.slice(5).trim();
+                    console.log('📊 SSE data extracted, length:', data.length, 'content:', data.substring(0, 100));
 
                     // Check if this chunk contains diff syntax and set the flag
                     if (!containsDiff && (
@@ -1002,6 +1007,7 @@ export const sendPayload = async (
 const readStream = async () => {
     try {
         while (true) {
+            let chunk = '';
             try {
                 if (signal.aborted) {
                     console.log("Stream aborted by user");
@@ -1010,7 +1016,9 @@ const readStream = async () => {
                     setIsStreaming(false);
                     return 'Response generation stopped by user.';
                 }
+                console.log('⏳ Waiting for next chunk from reader.read()...');
                 const { done, value } = await reader.read();
+                console.log('📨 Received from reader:', { done, valueLength: value?.length });
                 if (done) {
                     console.log("Stream read complete (done=true)");
                     // If the stream was aborted, don't process the final content
@@ -1025,7 +1033,8 @@ const readStream = async () => {
                     console.log("Stream read aborted due to error");
                     break;
                 }
-                const chunk = decoder.decode(value, { stream: true });
+                chunk = decoder.decode(value, { stream: true });
+                console.log('🔤 Decoded chunk length:', chunk.length);
                 if (!chunk) {
                     // Check if the stream was aborted during processing
                     if (isAborted) {
@@ -1101,9 +1110,15 @@ const readStream = async () => {
                     console.warn("Error checking for nested errors:", error);
                 }
 
+                console.log('📦 Processing chunk, length:', chunk.length, 'first 100 chars:', chunk.substring(0, 100));
                 processChunk(chunk);
+                console.log('✅ Chunk processed successfully');
             } catch (error) {
-                console.error('Error reading stream:', error);
+                console.error('❌ Error reading stream:', error);
+                console.error('Error type:', (error as any)?.constructor?.name);
+                console.error('Error message:', (error as any)?.message);
+                console.error('Error stack:', (error as any)?.stack);
+                console.error('Last chunk before error:', chunk?.substring(0, 200));
                 message.error('Stream reading error. Check JS console for details.');
                 errorOccurred = true;
                 removeStreamingConversation(conversationId);
@@ -1112,6 +1127,7 @@ const readStream = async () => {
             }
         }
     } catch (error) {
+        console.error('🔥 Outer catch - error type:', (error as any)?.constructor?.name, 'message:', (error as any)?.message);
         if (error instanceof DOMException && error.name === 'AbortError') return '';
         console.error('Unhandled Stream error in readStream:', { error });
         removeStreamingConversation(conversationId);
