@@ -332,7 +332,7 @@ class StreamingToolExecutor:
                 executed_tool_signatures = set()  # Track tool name + args to prevent duplicates
                 
                 # Timeout protection - use configured timeout from shell config
-                start_time = time.time()
+                last_activity_time = time.time()
                 from app.config.shell_config import DEFAULT_SHELL_CONFIG
                 chunk_timeout = int(os.environ.get('COMMAND_TIMEOUT', DEFAULT_SHELL_CONFIG["timeout"]))
 
@@ -341,14 +341,24 @@ class StreamingToolExecutor:
                 viz_buffer = ""  # Track potential visualization blocks
                 in_viz_block = False
                 
+                # Code block continuation tracking
+                code_block_tracker = {
+                    'in_block': False,
+                    'block_type': None,
+                    'accumulated_content': ''
+                }
+                
                 for event in response['body']:
-                    # Timeout protection
-                    if time.time() - start_time > chunk_timeout:
-                        logger.warning(f"🚨 STREAM TIMEOUT after {chunk_timeout}s - ending this iteration")
+                    # Timeout protection - only timeout if NO activity for chunk_timeout seconds
+                    if time.time() - last_activity_time > chunk_timeout:
+                        logger.warning(f"🚨 STREAM TIMEOUT after {chunk_timeout}s of inactivity - ending this iteration")
                         # Add timeout message to assistant text so model knows what happened
                         if not assistant_text.strip():
                             assistant_text = f"[Stream timeout after {chunk_timeout}s - no response received]"
                         break  # Break from chunk loop, but continue to next iteration
+                    
+                    # Reset activity timer on any event
+                    last_activity_time = time.time()
                         
                     chunk = json.loads(event['chunk']['bytes'])
 
@@ -501,6 +511,7 @@ class StreamingToolExecutor:
                             
                             # Use content optimizer to prevent mid-word splits
                             for optimized_chunk in self._content_optimizer.add_content(text):
+                                self._update_code_block_tracker(optimized_chunk, code_block_tracker)
                                 yield {
                                     'type': 'text',
                                     'content': optimized_chunk,
@@ -622,7 +633,6 @@ class StreamingToolExecutor:
                                     }
                                                     
                                     # Immediate flush to reduce delay
-                                    import asyncio
                                     await asyncio.sleep(0)
                                     
                                     tools_executed_this_iteration = True
@@ -680,17 +690,53 @@ class StreamingToolExecutor:
                         if hasattr(self, '_content_optimizer'):
                             remaining = self._content_optimizer.flush_remaining()
                             if remaining:
+                                self._update_code_block_tracker(remaining, code_block_tracker)
                                 yield {
                                     'type': 'text',
                                     'content': remaining,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                 }
                         if content_buffer.strip():
+                            self._update_code_block_tracker(content_buffer, code_block_tracker)
                             yield {
                                 'type': 'text',
                                 'content': content_buffer,
                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                             }
+                        
+                        # Check if we ended mid-code-block and auto-continue
+                        continuation_count = 0
+                        max_continuations = 3
+                        while code_block_tracker['in_block'] and continuation_count < max_continuations:
+                            continuation_count += 1
+                            logger.info(f"🔄 INCOMPLETE_BLOCK: Detected incomplete {code_block_tracker['block_type']} block, auto-continuing (attempt {continuation_count})")
+                            
+                            # Send heartbeat before continuation to keep connection alive
+                            yield {
+                                'type': 'heartbeat',
+                                'heartbeat': True,
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                            }
+                            
+                            continuation_had_content = False
+                            async for continuation_chunk in self._continue_incomplete_code_block(
+                                conversation, code_block_tracker, mcp_manager, iteration_start_time, assistant_text
+                            ):
+                                if continuation_chunk.get('content'):
+                                    continuation_had_content = True
+                                    self._update_code_block_tracker(continuation_chunk['content'], code_block_tracker)
+                                    assistant_text += continuation_chunk['content']
+                                    
+                                    if code_block_tracker['in_block']:
+                                        continuation_chunk['code_block_continuation'] = True
+                                        continuation_chunk['block_type'] = code_block_tracker['block_type']
+                                
+                                yield continuation_chunk
+                            
+                            if not continuation_had_content:
+                                logger.info("🔄 CONTINUATION: No content generated, stopping continuation attempts")
+                                break
+                        
                         # Just break out of chunk processing, handle completion logic below
                         break
 
@@ -801,3 +847,155 @@ class StreamingToolExecutor:
             except Exception as e:
                 yield {'type': 'error', 'content': f'Error: {e}'}
                 return
+
+    def _update_code_block_tracker(self, text: str, tracker: Dict[str, Any]) -> None:
+        """Update code block tracking state based on text content."""
+        if not text:
+            return
+            
+        lines = text.split('\n')
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('```'):
+                if not tracker['in_block']:
+                    block_type = stripped[3:].strip() or 'code'
+                    tracker['in_block'] = True
+                    tracker['block_type'] = block_type
+                    tracker['accumulated_content'] = line + '\n'
+                else:
+                    new_block_type = stripped[3:].strip() or 'code'
+                    if new_block_type == tracker['block_type']:
+                        tracker['in_block'] = False
+                        tracker['block_type'] = None
+                        tracker['accumulated_content'] = ''
+                    else:
+                        logger.info(f"🔄 UNCLOSED_BLOCK: Previous {tracker['block_type']} block was unclosed, starting new {new_block_type} block")
+                        tracker['in_block'] = True
+                        tracker['block_type'] = new_block_type
+                        tracker['accumulated_content'] = line + '\n'
+            elif tracker['in_block']:
+                tracker['accumulated_content'] += line + '\n'
+
+    async def _continue_incomplete_code_block(
+        self, 
+        conversation: List[Dict[str, Any]], 
+        code_block_tracker: Dict[str, Any],
+        mcp_manager,
+        start_time: float,
+        assistant_text: str
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Continue an incomplete code block by making a new API call."""
+        try:
+            block_type = code_block_tracker['block_type']
+            continuation_prompt = f"Continue ONLY the incomplete {block_type} code block from where it left off. Output ONLY the continuation code/data with no markdown fences, explanations, or commentary."
+            
+            continuation_conversation = conversation.copy()
+            
+            # Remove incomplete last line
+            if assistant_text.strip():
+                lines = assistant_text.split('\n')
+                if len(lines) > 1:
+                    last_line = lines[-1].strip()
+                    if not last_line or ('```' in last_line and not last_line.endswith('```')):
+                        cleaned_text = '\n'.join(lines[:-1])
+                        logger.info(f"🔄 CONTEXT_CLEANUP: Removed incomplete last line: '{last_line}'")
+                    else:
+                        cleaned_text = assistant_text
+                    
+                    if continuation_conversation and continuation_conversation[-1].get('role') == 'assistant':
+                        continuation_conversation[-1]['content'] = cleaned_text
+                    else:
+                        continuation_conversation.append({"role": "assistant", "content": cleaned_text})
+            
+            continuation_conversation.append({"role": "user", "content": continuation_prompt})
+            
+            body = {
+                "messages": continuation_conversation,
+                "max_tokens": 2000,
+                "temperature": 0.1,
+                "anthropic_version": "bedrock-2023-05-31"
+            }
+            
+            logger.info(f"🔄 CONTINUATION: Making API call to continue {block_type} block")
+            
+            # Yield initial heartbeat
+            yield {
+                'type': 'heartbeat',
+                'heartbeat': True,
+                'timestamp': f"{int((time.time() - start_time) * 1000)}ms"
+            }
+            
+            # Make the Bedrock call - this returns immediately with a stream
+            response = self.bedrock.invoke_model_with_response_stream(
+                modelId=self.model_id,
+                body=json.dumps(body)
+            )
+            
+            # Send heartbeat after getting response object (before first chunk)
+            yield {
+                'type': 'heartbeat',
+                'heartbeat': True,
+                'timestamp': f"{int((time.time() - start_time) * 1000)}ms"
+            }
+            
+            accumulated_start = ""
+            header_filtered = False
+            chunk_count = 0
+            
+            for event in response['body']:
+                # Send heartbeat every 10 chunks to keep connection alive
+                chunk_count += 1
+                if chunk_count % 10 == 0:
+                    yield {
+                        'type': 'heartbeat',
+                        'heartbeat': True,
+                        'timestamp': f"{int((time.time() - start_time) * 1000)}ms"
+                    }
+                
+                chunk = json.loads(event['chunk']['bytes'])
+                
+                if chunk['type'] == 'content_block_delta':
+                    delta = chunk.get('delta', {})
+                    if delta.get('type') == 'text_delta':
+                        text = delta.get('text', '')
+                        
+                        if not header_filtered:
+                            accumulated_start += text
+                            
+                            if '\n' in accumulated_start or len(accumulated_start) > 20:
+                                if accumulated_start.strip().startswith('```'):
+                                    lines = accumulated_start.split('\n', 1)
+                                    if len(lines) > 1:
+                                        remaining_text = lines[1]
+                                        header_type = lines[0].strip()
+                                        logger.info(f"🔄 FILTERED: Removed redundant {header_type} from continuation")
+                                    else:
+                                        remaining_text = ""
+                                    
+                                    if remaining_text:
+                                        yield {
+                                            'type': 'text',
+                                            'content': remaining_text,
+                                            'timestamp': f"{int((time.time() - start_time) * 1000)}ms",
+                                            'continuation': True
+                                        }
+                                else:
+                                    yield {
+                                        'type': 'text',
+                                        'content': accumulated_start,
+                                        'timestamp': f"{int((time.time() - start_time) * 1000)}ms",
+                                        'continuation': True
+                                    }
+                                
+                                header_filtered = True
+                        else:
+                            if text:
+                                yield {
+                                    'type': 'text',
+                                    'content': text,
+                                    'timestamp': f"{int((time.time() - start_time) * 1000)}ms",
+                                    'continuation': True
+                                }
+        
+        except Exception as e:
+            logger.error(f"🔄 CONTINUATION: Error in continuation: {e}")
