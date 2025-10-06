@@ -19,22 +19,51 @@ While instrumenting for Phase 1 metrics, discovered a **backend-only issue** vis
 [conclusion text DUPLICATE]
 ```
 
-## Why This Matters
-This is **not** a frontend issue - it's happening in the backend before data even leaves the server. Must fix this before continuing with frontend streaming investigation.
+## Root Cause Analysis
 
-## Hypothesis
-The iteration/continuation logic in `streaming_tool_executor.py` is:
-1. Not properly detecting when model is done
-2. Continuing iterations when it shouldn't
-3. Re-sending already-generated content
+### Bug Found in `_update_code_block_tracker`
+The code block tracker was checking if closing ` ``` ` had the **same type** as opening:
+```python
+if new_block_type == tracker['block_type']:  # BUG!
+    tracker['in_block'] = False
+```
 
-## Investigation Plan
-1. Check iteration loop termination conditions
-2. Check `message_stop` handling
-3. Check `stream_end` logic
-4. Look for duplicate content buffering/flushing
+**Problem**: Closing ` ``` ` often has no type, defaults to `'code'`, which doesn't match `'vega-lite'` or `'mermaid'`.
+
+**Result**:
+1. Opens: ` ```vega-lite ` → `in_block=True`, `block_type='vega-lite'`
+2. Closes: ` ``` ` → `new_block_type='code'` (default)
+3. `'code' != 'vega-lite'` → Thinks it's a NEW block!
+4. Triggers continuation to "complete" the "incomplete" block
+5. Model re-generates content → duplicates
+
+### Fix Applied
+Changed logic to: **any ` ``` ` closes the current block**, regardless of type.
+
+## Testing Required
+
+### Test Case
+Run the same request that caused duplication:
+```
+"create 10+ detailed visualizations summarizing this project structure"
+```
+
+### Success Criteria
+- [ ] No duplicate visualizations in output
+- [ ] No duplicate conclusion text
+- [ ] Content appears in linear order (9, 10, 11, 12, 13)
+- [ ] Server log shows single `STREAM_END` with no continuation
+- [ ] No `INCOMPLETE_BLOCK` or `UNCLOSED_BLOCK` warnings
+
+### If Test Fails
+- Hypothesis was wrong
+- Need to investigate other causes:
+  - Model itself repeating
+  - Iteration logic issue
+  - Buffer flushing problem
 
 ## Current Status
-- Paused Phase 1 metrics collection
-- Investigating backend iteration logic
-- Will resume Phase 1 after fixing duplication
+- ⏸️ Paused Phase 1 metrics collection
+- 🔧 Fix applied but NOT verified
+- 🧪 Ready for testing
+- Will resume Phase 1 after verification
