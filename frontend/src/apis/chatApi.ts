@@ -1005,6 +1005,14 @@ export const sendPayload = async (
         }
 
 const readStream = async () => {
+    // Metrics collection for debugging
+    const metrics = {
+        chunks_received: 0,
+        bytes_received: 0,
+        chunk_sizes: [] as number[],
+        start_time: Date.now()
+    };
+
     try {
         while (true) {
             let chunk = '';
@@ -1035,6 +1043,21 @@ const readStream = async () => {
                 }
                 chunk = decoder.decode(value, { stream: true });
                 console.log('🔤 Decoded chunk length:', chunk.length);
+                
+                // Track metrics
+                metrics.chunks_received++;
+                metrics.bytes_received += chunk.length;
+                metrics.chunk_sizes.push(chunk.length);
+                
+                if (metrics.chunks_received % 100 === 0) {
+                    console.log('📊 Streaming metrics:', {
+                        chunks: metrics.chunks_received,
+                        bytes: metrics.bytes_received,
+                        avg_chunk: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
+                        elapsed_ms: Date.now() - metrics.start_time
+                    });
+                }
+                
                 if (!chunk) {
                     // Check if the stream was aborted during processing
                     if (isAborted) {
@@ -1230,6 +1253,19 @@ try {
             role: 'assistant',
             content: currentContent
         };
+
+        // Log final streaming metrics
+        console.log('📊 Final streaming metrics:', {
+            total_chunks: metrics.chunks_received,
+            total_bytes: metrics.bytes_received,
+            avg_chunk_size: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
+            min_chunk: Math.min(...metrics.chunk_sizes),
+            max_chunk: Math.max(...metrics.chunk_sizes),
+            chunks_under_10: metrics.chunk_sizes.filter(s => s < 10).length,
+            duration_ms: Date.now() - metrics.start_time,
+            content_length: currentContent.length,
+            content_vs_bytes_ratio: (currentContent.length / metrics.bytes_received * 100).toFixed(1) + '%'
+        });
 
         const isNonCurrentConversation = !isStreamingToCurrentConversation;
         addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
