@@ -141,6 +141,27 @@ class StreamingToolExecutor:
                 return None
 
     async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        # Initialize streaming metrics
+        stream_metrics = {
+            'events_sent': 0,
+            'bytes_sent': 0,
+            'chunk_sizes': [],
+            'start_time': time.time()
+        }
+        
+        def track_yield(event_data):
+            """Track metrics for yielded events"""
+            chunk_size = len(json.dumps(event_data))
+            stream_metrics['events_sent'] += 1
+            stream_metrics['bytes_sent'] += chunk_size
+            stream_metrics['chunk_sizes'].append(chunk_size)
+            
+            if stream_metrics['events_sent'] % 100 == 0:
+                logger.info(f"📊 Stream metrics: {stream_metrics['events_sent']} events, "
+                           f"{stream_metrics['bytes_sent']} bytes, "
+                           f"avg={stream_metrics['bytes_sent']/stream_metrics['events_sent']:.2f}")
+            return event_data
+        
         # Extended context handling for sonnet4.5
         if conversation_id:
             logger.info(f"🔍 EXTENDED_CONTEXT: Processing conversation_id = {conversation_id}")
@@ -370,17 +391,17 @@ class StreamingToolExecutor:
                             if hasattr(self, '_content_optimizer'):
                                 remaining = self._content_optimizer.flush_remaining()
                                 if remaining:
-                                    yield {
+                                    yield track_yield({
                                         'type': 'text',
                                         'content': remaining,
                                         'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                    }
+                                    })
                             if content_buffer.strip():
-                                yield {
+                                yield track_yield({
                                     'type': 'text',
                                     'content': content_buffer,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                }
+                                })
                                 content_buffer = ""
                             
                             tool_id = content_block.get('id')
@@ -835,6 +856,13 @@ class StreamingToolExecutor:
                             continue
                         else:
                             logger.info(f"🔍 STREAM_END: Model produced text without tools, ending stream")
+                            # Log final metrics
+                            logger.info(f"📊 Final stream metrics: events={stream_metrics['events_sent']}, "
+                                       f"bytes={stream_metrics['bytes_sent']}, "
+                                       f"avg_size={stream_metrics['bytes_sent']/max(stream_metrics['events_sent'],1):.2f}, "
+                                       f"min={min(stream_metrics['chunk_sizes']) if stream_metrics['chunk_sizes'] else 0}, "
+                                       f"max={max(stream_metrics['chunk_sizes']) if stream_metrics['chunk_sizes'] else 0}, "
+                                       f"duration={time.time()-stream_metrics['start_time']:.2f}s")
                             yield {'type': 'stream_end'}
                             break
                     elif iteration >= 5:  # Safety: end after 5 iterations total
