@@ -887,21 +887,17 @@ class StreamingToolExecutor:
             stripped = line.strip()
             if stripped.startswith('```'):
                 if not tracker['in_block']:
+                    # Opening a new block
                     block_type = stripped[3:].strip() or 'code'
                     tracker['in_block'] = True
                     tracker['block_type'] = block_type
                     tracker['accumulated_content'] = line + '\n'
                 else:
-                    new_block_type = stripped[3:].strip() or 'code'
-                    if new_block_type == tracker['block_type']:
-                        tracker['in_block'] = False
-                        tracker['block_type'] = None
-                        tracker['accumulated_content'] = ''
-                    else:
-                        logger.info(f"🔄 UNCLOSED_BLOCK: Previous {tracker['block_type']} block was unclosed, starting new {new_block_type} block")
-                        tracker['in_block'] = True
-                        tracker['block_type'] = new_block_type
-                        tracker['accumulated_content'] = line + '\n'
+                    # Closing the current block - any ``` closes it
+                    # Don't require type to match since closing ``` often has no type
+                    tracker['in_block'] = False
+                    tracker['block_type'] = None
+                    tracker['accumulated_content'] = ''
             elif tracker['in_block']:
                 tracker['accumulated_content'] += line + '\n'
 
