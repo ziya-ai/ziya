@@ -1171,6 +1171,20 @@ const readStream = async () => {
         } catch (error) {
             console.warn("Error flushing decoder:", error);
         }
+        
+        // Log final streaming metrics
+        console.log('📊 Final streaming metrics:', {
+            total_chunks: metrics.chunks_received,
+            total_bytes: metrics.bytes_received,
+            avg_chunk_size: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
+            min_chunk: Math.min(...metrics.chunk_sizes),
+            max_chunk: Math.max(...metrics.chunk_sizes),
+            chunks_under_10: metrics.chunk_sizes.filter(s => s < 10).length,
+            duration_ms: Date.now() - metrics.start_time,
+            content_length: currentContent.length,
+            content_vs_bytes_ratio: (currentContent.length / metrics.bytes_received * 100).toFixed(1) + '%'
+        });
+        
         setIsStreaming(false);
         return !errorOccurred && currentContent ? currentContent : '';
     }
@@ -1253,19 +1267,6 @@ try {
             role: 'assistant',
             content: currentContent
         };
-
-        // Log final streaming metrics
-        console.log('📊 Final streaming metrics:', {
-            total_chunks: metrics.chunks_received,
-            total_bytes: metrics.bytes_received,
-            avg_chunk_size: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
-            min_chunk: Math.min(...metrics.chunk_sizes),
-            max_chunk: Math.max(...metrics.chunk_sizes),
-            chunks_under_10: metrics.chunk_sizes.filter(s => s < 10).length,
-            duration_ms: Date.now() - metrics.start_time,
-            content_length: currentContent.length,
-            content_vs_bytes_ratio: (currentContent.length / metrics.bytes_received * 100).toFixed(1) + '%'
-        });
 
         const isNonCurrentConversation = !isStreamingToCurrentConversation;
         addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
