@@ -1142,7 +1142,20 @@ const readStream = async () => {
                 console.error('Error message:', (error as any)?.message);
                 console.error('Error stack:', (error as any)?.stack);
                 console.error('Last chunk before error:', chunk?.substring(0, 200));
-                message.error('Stream reading error. Check JS console for details.');
+                
+                // Save partial content before aborting
+                if (currentContent && currentContent.trim()) {
+                    const partialMessage: Message = {
+                        role: 'assistant',
+                        content: currentContent + '\n\n[Stream interrupted - partial response saved]'
+                    };
+                    addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
+                    console.log('💾 Saved partial content on abort:', currentContent.length, 'characters');
+                    message.warning(`Stream interrupted. Saved ${currentContent.length} characters of partial response.`);
+                } else {
+                    message.error('Stream reading error. Check JS console for details.');
+                }
+                
                 errorOccurred = true;
                 removeStreamingConversation(conversationId);
                 setIsStreaming(false);
