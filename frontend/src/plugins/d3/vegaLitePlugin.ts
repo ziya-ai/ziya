@@ -620,6 +620,45 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       });
       
+      // Fix 3.7: Convert problematic log scales to symlog
+      const fixLogScales = (encoding: any, dataValues: any[]) => {
+        if (!encoding || !dataValues || dataValues.length === 0) return;
+        
+        ['x', 'y'].forEach(channel => {
+          const channelSpec = encoding[channel];
+          if (channelSpec?.field && channelSpec?.type === 'quantitative' && channelSpec?.scale?.type === 'log') {
+            const values = dataValues.map(d => d[channelSpec.field]).filter(v => typeof v === 'number' && !isNaN(v));
+            const hasZeroOrNegative = values.some(v => v <= 0);
+            const range = Math.max(...values) / Math.min(...values.filter(v => v > 0));
+            
+            // Convert log to symlog if there are zero/negative values, or use linear if range is small
+            if (hasZeroOrNegative) {
+              channelSpec.scale.type = 'symlog';
+              console.log(`🔧 VEGA-PREPROCESS: Converted ${channel} log scale to symlog (has zero/negative values)`);
+            } else if (range < 100) {
+              delete channelSpec.scale.type;
+              console.log(`🔧 VEGA-PREPROCESS: Removed ${channel} log scale (range too small: ${range.toFixed(1)}x)`);
+            }
+          }
+        });
+      };
+
+      if (spec.data?.values) {
+        fixLogScales(spec.encoding, spec.data.values);
+      }
+      if (spec.hconcat) spec.hconcat.forEach((s: any) => {
+        const dataValues = s.data?.values || spec.data?.values;
+        if (dataValues) fixLogScales(s.encoding, dataValues);
+      });
+      if (spec.vconcat) spec.vconcat.forEach((s: any) => {
+        const dataValues = s.data?.values || spec.data?.values;
+        if (dataValues) fixLogScales(s.encoding, dataValues);
+      });
+      if (spec.layer) spec.layer.forEach((s: any) => {
+        const dataValues = s.data?.values || spec.data?.values;
+        if (dataValues) fixLogScales(s.encoding, dataValues);
+      });
+      
       // Fix 4: Ensure schema exists
       if (!spec.$schema) {
         spec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
