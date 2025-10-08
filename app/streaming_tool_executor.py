@@ -703,6 +703,7 @@ class StreamingToolExecutor:
                     elif chunk['type'] == 'message_stop':
                         # Flush any remaining content from buffers before stopping
                         if viz_buffer.strip():
+                            self._update_code_block_tracker(viz_buffer, code_block_tracker)
                             yield track_yield({
                                 'type': 'text',
                                 'content': viz_buffer,
@@ -728,7 +729,12 @@ class StreamingToolExecutor:
                         
                         # Check if we ended mid-code-block and auto-continue
                         continuation_count = 0
-                        max_continuations = 3
+                        max_continuations = 10  # Increased for large diagrams/code blocks
+                        
+                        # Log tracker state before checking
+                        backtick_count = assistant_text.count('```')
+                        logger.info(f"🔍 TRACKER_STATE: in_block={code_block_tracker['in_block']}, block_type={code_block_tracker.get('block_type')}, backtick_count={backtick_count}, last_50_chars='{assistant_text[-50:]}'")
+                        
                         while code_block_tracker['in_block'] and continuation_count < max_continuations:
                             continuation_count += 1
                             logger.info(f"🔄 INCOMPLETE_BLOCK: Detected incomplete {code_block_tracker['block_type']} block, auto-continuing (attempt {continuation_count})")
@@ -758,6 +764,9 @@ class StreamingToolExecutor:
                             if not continuation_had_content:
                                 logger.info("🔄 CONTINUATION: No content generated, stopping continuation attempts")
                                 break
+                            
+                            # Log tracker state after continuation
+                            logger.info(f"🔄 CONTINUATION_RESULT: After attempt {continuation_count}, in_block={code_block_tracker['in_block']}, had_content={continuation_had_content}")
                         
                         # Just break out of chunk processing, handle completion logic below
                         break
@@ -847,6 +856,10 @@ class StreamingToolExecutor:
                     
                     # No tools executed - check if we should end the stream
                     if assistant_text.strip():
+                        # Check if code block is still incomplete
+                        if code_block_tracker.get('in_block'):
+                            logger.warning(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still incomplete after max continuations, ending stream anyway")
+                        
                         # Check if the text suggests the model is about to make a tool call
                         # Only check the last 200 characters to avoid issues with long accumulated text
                         text_end = assistant_text[-200:].lower().strip()
@@ -892,12 +905,14 @@ class StreamingToolExecutor:
                     tracker['in_block'] = True
                     tracker['block_type'] = block_type
                     tracker['accumulated_content'] = line + '\n'
+                    logger.debug(f"🔍 TRACKER: Opened {block_type} block")
                 else:
                     # Closing the current block - any ``` closes it
                     # Don't require type to match since closing ``` often has no type
                     tracker['in_block'] = False
                     tracker['block_type'] = None
                     tracker['accumulated_content'] = ''
+                    logger.debug(f"🔍 TRACKER: Closed block")
             elif tracker['in_block']:
                 tracker['accumulated_content'] += line + '\n'
 
@@ -912,7 +927,7 @@ class StreamingToolExecutor:
         """Continue an incomplete code block by making a new API call."""
         try:
             block_type = code_block_tracker['block_type']
-            continuation_prompt = f"Continue ONLY the incomplete {block_type} code block from where it left off. Output ONLY the continuation code/data with no markdown fences, explanations, or commentary."
+            continuation_prompt = f"Continue the incomplete {block_type} code block from where it left off and close it with ```. Output ONLY the continuation of the code block, no explanations."
             
             continuation_conversation = conversation.copy()
             
@@ -928,9 +943,10 @@ class StreamingToolExecutor:
                         cleaned_text = assistant_text
                     
                     if continuation_conversation and continuation_conversation[-1].get('role') == 'assistant':
-                        continuation_conversation[-1]['content'] = cleaned_text
+                        # Update the last assistant message with cleaned text in proper format
+                        continuation_conversation[-1]['content'] = [{"type": "text", "text": cleaned_text}]
                     else:
-                        continuation_conversation.append({"role": "assistant", "content": cleaned_text})
+                        continuation_conversation.append({"role": "assistant", "content": [{"type": "text", "text": cleaned_text}]})
             
             continuation_conversation.append({"role": "user", "content": continuation_prompt})
             
@@ -991,7 +1007,7 @@ class StreamingToolExecutor:
                                 if accumulated_start.strip().startswith('```'):
                                     lines = accumulated_start.split('\n', 1)
                                     if len(lines) > 1:
-                                        remaining_text = lines[1]
+                                        remaining_text = '\n' + lines[1]  # Preserve the newline
                                         header_type = lines[0].strip()
                                         logger.info(f"🔄 FILTERED: Removed redundant {header_type} from continuation")
                                     else:

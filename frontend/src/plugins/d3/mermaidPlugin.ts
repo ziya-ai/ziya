@@ -214,7 +214,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             themeVariables: isDarkMode ? {
                 // High contrast dark theme
                 primaryColor: '#88c0d0',
-                primaryTextColor: '#ffffff',
+                primaryTextColor: '#000000', // Use black text by default
                 primaryBorderColor: '#88c0d0',
                 lineColor: '#88c0d0',
                 secondaryColor: '#5e81ac',
@@ -429,8 +429,58 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             });
         };
 
+        // Helper function to detect light backgrounds
+        const isLightBackground = (color: string): boolean => {
+            if (!color || color === 'none' || color === 'transparent') return false;
+            
+            // Parse color to RGB values
+            let r = 0, g = 0, b = 0;
+            
+            // Handle hex format (#ff9999)
+            const hexMatch = color.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+            if (hexMatch) {
+                r = parseInt(hexMatch[1], 16);
+                g = parseInt(hexMatch[2], 16);
+                b = parseInt(hexMatch[3], 16);
+            }
+            // Handle rgb() format (rgb(255, 153, 153))
+            else {
+                const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+                if (rgbMatch) {
+                    r = parseInt(rgbMatch[1]);
+                    g = parseInt(rgbMatch[2]);
+                    b = parseInt(rgbMatch[3]);
+                } else {
+                    console.log(`🔍 COLOR-PARSE: Could not parse color format: ${color}`);
+                    return false;
+                }
+            }
+            
+            // Calculate relative luminance using proper sRGB formula
+            const getLuminanceComponent = (colorValue: number) => {
+                const normalized = colorValue / 255;
+                return normalized <= 0.03928 
+                    ? normalized / 12.92 
+                    : Math.pow((normalized + 0.055) / 1.055, 2.4);
+            };
+            
+            const rLum = getLuminanceComponent(r);
+            const gLum = getLuminanceComponent(g);
+            const bLum = getLuminanceComponent(b);
+            
+            const luminance = 0.2126 * rLum + 0.7152 * gLum + 0.0722 * bLum;
+            
+            console.log(`🔍 LUMINANCE-CALC: Color ${color} -> RGB(${r},${g},${b}) -> Luminance: ${luminance.toFixed(3)}`);
+            
+            // Use a threshold where anything above 0.4 luminance is considered light
+            return luminance > 0.4;
+        };
+        
         // Enhanced function to improve text visibility in dark mode
         const fixTextVisibilityForClassDef = (svgElement: SVGElement) => {
+            if (isDarkMode) {
+                console.log('🔍 DEBUG: fixTextVisibilityForClassDef starting in dark mode');
+            }
             console.log('🔍 FIXING TEXT VISIBILITY: Starting classDef text visibility fix');
             
             // Find all text elements
@@ -454,55 +504,26 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     if (backgroundShape) {
                         const fill = backgroundShape.getAttribute('fill');
                         console.log(`Text "${textContent}" has background fill: ${fill}`);
+                        const currentTextFill = textEl.getAttribute('fill');
+                        console.log(`Text "${textContent}" current fill: ${currentTextFill}`);
                         
                         if (fill && isLightBackground(fill)) {
                             console.log(`🔧 FIXING: Setting black text for "${textContent}" on light background ${fill}`);
                             textEl.setAttribute('fill', '#000000');
-                            textEl.style.fill = '#000000';
+                            (textEl as SVGElement).style.fill = '#000000';
                         }
                     }
                 }
             });
         };
-
-        // Helper function to detect light backgrounds
-        const isLightBackground = (color: string): boolean => {
-            if (!color || color === 'none' || color === 'transparent') return false;
-            
-            // Handle the specific problematic colors from classDef
-            const lightColors = [
-                '#e3f2fd', '#e1f5fe', // Light blue variants
-                '#e8f5e8', '#f3e5f5', // Light green/purple variants  
-                '#fff3e0', '#fce4ec'  // Light orange/pink variants
-            ];
-            
-            const normalizedColor = color.toLowerCase();
-            if (lightColors.includes(normalizedColor)) {
-                return true;
-            }
-            
-            // Convert hex to RGB for luminance calculation
-            const hexToRgb = (hex: string) => {
-                const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-                return result ? {
-                    r: parseInt(result[1], 16),
-                    g: parseInt(result[2], 16),
-                    b: parseInt(result[3], 16)
-                } : null;
-            };
-            
-            const rgb = hexToRgb(color);
-            if (!rgb) return false;
-            
-            // Calculate luminance - if > 0.6, it's a light background
-            const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-            return luminance > 0.6;
-        };
-
+        
         // Enhanced function to improve text visibility in dark mode
         const enhanceDarkModeTextVisibility = (svgElement: SVGElement) => {
+            if (isDarkMode) {
+            }
             // Get all text elements
             const textElements = svgElement.querySelectorAll('text');
+            console.log(`enhanceDarkModeTextVisibility: Found ${textElements.length} text elements`);
             textElements.forEach(textEl => {
                 // Find the parent node to get its styling context
                 let parentNode = textEl.parentElement;
@@ -519,10 +540,14 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
                         // If we have a stroke color, use it for text (it's usually darker/more saturated)
                         if (stroke && stroke !== 'none' && stroke !== '#333' && stroke !== '#333333') {
+                            console.log(`🔧 DEBUG: Using stroke color ${stroke} for text: "${textEl.textContent}"`);
                             textEl.setAttribute('fill', stroke);
                         } else if (fill && fill !== 'none') {
+                            const currentFill = textEl.getAttribute('fill');
+                            console.log(`🔧 DEBUG: Text "${textEl.textContent}" - current: ${currentFill}, background: ${fill}`);
                             // If no good stroke, derive optimal contrasting color from fill
                             const contrastColor = getTextContrastColor(fill);
+                            console.log(`🔧 DEBUG: Calculated contrast color: ${contrastColor} for background: ${fill}`);
                             textEl.setAttribute('fill', contrastColor);
                         } else {
                             // Fallback to high contrast color
@@ -535,9 +560,42 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             // Special handling for edge labels and other floating text
             svgElement.querySelectorAll('.edgeLabel text').forEach(textEl => {
                 const currentFill = textEl.getAttribute('fill');
-                // If text is white or very light, make it more visible
-                if (!currentFill || currentFill === '#ffffff' || currentFill === 'white' || currentFill === '#eceff4') {
-                    textEl.setAttribute('fill', '#000000');
+            });
+
+            // Special handling for Gantt charts - fix text visibility with proper contrast
+            const fixGanttTextContrast = (textEl: Element) => {
+                const svgTextEl = textEl as SVGElement;
+                
+                // Find the background color by looking at parent elements or sibling shapes
+                let backgroundColor = '#ffffff'; // Default to white
+                
+                // Check parent group for background rectangles
+                const parentGroup = textEl.closest('g');
+                if (parentGroup) {
+                    const backgroundRect = parentGroup.querySelector('rect');
+                    if (backgroundRect) {
+                        const fill = backgroundRect.getAttribute('fill');
+                        const computedFill = window.getComputedStyle(backgroundRect).fill;
+                        backgroundColor = fill || computedFill || backgroundColor;
+                    }
+                }
+                
+                // Get optimal contrasting color
+                const textColor = getOptimalTextColor(backgroundColor);
+                console.log(`🔍 GANTT-CONTRAST: Setting text color ${textColor} for background ${backgroundColor}`);
+                
+                svgTextEl.setAttribute('fill', textColor);
+                svgTextEl.style.setProperty('fill', textColor, 'important');
+            };
+            
+            // Apply contrast fixes to Gantt-specific elements
+            svgElement.querySelectorAll('.section0, .section1, .section2, .section3').forEach(fixGanttTextContrast);
+            svgElement.querySelectorAll('g.tick text, .taskText, .sectionTitle, .grid .tick text').forEach(fixGanttTextContrast);
+            
+            // Handle axis text and dates specifically
+            svgElement.querySelectorAll('text').forEach(textEl => {
+                if (textEl.textContent?.match(/\d{4}-\d{2}-\d{2}/) || textEl.closest('.grid')) {
+                    fixGanttTextContrast(textEl);
                 }
             });
 
@@ -624,12 +682,58 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             });
             applyCustomStyles(svgElement);
         }
-
         // CRITICAL: Add a delayed fix to ensure text visibility is applied after all other processing
         setTimeout(() => {
             console.log('🔍 DELAYED TEXT FIX: Applying final text visibility fixes');
+            
+            // SIMPLE APPROACH: Find all light-colored rectangles and fix text within them
+            const allRects = svgElement.querySelectorAll('rect');
+            console.log(`🔧 SIMPLE-FIX: Found ${allRects.length} rectangles to check`);
+            
+            allRects.forEach((rect, index) => {
+                const fill = rect.getAttribute('fill');
+                const computedFill = window.getComputedStyle(rect).fill;
+                const actualColor = computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)' ? computedFill : fill;
+                
+                if (actualColor && isLightBackground(actualColor)) {
+                    console.log(`🔧 SIMPLE-FIX: Found light background rect ${index}: ${actualColor}`);
+                    
+                    // Find the parent group and fix all text within it
+                    const parentGroup = rect.closest('g');
+                    if (parentGroup) {
+                        const textElements = parentGroup.querySelectorAll('div, span');
+                        console.log(`🔧 SIMPLE-FIX: Found ${textElements.length} text elements in this group`);
+                        
+                        textElements.forEach(textEl => {
+                            console.log(`🔧 SIMPLE-FIX: Setting black text for "${textEl.textContent}" on light background ${actualColor}`);
+                            (textEl as HTMLElement).style.setProperty('color', '#000000', 'important');
+                        });
+                    }
+                }
+            });
+            
             const allTextElements = svgElement.querySelectorAll('text');
             allTextElements.forEach(textEl => {
+                // Special handling for Gantt charts with proper contrast detection
+                const isGanttText = textEl.closest('.grid') || 
+                                  textEl.textContent?.match(/\d{4}-\d{2}-\d{2}/) ||
+                                  ['section0', 'section1', 'section2', 'section3'].some(cls => 
+                                      textEl.classList.contains(cls) || textEl.parentElement?.classList.contains(cls));
+                
+                if (isGanttText) {
+                    // Find background and set appropriate contrast
+                    let bgColor = '#ffffff';
+                    const parentGroup = textEl.closest('g');
+                    if (parentGroup) {
+                        const rect = parentGroup.querySelector('rect');
+                        bgColor = rect?.getAttribute('fill') || window.getComputedStyle(rect || textEl).backgroundColor || bgColor;
+                    }
+                    const contrastColor = getOptimalTextColor(bgColor);
+                    textEl.setAttribute('fill', contrastColor);
+                    (textEl as SVGElement).style.setProperty('fill', contrastColor, 'important');
+                    return; // Skip further processing for Gantt text
+                }
+                
                 const parentGroup = textEl.closest('g.node, g.cluster');
                 if (parentGroup) {
                     const backgroundShape = parentGroup.querySelector('rect, polygon, circle, path');
@@ -638,6 +742,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                         if (fill && isLightBackground(fill)) {
                             console.log(`🔧 DELAYED FIX: Setting black text for light background ${fill}`);
                             textEl.setAttribute('fill', '#000000');
+                            console.log(`🔧 DEBUG: Final text color set to black for "${textEl.textContent}" on ${fill}`);
                             (textEl as SVGElement).style.setProperty('fill', '#000000', 'important');
                         }
                     }
@@ -725,13 +830,14 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                                 const computedFill = window.getComputedStyle(shape).fill;
                                 console.log(`    Shape ${shape.tagName}: fill="${fill}" computed="${computedFill}"`);
 
-                                if (fill && fill !== 'none' && fill !== 'transparent') {
-                                    backgroundColor = fill;
+                                // CRITICAL FIX: Use computed style instead of fill attribute for custom colors
+                                if (computedFill && computedFill !== 'none' && computedFill !== 'transparent' && computedFill !== 'rgb(0, 0, 0)') {
+                                    backgroundColor = computedFill;
                                     console.log(`  Found SVG background: ${backgroundColor}`);
                                     break;
-                                } else if (computedFill && computedFill !== 'none' && computedFill !== 'transparent' && computedFill !== 'rgb(0, 0, 0)') {
-                                    backgroundColor = computedFill;
-                                    console.log(`  Found computed SVG background: ${backgroundColor}`);
+                                } else if (fill && fill !== 'none' && fill !== 'transparent') {
+                                    backgroundColor = fill;
+                                    console.log(`  Found fallback SVG background: ${backgroundColor}`);
                                     break;
                                 }
                             }
@@ -767,10 +873,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     if (backgroundColor) {
                         elementsWithBackground++;
                         console.log(`  Background found: ${backgroundColor}`);
-                        const isProblematic = isProblematicBackground(backgroundColor);
-                        console.log(`  Is problematic: ${isProblematic}`);
+                        const isLight = isLightBackground(backgroundColor);
+                        console.log(`  Is light background: ${isLight}`);
 
-                        if (isProblematic) {
+                        if (isLight) {
                             const contrastRatio = calculateContrastRatio(textColor, backgroundColor);
                             console.log(`  Contrast ratio: ${contrastRatio.toFixed(2)}`);
 
@@ -1073,20 +1179,24 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                             svgElement.querySelectorAll('.cluster rect').forEach(el => {
                                 el.setAttribute('stroke', colors.nodeBorder);
                                 el.setAttribute('fill', colors.clusterBkg);
-                            });
-                            
-                            // Text styling - node labels should contrast with node background
-                            svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(el => {
-                                el.setAttribute('fill', isDark ? '#000000' : '#333333');
-                            });
-                            
-                            // Edge labels and other text should use theme text color
-                            svgElement.querySelectorAll('.edgeLabel text, text:not(.node .label text):not(.cluster .label text)').forEach(el => {
-                                el.setAttribute('fill', colors.textColor);
-                            });
-                            
-                            // Flow chart links
-                            svgElement.querySelectorAll('.flowchart-link, path.path, path.messageText').forEach(el => {
+            });
+            
+            // Text styling - node labels should contrast with node background
+            svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(textEl => {
+                // Find the background color of the parent node/cluster
+                const parentGroup = textEl.closest('g.node, g.cluster');
+                if (parentGroup) {
+                    const backgroundShape = parentGroup.querySelector('rect, polygon, circle, path');
+                    if (backgroundShape) {
+                        const fill = backgroundShape.getAttribute('fill');
+                        const contrastColor = fill ? getOptimalTextColor(fill) : (isDark ? '#ffffff' : '#000000');
+                        textEl.setAttribute('fill', contrastColor);
+                    }
+                }
+            });
+            
+            // Flow chart links
+            svgElement.querySelectorAll('.flowchart-link, path.path, path.messageText').forEach(el => {
                                 el.setAttribute('stroke', colors.lineColor);
                                 el.setAttribute('stroke-width', '1.5px');
                             });

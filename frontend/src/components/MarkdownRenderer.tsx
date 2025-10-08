@@ -884,9 +884,50 @@ const normalizeGitDiff = (diff: string): string => {
     return diff;
 };
 
+// Shared language detection function - moved here so it can be used in both diff rendering and code block fixing
+const detectLanguage = (filePath: string): string => {
+    if (!filePath || filePath === '/dev/null') return 'plaintext';
+
+    // Handle paths that might have git prefixes
+    let cleanPath = filePath;
+    if (cleanPath.startsWith('a/') || cleanPath.startsWith('b/')) {
+        cleanPath = cleanPath.substring(2);
+    }
+
+    if (!cleanPath) return 'plaintext';
+
+    const extension = cleanPath.split('.').pop()?.toLowerCase();
+
+    const languageMap: { [key: string]: string } = {
+        'js': 'javascript',
+        'jsx': 'javascript',
+        'ts': 'typescript',
+        'tsx': 'typescript',
+        'swift': 'swift',
+        'objectivec': 'objectivec',
+        'objc': 'objectivec',
+        'metal': 'c',
+        'py': 'python',
+        'rb': 'ruby',
+        'php': 'php',
+        'java': 'java',
+        'go': 'go',
+        'rs': 'rust',
+        'cpp': 'cpp',
+        'c': 'clike',
+        'cs': 'csharp',
+        'css': 'css',
+        'html': 'markup',
+        'xml': 'markup',
+        'md': 'markdown',
+        'sh': 'bash',
+        'bash': 'bash'
+    };
+    return languageMap[extension || ''] || 'plaintext';
+};
+
 const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex }) => {
     const [isLoading, setIsLoading] = useState(true);
-    const [tokenizedHunks, setTokenizedHunks] = useState<any>(null);
     const { isDarkMode } = useTheme();
     const parsedFilesRef = useRef<any[]>([]);
     const [parseError, setParseError] = useState<boolean>(false);
@@ -1042,36 +1083,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     }, [updateHunkStatuses, diffId]);
 
 
-    // detect language from file path
-    const detectLanguage = (filePath: string): string => {
-        if (!filePath) return 'plaintext';
-        const extension = filePath.split('.').pop()?.toLowerCase();
-        const languageMap: { [key: string]: string } = {
-            'js': 'javascript',
-            'jsx': 'javascript',
-            'ts': 'typescript',
-            'tsx': 'typescript',
-            'swift': 'swift',
-            'objectivec': 'objectivec',
-            'objc': 'objectivec',
-            'metal': 'c',
-            'py': 'python',
-            'rb': 'ruby',
-            'php': 'php',
-            'java': 'java',
-            'go': 'go',
-            'rs': 'rust',
-            'cpp': 'cpp',
-            'c': 'c',
-            'cs': 'csharp',
-            'css': 'css',
-            'html': 'markup',
-            'xml': 'markup',
-            'md': 'markdown'
-        };
-        return languageMap[extension || ''] || 'plaintext';
-    };
-
     useEffect(() => {
         const parseAndSetFiles = () => {
             try {
@@ -1182,59 +1193,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         parseAndSetFiles();
     }, [diff, isGlobalStreaming]);
 
-    // tokenize hunks
+    // Set loading to false since we're not doing any async tokenization
     useEffect(() => {
-        const tokenizeHunks = async (hunks: any[], filePath: string) => {
-            if (!hunks || hunks.length === 0) {
-                setIsLoading(false);
-                return;
-            }
-            setIsLoading(true);
-            const language = detectLanguage(filePath);
-            try {
-                // always load basic languages first
-                await Promise.all([
-                    loadPrismLanguage('markup'),
-                    loadPrismLanguage('clike'),
-                    loadPrismLanguage(language)
-                ]);
-
-                // If parseError is true (e.g. because it's streaming and incomplete),
-                // we don't need to tokenize for the rich view.
-                if (parseError) {
-                    setIsLoading(false);
-                    return;
-                }
-
-                // Verify Prism is properly initialized
-                if (!window.Prism?.languages?.[language]) {
-                    console.warn(`Prism language ${language} not available, falling back to plain text`);
-                    // Try without syntax highlighting
-                    const tokens = tokenize(hunks, {
-                        highlight: true,
-                        refractor: window.Prism,
-                        language: 'plaintext'
-                    });
-                    setTokenizedHunks(tokens);
-                } else {
-                    // Try with the detected language
-                    setTokenizedHunks(null);
-                }
-            } catch (error: unknown) {
-                console.warn(`Error during tokenization for ${language}:`, error);
-                setTokenizedHunks(null);
-            } finally {
-                setIsLoading(false);
-            }
-        };
-
-        // Only tokenize if not in parseError state and we have hunks
-        if (!parseError && parsedFilesRef.current?.[0]?.hunks?.length > 0) {
-            const file = parsedFilesRef.current[0];
-            tokenizeHunks(file.hunks, file.newPath || file.oldPath);
-        } else {
-            setIsLoading(false); // Not loading if we will render raw or have no hunks
-        }
+        // Skip tokenization entirely since it's unused and problematic
+        setIsLoading(false);
     }, [diff, parseError]); // Re-tokenize if diff changes or parseError state changes
 
     const renderHunks = (hunks: any[], filePath: string, fileIndex: number) => {
@@ -1366,7 +1328,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         );
                     })}
                 </tbody>
-            </table>
+            </table >
         );
     };
 
@@ -3164,14 +3126,16 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
             const loadLanguage = async () => {
                 setIsLanguageLoaded(false);
                 try {
-                    console.debug('CodeBlock language info:', {
-                        originalLang: token.lang,
-                        effectiveLang: getEffectiveLang(token.lang),
-                        tokenType: token.type,
-                        prismLoaded: Boolean(window.Prism),
-                        availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
-                        tokenContent: token.text.substring(0, 100) + '...'
-                    });
+                    if (isDebugLoggingEnabled()) {
+                        debugLog('CodeBlock language info:', {
+                            originalLang: token.lang,
+                            effectiveLang: getEffectiveLang(token.lang),
+                            tokenType: token.type,
+                            prismLoaded: Boolean(window.Prism),
+                            availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
+                            tokenContent: token.text.substring(0, 100) + '...'
+                        });
+                    }
                     // Load language and get Prism instance
                     await loadPrismLanguage(normalizedLang);
                     setPrismInstance(window.Prism);
@@ -3722,6 +3686,51 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         return null;
                     }
 
+                    // CORE FIX: Check if this code block contains diff content and should use file-based language detection
+                    const rawCodeText = decodeHtmlEntities(tokenWithText.text || '');
+                    
+                    // Add debugging to see if this fix is being triggered
+                    const isDiffContent = rawCodeText.includes('diff --git') ||
+                        rawCodeText.includes('new file mode') ||
+                        rawCodeText.includes('deleted file mode') ||
+                        (rawCodeText.includes('+++') && rawCodeText.includes('---'));
+                    
+                    if ((!tokenWithText.lang || tokenWithText.lang === 'plaintext') &&
+                        isDiffContent) {
+                        
+                        console.log('🔍 DIFF_FIX: Applying language fix for diff content:', {
+                            hasLang: !!tokenWithText.lang,
+                            currentLang: tokenWithText.lang,
+                            contentPreview: rawCodeText.substring(0, 100)
+                        });
+
+                        // Extract file path from diff content
+                        const lines = rawCodeText.split('\n');
+                        for (const line of lines) {
+                            const gitMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                            if (gitMatch) {
+                                // For new files, prefer target path; for deleted files, prefer source path
+                                const filePath = gitMatch[1] === '/dev/null' ? gitMatch[2] :
+                                    gitMatch[2] === '/dev/null' ? gitMatch[1] :
+                                        (gitMatch[2] || gitMatch[1]);
+                                tokenWithText.lang = detectLanguage(filePath);
+                                console.log('🔍 DIFF_FIX: Language detection result:', { 
+                                    filePath, 
+                                    detectedLang: tokenWithText.lang,
+                                    gitMatch1: gitMatch[1],
+                                    gitMatch2: gitMatch[2]
+                                });
+                                break;
+                            }
+                        }
+                    } else if (isDiffContent) {
+                        console.log('🔍 DIFF_FIX: Diff content detected but not applying fix:', {
+                            hasLang: !!tokenWithText.lang,
+                            currentLang: tokenWithText.lang,
+                            reason: tokenWithText.lang && tokenWithText.lang !== 'plaintext' ? 'already has language' : 'unknown'
+                        });
+                    }
+
                     // Add safety check for tool blocks that might have slipped through
                     if (tokenWithText.lang?.startsWith('tool:')) {
                         console.error('CRITICAL ERROR: Tool block reached code case!', { lang: tokenWithText.lang, determinedType });
@@ -3759,7 +3768,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         }
                     }
 
-                    const rawCodeText = decodeHtmlEntities(tokenWithText.text || '');
                     // Pass the original lang tag (or plaintext) for highlighting
                     const codeToken = { ...tokenWithText, text: rawCodeText, lang: tokenWithText.lang || 'plaintext' };
                     // Decode HTML entities before passing to CodeBlock

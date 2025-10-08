@@ -163,18 +163,15 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
     // Control when to show raw content vs rendered visualization
     useEffect(() => {
-        if (isStreaming || !isMarkdownBlockClosed) {
+        // Only show raw content if this specific diagram is being streamed
+        // (not just because streaming is happening somewhere else in the conversation)
+        if ((isStreaming && !hasSuccessfulRenderRef.current) || !isMarkdownBlockClosed) {
             setShowRawContent(true);
-        } else if (!isStreaming && isMarkdownBlockClosed) {
+        } else if ((!isStreaming || hasSuccessfulRenderRef.current) && isMarkdownBlockClosed) {
             setShowRawContent(false);
         }
-    }, [spec, reservedSize]);
-
-    // Control when to show raw content vs rendered visualization
-    useEffect(() => {
-        if (isStreaming || !isMarkdownBlockClosed) {
-            setShowRawContent(true);
-        } else if (!isStreaming && isMarkdownBlockClosed) {
+        // If we have a successful render and the block is closed, keep showing the rendered version
+        if (hasSuccessfulRenderRef.current && isMarkdownBlockClosed) {
             setShowRawContent(false);
         }
     }, [isStreaming, isMarkdownBlockClosed, hasSuccessfulRenderRef.current]);
