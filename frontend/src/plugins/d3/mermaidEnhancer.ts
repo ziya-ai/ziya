@@ -399,6 +399,9 @@ export function initMermaidEnhancer(): void {
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i];
 
+        // Skip empty lines and whitespace-only lines
+        if (!line.trim()) continue;
+
         // Skip empty lines and comments
         if (!line || line.startsWith('%%')) continue;
 
@@ -439,6 +442,7 @@ export function initMermaidEnhancer(): void {
       const lines = result.split('\n');
       const output: string[] = [];
       let inRequirementBlock = false;
+      let inElementBlock = false;
       
       for (const line of lines) {
         const trimmed = line.trim();
@@ -462,10 +466,28 @@ export function initMermaidEnhancer(): void {
           continue;
         }
         
+        // Handle element block start
+        if (trimmed.match(/^element\s+\w+\s*\{/)) {
+          if (inRequirementBlock) {
+            output.push('    }'); // Close previous requirement block
+          }
+          inElementBlock = true;
+          inRequirementBlock = false;
+          output.push('    ' + trimmed);
+          continue;
+        }
+        
         // Handle requirement block end
         if (trimmed === '}' && inRequirementBlock) {
           output.push('    }');
           inRequirementBlock = false;
+          continue;
+        }
+        
+        // Handle element block end
+        if (trimmed === '}' && inElementBlock) {
+          output.push('    }');
+          inElementBlock = false;
           continue;
         }
         
@@ -478,6 +500,16 @@ export function initMermaidEnhancer(): void {
             const cleanValue = value.replace(/^["']|["']$/g, '');
             const shouldQuote = ['id', 'text'].includes(prop);
             output.push(`        ${prop}: ${shouldQuote ? `"${cleanValue}"` : cleanValue}`);
+          }
+          continue;
+        }
+        
+        // Handle properties inside element blocks
+        if (inElementBlock && trimmed.match(/^(type|category):/)) {
+          const match = trimmed.match(/^(\w+):\s*(.+)$/);
+          if (match) {
+            const [, prop, value] = match;
+            output.push(`        ${prop}: ${value}`);
           }
           continue;
         }
@@ -495,7 +527,7 @@ export function initMermaidEnhancer(): void {
       }
       
       // Close any remaining block
-      if (inRequirementBlock) {
+      if (inRequirementBlock || inElementBlock) {
         output.push('    }');
       }
       
@@ -1708,6 +1740,13 @@ export function initMermaidEnhancer(): void {
       return def;
     }
 
+    // Check if the Gantt chart already has properly formatted tasks
+    const hasProperTaskFormat = /:\s*\w+,\s*\w+,\s*\d{4}-\d{2}-\d{2},\s*\d+d/.test(def);
+    if (hasProperTaskFormat) {
+      console.log('🔍 GANTT-FIX: Tasks already properly formatted, skipping preprocessing');
+      return def; // Skip preprocessing for properly formatted Gantt charts
+    }
+
     console.log('🔍 GANTT-FIX: Processing gantt diagram task definitions');
 
     let processedDef = def;
@@ -1777,6 +1816,14 @@ export function initMermaidEnhancer(): void {
 
       // Process task lines
       if (trimmed.includes(':')) {
+        // Check if this is already a properly formatted task
+        const properTaskMatch = trimmed.match(/^(.+):\s*(\w+),\s*(\w+),\s*(\d{4}-\d{2}-\d{2}),\s*(\d+d)$/);
+        if (properTaskMatch) {
+          console.log(`🔍 GANTT-FIX: Task already properly formatted: ${trimmed}`);
+          fixedLines.push(line);
+          continue;
+        }
+
         const colonIndex = trimmed.indexOf(':');
         const taskName = trimmed.substring(0, colonIndex).trim();
         const taskDef = trimmed.substring(colonIndex + 1).trim();
