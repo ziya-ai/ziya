@@ -1924,7 +1924,12 @@ def create_agent_chain(chat_model: BaseChatModel):
                     if hasattr(prompt_template, 'messages') and prompt_template.messages:
                         system_msg = prompt_template.messages[0]
                         if hasattr(system_msg, 'format'):
-                            formatted_content = system_msg.format(**mapped_input)
+                            # Escape curly braces in user input to prevent .format() from interpreting them
+                            safe_mapped_input = {
+                                k: v.replace('{', '{{').replace('}', '}}') if isinstance(v, str) else v
+                                for k, v in mapped_input.items()
+                            }
+                            formatted_content = system_msg.format(**safe_mapped_input)
                             messages.append(SystemMessage(content=formatted_content))
                     
                     # Add user question
