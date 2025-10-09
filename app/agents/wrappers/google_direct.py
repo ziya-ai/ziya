@@ -19,6 +19,17 @@ class DirectGoogleModel:
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.mcp_manager = get_mcp_manager()
+        
+        logger.info(f"DirectGoogleModel initialized: model={model_name}, temp={temperature}, max_output_tokens={max_output_tokens}")
+        
+        # Get API key from environment and configure genai
+        import os
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if api_key:
+            genai.configure(api_key=api_key)
+            logger.info("Configured Google GenAI with API key from environment")
+        else:
+            logger.info("No GOOGLE_API_KEY found, will attempt to use Application Default Credentials")
 
     def _extract_text_from_mcp_result(self, result: Any) -> str:
         """Extracts the text content from a structured MCP tool result."""
@@ -123,8 +134,25 @@ class DirectGoogleModel:
 
             tool_calls = []
             model_response_parts = []
+            finish_reason = None
+            finish_reason_name = None
 
             async for chunk in response:
+                # Log finish reason if present
+                if hasattr(chunk, 'candidates') and chunk.candidates:
+                    for candidate in chunk.candidates:
+                        if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                            finish_reason = candidate.finish_reason
+                            # Decode finish reason
+                            try:
+                                from google.ai.generativelanguage_v1beta.types import Candidate
+                                finish_reason_name = Candidate.FinishReason(finish_reason).name
+                            except:
+                                finish_reason_name = str(finish_reason)
+                            logger.info(f"Google model finish_reason: {finish_reason_name} ({finish_reason})")
+                        if hasattr(candidate, 'safety_ratings') and candidate.safety_ratings:
+                            logger.info(f"Google model safety_ratings: {candidate.safety_ratings}")
+                
                 if chunk.parts:
                     for part in chunk.parts:
                         if part.text:
@@ -136,6 +164,8 @@ class DirectGoogleModel:
                     for candidate in chunk.candidates:
                         if candidate.content and candidate.content.parts:
                             model_response_parts.extend(candidate.content.parts)
+            
+            logger.info(f"Stream ended. Tool calls: {len(tool_calls)}, Finish reason: {finish_reason_name or finish_reason}")
 
             if not tool_calls:
                 logger.info("No tool calls from model. Ending loop.")
@@ -155,7 +185,7 @@ class DirectGoogleModel:
                     tool_result_obj = await self.mcp_manager.call_tool(tool_name, tool_args)
                     tool_result_str = self._extract_text_from_mcp_result(tool_result_obj)
 
-                    yield {"type": "tool_execution", "tool_name": tool_name, "result": tool_result_str}
+                    yield {"type": "tool_display", "tool_name": tool_name, "result": tool_result_str}
 
                     tool_results.append(
                         {"function_response": {"name": tool_name, "response": {"content": tool_result_str}}}

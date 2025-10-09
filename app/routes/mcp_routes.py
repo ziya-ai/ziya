@@ -283,11 +283,15 @@ async def get_shell_config():
             server_env = server_config.get("env", {})
             
             # Extract allowed commands from environment configuration
+            # Always start with the full default command list
             allowed_commands = DEFAULT_SHELL_CONFIG["allowedCommands"].copy()
-            if "ALLOW_COMMANDS" in server_env:
+            
+            # Only override if environment explicitly provides a DIFFERENT set
+            if "ALLOW_COMMANDS" in server_env and server_env["ALLOW_COMMANDS"].strip():
                 # If environment override exists, use it instead
                 env_commands = [cmd.strip() for cmd in server_env["ALLOW_COMMANDS"].split(",") if cmd.strip()]
-                if env_commands:
+                # Only replace if the environment list is substantially different (not just a subset)
+                if env_commands and len(env_commands) >= len(DEFAULT_SHELL_CONFIG["allowedCommands"]) * 0.8:
                     allowed_commands = env_commands
                     logger.info(f"Using environment override commands: {allowed_commands}")
             
@@ -302,14 +306,20 @@ async def get_shell_config():
             
             return {
                 "enabled": True,
+                "allowedCommands": allowed_commands,
                 "gitOperationsEnabled": git_operations_enabled,
-                "safeGitOperations": git_operations
+                "safeGitOperations": git_operations,
+                "timeout": timeout
             }
         else:
             # Shell server not connected, return default config with enabled=False
+            # But still check for environment timeout override
+            default_config = get_default_shell_config()
+            timeout = int(os.environ.get("COMMAND_TIMEOUT", default_config["timeout"]))
             return {
-                **get_default_shell_config(),
-                "enabled": False
+                **default_config,
+                "enabled": False,
+                "timeout": timeout
             }
         
     except Exception as e:
@@ -341,7 +351,7 @@ async def update_shell_config(config: ShellConfig):
         
         # Create new shell server configuration
         new_shell_config = {
-            "command": ["python", "-u", "mcp_servers/shell_server.py"],
+            "command": ["python", "-u", "app/mcp_servers/shell_server.py"],
             "enabled": config.enabled,
             "env": {
                 "ALLOW_COMMANDS": ",".join(config.allowedCommands),
@@ -352,17 +362,38 @@ async def update_shell_config(config: ShellConfig):
         }
         
         if config.enabled:
+            # Update the server configuration in MCP manager before restarting
+            mcp_manager.server_configs["shell"] = new_shell_config
+            
             # Restart the shell server with new configuration
+            logger.info(f"Attempting to restart shell server with config: {new_shell_config}")
             success = await mcp_manager.restart_server("shell", new_shell_config)
+            
+            if not success:
+                # Get detailed error information
+                shell_client = mcp_manager.clients.get("shell")
+                error_details = "Unknown error"
+                if shell_client and shell_client.process:
+                    try:
+                        stderr_output = shell_client.process.stderr.read() if shell_client.process.stderr else ""
+                        if stderr_output:
+                            error_details = f"Shell server stderr: {stderr_output}"
+                    except Exception as e:
+                        error_details = f"Could not read shell server error: {str(e)}"
+                
+                logger.error(f"Shell server restart failed. Details: {error_details}")
+                return {"success": False, "message": f"Failed to restart shell server: {error_details}"}
             
             if success:
                 logger.info(f"Shell server restarted with new config: {config.allowedCommands}")
+                
+                # Invalidate tools cache to ensure fresh tool list with updated shell tools
+                mcp_manager.invalidate_tools_cache()
+                
                 return {
                     "success": True, 
                     "message": f"Shell server updated instantly. Basic commands: {', '.join(config.allowedCommands)}, Git operations: {'enabled' if config.gitOperationsEnabled else 'disabled'}"
                 }
-            else:
-                return {"success": False, "message": "Failed to restart shell server"}
         else:
             # Disable shell server by disconnecting it
             if "shell" in mcp_manager.clients:
@@ -374,6 +405,9 @@ async def update_shell_config(config: ShellConfig):
             if "shell" in mcp_manager.server_configs:
                 mcp_manager.server_configs["shell"]["enabled"] = False
                 logger.info("Shell server marked as disabled in server configs")
+            
+            # Invalidate tools cache to ensure fresh tool list without shell tools
+            mcp_manager.invalidate_tools_cache()
             
             return {"success": True, "message": "Shell server disabled instantly"}
         
@@ -421,6 +455,10 @@ async def toggle_server(request: ServerToggleRequest):
             if server_config:
                 success = await mcp_manager.restart_server(request.server_name, server_config)
                 message = f"{request.server_name} server enabled and restarted" if success else f"Failed to restart {request.server_name} server"
+                
+                # Invalidate tools cache to ensure fresh tool list with newly enabled server tools
+                if success:
+                    mcp_manager.invalidate_tools_cache()
             else:
                 message = f"No configuration found for {request.server_name} server"
         else:
@@ -429,6 +467,14 @@ async def toggle_server(request: ServerToggleRequest):
                 await mcp_manager.clients[request.server_name].disconnect()
                 del mcp_manager.clients[request.server_name]
                 logger.info(f"{request.server_name} server disabled")
+            
+            # Update server config to mark as disabled
+            if request.server_name in mcp_manager.server_configs:
+                mcp_manager.server_configs[request.server_name]["enabled"] = False
+            
+            # Invalidate tools cache to ensure fresh tool list without disabled server tools
+            mcp_manager.invalidate_tools_cache()
+            
             message = f"{request.server_name} server disabled"
         
         return {"success": True, "message": message}

@@ -131,6 +131,50 @@
     color: #000000 !important;
 }
 
+/* More aggressive targeting for classDef backgrounds */
+.mermaid-container svg g.node rect[fill="#e3f2fd"] ~ g text,
+.mermaid-container svg g.node rect[fill="#e1f5fe"] ~ g text,
+.mermaid-container svg g.node rect[fill="#e8f5e8"] ~ g text,
+.mermaid-container svg g.node rect[fill="#f3e5f5"] ~ g text,
+.mermaid-container svg g.node rect[fill="#fff3e0"] ~ g text,
+.mermaid-container svg g.node rect[fill="#fce4ec"] ~ g text {
+    fill: #000000 !important;
+    color: #000000 !important;
+}
+
+/* Target text directly within nodes with light backgrounds */
+.mermaid-container svg g.node:has(rect[fill="#e3f2fd"]) text,
+.mermaid-container svg g.node:has(rect[fill="#e1f5fe"]) text,
+.mermaid-container svg g.node:has(rect[fill="#e8f5e8"]) text,
+.mermaid-container svg g.node:has(rect[fill="#f3e5f5"]) text,
+.mermaid-container svg g.node:has(rect[fill="#fff3e0"]) text,
+.mermaid-container svg g.node:has(rect[fill="#fce4ec"]) text {
+    fill: #000000 !important;
+    color: #000000 !important;
+}
+
+/* Alternative approach - target all text in light-filled nodes */
+.mermaid-container svg rect[fill^="#e"],
+.mermaid-container svg rect[fill^="#f"] {
+    /* Light background detected */
+}
+
+.mermaid-container svg rect[fill^="#e"] ~ text,
+.mermaid-container svg rect[fill^="#f"] ~ text {
+    fill: #000000 !important;
+}
+
+/* Cluster text fixes for light backgrounds */
+.mermaid-container svg g.cluster rect[fill="#e3f2fd"] ~ text,
+.mermaid-container svg g.cluster rect[fill="#e1f5fe"] ~ text,
+.mermaid-container svg g.cluster rect[fill="#e8f5e8"] ~ text,
+.mermaid-container svg g.cluster rect[fill="#f3e5f5"] ~ text,
+.mermaid-container svg g.cluster rect[fill="#fff3e0"] ~ text,
+.mermaid-container svg g.cluster rect[fill="#fce4ec"] ~ text {
+    fill: #000000 !important;
+    color: #000000 !important;
+}
+
 /* Alternative approach - target text within groups that contain problematic backgrounds */
 .mermaid-container svg g:has([fill="#FFEA2E"]) text,
 .mermaid-container svg g:has([fill="#FFB50D"]) text,

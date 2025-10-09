@@ -139,9 +139,13 @@ These parameters can also be configured in the web interface:
 
 #### Advanced Options
 
-`--mcp`: Enable MCP agent capabilities.
+`--mcp`: Enable MCP (Model Context Protocol) server integration. Enabled by default.
 
-`--ast`: Enable AST-based code understanding capabilities.
+`--no-mcp`: Disable MCP (Model Context Protocol) server integration.
+
+`--ast`: Enable AST-based code understanding capabilities. Disabled by default.
+
+`--ast-resolution`: AST context resolution level. Options: `disabled`, `minimal`, `medium`, `detailed`, `comprehensive`. Default is `medium`.
 
 ```bash
 # Example with AWS Bedrock

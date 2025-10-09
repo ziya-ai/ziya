@@ -1,0 +1,31 @@
+diff --git a/frontend/src/components/SendChatContainer.tsx b/frontend/src/components/SendChatContainer.tsx
+index 1234567..8901234 100644
+--- a/frontend/src/components/SendChatContainer.tsx
++++ b/frontend/src/components/SendChatContainer.tsx
+@@ -31,7 +31,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixe
+         removeStreamingConversation,
+         updateProcessingState,
+         setUserHasScrolled,
+-        getProcessingState
++        getProcessingState,
++        isTopToBottom
+     } = useChatContext();
+
+     const { checkedKeys } = useFolderContext();
+@@ -82,6 +83,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixe
+             // Add the human message immediately
+             addMessageToConversation(newHumanMessage, currentConversationId);
+
++            // Force scroll to bottom in top-down mode to show the echoed query
++            if (isTopToBottom) {
++                setTimeout(() => {
++                    const chatContainer = document.querySelector('.chat-container') as HTMLElement;
++                    if (chatContainer) {
++                        console.log('📜 Human message added - scrolling to show echo');
++                        chatContainer.scrollTop = chatContainer.scrollHeight;
++                    }
++                }, 50); // Small delay to ensure DOM updates
++            }
++
+             // Clear streamed content and add the human message immediately
+             setStreamedContentMap(new Map());

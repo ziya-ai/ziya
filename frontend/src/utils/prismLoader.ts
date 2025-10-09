@@ -92,6 +92,15 @@ const loadPrismCore = async (): Promise<PrismStatic | null> => {
                         await import('prismjs/components/prism-markup');
                         await import('prismjs/components/prism-markup-templating');
                         await import('prismjs/components/prism-javascript');
+                        
+                        // CRITICAL FIX: Clean up circular references in core languages immediately after loading
+                        if (instance.languages.javascript && instance.languages.javascript['template-string']) {
+                            const templateString = instance.languages.javascript['template-string'];
+                            if (typeof templateString === 'object' && templateString.inside && templateString.inside['template-string']) {
+                                delete templateString.inside['template-string'];
+                                console.debug('Cleaned circular reference in JavaScript template-string at init');
+                            }
+                        }
                         return instance;
                     }
                     return null;
@@ -170,6 +179,16 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                         import('prismjs/components/prism-javascript')
                     ]);
                     await import('prismjs/components/prism-jsx');
+                    
+                    // Clean up circular references in JSX
+                    if (window.Prism.languages.jsx && window.Prism.languages.jsx['template-string']) {
+                        const templateString = window.Prism.languages.jsx['template-string'];
+                        if (typeof templateString === 'object' && templateString.inside && templateString.inside['template-string']) {
+                            delete templateString.inside['template-string'];
+                            console.debug('Cleaned circular reference in JSX template-string');
+                        }
+                    }
+                    
                     if (!window.Prism.languages.jsx) {
                         window.Prism.languages.jsx = window.Prism.languages.extend('markup', window.Prism.languages.javascript);
                     }
@@ -179,9 +198,18 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                     if (!window.Prism?.languages?.typescript ||
                         Object.keys(window.Prism?.languages?.typescript || {}).length === 0) {
                         await import('prismjs/components/prism-typescript');
+                        
+                        // CRITICAL FIX: Clean up circular references immediately after loading TypeScript
+                        if (window.Prism.languages.typescript && window.Prism.languages.typescript['template-string']) {
+                            const templateString = window.Prism.languages.typescript['template-string'];
+                            if (typeof templateString === 'object' && templateString.inside && templateString.inside['template-string']) {
+                                delete templateString.inside['template-string'];
+                                console.debug('Cleaned circular reference in TypeScript template-string');
+                            }
+                        }
                     }
                     break;
-                case 'csharp': {
+                case 'jsx': {
                     await import('prismjs/components/prism-clike');
                     await import('prismjs/components/prism-csharp');
                     break;
