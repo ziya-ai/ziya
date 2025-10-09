@@ -1,0 +1,27 @@
+diff --git a/frontend/src/plugins/d3/vegaLitePlugin.ts b/frontend/src/plugins/d3/vegaLitePlugin.ts
+index 1234567..abcdefg 100644
+--- a/frontend/src/plugins/d3/vegaLitePlugin.ts
++++ b/frontend/src/plugins/d3/vegaLitePlugin.ts
+@@ -433,6 +433,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
+           Object.keys(spec.encoding).forEach(channel => {
+             const channelSpec = spec.encoding[channel];
+             if (channelSpec?.field) {
+               console.log(`🔧 FOLD-FIX: Checking ${channel} encoding field: "${channelSpec.field}"`);
+               // Fix "value" -> actual value field name from fold transform
+               if (channelSpec.field === 'value' && valueField !== 'value') {
+                 console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "value" -> "${valueField}" in ${channel} encoding`);
+                 channelSpec.field = valueField;
+               }
++              // Fix "key" -> actual key field name from fold transform
++              if (channelSpec.field === 'key' && keyField !== 'key') {
++                console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "key" -> "${keyField}" in ${channel} encoding`);
++                channelSpec.field = keyField;
++              }
++              // Fix "dimension" -> actual key field name from fold transform (common in parallel coordinates)
++              if (channelSpec.field === 'dimension' && keyField !== 'dimension') {
++                console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "dimension" -> "${keyField}" in ${channel} encoding`);
++                channelSpec.field = keyField;
++              }
+             }
+           });
+         }

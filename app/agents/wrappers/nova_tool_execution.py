@@ -136,7 +136,7 @@ async def execute_nova_tools_properly(bedrock_client, converse_params, formatted
                 
                 # Yield for frontend display in the format it expects
                 yield {
-                    'type': 'tool_execution',
+                    'type': 'tool_display',
                     'tool_name': tool_use['name'],
                     'result': result_text
                 }
@@ -150,7 +150,7 @@ async def execute_nova_tools_properly(bedrock_client, converse_params, formatted
             except Exception as e:
                 logger.error(f"Nova: Tool execution failed: {e}")
                 yield {
-                    'type': 'tool_execution',
+                    'type': 'tool_display',
                     'tool_name': tool_use['name'],
                     'result': f"Error: {str(e)}"
                 }

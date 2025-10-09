@@ -248,7 +248,7 @@ Do not include any explanatory text within the diff blocks. If you need to provi
 AVAILABLE TOOLS:
 You have access to the following tools:
 
-MCP tools available
+{tools}
 
 The codebase is provided at the end of this prompt in a specific format. 
 The code that the user has given to you for context is in the format like below where first line has the File path and then the content follows.

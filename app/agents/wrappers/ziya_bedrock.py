@@ -318,7 +318,8 @@ class ZiyaBedrock(Runnable):
         # Ensure system messages are properly ordered after caching
         messages = self._ensure_system_message_ordering(messages)
 
-        kwargs["max_tokens"] = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", self.ziya_max_tokens))  # Use environment variable if available
+        # Use much higher default if not set
+        kwargs["max_tokens"] = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", self.ziya_max_tokens or 32768))
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = self.ziya_max_tokens
             logger.debug(f"Added max_tokens={self.ziya_max_tokens} to _generate kwargs")
@@ -580,39 +581,60 @@ class ZiyaBedrock(Runnable):
         # Set streaming to True for this call
         self.bedrock_model.streaming = True
         
-        # Call the underlying model's stream method
-        for chunk in self.bedrock_model.stream(lc_messages, **kwargs):
-            if hasattr(chunk, 'content') and chunk.content:
-                # Check for repetitive lines
-                content = chunk.content
-                lines = content.split('\n')
+        # Call the underlying model's stream method with retry logic
+        stream_retries = 0
+        max_stream_retries = 2
+        
+        while stream_retries <= max_stream_retries:
+            try:
+                for chunk in self.bedrock_model.stream(lc_messages, **kwargs):
+                    if hasattr(chunk, 'content') and chunk.content:
+                        # Check for repetitive lines
+                        content = chunk.content
+                        lines = content.split('\n')
+                        
+                        for line in lines:
+                            if line.strip():  # Only track non-empty lines
+                                self._recent_lines.append(line)
+                                # Keep only recent lines
+                                if len(self._recent_lines) > 100:
+                                    self._recent_lines.pop(0)
+                        
+                        # Check if any line repeats too many times
+                        if any(self._recent_lines.count(line) > self._max_repetitions for line in set(self._recent_lines)):
+                            yield "\n\n**Warning: Response was interrupted because repetitive content was detected.**"
+                            
+                            # Log the repetitive content for debugging
+                            repetitive_lines = [line for line in set(self._recent_lines) 
+                                               if self._recent_lines.count(line) > self._max_repetitions]
+                            logger.warning(f"Repetitive content detected. Repetitive lines: {repetitive_lines}")
+                            
+                            # Send a special marker to indicate the stream should end
+                            yield "\n\n[STREAM_END_REPETITION_DETECTED]"
+                            
+                            # Break the streaming loop
+                            logger.warning("Streaming response interrupted due to repetitive content")
+                            return
+                        
+                        yield chunk.content
+                    elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
+                        yield chunk.message.content
+                return  # Success, exit retry loop
                 
-                for line in lines:
-                    if line.strip():  # Only track non-empty lines
-                        self._recent_lines.append(line)
-                        # Keep only recent lines
-                        if len(self._recent_lines) > 100:
-                            self._recent_lines.pop(0)
-                
-                # Check if any line repeats too many times
-                if any(self._recent_lines.count(line) > self._max_repetitions for line in set(self._recent_lines)):
-                    yield "\n\n**Warning: Response was interrupted because repetitive content was detected.**"
+            except Exception as e:
+                error_str = str(e)
+                if ("ThrottlingException" in error_str or "rate limit" in error_str.lower() or 
+                    "timeout" in error_str.lower()) and stream_retries < max_stream_retries:
                     
-                    # Log the repetitive content for debugging
-                    repetitive_lines = [line for line in set(self._recent_lines) 
-                                       if self._recent_lines.count(line) > self._max_repetitions]
-                    logger.warning(f"Repetitive content detected. Repetitive lines: {repetitive_lines}")
+                    stream_retries += 1
+                    delay = 2 if stream_retries == 1 else 5  # 2s, 5s
+                    logger.warning(f"🔄 STREAM_RETRY: Attempt {stream_retries}/{max_stream_retries} after {delay}s delay")
                     
-                    # Send a special marker to indicate the stream should end
-                    yield "\n\n[STREAM_END_REPETITION_DETECTED]"
-                    
-                    # Break the streaming loop
-                    logger.warning("Streaming response interrupted due to repetitive content")
-                    break
-                
-                yield chunk.content
-            elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
-                yield chunk.message.content
+                    import time
+                    time.sleep(delay)
+                    continue
+                else:
+                    raise  # Re-raise for higher-level retry or final failure
     
     async def astream(self, messages: List[Dict[str, Any]], system: Optional[str] = None, **kwargs) -> AsyncIterator[str]:
         """

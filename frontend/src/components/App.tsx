@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, Suspense } from 'react';
 import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
@@ -110,6 +110,9 @@ export const App: React.FC = () => {
         const saved = localStorage.getItem(PANEL_WIDTH_KEY);
         return saved ? parseInt(saved, 10) : 300; // Default width: 300px
     });
+    const wasFollowingStreamRef = useRef<boolean>(false);
+    const scrollPreservationRef = useRef<{ position: number; wasAtBottom: boolean }>({ position: 0, wasAtBottom: false });
+    const isRenderingRef = useRef(false);
     const bottomUpContentRef = useRef<HTMLDivElement | null>(null);
     const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -182,9 +185,14 @@ export const App: React.FC = () => {
                 const isNearBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 100;
 
                 // If user scrolls to bottom, reset userHasScrolled to re-enable auto-scrolling
-                if (isAtBottom && userHasScrolled) {
-                    console.log('📜 User scrolled back to bottom - resuming auto-scroll');
+                // But only if there's actual streaming content, not just loading indicators
+                const currentStreamedContent = streamedContentMap.get(currentConversationId);
+                const hasActualContent = currentStreamedContent && currentStreamedContent.trim().length > 0;
+                
+                if (isAtBottom && userHasScrolled && hasActualContent) {
+                    console.log('📜 User scrolled back to bottom with actual content - resuming auto-scroll');
                     setUserHasScrolled(false);
+                    wasFollowingStreamRef.current = true;
                     return;
                 }
 
@@ -193,79 +201,210 @@ export const App: React.FC = () => {
                     if (!userHasScrolled) {
                         console.log('📜 User scrolled away from bottom - pausing auto-scroll');
                         setUserHasScrolled(true);
+                        wasFollowingStreamRef.current = false;
                     }
+                } else if (isNearBottom && userHasScrolled && hasActualContent) {
+                    // Only re-enable if user deliberately scrolls back AND we have actual content
+                    console.log('📜 User scrolled back near bottom with content - resuming auto-scroll');
+                    setUserHasScrolled(false);
+                    wasFollowingStreamRef.current = true;
                 }
 
                 lastScrollPositionRef.current = scrollTop;
-            }, 100); // Debounce scroll events
+            }, 50); // Faster response to user scroll actions
         };
 
         chatContainer.addEventListener('scroll', handleScroll, { passive: true });
-
+        
         return () => {
             chatContainer.removeEventListener('scroll', handleScroll);
             clearTimeout(scrollTimeout);
         };
     }, [userHasScrolled, setUserHasScrolled]);
 
-    // Auto-scroll to bottom when new messages arrive or streaming updates occur
-    useEffect(() => {
-        // Only auto-scroll in top-down mode when user hasn't manually scrolled away and not currently streaming
-        if (!isTopToBottom || userHasScrolled) return;
-
+    // Preserve scroll position during re-renders
+    useLayoutEffect(() => {
         const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
         if (!chatContainer) return;
+        
+        // Check if the last message is a new user message
+        const lastMessage = currentMessages[currentMessages.length - 1];
+        const isNewUserMessage = lastMessage?.role === 'human';
+        
+        const wasStreamingBefore = streamingConversations.has(currentConversationId);
+        const isStreamingNow = streamingConversations.has(currentConversationId);
+        const streamingJustEnded = wasStreamingBefore && !isStreamingNow;
+
+        // Before render: capture current position
+        const { scrollTop, scrollHeight, clientHeight } = chatContainer;
+        const wasAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
+        
+        scrollPreservationRef.current = {
+            position: scrollTop,
+            wasAtBottom
+        };
+        
+        isRenderingRef.current = true;
+        
+        // Track if user was following the stream
+        wasFollowingStreamRef.current = wasAtBottom && !userHasScrolled;
+        
+        // After render: restore appropriate position
+        return () => {
+            if (!isRenderingRef.current) return;
+            
+            requestAnimationFrame(() => {
+                const { wasAtBottom, position } = scrollPreservationRef.current;
+                
+                // For new user messages, always scroll to bottom regardless of other conditions
+                if (isNewUserMessage && isTopToBottom) {
+                    console.log('📜 New user message detected in layout effect - scrolling to bottom');
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    // Reset user scroll state immediately for new messages
+                    setUserHasScrolled(false);
+                    wasFollowingStreamRef.current = true;
+                    return;
+                }
+                
+                // Skip position preservation for new user messages to avoid interference
+                if (isNewUserMessage) return;
+                
+                // If streaming just ended and user was following, force scroll to bottom
+                if (streamingJustEnded && wasFollowingStreamRef.current && isTopToBottom) {
+                    console.log('📜 Stream ended while user was following - maintaining bottom position');
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    return;
+                }
+                
+                // If streaming just ended, handle position based on user behavior
+                if (streamingJustEnded) {
+                    if (userHasScrolled) {
+                        console.log('📜 Stream ended but user had scrolled away - preserving current position');
+                        return; // Don't restore old position
+                    } else {
+                        // User was following - stay at bottom
+                        console.log('📜 Stream ended and user was following - staying at bottom');
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                        return;
+                    }
+                }
+                
+                if (isTopToBottom) {
+                    if (wasAtBottom && !userHasScrolled) {
+                        // If we were at bottom and not manually scrolled, stay at bottom
+                        console.log('📜 Preserving bottom position after render');
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    } else if (!isStreamingNow) {
+                        // If not streaming, preserve exact position to prevent jumps
+                        console.log('📜 Preserving scroll position after render:', position);
+                        chatContainer.scrollTop = position;
+                    }
+                } else {
+                    // In bottom-up mode, preserve position
+                    chatContainer.scrollTop = position;
+                }
+                
+                isRenderingRef.current = false;
+            });
+        };
+    }, [
+        // Only run scroll preservation for UI state changes, not content changes
+        isTopToBottom, 
+        currentConversationId,  // Only when switching conversations, not when messages change
+        streamingConversations, // Add this to detect streaming state changes
+        userHasScrolled        // Add this to detect user scroll state changes
+    ]);
+
+    // Auto-scroll to bottom when new messages arrive or streaming updates occur
+    useEffect(() => {
+        // Only auto-scroll in specific circumstances to prevent jumping
+        if (!isTopToBottom || isRenderingRef.current) return;
+        
+        const lastMessage = currentMessages[currentMessages.length - 1];
+        const isNewUserMessage = lastMessage?.role === 'human';
+        
+        const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
+        if (!chatContainer) return;
+
+        // For new user messages, ensure we get to bottom and enable autofollow
+        if (isNewUserMessage) {
+            console.log('📜 New user message - scrolling to bottom and enabling autofollow');
+            setUserHasScrolled(false);
+            wasFollowingStreamRef.current = true;
+            
+            // Use multiple approaches to ensure we get to the bottom
+            const scrollToBottom = () => {
+                // Force immediate scroll for new messages
+                chatContainer.scrollTo({
+                    top: chatContainer.scrollHeight,
+                    behavior: 'auto'
+                });
+                // Double-ensure we're at bottom with direct assignment
+                const newScrollHeight = chatContainer.scrollHeight;
+                chatContainer.scrollTop = newScrollHeight;
+                console.log('📜 Set scrollTop to:', newScrollHeight, 'actual:', chatContainer.scrollTop);
+            };
+            
+            // Ensure we get to bottom immediately
+            scrollToBottom();
+            // Also ensure after DOM updates
+            requestAnimationFrame(() => {
+                scrollToBottom();
+                // Final guarantee after any layout shifts
+                setTimeout(scrollToBottom, 50);
+            });
+            return;
+        }
+        
+        // For other messages, only scroll if user hasn't manually scrolled away
+        if (userHasScrolled) return;
+        
+        // Skip auto-scroll during streaming for AI responses unless it's a new user message
+        if (streamingConversations.has(currentConversationId) && !isNewUserMessage) return;
 
         // Scroll to bottom smoothly
         const scrollToBottom = () => {
             const { scrollTop, scrollHeight, clientHeight } = chatContainer as HTMLElement;
             const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
-
+            
             if (!isAtBottom) {
-                // Only auto-scroll for new messages when not actively streaming
-                // StreamedContent handles scrolling during streaming
-                if (!streamingConversations.has(currentConversationId)) {
-                    console.log('📜 App: Auto-scrolling to bottom for new messages');
+                // Only auto-scroll for actual content, not loading states
+                const currentStreamedContent = streamedContentMap.get(currentConversationId);
+                const hasActualContent = !streamingConversations.has(currentConversationId) || 
+                    (currentStreamedContent && currentStreamedContent.trim().length > 0);
+                
+                if (hasActualContent) {
                     chatContainer.scrollTo({
-                        top: chatContainer.scrollHeight,
-                        behavior: 'smooth'
-                    });
-                } else {
-                    console.log('📜 App: Skipping auto-scroll - streaming active, StreamedContent will handle');
+                    top: chatContainer.scrollHeight,
+                    behavior: 'smooth' // Smooth scroll is less jarring when user is trying to scroll away
+                });
                 }
             }
         };
-
+        
         // Use requestAnimationFrame to ensure DOM has updated
         requestAnimationFrame(scrollToBottom);
-    }, [isTopToBottom, currentMessages, streamedContentMap, userHasScrolled, streamingConversations, currentConversationId]);
+    }, [isTopToBottom, currentMessages.length, userHasScrolled, streamingConversations, currentConversationId]);
+    
+    // Note: userHasScrolled reset for new user messages is handled in the main scroll effect above
 
     // Reset userHasScrolled when switching conversations
     useEffect(() => {
         // Reset scroll state when switching to a new conversation
         // This ensures auto-scroll works immediately in new conversations
         setUserHasScrolled(false);
-
+        
         // Also scroll to bottom when switching conversations in top-down mode
         if (isTopToBottom) {
             setTimeout(() => {
                 const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
                 if (chatContainer) {
                     chatContainer.scrollTop = chatContainer.scrollHeight;
+                    wasFollowingStreamRef.current = true;
                 }
             }, 100);
         }
     }, [currentConversationId, isTopToBottom, setUserHasScrolled]);
-
-    const handleNewChat = async () => {
-        try {
-            await startNewChat();
-            setStreamedContentMap(new Map());
-        } catch (error) {
-            message.error('Failed to create new chat');
-            console.error('Error creating new chat:', error);
-        }
-    };
 
     const handlePanelResize = (newWidth: number) => {
         const minWidth = 200;
@@ -372,6 +511,7 @@ export const App: React.FC = () => {
                 if (!isTopToBottom) {
                     console.log('📜 Switching to top-down mode - scrolling to bottom');
                     chatContainer.scrollTop = chatContainer.scrollHeight;
+                    wasFollowingStreamRef.current = true;
                 } else {
                     console.log('📜 Switching to bottom-up mode - scrolling to top');
                     chatContainer.scrollTop = 0;
@@ -497,7 +637,7 @@ export const App: React.FC = () => {
                                     </>
                                 )}
                                 <Tooltip title="New Chat">
-                                    <Button icon={<PlusOutlined />} onClick={handleNewChat} />
+                                    <Button icon={<PlusOutlined />} onClick={() => startNewChat()} />
                                 </Tooltip>
                             </div>
                         </div>

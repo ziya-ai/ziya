@@ -2,6 +2,7 @@ import React, { createContext, ReactNode, useContext, useState, useEffect, Dispa
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
+import { detectIncompleteResponse } from '../utils/responseUtils';
 import { message } from 'antd';
 
 export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'error';
@@ -18,6 +19,7 @@ interface ChatContext {
     streamedContentMap: Map<string, string>;
     reasoningContentMap: Map<string, string>;
     dynamicTitleLength: number;
+    lastResponseIncomplete: boolean;
     setDynamicTitleLength: (length: number) => void;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     setReasoningContentMap: Dispatch<SetStateAction<Map<string, string>>>;
@@ -82,7 +84,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
     const [isTopToBottom, setIsTopToBottom] = useState(() => {
         const saved = localStorage.getItem('ZIYA_TOP_DOWN_MODE');
-        return saved ? JSON.parse(saved) : false;
+        return saved ? JSON.parse(saved) : true;
     });
     const [isInitialized, setIsInitialized] = useState(false);
     const [userHasScrolled, setUserHasScrolled] = useState(false);
@@ -100,6 +102,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [dynamicTitleLength, setDynamicTitleLength] = useState<number>(50); // Default reasonable length
     const processedModelChanges = useRef<Set<string>>(new Set());
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
+    const [lastResponseIncomplete, setLastResponseIncomplete] = useState<boolean>(false);
     const isRecovering = useRef<boolean>(false);
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
@@ -171,6 +174,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             });
             return next;
         });
+
     }, []);
 
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {
@@ -217,6 +221,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         // Debug logging to see when messages are added
         console.log('📝 Adding message:', { role: message.role, conversationId: targetConversationId, titleLength: dynamicTitleLength });
+
+        // Check if this is an assistant message and if it appears incomplete
+        if (message.role === 'assistant' && message.content) {
+            setLastResponseIncomplete(detectIncompleteResponse(message.content));
+        }
 
         messageUpdateCount.current += 1;
         setConversations(prevConversations => {
@@ -434,16 +443,38 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.log('Current conversation changed:', {
                 from: currentConversationId,
                 to: conversationId,
-                streamingConversations: Array.from(streamingConversations),
-                hasStreamingContent: Array.from(streamedContentMap.keys())
+                streamingConversations: Array.from(streamingConversations)
             });
         } finally {
             // Always clear loading state, even if folder operations are pending
             console.log('✅ Conversation loading complete:', conversationId);
             setIsLoadingConversation(false);
+            
+            // Scroll to appropriate position after conversation loads with multiple attempts
+            const scrollToPosition = () => {
+                const chatContainer = document.querySelector('.chat-container') as HTMLElement;
+                if (chatContainer) {
+                    if (isTopToBottom) {
+                        // For top-down, scroll to the very bottom
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                        // Force a second update after DOM settles
+                        requestAnimationFrame(() => {
+                            chatContainer.scrollTop = chatContainer.scrollHeight;
+                        });
+                    } else {
+                        // For bottom-up, scroll to the very top
+                        chatContainer.scrollTop = 0;
+                    }
+                }
+            };
+            
+            // Multiple scroll attempts to ensure we reach the end
+            setTimeout(scrollToPosition, 100);
+            setTimeout(scrollToPosition, 200);
+            setTimeout(scrollToPosition, 400);
         }
         setStreamedContentMap(new Map());
-    }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave]);
+    }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave, isTopToBottom]);
 
     // Folder management functions
     const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
@@ -526,6 +557,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
         try {
             // First update the conversation in memory with a new version
             const newVersion = Date.now();
+            console.log('🔧 CHATCONTEXT: moveConversationToFolder called:', {
+                conversationId,
+                folderId,
+                newVersion
+            });
+            
             setConversations(prev => prev.map(conv =>
                 conv.id === conversationId
                     ? { ...conv, folderId, _version: newVersion }
@@ -534,6 +571,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Then update in the database
             await db.moveConversationToFolder(conversationId, folderId);
+            
+            // Check if the state was preserved
+            setTimeout(() => {
+                const checkConv = conversations.find(c => c.id === conversationId);
+                console.log('🔍 CHATCONTEXT: State check after database update:', {
+                    conversationId,
+                    actualFolderId: checkConv?.folderId,
+                    expectedFolderId: folderId,
+                    statePreserved: checkConv?.folderId === folderId
+                });
+                
+                // If the move was overwritten, force it back to the correct state
+                if (checkConv && checkConv.folderId !== folderId) {
+                    console.log('🔧 FIXING OVERWRITTEN MOVE: Re-applying folder ID');
+                    setConversations(prev => prev.map(conv =>
+                        conv.id === conversationId ? { ...conv, folderId, _version: Date.now() } : conv
+                    ));
+                }
+            }, 50);
 
             return;
         } catch (error) {
@@ -786,6 +842,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         streamedContentMap,
         reasoningContentMap,
         dynamicTitleLength,
+        lastResponseIncomplete,
         setDynamicTitleLength,
         setStreamedContentMap,
         setReasoningContentMap,
@@ -845,6 +902,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         currentMessages,
         editingMessageIndex,
         dynamicTitleLength,
+        lastResponseIncomplete,
         setDynamicTitleLength,
         setStreamedContentMap,
         getProcessingState,

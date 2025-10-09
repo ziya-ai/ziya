@@ -144,6 +144,9 @@ interface ChatTreeItemProps {
   onMove: (id: string, folderId: string | null) => void;
   onOpenMoveMenu?: (id: string, anchorEl: HTMLElement) => void;
   onCreateSubfolder?: (id: string) => void;
+  onMoveFolder?: (id: string, parentId: string | null) => void;
+  onCustomDragEnd?: (draggedId: string, targetId: string, dragType: 'folder' | 'conversation') => void;
+  onMouseDown?: (event: React.MouseEvent) => void;
   isEditing?: boolean;
   editValue?: string;
   onEditChange?: (value: string) => void;
@@ -152,8 +155,8 @@ interface ChatTreeItemProps {
   className?: string;
   onEditSubmit: (id: string, value: string) => void;
   style?: React.CSSProperties;
-  onDragStart?: (event: React.DragEvent) => void;
   onDragOver?: (event: React.DragEvent) => void;
+  onDragLeave?: () => void;
   onDrop?: (event: React.DragEvent) => void;
 }
 
@@ -179,12 +182,15 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onCreateSubfolder,
     isEditing = false,
     editValue = '',
+    onMoveFolder,
+    onCustomDragEnd,
+    onMouseDown,
     onEditChange,
     onEditSubmit,
     className,
     style,
-    onDragStart,
     onDragOver,
+    onDragLeave,
     onDrop,
     ...other
   } = props;
@@ -230,12 +236,9 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
       nodeId={nodeId}
       label={
         <div
-          style={{ width: '100%' }}
-          onMouseDown={(e) => {
-            // Prevent TreeView from handling the mouse down event
-            e.stopPropagation();
-          }}
+          style={{ width: '100%', cursor: 'grab' }}
           draggable={true}
+          onMouseDown={onMouseDown}
           onDragStart={(e) => {
             e.stopPropagation();
             // Set drag data
@@ -258,6 +261,9 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
               e.currentTarget.style.opacity = '1';
             }
           }}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
         >
           <Box // This Box is for the entire label content layout
             onMouseEnter={() => setIsHovered(true)}
@@ -364,10 +370,6 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
             )}</Box>
         </div>}
       {...other} // Spread any other props like children  
-      draggable={true}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
     >
       {/* Menu is always rendered but its 'open' state and 'key' control its behavior */}
       {props.children}
@@ -558,6 +560,21 @@ const MUIChatHistory = () => {
       nodeId: null | string
     }>({ anchorEl: null, nodeId: null });
 
+  // Custom drag state to replace HTML5 drag and drop
+  const [customDragState, setCustomDragState] = useState<{
+    isDragging: boolean;
+    draggedNodeId: string | null;
+    draggedNodeType: 'folder' | 'conversation' | null;
+    ghostElement: HTMLElement | null;
+    draggedText: string;
+  }>({
+    isDragging: false,
+    draggedNodeId: null,
+    draggedNodeType: null,
+    ghostElement: null,
+    draggedText: ''
+  });
+
   // Load pinned folders from localStorage on mount
   useEffect(() => {
     try {
@@ -594,7 +611,7 @@ const MUIChatHistory = () => {
   useEffect(() => {
     let lastWidth = 0;
     let timeoutId: NodeJS.Timeout;
-    
+
     const resizeObserver = new ResizeObserver((entries) => {
       // Debounce resize events to prevent excessive firing
       clearTimeout(timeoutId);
@@ -618,6 +635,28 @@ const MUIChatHistory = () => {
     };
   }, [setDynamicTitleLength]);
 
+  // Custom drag implementation
+  const createDragGhost = useCallback((text: string): HTMLElement => {
+    const ghost = document.createElement('div');
+    ghost.style.cssText = `
+      position: fixed;
+      background: linear-gradient(135deg, rgba(24, 144, 255, 0.95), rgba(64, 169, 243, 0.95));
+      color: white;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      pointer-events: none;
+      z-index: 10000;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      font-family: system-ui;
+      border: 1px solid rgba(255,255,255,0.3);
+    `;
+    ghost.textContent = `Moving: ${text}`;
+    ghost.id = 'mui-drag-ghost';
+    document.body.appendChild(ghost);
+    return ghost;
+  }, []);
+
   // Handle opening the move menu
   const handleOpenMoveMenu = (nodeId: string, anchorEl: HTMLElement) => {
     console.log("Opening move menu for:", nodeId, "anchored to:", anchorEl);
@@ -630,20 +669,42 @@ const MUIChatHistory = () => {
     setMoveToMenuState({ anchorEl: null, nodeId: null });
   };
 
-  // Function to toggle pin status
-  const togglePinFolder = (folderId: string) => {
-    setPinnedFolders(prev => {
-      const newPinned = new Set(prev);
-      if (newPinned.has(folderId)) {
-        newPinned.delete(folderId);
-        message.info('Folder unpinned');
-      } else {
-        newPinned.add(folderId);
-        message.success('Folder pinned to top');
-      }
-      return newPinned;
-    });
-  }
+  // Handle moving a conversation to a folder
+  const handleMoveConversation = async (conversationId: string, folderId: string | null) => {
+    console.log('🔧 handleMoveConversation called:', { conversationId, folderId });
+
+    // Strip conv- prefix if present
+    if (conversationId.startsWith('conv-')) {
+      conversationId = conversationId.substring(5);
+      console.log('🔧 Stripped conv- prefix, new ID:', conversationId);
+    }
+
+    try {
+      console.log('🔧 Calling moveConversationToFolder with:', { conversationId, folderId });
+      await moveConversationToFolder(conversationId, folderId);
+
+      // Force a re-render by checking if the state actually changed
+      setTimeout(() => {
+        const updatedConv = conversations.find(c => c.id === conversationId);
+        console.log('📊 Conversation state after move:', {
+          id: conversationId,
+          folderId: updatedConv?.folderId,
+          expectedFolderId: folderId,
+          moveWorked: updatedConv?.folderId === folderId
+        });
+
+        if (updatedConv?.folderId !== folderId) {
+          console.error('❌ MOVE WAS OVERWRITTEN - conversation folder ID was reset!');
+        }
+      }, 100);
+
+      message.success('Conversation moved successfully');
+      console.log('✅ Move completed successfully');
+    } catch (error) {
+      console.error('❌ Move failed:', error);
+      message.error('Failed to move conversation');
+    }
+  };
 
   // Handle moving a folder
   const handleMoveFolder = async (folderId: string, targetParentId: string | null) => {
@@ -682,6 +743,387 @@ const MUIChatHistory = () => {
       console.error('Move folder error:', error);
     }
   };
+
+  const startCustomDrag = useCallback((nodeId: string, nodeType: 'folder' | 'conversation', text: string) => {
+    const ghostElement = createDragGhost(text);
+
+    setCustomDragState({
+      isDragging: true,
+      draggedNodeId: nodeId,
+      draggedNodeType: nodeType,
+      ghostElement,
+      draggedText: text
+    });
+  }, [createDragGhost]);
+
+  const endCustomDrag = useCallback(async (dropTargetId?: string | undefined) => {
+    if (!customDragState.isDragging || !customDragState.draggedNodeId) return;
+    // Clear all visual feedback
+    document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
+      if (item instanceof HTMLElement) {
+        item.style.backgroundColor = '';
+        item.style.border = '';
+        item.style.opacity = '1';
+        item.style.boxShadow = '';
+      }
+    });
+
+    // Remove insertion lines
+    document.querySelectorAll('.drop-insertion-line').forEach(line => {
+      line.remove();
+    });
+
+    if (dropTargetId && dropTargetId !== customDragState.draggedNodeId) {
+      try {
+        if (customDragState.draggedNodeType === 'conversation') {
+          const targetFolderId = dropTargetId.startsWith('conv-') ? null : dropTargetId;
+          console.log('🔍 FOLDER ID LOGIC:', {
+            dropTargetId,
+            startsWithConv: dropTargetId?.startsWith('conv-'),
+            targetFolderId
+          });
+          console.log('📝 Moving conversation:', customDragState.draggedNodeId, 'to folder:', targetFolderId);
+          await handleMoveConversation(customDragState.draggedNodeId, targetFolderId);
+        } else if (customDragState.draggedNodeType === 'folder') {
+          const targetParentId = dropTargetId.startsWith('conv-') ? null : dropTargetId;
+          await handleMoveFolder(customDragState.draggedNodeId, targetParentId);
+        }
+      } catch (error) {
+        console.error('Drop error:', error);
+        message.error('Failed to move item');
+      }
+    }
+
+    // Handle the case where dropTargetId is undefined (root level drop)
+    if (dropTargetId === undefined) {
+      if (customDragState.draggedNodeType === 'conversation') {
+        await handleMoveConversation(customDragState.draggedNodeId, null);
+      } else if (customDragState.draggedNodeType === 'folder') {
+        await handleMoveFolder(customDragState.draggedNodeId, null);
+      }
+    }
+
+    // Cleanup (always runs, regardless of success or failure)
+    if (customDragState.ghostElement) {
+      customDragState.ghostElement.remove();
+    }
+
+    // Final cleanup of any remaining visual artifacts
+    document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
+      if (item instanceof HTMLElement) {
+        item.style.backgroundColor = '';
+        item.style.border = '';
+      }
+    });
+
+    // Final cleanup of insertion lines
+    document.querySelectorAll('.drop-insertion-line').forEach(line => {
+      line.remove();
+    });
+
+    setCustomDragState({
+      isDragging: false,
+      draggedNodeId: null,
+      draggedNodeType: null,
+      ghostElement: null,
+      draggedText: ''
+    });
+  }, [customDragState, handleMoveConversation, handleMoveFolder]);
+
+  // Global mouse tracking for custom drag
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!customDragState.isDragging || !customDragState.ghostElement) return;
+
+      // Only handle mouse events within the chat history area
+      const chatHistoryContainer = chatHistoryRef.current;
+      if (!chatHistoryContainer || !chatHistoryContainer.contains(e.target as Node)) {
+        // Mouse is outside chat history - don't interfere
+        return;
+      }
+
+      customDragState.ghostElement.style.left = (e.clientX + 10) + 'px';
+      customDragState.ghostElement.style.top = (e.clientY + 10) + 'px';
+
+      // Clear all highlighting first
+      document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
+        if (item instanceof HTMLElement) {
+          item.style.backgroundColor = '';
+          item.style.border = '';
+          item.style.boxShadow = '';
+        }
+      });
+
+      // Remove any existing insertion lines
+      document.querySelectorAll('.drop-insertion-line').forEach(line => {
+        line.remove();
+      });
+
+      // Enhanced drop zone detection with hierarchical insertion
+      const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
+      const treeItemBelow = elementBelow?.closest('.MuiTreeItem-content');
+
+      if (treeItemBelow && treeItemBelow instanceof HTMLElement) {
+        const dropTargetText = treeItemBelow.textContent?.trim();
+
+        // Better folder detection - check multiple indicators
+        const isFolder = (
+          dropTargetText?.includes('(') || // Has conversation count
+          treeItemBelow.querySelector('.MuiSvgIcon-root[data-testid*="Folder"]') || // Has folder icon
+          dropTargetText?.toLowerCase().includes('folder') || // Name contains "folder"
+          treeItemBelow.closest('.MuiTreeItem-root')?.querySelector('.MuiTreeItem-group') || // Has children
+          // Check if this item has the folder icon (MUI uses FolderIcon for folders)
+          treeItemBelow.querySelector('svg[data-testid="FolderIcon"]')
+        );
+
+        const treeItemRoot = treeItemBelow.closest('.MuiTreeItem-root');
+        const treeContainer = treeItemBelow.closest('.MuiTreeView-root');
+
+        // Get mouse position relative to the item for insertion logic
+        const rect = treeItemBelow.getBoundingClientRect();
+        const mouseY = e.clientY;
+        const itemTop = rect.top;
+        const itemBottom = rect.bottom;
+        const itemHeight = rect.height;
+        const relativeY = mouseY - itemTop;
+
+        // Determine insertion position and target
+        let insertionType: 'above' | 'below' | 'inside' = 'below';
+        let targetLevel = 0;
+
+        // Calculate current item's nesting level
+        if (treeItemRoot) {
+          const parentGroups: Element[] = [];
+          let current = treeItemRoot.parentElement;
+          while (current && current !== treeContainer) {
+            if (current.classList.contains('MuiTreeItem-group')) {
+              parentGroups.push(current);
+            }
+            current = current.parentElement;
+          }
+          targetLevel = parentGroups.length;
+        }
+
+        // Determine insertion type based on mouse position and target type
+        if (isFolder && relativeY > itemHeight * 0.3 && relativeY < itemHeight * 0.7) {
+          // Middle of folder - insert INSIDE the folder
+          insertionType = 'inside';
+        } else if (relativeY < itemHeight * 0.5) {
+          // Top half - insert ABOVE
+          insertionType = 'above';
+        } else {
+          // Bottom half - insert BELOW
+          insertionType = 'below';
+        }
+
+        // Create insertion line/highlight with proper visual feedback
+        const insertionLine = document.createElement('div');
+        insertionLine.className = 'drop-insertion-line';
+
+        if (insertionType === 'inside') {
+          // Inside folder - show as green highlight
+          insertionLine.style.cssText = `
+            position: absolute;
+            left: ${20 + targetLevel * 15}px;
+            right: 10px;
+            height: ${itemHeight}px;
+            background: rgba(82, 196, 26, 0.15);
+            border: 2px dashed #52c41a;
+            border-radius: 4px;
+            z-index: 999;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            padding-left: 8px;
+            font-size: 12px;
+            color: #52c41a;
+            font-weight: bold;
+          `;
+          insertionLine.textContent = '📁 Drop inside folder';
+        } else {
+          // Above/below - show as insertion line with proper indentation
+          insertionLine.style.cssText = `
+            position: absolute;
+            left: ${20 + targetLevel * 15}px;
+            right: 10px;
+            height: 2px;
+            background: #1890ff;
+            z-index: 1000;
+            pointer-events: none;
+            box-shadow: 0 0 4px rgba(24, 144, 255, 0.5);
+          `;
+        }
+
+        const containerRect = treeItemBelow.closest('.MuiTreeView-root')?.getBoundingClientRect();
+
+        if (containerRect) {
+          const lineY = insertionType === 'above' ?
+            rect.top - containerRect.top - 2 :
+            insertionType === 'inside' ?
+              rect.top - containerRect.top :
+              rect.bottom - containerRect.top + 2;
+
+          insertionLine.style.top = lineY + 'px';
+
+          // Add to the tree container
+          if (treeContainer instanceof HTMLElement) {
+            treeContainer.style.position = 'relative';
+            treeContainer.appendChild(insertionLine);
+          }
+        }
+
+        // Store the insertion context for the drop handler
+        insertionLine.setAttribute('data-insertion-type', insertionType);
+        insertionLine.setAttribute('data-target-level', targetLevel.toString());
+        insertionLine.setAttribute('data-target-node', dropTargetText || '');
+      }
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+      if (customDragState.isDragging) {
+        // Read insertion context BEFORE clearing visual feedback
+        const insertionLine = document.querySelector('.drop-insertion-line');
+        const insertionContext = insertionLine ? {
+          type: insertionLine.getAttribute('data-insertion-type') || 'below',
+          level: insertionLine.getAttribute('data-target-level'),
+          target: insertionLine.getAttribute('data-target-node')
+        } : null;
+
+        console.log('📍 Insertion context captured:', insertionContext);
+
+        // Clear all visual feedback immediately
+        document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
+          if (item instanceof HTMLElement) {
+            item.style.backgroundColor = '';
+            item.style.border = '';
+            item.style.opacity = '1';
+            item.style.boxShadow = '';
+          }
+        });
+
+        // Remove all insertion lines (AFTER reading the context)
+        document.querySelectorAll('.drop-insertion-line').forEach(line => {
+          line.remove();
+        });
+
+        const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
+        const dropTarget = elementBelow?.closest('.MuiTreeItem-content');
+
+        // Better drop target detection using our node mapping
+        let targetNodeId: string | undefined;
+        let insertionType = insertionContext?.type || 'below'; // Use captured context
+
+        if (dropTarget) {
+          console.log('📍 Using captured insertion context:', insertionType);
+
+          const dropTargetText = dropTarget.textContent?.trim();
+          console.log('🔍 Looking for node with text:', dropTargetText);
+
+          // Determine target based on insertion type
+          if (insertionType === 'inside') {
+            // Dropping INSIDE a folder - find the folder GUID
+            const matchingFolder = folders.find(folder => {
+              // Try multiple matching strategies
+              const expectedText = `${folder.name}(${conversations.filter(c => c.folderId === folder.id).length})`.trim();
+              const matches = expectedText === dropTargetText;
+              if (!matches) {
+                // Try matching just the folder name without count
+                const nameOnlyMatches = folder.name.trim() === dropTargetText;
+                // Try matching with different folder name patterns
+                const folderNamePatterns = [
+                  folder.name.trim(),
+                  `${folder.name}(0)`, // Empty folder
+                  folder.name.split('/').pop()?.trim() // Last part of path for nested folders
+                ].filter(Boolean);
+
+                if (nameOnlyMatches || folderNamePatterns.some(pattern => pattern === dropTargetText)) {
+                  console.log('🔍 Matched folder by name only:', folder.name);
+                  return true;
+                }
+              }
+              return matches;
+            });
+
+            if (matchingFolder) {
+              targetNodeId = matchingFolder.id;
+            }
+
+          } else {
+            // Dropping above/below - determine the parent context
+            const matchingConversation = conversations.find(conv =>
+              conv.title.trim() === dropTargetText
+            );
+
+            if (matchingConversation) {
+              // When dropping above/below a conversation, move to the same folder as that conversation
+              targetNodeId = matchingConversation.folderId || undefined;
+            } else {
+              const matchingFolder = folders.find(folder => {
+                const expectedText = `${folder.name}(${conversations.filter(c => c.folderId === folder.id).length})`.trim();
+                const matches = expectedText === dropTargetText;
+                if (!matches) {
+                  // Also try matching just the folder name without count
+                  const nameOnlyMatches = folder.name.trim() === dropTargetText;
+                  return nameOnlyMatches;
+                }
+              });
+
+              if (matchingFolder) {
+                if (insertionType === 'inside') {
+                  // Dropping INSIDE the folder - use the folder's ID
+                  targetNodeId = matchingFolder.id;
+                } else {
+                  // Dropping above/below the folder - move to the same level as the folder
+                  targetNodeId = matchingFolder.parentId || undefined;
+                }
+                console.log('🎯 Found folder target:', {
+                  targetNodeId,
+                  matchingFolder: matchingFolder.name,
+                  insertionType,
+                  parentId: matchingFolder.parentId
+                });
+
+              }
+            }
+          }
+
+        }
+
+        // Handle the case where no target was found - this should be a root level drop
+        if (targetNodeId === undefined) {
+          console.log('🎯 No specific target found - treating as root level drop');
+        }
+
+        console.log('🎯 Final target resolution:', { targetNodeId, draggedId: customDragState.draggedNodeId });
+        endCustomDrag(targetNodeId ?? undefined);
+      }
+    };
+
+    if (customDragState.isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+
+      return () => {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [customDragState, endCustomDrag, folders, conversations, pinnedFolders]);
+
+  // Function to toggle pin status
+  const togglePinFolder = (folderId: string) => {
+    setPinnedFolders(prev => {
+      const newPinned = new Set(prev);
+      if (newPinned.has(folderId)) {
+        newPinned.delete(folderId);
+        message.info('Folder unpinned');
+      } else {
+        newPinned.add(folderId);
+        message.success('Folder pinned to top');
+      }
+      return newPinned;
+    });
+  }
 
   // Handle edit actions
   const handleEdit = (id: string) => {
@@ -917,20 +1359,6 @@ const MUIChatHistory = () => {
     });
   };
 
-  // Handle moving a conversation to a folder
-  const handleMoveConversation = async (conversationId: string, folderId: string | null) => {
-    if (conversationId.startsWith('conv-')) {
-      conversationId = conversationId.substring(5);
-    }
-
-    try {
-      await moveConversationToFolder(conversationId, folderId);
-      message.success('Conversation moved successfully');
-    } catch (error) {
-      message.error('Failed to move conversation');
-    }
-  };
-
   // Handle forking a conversation
   const handleForkConversation = async (conversationId: string) => {
     if (conversationId.startsWith('conv-')) {
@@ -1129,6 +1557,14 @@ const MUIChatHistory = () => {
 
   // Build tree data from folders and conversations
   const treeData = useMemo(() => {
+    // Add logging to see why this rebuilds so often
+    console.log('🔄 REBUILDING TREE DATA:', {
+      foldersCount: folders.length,
+      conversationsCount: conversations.length,
+      pinnedFoldersCount: pinnedFolders.size,
+      timestamp: Date.now()
+    });
+
     const folderMap = new Map();
     folders.forEach(folder => {
       folderMap.set(folder.id, {
@@ -1141,7 +1577,7 @@ const MUIChatHistory = () => {
         lastActivityTime: 0, // Will be calculated from conversations
         createdAt: folder.createdAt || 0 // Use creation time as fallback
       });
-    })
+    });
 
     // Add conversations to their respective folders in the map
     const activeConversations = conversations.filter(conv => conv.isActive !== false);
@@ -1273,46 +1709,7 @@ const MUIChatHistory = () => {
     };
 
     return sortRecursive(rootItems);
-  }, [folders, conversations, pinnedFolders]);
-
-  // Handle drag and drop using MUI TreeView's built-in functionality
-  const handleDragStart = (event: React.DragEvent, nodeId: string) => {
-    console.log('Drag started:', nodeId);
-    const nodeType = nodeId.startsWith('conv-') ? 'conversation' : 'folder';
-    const dragData = { nodeId, nodeType };
-    event.dataTransfer.setData('application/json', JSON.stringify(dragData));
-  };
-
-  const handleDragOver = (event: React.DragEvent, nodeId: string) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-  };
-
-  const handleDrop = async (event: React.DragEvent, nodeId: string) => {
-    event.preventDefault();
-
-    try {
-      const dragDataStr = event.dataTransfer.getData('application/json');
-      if (!dragDataStr) return;
-
-      const { nodeId: sourceNodeId, nodeType } = JSON.parse(dragDataStr);
-
-      if (sourceNodeId === nodeId) return; // Can't drop on itself
-
-      console.log(`Dropping ${sourceNodeId} onto ${nodeId}`);
-
-      if (nodeType === 'conversation') {
-        const targetFolderId = nodeId.startsWith('conv-') ? null : nodeId;
-        await handleMoveConversation(sourceNodeId, targetFolderId);
-      } else if (nodeType === 'folder') {
-        const targetParentId = nodeId.startsWith('conv-') ? null : nodeId;
-        await handleMoveFolder(sourceNodeId, targetParentId);
-      }
-    } catch (error) {
-      console.error('Drop error:', error);
-      message.error('Failed to move item');
-    }
-  };
+  }, [conversations, folders, pinnedFolders]);
 
   // Create a unified folder configuration dialog that works for both creation and editing
   const showFolderConfigDialog = (folderId?: string) => {
@@ -1556,7 +1953,7 @@ const MUIChatHistory = () => {
   };
 
   // Render the tree recursively
-  const renderTree = (nodes: any[]) => {
+  const renderTree = (nodes: any[]): React.ReactNode[] => {
     return nodes.map(node => {
       const isFolder = Boolean(node.folder);
       const nodeId = node.id;
@@ -1575,7 +1972,50 @@ const MUIChatHistory = () => {
       const conversationCount = isFolder ? node.conversationCount : 0;
       const isEditing = editingId === (isFolder ? node.id : node.id.substring(5));
 
-      // Add draggable attribute to enable drag and drop
+      // Custom drag handler that doesn't interfere with text editing
+      const handleCustomMouseDown = (e: React.MouseEvent) => {
+        // Skip if clicking on editable elements
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.closest('input') ||
+          target.closest('textarea') ||
+          target.closest('.MuiTextField-root')) {
+          return; // Allow normal text editing
+        }
+
+        // Only initiate drag if we're within the chat history area
+        const chatHistoryContainer = chatHistoryRef.current;
+        if (!chatHistoryContainer || !chatHistoryContainer.contains(target)) {
+          return; // Don't start drag if outside chat history
+        }
+
+        // Only start drag detection after movement threshold
+        const startX = e.clientX;
+        const startY = e.clientY;
+
+        const detectDrag = (moveEvent: MouseEvent) => {
+          const deltaX = Math.abs(moveEvent.clientX - startX);
+          const deltaY = Math.abs(moveEvent.clientY - startY);
+
+          if (deltaX > 8 || deltaY > 8) {
+            startCustomDrag(nodeId, isFolder ? 'folder' : 'conversation', labelText);
+            document.removeEventListener('mousemove', detectDrag);
+            document.removeEventListener('mouseup', cleanup);
+          }
+        };
+
+        const cleanup = () => {
+          document.removeEventListener('mousemove', detectDrag);
+          document.removeEventListener('mouseup', cleanup);
+        };
+
+        setTimeout(() => {
+          document.addEventListener('mousemove', detectDrag);
+          document.addEventListener('mouseup', cleanup);
+        }, 50);
+      };
+
       return (
         <ChatTreeItem
           key={nodeId}
@@ -1601,10 +2041,12 @@ const MUIChatHistory = () => {
           editValue={editValue}
           onEditChange={handleEditChange}
           onEditSubmit={handleEditSubmit}
-          // Add drag and drop props
-          onDragStart={(e) => handleDragStart(e, nodeId)}
-          onDragOver={(e) => handleDragOver(e, nodeId)}
-          onDrop={(e) => handleDrop(e, nodeId)}
+          onMouseDown={handleCustomMouseDown}
+          style={{
+            cursor: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 'grabbing' : 'grab',
+            opacity: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 0.6 : 1,
+            transition: 'opacity 0.2s ease'
+          }}
         >
           {isFolder && node.children && node.children.length > 0 ? renderTree(node.children) : null}
         </ChatTreeItem>
@@ -1622,89 +2064,90 @@ const MUIChatHistory = () => {
       <Spin size="large" />
     </Box>
   ) : (
-    <Box ref={chatHistoryRef} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Tree View with integrated action buttons */}
-      <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
-        {(() => {
-          const treeViewStyles = {
-            height: '100%',
-            overflowY: 'auto' as const,
-            '& .MuiTreeItem-root': {
-              '&.Mui-selected > .MuiTreeItem-content': {
-                bgcolor: isDarkMode ? '#177ddc' : '#e6f7ff',
-                color: isDarkMode ? '#ffffff' : 'inherit',
+    <>
+      <Box ref={chatHistoryRef} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        {/* Tree View with integrated action buttons */}
+        <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
+          {(() => {
+            const treeViewStyles = {
+              height: '100%',
+              overflowY: 'auto' as const,
+              '& .MuiTreeItem-root': {
+                '&.Mui-selected > .MuiTreeItem-content': {
+                  bgcolor: isDarkMode ? '#177ddc' : '#e6f7ff',
+                  color: isDarkMode ? '#ffffff' : 'inherit',
+                },
+                '&.drag-over > .MuiTreeItem-content': {
+                  backgroundColor: isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)',
+                  border: isDarkMode ? '1px dashed #177ddc' : '1px dashed #1890ff'
+                }
               },
-              '&.drag-over > .MuiTreeItem-content': {
-                backgroundColor: isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)',
-                border: isDarkMode ? '1px dashed #177ddc' : '1px dashed #1890ff'
+              '& .MuiTreeItem-content': {
+                padding: '0px 8px',
+                minHeight: '20px'
               }
-            },
-            '& .MuiTreeItem-content': {
-              padding: '0px 8px',
-              minHeight: '20px'
-            }
-          };
+            };
 
-          return (
-            <TreeView
-              aria-label="chat history"
-              sx={treeViewStyles}
-              defaultCollapseIcon={<ArrowDropDownIcon />}
-              defaultExpandIcon={<ArrowRightIcon />}
-              defaultEndIcon={<div style={{ width: 24 }} />}
-              expanded={expandedNodes.map(String)}
-              selected={currentConversationId ? 'conv-' + currentConversationId : currentFolderId || ''}
-              onNodeToggle={handleNodeToggle}
-              onNodeSelect={handleTreeNodeSelect}
-              // Disable TreeView's built-in selection behavior during drag
-              disableSelection={false}
-              className="chat-history-tree"
-            >
-              {renderTree(treeData)}
-            </TreeView>
-          );
-        })()}
-      </Box>
-
-      {/* Export/Import buttons */}
-      <Box sx={{
-        mt: 'auto',
-        display: 'flex',
-        justifyContent: 'flex-end',
-        p: 2,
-        borderTop: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8'
-      }}>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Button
-            variant="outlined"
-            startIcon={<DownloadIcon />}
-            onClick={handleExportConversations}
-            size="small"
-          >
-            Export
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<UploadIcon />}
-            onClick={handleImportConversations}
-            size="small"
-          >
-            Import
-          </Button>
+            return (
+              <TreeView
+                aria-label="chat history"
+                sx={treeViewStyles}
+                defaultCollapseIcon={<ArrowDropDownIcon />}
+                defaultExpandIcon={<ArrowRightIcon />}
+                defaultEndIcon={<div style={{ width: 24 }} />}
+                expanded={expandedNodes.map(String)}
+                selected={currentConversationId ? 'conv-' + currentConversationId : currentFolderId || ''}
+                onNodeToggle={handleNodeToggle}
+                onNodeSelect={handleTreeNodeSelect}
+                disableSelection={false}
+                className="chat-history-tree"
+              >
+                {renderTree(treeData)}
+              </TreeView>
+            );
+          })()}
         </Box>
-      </Box>
 
-      {/* Render the move menu */}
-      <MoveToFolderMenu
-        anchorEl={moveToMenuState.anchorEl}
-        open={Boolean(moveToMenuState.anchorEl)}
-        onClose={handleCloseMoveMenu}
-        folders={folders}
-        onMove={handleMoveConversation}
-        onMoveFolder={handleMoveFolder}
-        nodeId={moveToMenuState.nodeId}
-      />
-    </Box>
+        {/* Export/Import buttons */}
+        <Box sx={{
+          mt: 'auto',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          p: 2,
+          borderTop: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8'
+        }}>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Button
+              variant="outlined"
+              startIcon={<DownloadIcon />}
+              onClick={handleExportConversations}
+              size="small"
+            >
+              Export
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<UploadIcon />}
+              onClick={handleImportConversations}
+              size="small"
+            >
+              Import
+            </Button>
+          </Box>
+        </Box>
+
+        {/* Render the move menu */}
+        <MoveToFolderMenu
+          anchorEl={moveToMenuState.anchorEl}
+          open={Boolean(moveToMenuState.anchorEl)}
+          onClose={handleCloseMoveMenu}
+          folders={folders}
+          onMove={handleMoveConversation}
+          onMoveFolder={handleMoveFolder}
+          nodeId={moveToMenuState.nodeId}
+        />
+      </Box>
+    </>
   );
 };
 

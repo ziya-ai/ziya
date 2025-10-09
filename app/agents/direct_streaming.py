@@ -141,7 +141,7 @@ class DirectStreamingAgent:
                 chunk_count = 0
                 tool_results_sent = 0
                 largest_chunk = 0
-                async for chunk in self.executor.stream_with_tools(openai_messages, tools):
+                async for chunk in self.executor.stream_with_tools(openai_messages, tools, conversation_id=conversation_id):
                     chunk_count += 1
                     chunk_size = len(str(chunk))
                     largest_chunk = max(largest_chunk, chunk_size)

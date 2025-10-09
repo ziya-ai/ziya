@@ -49,6 +49,7 @@ class CustomBedrockClient:
         self.last_extended_context_notification = None
         self.model_config = model_config or {}
         self.extended_context_manager = get_extended_context_manager()
+        self.throttled = False  # Track if we've hit throttling
         
         # Get the region from the client
         self.region = self.client.meta.region_name if hasattr(self.client, 'meta') else None
@@ -219,9 +220,50 @@ class CustomBedrockClient:
                     except Exception as e:
                         error_message = str(e)
                         self.last_error = error_message
+                        logger.warning(f"🔄 INITIAL_ERROR: {error_message}")
+                        
+                        # Check for throttling errors - let higher level retry handle it
+                        # But keep timeout retries here since they need immediate retry
+                        if ("ThrottlingException" in error_message or 
+                            "Too many tokens" in error_message or
+                            "rate limit" in error_message.lower()):
+                            # Mark as throttled and recreate client without boto3 retries
+                            if not self.throttled:
+                                self.throttled = True
+                                logger.info("🔄 THROTTLE_DETECTED: Disabling boto3 retries for subsequent attempts")
+                                from botocore.config import Config
+                                import boto3
+                                retry_config = Config(retries={'max_attempts': 1, 'mode': 'standard'})
+                                new_client = boto3.client('bedrock-runtime', region_name=self.region, config=retry_config)
+                                self.client = new_client
+                                self.original_invoke = new_client.invoke_model_with_response_stream
+                                if hasattr(new_client, 'invoke_model'):
+                                    self.original_invoke_model = new_client.invoke_model
+                            # Don't retry here, let streaming_tool_executor handle throttling retries
+                            raise
+                        
+                        if "timeout" in error_message.lower():
+                            # Retry timeouts immediately with short delays
+                            max_retries = 2
+                            for retry_attempt in range(max_retries):
+                                delays = [1, 2]
+                                delay = delays[retry_attempt]
+                                logger.warning(f"🔄 TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
+                                
+                                import time
+                                time.sleep(delay)
+                                
+                                try:
+                                    return self.original_invoke(**kwargs)
+                                except Exception as retry_error:
+                                    if retry_attempt == max_retries - 1:
+                                        logger.error(f"🔄 TIMEOUT_RETRY: All {max_retries} retry attempts failed")
+                                        raise retry_error
+                                    elif "timeout" not in str(retry_error).lower():
+                                        raise retry_error
                         
                         # Check if it's a context limit error
-                        if ("input length and `max_tokens` exceed context limit" in error_message or
+                        elif ("input length and `max_tokens` exceed context limit" in error_message or
                             "Input is too long" in error_message):
                             logger.warning(f"Context limit error detected: {error_message}")
                             

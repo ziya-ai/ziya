@@ -80,13 +80,19 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         self._recent_lines = []
         accumulated_content = ""
         accumulated_chunks = []  # Track all chunks for better preservation
+
+        # Code block state tracking for frontend
+        frontend_code_block_state = {
+            'in_block': False,
+            'block_type': None
+        }
         
         # Limits for preserved content to prevent context bloat
         MAX_PRESERVED_TOOLS = 10
         MAX_TOOL_OUTPUT_LENGTH = 5000
         successful_tool_outputs = []  # Track successful tool executions
         tool_sequence_count = 0
-        content_buffer = ""  # Buffer to hold content while checking for tool calls
+        # content_buffer = ""  # Disabled buffering for real-time streaming
         partial_response_preserved = False
         try:
             async for chunk in original_iterator:
@@ -138,7 +144,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 chunk_content = json.dumps(json_obj)
                                 
                                 # DEBUGGING: Check if JSON serialization changed size
-                                if len(chunk_content) != chunk_size and json_obj.get('type') == 'tool_execution':
+                                if len(chunk_content) != chunk_size and json_obj.get('type') in ['tool_execution', 'tool_display']:
                                     logger.warning(f"🔍 JSON_SIZE_CHANGE: Original {chunk_size} -> Serialized {len(chunk_content)} chars")
                                 
                                 yield f"data: {json.dumps(json_obj)}\n\n"
@@ -146,46 +152,18 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 # If it's not valid JSON, just pass it as a string
                                 content = str(chunk)
                                 
-                                # Buffer content to check for tool calls
-                                content_buffer += content
-                                
-                                # Check if we have a complete tool call or if we should flush the buffer
-                                if self._should_flush_buffer(content_buffer):
-                                    # If this contains a complete tool call, execute it and send the result
-                                    if self._contains_complete_tool_call(content_buffer):
-                                        # First, send the complete tool call to the frontend as JSON
-                                        yield f"data: {json.dumps({'tool_call': content_buffer})}\n\n"
-                                        
-                                        try:
-                                            # Execute the tool call
-                                            logger.info(f"Executing tool call in streaming middleware: {content_buffer[:100]}...")
-                                            from app.mcp.consolidated import execute_mcp_tools_with_status
-                                            tool_result = await execute_mcp_tools_with_status(content_buffer)
-                                            logger.info(f"Tool execution result: {tool_result[:100]}...")
-                                            
-                                            # Send the tool result to the frontend
-                                            yield f"data: {json.dumps({'tool_result': tool_result})}\n\n"
-                                        except Exception as tool_error:
-                                            logger.error(f"Error executing tool call: {tool_error}")
-                                            # Send error message
-                                            error_msg = f"\n\n```tool:error\n❌ **Tool Error:** {str(tool_error)}\n```\n\n"
-                                            yield f"data: {json.dumps({'tool_error': error_msg})}\n\n"
-                                        
-                                        # Clear buffer
-                                        content_buffer = ""
-                                    else:
-                                        # Send buffered content as JSON, not raw content
+                                # Immediately pass through tool_start messages without buffering
+                                if '"type": "tool_start"' in content:
+                                    # First flush any buffered content
+                                    if content_buffer:
                                         yield f"data: {json.dumps({'content': content_buffer})}\n\n"
                                         content_buffer = ""
-                                elif self._contains_partial(content_buffer):
-                                    # Still accumulate partial content
-                                    accumulated_content += content
-                                    # Hold the content in buffer, don't send yet
+                                    # Then send the tool_start message
+                                    yield content
                                     continue
-                                else:
-                                    # Safe to send immediately as raw content
-                                    yield f"data: {content}\n\n"
-                                    content_buffer = ""
+                                
+                                # Send content immediately for real-time streaming
+                                yield f"data: {json.dumps({'content': content})}\\n\\n"
                         
                         # Log chunk content preview
                         if len(chunk) > 200:
@@ -246,6 +224,16 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         else:
                             # For simple string content
                             content = str(raw_content)
+                            
+                            # Immediately pass through tool_start messages without buffering
+                            if '"type": "tool_start"' in content:
+                                # First flush any buffered content
+                                if content_buffer:
+                                    yield f"data: {json.dumps({'content': content_buffer})}\n\n"
+                                    content_buffer = ""
+                                # Then send the tool_start message
+                                yield content
+                                continue
                             
                             # Buffer content to check for tool calls
                             content_buffer += content
@@ -354,7 +342,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 logger.warning(f"🔍 LARGE_CHUNK_DETECTED: {chunk_size} chars - monitoring for truncation")
                             
                             # Check if this is a tool result chunk
-                            if "tool_execution" in chunk or "tool_result" in chunk:
+                            if "tool_execution" in chunk or "tool_display" in chunk or "tool_result" in chunk:
                                 logger.info(f"🔍 TOOL_RESULT_CHUNK: size={chunk_size}, content preview: {chunk[:100]}...")
                             
                             # Check if it might be JSON
@@ -368,7 +356,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 # DEBUGGING: Track large JSON objects
                                 if len(chunk_content) > 5000:
                                     logger.warning(f"🔍 MIDDLEWARE_LARGE_JSON: {len(chunk_content)} chars, type={json_obj.get('type')}")
-                                    if json_obj.get('type') == 'tool_execution':
+                                if json_obj.get('type') in ['tool_execution', 'tool_display']:
                                         result_size = len(json_obj.get('result', ''))
                                         logger.warning(f"🔍 MIDDLEWARE_TOOL_RESULT: tool={json_obj.get('tool_name')}, result_size={result_size}")
                                         if result_size == 0:

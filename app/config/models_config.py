@@ -9,7 +9,7 @@ import os
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
-    "bedrock": "sonnet4.0",
+    "bedrock": "sonnet4.5",
     "google": "gemini-pro"
 }
 
@@ -29,7 +29,7 @@ GLOBAL_MODEL_DEFAULTS = {
     "temperature": 0.3,
     "supports_thinking": False,
     "supports_max_input_tokens": False,
-    "default_max_output_tokens": 4096,  # Default value for max_output_tokens
+    "default_max_output_tokens": 32768,  # Default value for max_output_tokens
     "parameter_mappings": {
         "max_output_tokens": ["max_tokens"],  # Some APIs use max_tokens instead
         "temperature": ["temperature"],
@@ -169,19 +169,6 @@ ENDPOINT_DEFAULTS = {
 # Model-specific configs that override endpoint defaults
 MODEL_CONFIGS = {
     "bedrock": {
-        "opus4.1": {
-            "model_id": {
-                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0"
-            },
-            "token_limit": 200000,  # Total context window size
-            "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
-            "supports_max_input_tokens": True,
-            "supports_thinking": True,  # Override global default
-            "family": "claude",
-            "supports_context_caching": True,
-            "region": "us-east-1"  # Model-specific region preference
-        },
         "sonnet4.0": {
             "model_id": {
                 "us": "us.anthropic.claude-sonnet-4-20250514-v1:0",
@@ -196,7 +183,7 @@ MODEL_CONFIGS = {
             "preferred_region": "us-east-1",  # Default preference but not restricted
             "token_limit": 200000,  # Total context window size
             "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
+            "default_max_output_tokens": 36000,  # Default value for max_output_tokens
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
             "family": "claude",
@@ -204,6 +191,26 @@ MODEL_CONFIGS = {
             "supports_extended_context": True,  # Supports 1M token context window
             "extended_context_limit": 1000000,  # Extended context window size
             "extended_context_header": "context-1m-2025-08-07"  # Beta header for extended context
+        },
+        "sonnet4.5": {
+            "model_id": {
+                "us": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "eu": "anthropic.claude-sonnet-4-5-20250929-v1:0"
+            },
+            "available_regions": [
+                "us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"
+            ],
+            "preferred_region": "us-east-1",  # Default preference
+            "token_limit": 200000,  # Total context window size
+            "max_output_tokens": 64000,  # Maximum output tokens
+            "default_max_output_tokens": 36000,  # Default value for max_output_tokens
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,  # Override global default
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_extended_context": True,  # Supports 1M token context window
+            "extended_context_limit": 1000000,  # Extended context window size
+            "extended_context_header": "context-1m-2025-08-07"  # Same header as sonnet4.0
         },
         "sonnet3.7": {
             "model_id": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -243,9 +250,16 @@ MODEL_CONFIGS = {
             "region_restricted": True,  # Only available in US regions
             "preferred_region": "us-east-1",
             "family": "claude",
-            "supports_context_caching": True,
-        }, 
+            "region": "us-east-1"  # Model-specific region preference
+        },
         "opus4": {
+            "max_output_tokens": 64000,  # Add explicit output token limits
+            "default_max_output_tokens": 32000,  # Higher default for opus4
+            "max_iterations": 8,  # Higher iteration limit for advanced model
+            "timeout_multiplier": 6,  # Longer timeouts for complex responses
+            "is_advanced_model": True,  # Flag for 4.0+ capabilities
+            "token_limit": 200000,  # Add context window
+            "supports_max_input_tokens": True,
             "model_id": {
                 "us": "us.anthropic.claude-opus-4-20250514-v1:0"
             },
@@ -264,7 +278,10 @@ MODEL_CONFIGS = {
             "preferred_region": "us-east-1",
             "token_limit": 200000,  # Total context window size
             "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
+            "default_max_output_tokens": 32000,  # Increased from 10k to 32k for longer responses
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
             "family": "claude",
@@ -352,7 +369,7 @@ MODEL_CONFIGS = {
             "model_id": "gemini-2.5-pro",
             "token_limit": 1048576,
             "family": "gemini-pro",
-            "max_output_tokens": 8192,
+            "max_output_tokens": 65536,  # Gemini 2.5 Pro supports up to 65K output tokens
             "convert_system_message_to_human": False,
             "supports_function_calling": True,
             "native_function_calling": True,
@@ -425,6 +442,30 @@ DEFAULT_MAX_REQUEST_SIZE_MB = 10
 TOOL_SENTINEL_TAG = os.environ.get("ZIYA_TOOL_SENTINEL", "TOOL_SENTINEL")
 TOOL_SENTINEL_OPEN = f"<{TOOL_SENTINEL_TAG}>"
 TOOL_SENTINEL_CLOSE = f"</{TOOL_SENTINEL_TAG}>"
+
+# Shell command configuration
+DEFAULT_SHELL_CONFIG = {
+    "enabled": True,
+    "allowedCommands": [
+        "ls", "cat", "pwd", "grep", "wc", "touch", "find", "date", "od", "df", 
+        "netstat", "lsof", "ps", "sed", "awk", "cut", "sort", "which", "hexdump", 
+        "xxd", "tail", "head", "echo", "printf", "tr", "uniq", "column", "nl", 
+        "tee", "base64", "md5sum", "sha1sum", "sha256sum", "bc", "expr", "seq", 
+        "paste", "join", "fold", "expand", "cd", "tree", "less", "xargs", "curl", 
+        "ping", "du", "file"
+    ],
+    "gitOperationsEnabled": True,
+    "safeGitOperations": [
+        "status", "log", "show", "diff", "branch", "remote", "config --get",
+        "ls-files", "ls-tree", "blame", "tag", "stash list", "reflog", 
+        "rev-parse", "describe", "shortlog", "whatchanged"
+    ],
+    "timeout": 90  # Increased base timeout to support longer operations
+}
+
+def get_default_shell_config():
+    """Get the default shell configuration."""
+    return DEFAULT_SHELL_CONFIG.copy()
 
 # Helper functions for model parameter validation
 

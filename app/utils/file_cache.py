@@ -22,9 +22,11 @@ class ThreadStateManager:
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
-                instance = super().__new__(cls)
-                instance.thread_states = {}
-                cls._instance = instance
+                cls._instance = super().__new__(cls)
+                cls._instance.thread_states = {}
+                cls._instance._initialized = True
+            elif not hasattr(cls._instance, '_initialized'):
+                cls._instance.thread_states = {}
         return cls._instance
 
 

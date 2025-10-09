@@ -499,28 +499,28 @@ const extractAllFilesFromDiff = (diffContent: string): string[] => {
 const checkFilesInContext = (filePaths: string[], currentFiles: string[] = []): { missingFiles: string[], availableFiles: string[] } => {
     const missingFiles: string[] = [];
     const availableFiles: string[] = [];
-    
+
     for (const filePath of filePaths) {
         // Clean up the file path (remove a/ or b/ prefixes from git diffs)
         let cleanPath = filePath.trim();
         if (cleanPath.startsWith('a/') || cleanPath.startsWith('b/')) {
             cleanPath = cleanPath.substring(2);
         }
-        
+
         // Check if the file is in the current selected context
-        const isInContext = currentFiles.some(currentFile => 
-            currentFile === cleanPath || 
+        const isInContext = currentFiles.some(currentFile =>
+            currentFile === cleanPath ||
             cleanPath.startsWith(currentFile + '/') ||
             (currentFile.endsWith('/') && cleanPath.startsWith(currentFile))
         );
-        
+
         if (isInContext) {
             availableFiles.push(cleanPath);
         } else {
             missingFiles.push(cleanPath);
         }
     }
-    
+
     console.log('🔄 CONTEXT_ENHANCEMENT: Local check result:', { filePaths, currentFiles: currentFiles.slice(0, 5), missingFiles, availableFiles });
     return { missingFiles, availableFiles };
 };
@@ -884,9 +884,50 @@ const normalizeGitDiff = (diff: string): string => {
     return diff;
 };
 
+// Shared language detection function - moved here so it can be used in both diff rendering and code block fixing
+const detectLanguage = (filePath: string): string => {
+    if (!filePath || filePath === '/dev/null') return 'plaintext';
+
+    // Handle paths that might have git prefixes
+    let cleanPath = filePath;
+    if (cleanPath.startsWith('a/') || cleanPath.startsWith('b/')) {
+        cleanPath = cleanPath.substring(2);
+    }
+
+    if (!cleanPath) return 'plaintext';
+
+    const extension = cleanPath.split('.').pop()?.toLowerCase();
+
+    const languageMap: { [key: string]: string } = {
+        'js': 'javascript',
+        'jsx': 'javascript',
+        'ts': 'typescript',
+        'tsx': 'typescript',
+        'swift': 'swift',
+        'objectivec': 'objectivec',
+        'objc': 'objectivec',
+        'metal': 'c',
+        'py': 'python',
+        'rb': 'ruby',
+        'php': 'php',
+        'java': 'java',
+        'go': 'go',
+        'rs': 'rust',
+        'cpp': 'cpp',
+        'c': 'clike',
+        'cs': 'csharp',
+        'css': 'css',
+        'html': 'markup',
+        'xml': 'markup',
+        'md': 'markdown',
+        'sh': 'bash',
+        'bash': 'bash'
+    };
+    return languageMap[extension || ''] || 'plaintext';
+};
+
 const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex }) => {
     const [isLoading, setIsLoading] = useState(true);
-    const [tokenizedHunks, setTokenizedHunks] = useState<any>(null);
     const { isDarkMode } = useTheme();
     const parsedFilesRef = useRef<any[]>([]);
     const [parseError, setParseError] = useState<boolean>(false);
@@ -1042,36 +1083,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     }, [updateHunkStatuses, diffId]);
 
 
-    // detect language from file path
-    const detectLanguage = (filePath: string): string => {
-        if (!filePath) return 'plaintext';
-        const extension = filePath.split('.').pop()?.toLowerCase();
-        const languageMap: { [key: string]: string } = {
-            'js': 'javascript',
-            'jsx': 'javascript',
-            'ts': 'typescript',
-            'tsx': 'typescript',
-            'swift': 'swift',
-            'objectivec': 'objectivec',
-            'objc': 'objectivec',
-            'metal': 'c',
-            'py': 'python',
-            'rb': 'ruby',
-            'php': 'php',
-            'java': 'java',
-            'go': 'go',
-            'rs': 'rust',
-            'cpp': 'cpp',
-            'c': 'c',
-            'cs': 'csharp',
-            'css': 'css',
-            'html': 'markup',
-            'xml': 'markup',
-            'md': 'markdown'
-        };
-        return languageMap[extension || ''] || 'plaintext';
-    };
-
     useEffect(() => {
         const parseAndSetFiles = () => {
             try {
@@ -1182,59 +1193,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         parseAndSetFiles();
     }, [diff, isGlobalStreaming]);
 
-    // tokenize hunks
+    // Set loading to false since we're not doing any async tokenization
     useEffect(() => {
-        const tokenizeHunks = async (hunks: any[], filePath: string) => {
-            if (!hunks || hunks.length === 0) {
-                setIsLoading(false);
-                return;
-            }
-            setIsLoading(true);
-            const language = detectLanguage(filePath);
-            try {
-                // always load basic languages first
-                await Promise.all([
-                    loadPrismLanguage('markup'),
-                    loadPrismLanguage('clike'),
-                    loadPrismLanguage(language)
-                ]);
-
-                // If parseError is true (e.g. because it's streaming and incomplete),
-                // we don't need to tokenize for the rich view.
-                if (parseError) {
-                    setIsLoading(false);
-                    return;
-                }
-
-                // Verify Prism is properly initialized
-                if (!window.Prism?.languages?.[language]) {
-                    console.warn(`Prism language ${language} not available, falling back to plain text`);
-                    // Try without syntax highlighting
-                    const tokens = tokenize(hunks, {
-                        highlight: true,
-                        refractor: window.Prism,
-                        language: 'plaintext'
-                    });
-                    setTokenizedHunks(tokens);
-                } else {
-                    // Try with the detected language
-                    setTokenizedHunks(null);
-                }
-            } catch (error: unknown) {
-                console.warn(`Error during tokenization for ${language}:`, error);
-                setTokenizedHunks(null);
-            } finally {
-                setIsLoading(false);
-            }
-        };
-
-        // Only tokenize if not in parseError state and we have hunks
-        if (!parseError && parsedFilesRef.current?.[0]?.hunks?.length > 0) {
-            const file = parsedFilesRef.current[0];
-            tokenizeHunks(file.hunks, file.newPath || file.oldPath);
-        } else {
-            setIsLoading(false); // Not loading if we will render raw or have no hunks
-        }
+        // Skip tokenization entirely since it's unused and problematic
+        setIsLoading(false);
     }, [diff, parseError]); // Re-tokenize if diff changes or parseError state changes
 
     const renderHunks = (hunks: any[], filePath: string, fileIndex: number) => {
@@ -1306,9 +1268,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                             }}>
                                 {isApplied ?
                                     isAlreadyApplied ?
-                                        <><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</> :
-                                        <><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</> :
-                                    <><CloseCircleOutlined /> Failed: {statusReason}</>
+                                        <span><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</span> :
+                                        <span><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</span> :
+                                    <span><CloseCircleOutlined /> Failed: {statusReason}</span>
                                 }
                             </span>
                         );
@@ -1366,7 +1328,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         );
                     })}
                 </tbody>
-            </table>
+            </table >
         );
     };
 
@@ -1726,9 +1688,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 }}>
                                     {isApplied ?
                                         isAlreadyApplied ?
-                                            <><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</> :
-                                            <><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</> :
-                                        <><CloseCircleOutlined /> Failed: {statusReason}</>
+                                            <span><CheckCircleOutlined style={{ color: '#faad14' }} /> Already Applied</span> :
+                                            <span><CheckCircleOutlined style={{ color: '#52c41a' }} /> Applied</span> :
+                                        <span><CloseCircleOutlined /> Failed: {statusReason}</span>
                                     }
                                 </span>
                             );
@@ -2637,7 +2599,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
             // Mark as checked BEFORE doing the work to prevent race conditions
             hasCheckedFilesRef.current = true;
             setIsCheckingFiles(true);
-            
+
             try {
                 const currentFiles = Array.from(checkedKeys).map(String);
                 const response = checkFilesInContext(referencedFiles, currentFiles);
@@ -2769,8 +2731,8 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
     // Show context enhancement overlay when files are missing
     const contextEnhancementOverlay = (isCheckingFiles || needsContextEnhancement) ? (
         <div style={{
-            position: 'relative', width: '100%', 
-            backgroundColor: needsContextEnhancement ? 'rgba(255,193,7,0.9)' : 'rgba(0,0,0,0.7)', 
+            position: 'relative', width: '100%',
+            backgroundColor: needsContextEnhancement ? 'rgba(255,193,7,0.9)' : 'rgba(0,0,0,0.7)',
             color: needsContextEnhancement ? '#000' : 'white',
             padding: '12px', textAlign: 'center',
             borderRadius: '4px'
@@ -2782,9 +2744,9 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
                     <div style={{ marginBottom: '8px' }}>
                         ⚠️ This diff references files not in context: <strong>{missingFilesList.join(', ')}</strong>
                     </div>
-                    <Button 
-                        type="primary" 
-                        size="small" 
+                    <Button
+                        type="primary"
+                        size="small"
                         onClick={retryWithEnhancedContext}
                         style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
                     >
@@ -2847,14 +2809,34 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             if (line.startsWith('diff --git')) {
                 const match = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
                 if (match) {
-                    return match[2] || match[1]; // Prefer new path, fallback to old path
+                    const oldPath = match[1];
+                    const newPath = match[2];
+
+                    // Handle new file creation (old path is /dev/null)
+                    if (oldPath === '/dev/null') {
+                        return `Create: ${newPath}`;
+                    }
+                    // Handle file deletion (new path is /dev/null)  
+                    if (newPath === '/dev/null') {
+                        return `Delete: ${oldPath}`;
+                    }
+                    // Regular file modification - prefer new path, fallback to old path
+                    return newPath || oldPath;
                 }
             }
             // Look for unified diff headers
             if (line.startsWith('+++ b/')) {
                 return line.substring(6);
             }
+            // Handle new file creation from unified diff headers
+            if (line.startsWith('+++ b/') && lines.some(l => l.startsWith('--- /dev/null'))) {
+                return `Create: ${line.substring(6)}`;
+            }
             if (line.startsWith('--- a/')) {
+                // Check if this is a deletion diff
+                if (lines.some(l => l.startsWith('+++ /dev/null'))) {
+                    return `Delete: ${line.substring(6)}`;
+                }
                 return line.substring(6);
             }
         }
@@ -3144,14 +3126,16 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
             const loadLanguage = async () => {
                 setIsLanguageLoaded(false);
                 try {
-                    console.debug('CodeBlock language info:', {
-                        originalLang: token.lang,
-                        effectiveLang: getEffectiveLang(token.lang),
-                        tokenType: token.type,
-                        prismLoaded: Boolean(window.Prism),
-                        availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
-                        tokenContent: token.text.substring(0, 100) + '...'
-                    });
+                    if (isDebugLoggingEnabled()) {
+                        debugLog('CodeBlock language info:', {
+                            originalLang: token.lang,
+                            effectiveLang: getEffectiveLang(token.lang),
+                            tokenType: token.type,
+                            prismLoaded: Boolean(window.Prism),
+                            availableLanguages: window.Prism ? Object.keys(window.Prism.languages) : [],
+                            tokenContent: token.text.substring(0, 100) + '...'
+                        });
+                    }
                     // Load language and get Prism instance
                     await loadPrismLanguage(normalizedLang);
                     setPrismInstance(window.Prism);
@@ -3702,6 +3686,51 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         return null;
                     }
 
+                    // CORE FIX: Check if this code block contains diff content and should use file-based language detection
+                    const rawCodeText = decodeHtmlEntities(tokenWithText.text || '');
+                    
+                    // Add debugging to see if this fix is being triggered
+                    const isDiffContent = rawCodeText.includes('diff --git') ||
+                        rawCodeText.includes('new file mode') ||
+                        rawCodeText.includes('deleted file mode') ||
+                        (rawCodeText.includes('+++') && rawCodeText.includes('---'));
+                    
+                    if ((!tokenWithText.lang || tokenWithText.lang === 'plaintext') &&
+                        isDiffContent) {
+                        
+                        console.log('🔍 DIFF_FIX: Applying language fix for diff content:', {
+                            hasLang: !!tokenWithText.lang,
+                            currentLang: tokenWithText.lang,
+                            contentPreview: rawCodeText.substring(0, 100)
+                        });
+
+                        // Extract file path from diff content
+                        const lines = rawCodeText.split('\n');
+                        for (const line of lines) {
+                            const gitMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                            if (gitMatch) {
+                                // For new files, prefer target path; for deleted files, prefer source path
+                                const filePath = gitMatch[1] === '/dev/null' ? gitMatch[2] :
+                                    gitMatch[2] === '/dev/null' ? gitMatch[1] :
+                                        (gitMatch[2] || gitMatch[1]);
+                                tokenWithText.lang = detectLanguage(filePath);
+                                console.log('🔍 DIFF_FIX: Language detection result:', { 
+                                    filePath, 
+                                    detectedLang: tokenWithText.lang,
+                                    gitMatch1: gitMatch[1],
+                                    gitMatch2: gitMatch[2]
+                                });
+                                break;
+                            }
+                        }
+                    } else if (isDiffContent) {
+                        console.log('🔍 DIFF_FIX: Diff content detected but not applying fix:', {
+                            hasLang: !!tokenWithText.lang,
+                            currentLang: tokenWithText.lang,
+                            reason: tokenWithText.lang && tokenWithText.lang !== 'plaintext' ? 'already has language' : 'unknown'
+                        });
+                    }
+
                     // Add safety check for tool blocks that might have slipped through
                     if (tokenWithText.lang?.startsWith('tool:')) {
                         console.error('CRITICAL ERROR: Tool block reached code case!', { lang: tokenWithText.lang, determinedType });
@@ -3739,7 +3768,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         }
                     }
 
-                    const rawCodeText = decodeHtmlEntities(tokenWithText.text || '');
                     // Pass the original lang tag (or plaintext) for highlighting
                     const codeToken = { ...tokenWithText, text: rawCodeText, lang: tokenWithText.lang || 'plaintext' };
                     // Decode HTML entities before passing to CodeBlock
@@ -3914,8 +3942,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         }
                     }
 
-                    // If all tags are known, render as HTML
-                    return <div key={index} dangerouslySetInnerHTML={{ __html: decodeHtmlEntities(htmlContent) }} />;
+                    // Render as text content to avoid HTML parsing issues with angle brackets
+                    return <div key={index}>{decodeHtmlEntities(htmlContent)}</div>;
 
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
@@ -3948,10 +3976,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
                     if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
                         // If it has nested tokens, render them recursively
-                        return <>{renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode)}</>;
+                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode);
                     } else {
-                        // Otherwise, just render the decoded text content (use fragment)
-                        return <>{decodedText}</>; // Use fragment to avoid extra spans
+                        // Otherwise, just render the decoded text content directly
+                        return decodedText; // Direct text rendering prevents JSX interpretation
                     }
 
                 // --- Handle Inline Markdown Elements (Recursively) ---
@@ -3962,8 +3990,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'codespan':
                     if (!hasText(tokenWithText)) return null;
                     const decodedCode = decodeHtmlEntities(tokenWithText.text);
-                    // Basic escaping for codespan content
-                    return <code key={index} dangerouslySetInnerHTML={{ __html: decodedCode }} />;
+                    // Use text content instead of dangerouslySetInnerHTML to prevent HTML parsing issues
+                    return <code key={index}>{decodedCode}</code>;
                 case 'br':
                     return <br key={index} />;
                 case 'del':
@@ -3975,7 +4003,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'escape':
                     if (!hasText(tokenWithText)) return null;
-                    return <>{decodeHtmlEntities(tokenWithText.text || '')}</>;
+                    return decodeHtmlEntities(tokenWithText.text || '');
 
                 case 'image':
                     const imageToken = token as Tokens.Image;
@@ -4122,17 +4150,22 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
         const html = katex.renderToString(math, {
             displayMode,
             throwOnError: false,
-            strict: false
+            strict: false,
+            errorColor: '#cc0000',
+            macros: {
+                "\\f": "#1f(#2)"
+            }
         });
 
         return displayMode ?
             <div className="math-display" dangerouslySetInnerHTML={{ __html: html }} /> :
             <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />;
     } catch (error) {
-        console.warn('KaTeX rendering error:', error);
+        // Silently handle math errors and render as plain text instead of showing error
+        console.debug('KaTeX rendering error (handled):', error);
         return displayMode ?
-            <div className="math-error">Math Error: {math}</div> :
-            <span className="math-error">Math Error: {math}</span>;
+            <div className="math-fallback" style={{ fontFamily: 'monospace', padding: '4px' }}>{math}</div> :
+            <span className="math-fallback" style={{ fontFamily: 'monospace' }}>{math}</span>;
     }
 };
 
@@ -4245,6 +4278,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     /<TOOL_SENTINEL>[\s\S]*?<\/TOOL_SENTINEL>/,
                     formattedToolCall
                 );
+            } else if (isStreamingState && processedMarkdown.includes('<TOOL_SENTINEL>')) {
+                // During streaming, if we have an incomplete tool call, don't try to parse it yet
+                // This prevents showing malformed content while the tool call is being streamed
+                const incompleteToolMatch = processedMarkdown.match(/<TOOL_SENTINEL>[\s\S]*$/);
+                if (incompleteToolMatch && !processedMarkdown.includes('</TOOL_SENTINEL>')) {
+                    // Remove the incomplete tool call from display until it's complete
+                    processedMarkdown = processedMarkdown.replace(/<TOOL_SENTINEL>[\s\S]*$/, '');
+                    // Add a placeholder to show tool execution is starting
+                    processedMarkdown += '\n\n🔧 Preparing tool execution...\n';
+                }
             }
 
             // Pre-process thinking content to extract and handle separately (only once)
@@ -4283,51 +4326,67 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Only process math expressions if this doesn't look like a diff
             if (!isDiff) {
-                // Split the markdown into code blocks and non-code blocks
-                const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
+                try {
+                    // Split the markdown into code blocks and non-code blocks
+                    const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
 
-                // Process each segment separately
-                processedMarkdown = segments.map((segment, index) => {
-                    // Skip math processing for code blocks (odd indices in the split)
-                    if (index % 2 === 1 && segment.startsWith('```')) {
-                        return segment;
-                    }
-
-                    // Process math only in non-code segments
-                    let processed = segment;
-
-                    // Handle display math $$...$$
-                    processed = processed.replace(
-                        /\$\$([\s\S]+?)\$\$/g,
-                        '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
-                    );
-
-                    // Handle inline math $...$
-                    processed = processed.replace(
-                        /\$([^⟩]+?)\$/g,
-                        (match, p1) => {
-                            // Skip processing if this looks like a regex replacement ($1, $2, etc.)
-                            if (/^\d+$/.test(p1.trim())) {
-                                return match; // Keep $1, $2, etc. as is
-                            }
-
-                            // Skip processing if this is inside code-like contexts
-                            const surroundingText = match.substring(0, 50) + match.substring(match.length - 50);
-                            if (surroundingText.includes('replace(') ||
-                                surroundingText.includes('processedDef') ||
-                                surroundingText.includes('regex')) {
-                                return match; // Keep as is in code contexts
-                            }
-
-                            // Only treat as math if it contains LaTeX commands or mathematical symbols
-                            const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
-                            const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
-                            return (hasLatex || hasMathSymbols) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                    // Process each segment separately
+                    processedMarkdown = segments.map((segment, index) => {
+                        // Skip math processing for code blocks (odd indices in the split)
+                        if (index % 2 === 1 && segment.startsWith('```')) {
+                            return segment;
                         }
-                    );
 
-                    return processed;
-                }).join('');
+                        // Process math only in non-code segments
+                        let processed = segment;
+
+                        try {
+                            // Handle display math $$...$$
+                            processed = processed.replace(
+                                /\$\$([\s\S]+?)\$\$/g,
+                                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
+                            );
+
+                            // Handle inline math $...$
+                            processed = processed.replace(
+                                /\$([^⟩$\n]+?)\$/g,
+                                (match, p1) => {
+                                    // Skip processing if this looks like a regex replacement ($1, $2, etc.)
+                                    if (/^\d+$/.test(p1.trim())) {
+                                        return match; // Keep $1, $2, etc. as is
+                                    }
+
+                                    // Skip processing if this is inside code-like contexts
+                                    const surroundingText = match.substring(0, 50) + match.substring(match.length - 50);
+                                    if (surroundingText.includes('replace(') ||
+                                        surroundingText.includes('processedDef') ||
+                                        surroundingText.includes('regex') ||
+                                        surroundingText.includes('command') ||
+                                        surroundingText.includes('shell')) {
+                                        return match; // Keep as is in code contexts
+                                    }
+
+                                    // Only treat as math if it contains LaTeX commands or mathematical symbols
+                                    const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
+                                    const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
+                                    const hasComplexMath = /[{}^_]/.test(p1) && p1.length > 2; // Subscripts, superscripts, braces
+
+                                    // Be more conservative - only process if it really looks like math
+                                    return (hasLatex || hasMathSymbols || hasComplexMath) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                                }
+                            );
+                        } catch (mathError) {
+                            console.debug('Math processing error (handled):', mathError);
+                            // Return original segment if math processing fails
+                            return segment;
+                        }
+
+                        return processed;
+                    }).join('');
+                } catch (mathProcessingError) {
+                    console.debug('Math segment processing error (handled):', mathProcessingError);
+                    // Continue without math processing if there's an error
+                }
             }
 
             // Pre-process MathML blocks to prevent fragmentation

@@ -78,11 +78,13 @@ def parse_arguments():
     parser.add_argument("--list-models", action="store_true",
                         help="List all supported endpoints and their available models")
     parser.add_argument("--ast", action="store_true",
-                        help="Enable AST-based code understanding capabilities")
+                        help="Enable AST-based code understanding capabilities (disabled by default)")
     parser.add_argument("--ast-resolution", choices=['disabled', 'minimal', 'medium', 'detailed', 'comprehensive'], 
                        default='medium', help="AST context resolution level (default: medium)")
-    parser.add_argument("--mcp", action="store_true",
-                       help="Enable MCP (Model Context Protocol) server integration")
+    parser.add_argument("--mcp", action="store_true", default=True,
+                       help="Enable MCP (Model Context Protocol) server integration (enabled by default)")
+    parser.add_argument("--no-mcp", action="store_false", dest="mcp",
+                       help="Disable MCP (Model Context Protocol) server integration")
     return parser.parse_args()
 
 
