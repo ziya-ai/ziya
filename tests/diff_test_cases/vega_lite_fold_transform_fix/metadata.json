@@ -1,0 +1,8 @@
+{
+    "description": "Test case for VegaLite plugin fold transform field fix",
+    "original_file": "original.ts",
+    "diff_file": "changes.diff",
+    "expected_file": "expected.ts",
+    "target_file": "vegaLitePlugin.ts",
+    "test_type": "standard"
+}

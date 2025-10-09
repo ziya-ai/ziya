@@ -1,20 +1,26 @@
 ### To Run locally
-First install packages
+First build
 ```bash
-poetry install
+python ziya_build.sh
 ```
-To just test FrontEnd changes run
+#### To just test BackEnd changes run
 ```bash
-poetry run fbuild && poetry run python app/main.py --port 6868
+PYTHONPATH=$(pwd) poetry run python app/main.py
+```
 
-Run with aws profile: 
+#### Run with aws profile: 
+```bash
 poetry run fbuild && poetry run python app/main.py --profile ziya --port 6868
 ```
+
 #### To test Backend and FrontEnd changes via locally installed pip file run
 ```bash
-pip uninstall ziya -y
-poetry run fbuild && poetry build
-pip install dist/
+python ziya_build.py && pip uninstall -y ziya && pip install dist/*.whl
+```
+
+#### To maximize all debug levels:
+```bash
+PYTHONPATH=$(pwd) ZIYA_LOG_LEVEL=DEBUG NODE_ENV=development poetry run python app/main.py
 ```
 
 #### To run unit tests for backend
@@ -22,10 +28,15 @@ pip install dist/
 poetry run pytest
 ```
 
+#### To run Difflib regression tests
+```bash
+python tests/run_diff_tests.pl --multi
+```
+
 ### To Publish
 #### To publish to PyPi:
 ```bash
-poetry run fbuild && poetry build && poetry publish
+python ziya_build.py
 pip install ziya --upgrade
 OR 
 pipx upgrade ziya
@@ -34,12 +45,12 @@ pipx upgrade ziya
 ### FAQ
 #### To install a specific version of a package
 ```bash
-pip install ziya==0.1.3
+pip install ziya==0.3.0
 ```
 
 #### To publish and test in the testpypi repository:
 ```bash
-poetry run fbuild && poetry build
+python ziya_build.py
 poetry publish --repository testpypi
 pip uninstall ziya -y
 pip install --index-url https://test.pypi.org/simple/ ziya

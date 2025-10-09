@@ -820,9 +820,12 @@ class RetryingChatBedrock(Runnable):
                 model_config = config.copy() if config else {}
                 if conversation_id:
                     model_config["conversation_id"] = conversation_id
+                
+                # Merge model_config into kwargs for compatibility with all model types
+                merged_kwargs = {**kwargs, **model_config}
                     
-                async for chunk in self.model.astream(messages, model_config, **kwargs):
-                    logger.error(f"🔍 AGENT_MODEL_ASTREAM: Received chunk type: {type(chunk)}, content: {getattr(chunk, 'content', str(chunk))[:100]}")
+                async for chunk in self.model.astream(messages, **merged_kwargs):
+                    logger.debug(f"🔍 AGENT_MODEL_ASTREAM: Received chunk type: {type(chunk)}, content: {getattr(chunk, 'content', str(chunk))[:100]}")
                     # Check if this is an error chunk that should terminate this specific stream
                     # If we reach here, we've successfully started streaming
                     
@@ -1078,23 +1081,20 @@ class RetryingChatBedrock(Runnable):
                 
 
                 # Check if this is a throttling error wrapped in another exception
+                logger.error(f"🔍 ACTUAL_ERROR: {error_str}")
+                logger.error(f"🔍 ERROR_TYPE: {type(e)}")
                 if "ThrottlingException" in error_str or "Too many requests" in error_str:
                     logger.warning("Detected throttling error in exception")
-                    # Format error message for throttling
+                    # Simple error message for frontend
                     error_message = {
-                        "error": "throttling_error",
-                        "detail": "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.",
-                        "status_code": 429,
-                        "stream_id": stream_id,
-                        "retry_after": "60",
-                        "throttle_info": {
-                            "auto_attempts_exhausted": True,
-                            "total_auto_attempts": max_retries,
-                            "can_user_retry": True,
-                            "backoff_used": [5, 10, 20, 40][:attempt + 1]
-                        },
-                        "ui_action": "show_retry_button",
-                        "user_message": "Click 'Retry' to attempt again, or wait a few minutes for better success rate."
+                        "error": "⚠️ AWS rate limit exceeded. Please wait a moment and try again.",
+                        "type": "throttling"
+                    }
+                else:
+                    # Show the actual error instead of masking it
+                    error_message = {
+                        "error": f"⚠️ Error: {error_str}",
+                        "type": "general"
                     }
                     
                     # Include pre-streaming work in preservation
@@ -1412,19 +1412,10 @@ class RetryingChatBedrock(Runnable):
                         time.sleep(retry_delay)
                         continue
                     else:
-                        # Final attempt failed - enhance error response for frontend
+                        # Simple error response for frontend
                         error_message = {
-                            "error": "throttling_error",
-                            "detail": "AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.",
-                            "status_code": 429,
-                            "throttle_info": {
-                                "auto_attempts_exhausted": True,
-                                "total_auto_attempts": max_retries,
-                                "can_user_retry": True,
-                                "backoff_used": [5.0, 10.0, 20.0, 40.0][:attempt + 1]
-                            },
-                            "ui_action": "show_retry_button",
-                            "user_message": "Click 'Retry' to attempt again, or wait a few minutes for better success rate."
+                            "error": "⚠️ AWS rate limit exceeded. Please wait a moment and try again.",
+                            "type": "throttling"
                         }
                         # Let this fall through to the final error handling
 
@@ -1808,31 +1799,34 @@ def create_agent_chain(chat_model: BaseChatModel):
     # Create cache key based on model configuration
     model_id = ModelManager.get_model_id() or getattr(chat_model, 'model_id', 'unknown')
     ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
-    mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP") != "false"
+    mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes")
     
     # Get MCP tools first to include in cache key
     mcp_tools = []
-    try:
-        from app.mcp.manager import get_mcp_manager
-        from app.mcp.enhanced_tools import create_secure_mcp_tools
-        mcp_manager = get_mcp_manager()
-        # Ensure MCP is initialized before creating tools
-        if not mcp_manager.is_initialized:
-            # Don't initialize during startup - let server startup handle it
-            logger.info("MCP manager not yet initialized, will use available tools when ready")
-            mcp_tools = []
-        else:
-            mcp_tools = create_secure_mcp_tools()
-            logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+    if mcp_enabled:
+        try:
+            from app.mcp.manager import get_mcp_manager
+            from app.mcp.enhanced_tools import create_secure_mcp_tools
+            mcp_manager = get_mcp_manager()
+            # Ensure MCP is initialized before creating tools
+            if not mcp_manager.is_initialized:
+                # Don't initialize during startup - let server startup handle it
+                logger.info("MCP manager not yet initialized, will use available tools when ready")
+                mcp_tools = []
+            else:
+                mcp_tools = create_secure_mcp_tools()
+                logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+            
+            if mcp_manager.is_initialized:
+                mcp_tools = create_secure_mcp_tools()
+                logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+            else:
+                logger.warning("MCP manager not initialized, no MCP tools available")
         
-        if mcp_manager.is_initialized:
-            mcp_tools = create_secure_mcp_tools()
-            logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
-        else:
-            logger.warning("MCP manager not initialized, no MCP tools available")
-    
-    except Exception as e:
-        logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+        except Exception as e:
+            logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
+    else:
+        logger.debug("MCP is disabled, no tools will be created for agent chain")
     
     # Include MCP tool count in cache key to ensure different chains for different tool availability
     cache_key = f"{model_id}_{ast_enabled}_{mcp_enabled}_{len(mcp_tools)}"
@@ -2099,22 +2093,26 @@ def create_agent_executor(agent_chain: Runnable):
 
     # Get MCP tools for the executor
     mcp_tools = []
-    try:
-        logger.info("Attempting to get MCP tools for agent executor...")
-        
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        
-        if mcp_manager.is_initialized:
-            mcp_tools = create_mcp_tools()
-            logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
-            for tool in mcp_tools:
-                logger.info(f"  - {tool.name}: {tool.description}")
-        else:
-            logger.info("MCP not initialized, no MCP tools available")
-    except Exception as e:
-        logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
-        from app.mcp.manager import get_mcp_manager
+    # Check if MCP is enabled before creating tools
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        try:
+            logger.info("Attempting to get MCP tools for agent executor...")
+            
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            
+            if mcp_manager.is_initialized:
+                mcp_tools = create_mcp_tools()
+                logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
+                for tool in mcp_tools:
+                    logger.info(f"  - {tool.name}: {tool.description}")
+            else:
+                logger.info("MCP not initialized, no MCP tools available")
+        except Exception as e:
+            logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
+            from app.mcp.manager import get_mcp_manager
+    else:
+        logger.debug("MCP is disabled, no tools will be created for agent executor")
         mcp_manager = get_mcp_manager()
 
     logger.info(f"AGENT_EXECUTOR: Tools being passed to AgentExecutor: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
@@ -2363,15 +2361,15 @@ def initialize_langserve(app, executor):
         new_app.routes.append(route)
  
     # Add LangServe routes for non-Bedrock models (Gemini, Nova, etc.)
-    # The priority /api/chat endpoint will intercept Bedrock requests
-    add_routes(
-        new_app,
-        executor,
-        disabled_endpoints=["playground"],  # Keep stream and invoke for non-Bedrock models
-        path="/ziya"
-    )
+    # DISABLED: LangServe /ziya routes cause duplicate execution with /api/chat
+    # add_routes(
+    #     new_app,
+    #     executor,
+    #     disabled_endpoints=["playground"],  # Keep stream and invoke for non-Bedrock models
+    #     path="/ziya"
+    # )
     
-    logger.info("Added LangServe routes - priority /api/chat will handle Bedrock routing")
+    logger.info("DISABLED LangServe /ziya routes - using /api/chat only to prevent duplicate execution")
 
     # Clear all routes from original app
     while app.routes:
