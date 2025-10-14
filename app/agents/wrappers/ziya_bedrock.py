@@ -95,11 +95,23 @@ class ZiyaBedrock(Runnable):
         filtered_kwargs = ModelManager.filter_model_kwargs(current_model_kwargs, model_config)
         logger.info(f"Filtered model_kwargs: {filtered_kwargs}")
 
+        # Handle boto3 client compatibility issues
+        bedrock_client = None
+        if client:
+            try:
+                # Test if the client is working properly by accessing a simple property
+                _ = client.meta.service_name
+                bedrock_client = client
+            except (AttributeError, RecursionError) as e:
+                logger.warning(f"Provided client has compatibility issues: {e}. Creating new client.")
+                # Create a fresh client if the provided one has issues
+                import boto3
+                bedrock_client = boto3.client('bedrock-runtime', region_name=region_name)
         
         # Create the underlying ChatBedrock instance with the fresh client
         self.bedrock_model = ChatBedrock(
             model_id=model_id,
-            client=client,  # Use the provided persistent client
+            client=bedrock_client,  # Use the validated/fresh client
             region_name=region_name,
             max_tokens=max_tokens,  # Explicitly pass max_tokens
             credentials_profile_name=credentials_profile_name,
