@@ -56,6 +56,10 @@ class FileStateManager:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             data = {}
             for conv_id, files in self.conversation_states.items():
+                # Skip temporary precision_ conversations
+                if conv_id.startswith('precision_'):
+                    continue
+                    
                 data[conv_id] = {}
                 for file_path, state in files.items():
                     data[conv_id][file_path] = {
@@ -70,9 +74,17 @@ class FileStateManager:
             
             with open(self.state_file, 'w') as f:
                 json.dump(data, f, indent=2)
-            logger.debug(f"Saved file states for {len(self.conversation_states)} conversations")
+            logger.debug(f"Saved file states for {len(data)} conversations")
         except Exception as e:
             logger.warning(f"Failed to save file states: {e}")
+    
+    def cleanup_temporary_conversations(self):
+        """Remove temporary precision_ conversations from memory."""
+        temp_convs = [conv_id for conv_id in self.conversation_states.keys() if conv_id.startswith('precision_')]
+        for conv_id in temp_convs:
+            del self.conversation_states[conv_id]
+        if temp_convs:
+            logger.info(f"Cleaned up {len(temp_convs)} temporary conversations from memory")
     
     def initialize_conversation(self, conversation_id: str, files: Dict[str, str]) -> None:
         """Initialize or reset file states for a conversation"""
@@ -234,6 +246,8 @@ class FileStateManager:
             current_lines
         )
 
+        state.current_content = current_lines.copy()  # Update current content
+        state.content_hash = current_hash  # Update hash
         state.last_seen_content = current_lines.copy()  # Update last seen content
         
         # Update line states

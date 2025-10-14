@@ -223,6 +223,15 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     Returns:
         Dict with folder structure including token counts
     """
+    import traceback
+    with open('/tmp/scan_debug.txt', 'a') as f:
+        f.write(f"\n\n=== get_folder_structure CALLED at {time.time()} ===\n")
+        f.write(f"Directory: {directory}\n")
+        f.write(f"Call stack:\n")
+        for line in traceback.format_stack()[:-1]:
+            f.write(line)
+        f.write(f"=== END CALL STACK ===\n\n")
+    
     logger.info(f"🔍 PERF: Starting ULTRA-FAST folder scan for directory: {directory}")
     
     # Check if we have cached results first
@@ -266,6 +275,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
     def process_dir(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory recursively."""
+        print(f"DEBUG process_dir: path={path}, depth={depth}, max_depth={max_depth}")
+        
         # Resolve symlinks to detect loops
         real_path = os.path.realpath(path)
         
@@ -396,8 +407,11 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     global _visited_directories
     _visited_directories.clear()
     
+    print(f"DEBUG: About to call process_dir for {directory}")
     # Process the root directory
     root_result = process_dir(directory, 1)
+    print(f"DEBUG: After process_dir, root_result keys: {list(root_result.keys())}")
+    print(f"DEBUG: root_result['children'] has {len(root_result.get('children', {}))} entries")
     
     # Check if we need to include external paths
     include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")
@@ -466,6 +480,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             logger.warning(f"  {path}: {duration:.2f}s ({reason})")
             
     result = root_result.get('children', {})
+    logger.info(f"DEBUG: root_result keys: {list(root_result.keys())}")
+    logger.info(f"DEBUG: root_result has {len(root_result.get('children', {}))} children")
     if total_time >= max_scan_time:
         logger.warning(f"Folder scan timed out after {max_scan_time}s, returning partial results with {len(result)} entries")
         result['_timeout'] = True

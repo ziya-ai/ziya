@@ -30,23 +30,20 @@ class FileChangeHandler(FileSystemEventHandler):
     def _should_ignore_path(self, abs_path: str) -> bool:
         """Check if a path should be ignored based on gitignore patterns."""
         try:
-            # Handle non-existent files (like during deletion events)
-            if not os.path.exists(abs_path) and os.path.dirname(abs_path):
-                # For deleted files, check if the parent directory should be ignored
-                parent_dir = os.path.dirname(abs_path)
+            # Check if the path itself should be ignored
+            if self.should_ignore_fn(abs_path):
+                return True
+            
+            # Also check if any parent directory should be ignored
+            parent_dir = os.path.dirname(abs_path)
+            while parent_dir and parent_dir != self.base_dir and len(parent_dir) > len(self.base_dir):
                 if self.should_ignore_fn(parent_dir):
                     return True
-                # Use the filename pattern matching
-                filename = os.path.basename(abs_path)
-                for pattern, base in self.ignored_patterns:
-                    if pattern == filename or pattern == f"*{os.path.splitext(filename)[1]}":
-                        return True
-                return False
+                parent_dir = os.path.dirname(parent_dir)
             
-            return self.should_ignore_fn(abs_path)
+            return False
         except Exception as e:
             logger.warning(f"Error checking if path should be ignored: {abs_path}, {str(e)}")
-            # Default to not ignoring in case of errors
             return False
         
     def on_modified(self, event: FileSystemEvent):
@@ -149,10 +146,21 @@ class FileChangeHandler(FileSystemEventHandler):
     
     def _update_conversations(self, file_path: str, content: str):
         """Update all conversations that include this file."""
+        # Periodically clean up temporary conversations (every 10 file changes)
+        if not hasattr(self, '_update_count'):
+            self._update_count = 0
+        self._update_count += 1
+        if self._update_count % 10 == 0:
+            self.file_state_manager.cleanup_temporary_conversations()
+        
         # Find all conversations that include this file
         updated_conversations = []
         
         for conv_id, files in self.file_state_manager.conversation_states.items():
+            # Skip temporary precision_ conversations
+            if conv_id.startswith('precision_'):
+                continue
+                
             if file_path in files:
                 # Update the file state
                 changed_lines = self.file_state_manager.update_file_state(conv_id, file_path, content)
