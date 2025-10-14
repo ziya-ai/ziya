@@ -503,7 +503,6 @@ def apply_diff_with_difflib_hybrid_forced(
             whitespace_only = is_whitespace_only_diff(h)
             
             # Use fuzzy matching to find the best position
-            from ..application.fuzzy_match import find_best_chunk_position
             
             fuzzy_best_pos, fuzzy_best_ratio = find_best_chunk_position(
                 normalized_final_lines_fuzzy, normalized_old_block_fuzzy,
