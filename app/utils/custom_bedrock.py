@@ -43,6 +43,15 @@ class CustomBedrockClient:
         # avoiding unnecessary client creation during normal operation
         self.client = client
         
+        # Validate the client is working properly
+        try:
+            _ = self.client.meta.service_name
+        except (AttributeError, RecursionError) as e:
+            logger.warning(f"Provided client has compatibility issues, creating fallback: {e}")
+            import boto3
+            region = getattr(getattr(client, 'meta', None), 'region_name', 'us-west-2')
+            self.client = boto3.client('bedrock-runtime', region_name=region)
+        
         self.user_max_tokens = max_tokens
         self.default_max_tokens = 4000  # Default fallback if not specified
         self.last_error = None

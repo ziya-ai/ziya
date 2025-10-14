@@ -673,6 +673,15 @@ class ModelManager:
             bedrock_client = session.client('bedrock-runtime', region_name=region)
             logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
             
+            # Test the client to ensure it's working properly
+            try:
+                _ = bedrock_client.meta.service_name
+                logger.info("Bedrock client validation successful")
+            except (AttributeError, RecursionError) as e:
+                logger.error(f"Created client has compatibility issues: {e}")
+                # Force recreation without session profile if needed
+                bedrock_client = boto3.client('bedrock-runtime', region_name=region)
+            
             # Wrap with CustomBedrockClient and ThrottleSafeBedrock
             custom_client = CustomBedrockClient(bedrock_client, model_config=model_config)
             throttle_safe_client = ThrottleSafeBedrock(custom_client)
