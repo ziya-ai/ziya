@@ -3091,7 +3091,19 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 
         // Only update DOM if content has changed
         if (contentRef.current.innerHTML !== highlighted) {
-            contentRef.current.innerHTML = highlighted;
+            // Safely set innerHTML while preventing script execution
+            if (contentRef.current) {
+                // Create a document fragment to safely parse the HTML
+                const template = document.createElement('template');
+                template.innerHTML = highlighted;
+                
+                // Remove any potentially dangerous elements
+                template.content.querySelectorAll('script, object, embed, iframe').forEach(el => el.remove());
+                
+                // Clear and append the safe content
+                contentRef.current.innerHTML = '';
+                contentRef.current.appendChild(template.content.cloneNode(true));
+            }
             contentRef.current.style.visibility = 'visible';
             // Debug log for streaming updates
             if (content.endsWith('\n') || content.includes('```')) {
@@ -3224,7 +3236,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 // Define the possible determined types
 type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'file-operation' | 'tool' |
-    'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
+    'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' |
@@ -3326,6 +3338,8 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         }
 
         if (lang === 'mermaid') return 'mermaid';  // Check mermaid FIRST
+        if (lang === 'joint' || lang === 'jointjs') return 'joint';
+        if (lang === 'diagram') return 'joint';  // Also support 'diagram' as joint type
         if (lang === 'diff') {
             console.log('✅ MarkdownRenderer - DETECTED AS DIFF (lang tag)');
             return 'diff';
@@ -3636,6 +3650,30 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             isStreaming={isStreaming}
                         />
                     );
+
+                case 'joint':
+                case 'jointjs':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    
+                    // Try to parse as JSON first, otherwise treat as definition string
+                    let jointSpec;
+                    try {
+                        jointSpec = JSON.parse(tokenWithText.text);
+                        // Ensure it has the joint type
+                        if (!jointSpec.type) {
+                            jointSpec.type = 'joint';
+                        }
+                    } catch (error) {
+                        // If JSON parsing fails, treat as definition string
+                        jointSpec = {
+                            type: 'joint',
+                            definition: tokenWithText.text,
+                            isStreaming: isStreaming,
+                            forceRender: true
+                        };
+                    }
+                    
+                    return <D3Renderer key={index} spec={jointSpec} type="d3" isStreaming={isStreaming} />;
 
                 case 'tool':
                     if (!hasText(tokenWithText) || !tokenWithText.toolName) {
@@ -4320,7 +4358,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // First check if this is a diff or code block that shouldn't have math processing
             const isDiff = processedMarkdown.includes('diff --git') ||
                 (processedMarkdown.includes('```diff') && processedMarkdown.includes('+++')) ||
-                (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m));
+                (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m)) ||
+                // Skip processing for content containing tool sentinels or template variables
+                // TODO: Get actual sentinel values from backend instead of hardcoding
+                processedMarkdown.includes('<TOOL_SENTINEL>') || 
+                processedMarkdown.includes('</TOOL_SENTINEL>') ||
+                /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
 
             const hasCodeBlocks = processedMarkdown.includes('```');
 
