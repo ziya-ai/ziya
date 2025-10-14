@@ -324,7 +324,7 @@ export const App: React.FC = () => {
 
     // Auto-scroll to bottom when new messages arrive or streaming updates occur
     useEffect(() => {
-        const lastMessage = currentMessages[currentMessages.length - 1];
+        const lastMessage = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
         const isNewUserMessage = lastMessage?.role === 'human';
         
         // CRITICAL: Only scroll if there's actually new content or a new user message
@@ -374,11 +374,21 @@ export const App: React.FC = () => {
             return;
         }
         
-        // For other messages, only scroll if user hasn't manually scrolled away
-        if (userHasScrolled && timeSinceManualScroll < SCROLL_COOLDOWN) return;
-        
-        // Skip auto-scroll during streaming for AI responses unless it's a new user message
-        if (streamingConversations.has(currentConversationId) && !isNewUserMessage) return;
+        // For streaming content, be much more conservative about auto-scrolling
+        if (streamingConversations.has(currentConversationId)) {
+            // If user has manually scrolled away, respect that completely during streaming
+            if (userHasScrolled) {
+                return; // Don't auto-scroll at all during streaming if user scrolled away
+            }
+            
+            // Only auto-scroll if user hasn't scrolled and we're still following the stream
+            const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
+            if (chatContainer) {
+                const { scrollTop, scrollHeight, clientHeight } = chatContainer;
+                const isNearBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 50;
+                if (!isNearBottom) return; // User has scrolled away, don't force scroll back
+            }
+        }
 
         // Scroll to bottom smoothly
         const scrollToBottom = () => {
@@ -405,7 +415,8 @@ export const App: React.FC = () => {
     }, [
         isTopToBottom, 
         currentMessages.length, // Only when messages actually change
-        streamedContentMap.get(currentConversationId), // Only when streamed content changes
+        // Remove streamedContentMap dependency to prevent continuous scrolling during streaming
+        // streamedContentMap.get(currentConversationId), 
         currentConversationId
     ]);
 
