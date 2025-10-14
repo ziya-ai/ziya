@@ -1923,14 +1923,18 @@ def create_agent_chain(chat_model: BaseChatModel):
                     # Add system message from prompt
                     if hasattr(prompt_template, 'messages') and prompt_template.messages:
                         system_msg = prompt_template.messages[0]
-                        if hasattr(system_msg, 'format'):
-                            # Escape curly braces in user input to prevent .format() from interpreting them
-                            safe_mapped_input = {
-                                k: v.replace('{', '{{').replace('}', '}}') if isinstance(v, str) else v
-                                for k, v in mapped_input.items()
-                            }
-                            formatted_content = system_msg.format(**safe_mapped_input)
-                            messages.append(SystemMessage(content=formatted_content))
+                        # Escape curly braces in user input to prevent .format() from interpreting them
+                        safe_mapped_input = {
+                            k: v.replace('{', '{{').replace('}', '}}') if isinstance(v, str) and not (
+                                '{{' in v or '}}' in v  # Skip if already escaped
+                            ) else v
+                            for k, v in mapped_input.items()
+                        }
+                        formatted_content = system_msg.format(**safe_mapped_input)
+                        # Don't escape codebase content as it may already contain properly escaped MCP examples
+                        # Only escape user-provided content (questions and chat history)
+                        formatted_content = system_msg.format(**safe_mapped_input)
+                        messages.append(SystemMessage(content=formatted_content))
                     
                     # Add user question
                     question = mapped_input.get("question", "")
