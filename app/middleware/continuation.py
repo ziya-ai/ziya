@@ -7,6 +7,7 @@ Handles seamless continuation when approaching output context limits.
 
 import asyncio
 import json
+import re
 import time
 from typing import Dict, Any, Optional, AsyncGenerator
 from starlette.middleware.base import BaseHTTPMiddleware
