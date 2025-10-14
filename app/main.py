@@ -378,10 +378,17 @@ def start_server(args):
             
             # Import here to avoid circular imports
             import uvicorn
-            from app.server import app
+            from app.server import app, invalidate_folder_cache
             
             # Restore the original working directory before starting the server
             os.chdir(original_cwd)
+            
+            # Initialize file watcher with cache invalidation
+            from app.utils.file_watcher import initialize_file_watcher
+            from app.utils.file_state_manager import FileStateManager
+            file_state_manager = FileStateManager()
+            initialize_file_watcher(file_state_manager, os.getcwd(), invalidate_folder_cache)
+            logger.info("File watcher initialized with folder cache invalidation")
             
             # Use uvicorn directly instead of langchain_cli.serve()
             uvicorn.run(app, host="0.0.0.0", port=args.port)
