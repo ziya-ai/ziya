@@ -2661,7 +2661,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
 
             // Show subtle notification
             message.info({
-                content: `Added missing files: ${addedFiles.join(', ')}. Restarting with enhanced context...`,
+                content: `Adding missing files to context: ${addedFiles.join(', ')}...`,
                 duration: 3,
                 key: `context-enhanced-${currentConversationId}`
             });
@@ -2710,21 +2710,21 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         }
     }, [currentConversationId]);
 
-    // Function to retry with enhanced context
-    const retryWithEnhancedContext = async () => {
+    // Function to add files to context
+    const addMissingFilesToContext = async () => {
         setNeedsContextEnhancement(false);
         try {
             const allCurrentFiles = Array.from(checkedKeys).map(String);
             await restartStreamWithEnhancedContext(currentConversationId, missingFilesList, allCurrentFiles);
 
             message.success({
-                content: `Retrying with enhanced context including: ${missingFilesList.join(', ')}`,
+                content: `Added missing files to context: ${missingFilesList.join(', ')}`,
                 duration: 3,
-                key: `context-retry-${currentConversationId}`
+                key: `context-enhanced-${currentConversationId}`
             });
         } catch (error) {
-            console.error('Error retrying with enhanced context:', error);
-            message.error('Failed to retry with enhanced context. Please try your request again.');
+            console.error('Error adding files to context:', error);
+            message.error('Failed to add files to context. Please try again.');
         }
     };
 
@@ -2747,10 +2747,10 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
                     <Button
                         type="primary"
                         size="small"
-                        onClick={retryWithEnhancedContext}
+                        onClick={addMissingFilesToContext}
                         style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
                     >
-                        Retry with Enhanced Context
+                        Add Files to Context
                     </Button>
                 </div>
             ) : null}
