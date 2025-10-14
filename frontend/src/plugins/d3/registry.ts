@@ -4,6 +4,8 @@ import { basicChartPlugin } from './basicChart';
 import { mermaidPlugin } from './mermaidPlugin';
 import { graphvizPlugin } from './graphvizPlugin';
 import { vegaLitePlugin } from './vegaLitePlugin';
+import { jointPlugin } from './jointPlugin';
+import { d2Plugin } from './d2Plugin';
 
 // Registry for D3 visualization plugins
 const pluginRegistry: D3RenderPlugin[] = [
@@ -11,7 +13,9 @@ const pluginRegistry: D3RenderPlugin[] = [
     basicChartPlugin,
     mermaidPlugin,
     graphvizPlugin,
-    vegaLitePlugin
+    vegaLitePlugin,
+    jointPlugin,
+    d2Plugin
     // Add more plugins here as needed
 ];
 pluginRegistry.forEach(plugin => {
