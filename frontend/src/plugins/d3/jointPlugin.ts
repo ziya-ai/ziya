@@ -133,11 +133,53 @@ const isJointSpec = (spec: any): spec is JointSpec => {
 // Enhanced shape registry with electrical and network components
 const createShapeRegistry = () => {
     return {
-        // Basic shapes
-        rect: (spec: JointElement, theme: 'light' | 'dark') => createElement(spec, theme),
-        circle: (spec: JointElement, theme: 'light' | 'dark') => createElement(spec, theme),
-        ellipse: (spec: JointElement, theme: 'light' | 'dark') => createElement(spec, theme),
-        diamond: (spec: JointElement, theme: 'light' | 'dark') => createDiamondElement(spec, theme),
+        // Enhanced basic shapes with better styling
+        rect: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
+        square: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement({ ...spec, size: { width: 80, height: 80 } }, theme),
+        circle: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement(spec, theme),
+        ellipse: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedEllipseElement(spec, theme),
+        diamond: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedDiamondElement(spec, theme),
+        hexagon: (spec: JointElement, theme: 'light' | 'dark') => createHexagonElement(spec, theme),
+        cylinder: (spec: JointElement, theme: 'light' | 'dark') => createCylinderElement(spec, theme),
+        actor: (spec: JointElement, theme: 'light' | 'dark') => createActorElement(spec, theme),
+        
+        // Process/workflow shapes
+        process: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement({...spec, size: spec.size || {width: 140, height: 60}}, theme),
+        decision: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedDiamondElement(spec, theme),
+        start: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement({...spec, size: spec.size || {width: 80, height: 80}}, theme),
+        end: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement({...spec, size: spec.size || {width: 80, height: 80}}, theme),
+        
+        // Additional common shapes
+        node: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement(spec, theme),
+        box: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
+        oval: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedEllipseElement(spec, theme),
+        rhombus: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedDiamondElement(spec, theme),
+        
+        // Aliases for common names
+        rectangle: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
+        
+        // Database shapes
+        database: (spec: JointElement, theme: 'light' | 'dark') => createCylinderElement(spec, theme),
+        storage: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
+
+        // Network components
+        message: (spec: JointElement, theme: 'light' | 'dark') => createMessageElement(spec, theme),
+        document: (spec: JointElement, theme: 'light' | 'dark') => createDocumentElement(spec, theme),
+
+        // System shapes
+        component: (spec: JointElement, theme: 'light' | 'dark') => createComponentElement(spec, theme),
+        module: (spec: JointElement, theme: 'light' | 'dark') => createModuleElement(spec, theme),
+
+        // UML shapes  
+        class: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedUMLElement(spec, 'class', theme),
+        interface: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedUMLElement(spec, 'interface', theme),
+        package: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedUMLElement(spec, 'package', theme),
+        note: (spec: JointElement, theme: 'light' | 'dark') => createNoteElement(spec, theme),
+
+        // Flowchart shapes
+        subprocess: (spec: JointElement, theme: 'light' | 'dark') => createSubprocessElement(spec, theme),
+        manual: (spec: JointElement, theme: 'light' | 'dark') => createManualElement(spec, theme),
+        data: (spec: JointElement, theme: 'light' | 'dark') => createDataElement(spec, theme),
 
         // Network components
         router: (spec: JointElement, theme: 'light' | 'dark') => createNetworkElement(spec, 'router', theme),
@@ -157,14 +199,229 @@ const createShapeRegistry = () => {
         diode: (spec: JointElement, theme: 'light' | 'dark') => createElectricalElement(spec, 'diode', theme),
         transistor: (spec: JointElement, theme: 'light' | 'dark') => createElectricalElement(spec, 'transistor', theme),
 
-        // UML components
-        class: (spec: JointElement, theme: 'light' | 'dark') => createUMLElement(spec, 'class', theme),
-        interface: (spec: JointElement, theme: 'light' | 'dark') => createUMLElement(spec, 'interface', theme),
-        package: (spec: JointElement, theme: 'light' | 'dark') => createUMLElement(spec, 'package', theme),
     };
 };
 
 // Create diamond-shaped element
+const createEnhancedRectElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 120, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new shapes.standard.Rectangle({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: theme === 'dark' ? '#4c566a' : '#ffffff',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2c3e50',
+                strokeWidth: 2,
+                rx: 8,
+                ry: 8,
+                filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
+                fontSize: 14,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
+};
+
+const createEnhancedCircleElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 80, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new shapes.standard.Circle({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: theme === 'dark' ? '#5e81ac' : '#3498db',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
+                strokeWidth: 3,
+                filter: theme === 'dark' ? 'drop-shadow(2px 2px 6px rgba(0,0,0,0.4))' : 'drop-shadow(2px 2px 6px rgba(0,0,0,0.2))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 13,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
+};
+
+const createEnhancedEllipseElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 140, height: 70 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new shapes.standard.Ellipse({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: theme === 'dark' ? '#bf616a' : '#e74c3c',
+                stroke: theme === 'dark' ? '#d08770' : '#c0392b',
+                strokeWidth: 2,
+                filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 13,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
+};
+
+const createEnhancedDiamondElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 120, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new shapes.standard.Polygon({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: theme === 'dark' ? '#ebcb8b' : '#f39c12',
+                stroke: theme === 'dark' ? '#d08770' : '#e67e22',
+                strokeWidth: 2,
+                refPoints: '0,10 10,0 20,10 10,20',
+                filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#2e3440' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
+};
+
+const createHexagonElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 100, height: 86 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new shapes.standard.Polygon({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: theme === 'dark' ? '#a3be8c' : '#27ae60',
+                stroke: theme === 'dark' ? '#8fbcbb' : '#229954',
+                strokeWidth: 2,
+                refPoints: '15,0 25,0 30,8.66 25,17.32 15,17.32 10,8.66',
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
+};
+
+const createCylinderElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 80, height: 100 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'ellipse', selector: 'top' },
+            { tagName: 'rect', selector: 'body' },
+            { tagName: 'ellipse', selector: 'bottom' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            top: {
+                cx: size.width / 2,
+                cy: 8,
+                rx: size.width / 2 - 2,
+                ry: 8,
+                fill: theme === 'dark' ? '#5e81ac' : '#3498db',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
+                strokeWidth: 2
+            },
+            body: {
+                x: 2,
+                y: 8,
+                width: size.width - 4,
+                height: size.height - 16,
+                fill: theme === 'dark' ? '#5e81ac' : '#3498db',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
+                strokeWidth: 2
+            },
+            bottom: {
+                cx: size.width / 2,
+                cy: size.height - 8,
+                rx: size.width / 2 - 2,
+                ry: 8,
+                fill: theme === 'dark' ? '#4c566a' : '#2c3e50',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
+                strokeWidth: 2
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle',
+                x: size.width / 2,
+                y: size.height / 2
+            }
+        }
+    });
+};
+
 const createDiamondElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
     const position = Array.isArray(elementSpec.position) ?
         { x: elementSpec.position[0], y: elementSpec.position[1] } :
@@ -288,6 +545,166 @@ const parseUMLContent = (text: string) => {
         attributes,
         methods
     };
+};
+
+const createDocumentElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 100, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'path', selector: 'body' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            body: {
+                d: `M 0 0 L ${size.width - 15} 0 L ${size.width} 15 L ${size.width} ${size.height} L 0 ${size.height} Z M ${size.width - 15} 0 L ${size.width - 15} 15 L ${size.width} 15`,
+                fill: theme === 'dark' ? '#d08770' : '#f39c12',
+                stroke: theme === 'dark' ? '#ebcb8b' : '#e67e22',
+                strokeWidth: 2,
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#2e3440' : '#ffffff',
+                fontSize: 11,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle',
+                x: size.width / 2,
+                y: size.height / 2 + 5
+            }
+        }
+    });
+};
+
+const createComponentElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 120, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'rect', selector: 'body' },
+            { tagName: 'rect', selector: 'tab1' },
+            { tagName: 'rect', selector: 'tab2' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            body: {
+                x: 0, y: 10, width: size.width, height: size.height - 10,
+                fill: theme === 'dark' ? '#5e81ac' : '#3498db',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
+                strokeWidth: 2,
+                rx: 5,
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))'
+            },
+            tab1: {
+                x: 10, y: 0, width: 20, height: 15,
+                fill: theme === 'dark' ? '#81a1c1' : '#5dade2',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
+                strokeWidth: 1,
+                rx: 3
+            },
+            tab2: {
+                x: 35, y: 0, width: 20, height: 15,
+                fill: theme === 'dark' ? '#81a1c1' : '#5dade2',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
+                strokeWidth: 1,
+                rx: 3
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle',
+                x: size.width / 2,
+                y: size.height / 2 + 5
+            }
+        }
+    });
+};
+
+const createStartEndElement = (elementSpec: JointElement, theme: 'light' | 'dark', type: 'start' | 'end') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 80, height: 40 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+    const color = type === 'start' ?
+        (theme === 'dark' ? '#a3be8c' : '#27ae60') :
+        (theme === 'dark' ? '#bf616a' : '#e74c3c');
+
+    return new shapes.standard.Ellipse({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: color,
+                stroke: theme === 'dark' ? '#eceff4' : '#2c3e50',
+                strokeWidth: 3,
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.4))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
+};
+
+const createProcessElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 140, height: 60 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new shapes.standard.Rectangle({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: theme === 'dark' ? '#81a1c1' : '#3498db',
+                stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
+                strokeWidth: 2,
+                rx: 10,
+                ry: 10,
+                filter: 'drop-shadow(3px 3px 6px rgba(0,0,0,0.3))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 13,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
 };
 
 // Create electrical element with specialized symbols
@@ -618,16 +1035,18 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
     const commonAttrs = {
         body: {
             fill: theme === 'dark' ? '#2f3349' : '#ffffff',
-            stroke: theme === 'dark' ? '#4cc9f0' : '#333333',
-            strokeWidth: 2,
-            rx: 5,
-            ry: 5
+            stroke: theme === 'dark' ? '#4cc9f0' : '#2c3e50',
+            strokeWidth: 3,
+            rx: 8,
+            ry: 8,
+            filter: theme === 'dark' ? 'drop-shadow(2px 2px 6px rgba(0,0,0,0.4))' : 'drop-shadow(2px 2px 6px rgba(0,0,0,0.2))'
         },
         label: {
             text: text,
-            fill: theme === 'dark' ? '#ffffff' : '#000000',
-            fontSize: 14,
+            fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
+            fontSize: 13,
             fontFamily: 'Arial, sans-serif',
+            fontWeight: 'bold',
             textAnchor: 'middle',
             textVerticalAnchor: 'middle'
         }
@@ -641,9 +1060,15 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
                 position,
                 size,
                 attrs: {
-                    ...commonAttrs,
-                    body: commonAttrs.body,
-                    label: commonAttrs.label
+                    body: {
+                        ...commonAttrs.body,
+                        fill: theme === 'dark' ? '#5e81ac' : '#3498db',
+                        stroke: theme === 'dark' ? '#88c0d0' : '#2980b9'
+                    },
+                    label: {
+                        ...commonAttrs.label,
+                        fill: theme === 'dark' ? '#eceff4' : '#ffffff'
+                    }
                 }
             });
             break;
@@ -653,9 +1078,15 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
                 position,
                 size,
                 attrs: {
-                    ...commonAttrs,
-                    body: commonAttrs.body,
-                    label: commonAttrs.label
+                    body: {
+                        ...commonAttrs.body,
+                        fill: theme === 'dark' ? '#bf616a' : '#e74c3c',
+                        stroke: theme === 'dark' ? '#d08770' : '#c0392b'
+                    },
+                    label: {
+                        ...commonAttrs.label,
+                        fill: theme === 'dark' ? '#eceff4' : '#ffffff'
+                    }
                 }
             });
             break;
@@ -666,21 +1097,37 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
                 position,
                 size,
                 attrs: {
-                    ...commonAttrs,
-                    body: commonAttrs.body,
-                    label: commonAttrs.label
+                    body: {
+                        ...commonAttrs.body,
+                        fill: theme === 'dark' ? '#a3be8c' : '#2ecc71',
+                        stroke: theme === 'dark' ? '#8fbcbb' : '#27ae60'
+                    },
+                    label: {
+                        ...commonAttrs.label,
+                        fill: theme === 'dark' ? '#2e3440' : '#ffffff',
+                        fontSize: 11
+                    }
                 }
             });
             break;
         case 'diamond':
-            // Create diamond using Path shape
-            element = new shapes.standard.Rectangle({
+            // Create proper diamond using Polygon
+            element = new shapes.standard.Polygon({
                 id: elementSpec.id,
                 position,
                 size,
                 attrs: {
-                    body: commonAttrs.body,
-                    label: commonAttrs.label
+                    body: {
+                        ...commonAttrs.body,
+                        fill: theme === 'dark' ? '#ebcb8b' : '#f39c12',
+                        stroke: theme === 'dark' ? '#d08770' : '#e67e22',
+                        refPoints: '0,10 10,0 20,10 10,20'
+                    },
+                    label: {
+                        ...commonAttrs.label,
+                        fill: theme === 'dark' ? '#2e3440' : '#ffffff',
+                        fontSize: 12
+                    }
                 }
             });
             break;
@@ -690,7 +1137,10 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
                 position,
                 size,
                 attrs: {
-                    body: commonAttrs.body,
+                    body: {
+                        ...commonAttrs.body,
+                        fill: theme === 'dark' ? '#4c566a' : '#ffffff'
+                    },
                     label: commonAttrs.label
                 }
             });
@@ -706,29 +1156,62 @@ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
         id: linkSpec.id,
         source: { id: typeof linkSpec.source === 'string' ? linkSpec.source : linkSpec.source.id },
         target: { id: typeof linkSpec.target === 'string' ? linkSpec.target : linkSpec.target.id },
+        router: {
+            name: linkSpec.router || 'orthogonal',
+            args: { padding: 20, excludeEnds: ['source', 'target'] }
+        },
+        connector: {
+            name: linkSpec.connector || 'rounded',
+            args: { radius: 15 }
+        },
+        vertices: linkSpec.vertices || [],
         attrs: {
             line: {
-                stroke: theme === 'dark' ? '#88c0d0' : '#333333',
-                strokeWidth: 2,
+                stroke: theme === 'dark' ? '#88c0d0' : '#34495e',
+                strokeWidth: 3,
+                strokeLinecap: 'round',
+                strokeLinejoin: 'round',
+                strokeDasharray: linkSpec.attrs?.line?.strokeDasharray || '0',
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))',
                 targetMarker: {
                     type: 'path',
-                    d: 'M 10 -5 0 0 10 5 z',
-                    fill: theme === 'dark' ? '#88c0d0' : '#333333'
+                    d: 'M 14 -7 0 0 14 7 z',
+                    fill: theme === 'dark' ? '#88c0d0' : '#34495e',
+                    stroke: theme === 'dark' ? '#88c0d0' : '#34495e',
+                    strokeWidth: 2
                 }
+            },
+            wrapper: {
+                strokeWidth: 10,
+                stroke: 'transparent'
             }
         }
     });
 
     // Add label if specified
     if (linkSpec.label) {
-        link.label(0, {
+        link.appendLabel({
             position: 0.5,
             attrs: {
+                rect: {
+                    fill: theme === 'dark' ? '#3b4252' : '#ffffff',
+                    stroke: theme === 'dark' ? '#4c566a' : '#bdc3c7',
+                    strokeWidth: 1,
+                    rx: 6,
+                    ry: 6,
+                    width: 'calc(w + 16)',
+                    height: 'calc(h + 8)',
+                    x: 'calc(x - 8)',
+                    y: 'calc(y - 4)'
+                },
                 text: {
                     text: linkSpec.label,
-                    fill: theme === 'dark' ? '#ffffff' : '#000000',
+                    fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
                     fontSize: 12,
-                    fontFamily: 'Arial, sans-serif'
+                    fontFamily: 'Arial, sans-serif',
+                    fontWeight: 'bold',
+                    textAnchor: 'middle',
+                    textVerticalAnchor: 'middle'
                 }
             }
         });
@@ -899,11 +1382,12 @@ export const jointPlugin: D3RenderPlugin = {
                 model: graph,
                 cellViewNamespace: shapes,
                 interactive: spec.interactive !== false,
-                snapLinks: spec.snapToGrid !== false,
+                snapLinks: { radius: 30 },
                 linkPinning: false,
                 // Fix viewport and scaling issues
-                defaultRouter: { name: 'orthogonal' },
-                defaultConnector: { name: 'rounded' },
+                defaultRouter: { name: 'orthogonal', args: { padding: 25 } },
+                defaultConnector: { name: 'rounded', args: { radius: 15 } },
+                markAvailable: true,
                 // Ensure proper viewport handling
                 restrictTranslate: false, // Allow free positioning but ensure content fits
                 multiLinks: false,
@@ -948,7 +1432,7 @@ export const jointPlugin: D3RenderPlugin = {
             if (loadingSpinner && loadingSpinner.parentNode === container) {
                 container.removeChild(loadingSpinner);
             }
-            
+
             // CRITICAL FIX: Ensure SVG uses full interactive area
             setTimeout(() => {
                 const paperSvg = container.querySelector('svg[joint-selector="svg"]');
@@ -969,8 +1453,17 @@ export const jointPlugin: D3RenderPlugin = {
             const startX = Math.max(60, (width - totalGridWidth) / 2);
             const startY = 80;
 
+            // Create shape registry for enhanced element creation
+            const shapeRegistry = createShapeRegistry();
+
             elements.forEach(elementSpec => {
                 try {
+                    // Use shape registry for enhanced shapes
+                    const shapeType = elementSpec.type || elementSpec.shape || 'rect';
+                    const shapeCreator = shapeRegistry[shapeType] || shapeRegistry['rect'];
+
+                    console.log(`Creating enhanced element ${elementSpec.id} with shape type: ${shapeType}`);
+
                     // Ensure element has required properties
                     let defaultPosition = elementSpec.position;
                     if (!defaultPosition ||
@@ -992,7 +1485,7 @@ export const jointPlugin: D3RenderPlugin = {
                         size: elementSpec.size || { width: 120, height: 80 }
                     };
 
-                    const element = createElement(elementWithDefaults, theme);
+                    const element = shapeCreator(elementWithDefaults, theme);
                     if (element) {
                         jointElements.push(element);
                         graph.addCell(element);
@@ -1031,7 +1524,7 @@ export const jointPlugin: D3RenderPlugin = {
                         return;
                     }
 
-                    const link = createLink(linkSpec, theme);
+                    const link = createEnhancedLink(linkSpec, theme);
                     if (link) {
                         jointLinks.push(link);
                         graph.addCell(link);
@@ -1072,12 +1565,12 @@ export const jointPlugin: D3RenderPlugin = {
                     // This preserves any layout-applied positioning
                     const contentBBox = paper.getContentBBox();
                     console.log('Initial content bounds:', contentBBox);
-                    
+
                     if (!contentBBox) {
                         console.warn('No content bbox available, skipping fit');
                         return;
                     }
-                    
+
                     // Reset transforms AFTER getting initial bounds
                     paper.translate(0, 0);
                     paper.scale(1);
@@ -1092,7 +1585,7 @@ export const jointPlugin: D3RenderPlugin = {
                         // Ensure we don't push content above or to the left of the canvas
                         const minX = Math.max(20, -freshBBox.x); // Minimum 20px margin from left
                         const minY = Math.max(20, -freshBBox.y); // Minimum 20px margin from top
-                        
+
                         const centerX = Math.max(minX, (width - freshBBox.width) / 2 - freshBBox.x);
                         const centerY = Math.max(minY, (height - freshBBox.height) / 2 - freshBBox.y);
 
@@ -1104,12 +1597,12 @@ export const jointPlugin: D3RenderPlugin = {
                         // CRITICAL: Force the paper to actually render at full size
                         const paperElement = container.querySelector('.joint-paper');
                         const svgElement = container.querySelector('svg[joint-selector="svg"]');
-                        
+
                         if (paperElement && svgElement) {
                             (paperElement as HTMLElement).style.width = `${width}px`;
                             (paperElement as HTMLElement).style.height = `${height}px`;
                             (paperElement as HTMLElement).style.minHeight = `${height}px`;
-                            
+
                             (svgElement as SVGElement).style.width = `${width}px`;
                             (svgElement as SVGElement).style.height = `${height}px`;
                             svgElement.setAttribute('width', width.toString());
@@ -1190,20 +1683,20 @@ export const jointPlugin: D3RenderPlugin = {
             fitButton.onclick = () => {
                 // Reset transformations and re-center
                 console.log('Fit button clicked - resetting and re-centering');
-                
+
                 // Get current content bounds
                 const currentBBox = paper.getContentBBox();
                 console.log('Current content bounds for fit:', currentBBox);
-                
+
                 if (!currentBBox) {
                     console.warn('No content to fit');
                     return;
                 }
-                
+
                 // Reset transforms
                 paper.translate(0, 0);
                 paper.scale(1);
-                
+
                 // Get bounds after reset
                 const resetBBox = paper.getContentBBox();
                 console.log('Content bounds after reset:', resetBBox);
@@ -1212,19 +1705,19 @@ export const jointPlugin: D3RenderPlugin = {
                     // Ensure we don't push content above or to the left of the canvas
                     const minX = Math.max(20, -resetBBox.x); // Minimum 20px margin from left
                     const minY = Math.max(20, -resetBBox.y); // Minimum 20px margin from top
-                    
+
                     const centerX = Math.max(minX, (width - resetBBox.width) / 2 - resetBBox.x);
                     const centerY = Math.max(minY, (height - resetBBox.height) / 2 - resetBBox.y);
-                    
+
                     console.log('Fit operation - centering to:', { centerX, centerY });
                     paper.translate(centerX, centerY);
-                    
+
                     // Apply scaling if content is too large
                     if (resetBBox.width > width - 40 || resetBBox.height > height - 40) {
                         const scaleX = (width - 40) / resetBBox.width;
                         const scaleY = (height - 40) / resetBBox.height;
                         const scale = Math.min(scaleX, scaleY, 1.0);
-                        
+
                         console.log('Fit operation - scaling content:', { scale });
                         paper.scale(scale);
                     }
@@ -1343,16 +1836,16 @@ export const jointPlugin: D3RenderPlugin = {
                         // Try to fix the grid positioning
                         if (gridLayer) {
                             console.log('Fixing grid layer positioning');
-                            
+
                             // Get the current paper transform
                             const currentMatrix = paper.viewport.getCTM();
                             console.log('Current paper transform matrix:', currentMatrix);
-                            
+
                             // The grid should always fill the entire paper, regardless of content position
                             // Reset grid layer to fill the full paper dimensions
                             const gridSvg = gridLayer as SVGSVGElement;
                             gridSvg.setAttribute('x', '0');
-                            gridSvg.setAttribute('y', '0'); 
+                            gridSvg.setAttribute('y', '0');
                             gridSvg.setAttribute('width', width.toString());
                             gridSvg.setAttribute('height', height.toString());
                             gridSvg.style.position = 'absolute';
@@ -1360,7 +1853,7 @@ export const jointPlugin: D3RenderPlugin = {
                             gridSvg.style.left = '0';
                             gridSvg.style.width = `${width}px`;
                             gridSvg.style.height = `${height}px`;
-                            
+
                             // Ensure grid layer is behind content
                             const gridParent = gridSvg.parentElement;
                             if (gridParent) {
@@ -1667,4 +2160,503 @@ const getPortPosition = (position: string) => {
         right: { x: '100%', y: '50%' }
     };
     return positions[position as keyof typeof positions] || { x: '50%', y: '50%' };
+};
+
+// Enhanced link creation with better routing and styling
+const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
+    const link = new shapes.standard.Link({
+        id: linkSpec.id,
+        source: { id: typeof linkSpec.source === 'string' ? linkSpec.source : linkSpec.source.id },
+        target: { id: typeof linkSpec.target === 'string' ? linkSpec.target : linkSpec.target.id },
+        router: {
+            name: linkSpec.router || 'orthogonal',
+            args: { padding: 20, excludeEnds: ['source', 'target'] }
+        },
+        connector: {
+            name: linkSpec.connector || 'rounded',
+            args: { radius: 15 }
+        },
+        vertices: linkSpec.vertices || [],
+        attrs: {
+            line: {
+                stroke: theme === 'dark' ? '#88c0d0' : '#34495e',
+                strokeWidth: 3,
+                strokeLinecap: 'round',
+                strokeLinejoin: 'round',
+                filter: 'drop-shadow(1px 1px 3px rgba(0,0,0,0.2))',
+                targetMarker: {
+                    type: 'path',
+                    d: 'M 14 -7 0 0 14 7 z',
+                    fill: theme === 'dark' ? '#88c0d0' : '#34495e',
+                    stroke: theme === 'dark' ? '#88c0d0' : '#34495e',
+                    strokeWidth: 1
+                }
+            }
+        }
+    });
+
+    // Enhanced label handling with background
+    if (linkSpec.label) {
+        link.appendLabel({
+            position: 0.5,
+            attrs: {
+                rect: {
+                    fill: theme === 'dark' ? '#3b4252' : '#ffffff',
+                    stroke: theme === 'dark' ? '#4c566a' : '#bdc3c7',
+                    strokeWidth: 1,
+                    rx: 6,
+                    ry: 6,
+                    width: 'calc(w + 16)',
+                    height: 'calc(h + 8)',
+                    x: 'calc(x - 8)',
+                    y: 'calc(y - 4)'
+                },
+                text: {
+                    text: linkSpec.label,
+                    fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
+                    fontSize: 12,
+                    fontFamily: 'Arial, sans-serif',
+                    fontWeight: 'bold',
+                    textAnchor: 'middle',
+                    textVerticalAnchor: 'middle'
+                }
+            }
+        });
+    }
+
+    return link;
+};
+
+const createDatabaseElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 80, height: 100 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'ellipse', selector: 'top' },
+            { tagName: 'rect', selector: 'body' },
+            { tagName: 'ellipse', selector: 'bottom' },
+            { tagName: 'ellipse', selector: 'bottomShadow' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            top: {
+                cx: size.width / 2, cy: 10, rx: size.width / 2 - 2, ry: 10,
+                fill: theme === 'dark' ? '#a3be8c' : '#2ecc71',
+                stroke: theme === 'dark' ? '#8fbcbb' : '#27ae60',
+                strokeWidth: 2
+            },
+            body: {
+                x: 2, y: 10, width: size.width - 4, height: size.height - 20,
+                fill: theme === 'dark' ? '#a3be8c' : '#2ecc71',
+                stroke: theme === 'dark' ? '#8fbcbb' : '#27ae60',
+                strokeWidth: 2
+            },
+            bottom: {
+                cx: size.width / 2, cy: size.height - 10, rx: size.width / 2 - 2, ry: 10,
+                fill: theme === 'dark' ? '#8fbcbb' : '#27ae60',
+                stroke: theme === 'dark' ? '#8fbcbb' : '#27ae60',
+                strokeWidth: 2
+            },
+            bottomShadow: {
+                cx: size.width / 2, cy: size.height - 8, rx: size.width / 2 - 4, ry: 6,
+                fill: theme === 'dark' ? '#4c566a' : '#229954',
+                opacity: 0.7
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#2e3440' : '#ffffff',
+                fontSize: 11,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle',
+                x: size.width / 2,
+                y: size.height / 2
+            }
+        }
+    });
+};
+
+const createStorageElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 100, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new shapes.standard.Rectangle({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: theme === 'dark' ? '#b48ead' : '#9b59b6',
+                stroke: theme === 'dark' ? '#d08770' : '#8e44ad',
+                strokeWidth: 2,
+                rx: 10,
+                ry: 10,
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 13,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
+};
+
+const createMessageElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 120, height: 60 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'rect', selector: 'body' },
+            { tagName: 'path', selector: 'flap' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            body: {
+                x: 0, y: 0, width: size.width, height: size.height,
+                fill: theme === 'dark' ? '#ebcb8b' : '#f39c12',
+                stroke: theme === 'dark' ? '#d08770' : '#e67e22',
+                strokeWidth: 2,
+                rx: 5,
+                ry: 5
+            },
+            flap: {
+                d: `M 0,0 L ${size.width / 2},${size.height / 3} L ${size.width},0`,
+                fill: 'none',
+                stroke: theme === 'dark' ? '#d08770' : '#e67e22',
+                strokeWidth: 2
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#2e3440' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle',
+                x: size.width / 2,
+                y: size.height / 2 + 5
+            }
+        }
+    });
+};
+
+const createModuleElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 120, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new shapes.standard.Rectangle({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: theme === 'dark' ? '#5e81ac' : '#3498db',
+                stroke: theme === 'dark' ? '#81a1c1' : '#2980b9',
+                strokeWidth: 3,
+                strokeDasharray: '10,5',
+                rx: 8,
+                ry: 8,
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 13,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle'
+            }
+        }
+    });
+};
+
+const createEnhancedUMLElement = (elementSpec: JointElement, umlType: 'class' | 'interface' | 'package', theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 160, height: 120 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    const colors = {
+        class: { fill: theme === 'dark' ? '#4c566a' : '#ffffff', stroke: theme === 'dark' ? '#88c0d0' : '#2c3e50' },
+        interface: { fill: theme === 'dark' ? '#5e81ac' : '#e8f4fd', stroke: theme === 'dark' ? '#81a1c1' : '#3498db' },
+        package: { fill: theme === 'dark' ? '#a3be8c' : '#e8f5e8', stroke: theme === 'dark' ? '#8fbcbb' : '#27ae60' }
+    };
+
+    return new shapes.standard.Rectangle({
+        id: elementSpec.id,
+        position,
+        size,
+        attrs: {
+            body: {
+                fill: colors[umlType].fill,
+                stroke: colors[umlType].stroke,
+                strokeWidth: 2,
+                rx: 5,
+                ry: 5,
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
+            },
+            label: {
+                text: umlType === 'interface' ? `<<interface>>\n${text}` : text,
+                fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'top',
+                y: 15
+            }
+        }
+    });
+};
+
+
+const createNoteElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 100, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'path', selector: 'body' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            body: {
+                d: `M 0,0 L ${size.width - 15},0 L ${size.width},15 L ${size.width},${size.height} L 0,${size.height} Z M ${size.width - 15},0 L ${size.width - 15},15 L ${size.width},15`,
+                fill: theme === 'dark' ? '#ebcb8b' : '#fff3cd',
+                stroke: theme === 'dark' ? '#d08770' : '#ffc107',
+                strokeWidth: 2
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#2e3440' : '#856404',
+                fontSize: 11,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'normal',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle',
+                x: size.width / 2 - 7,
+                y: size.height / 2
+            }
+        }
+    });
+};
+
+
+const createDataElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 120, height: 60 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'path', selector: 'body' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            body: {
+                d: `M 15,0 L ${size.width},0 L ${size.width - 15},${size.height} L 0,${size.height} Z`,
+                fill: theme === 'dark' ? '#b48ead' : '#9b59b6',
+                stroke: theme === 'dark' ? '#d08770' : '#8e44ad',
+                strokeWidth: 2
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle',
+                x: size.width / 2,
+                y: size.height / 2
+            }
+        }
+    });
+};
+
+const createSubprocessElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 120, height: 60 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'rect', selector: 'body' },
+            { tagName: 'rect', selector: 'plus1' },
+            { tagName: 'rect', selector: 'plus2' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            body: {
+                x: 0, y: 0, width: size.width, height: size.height,
+                fill: theme === 'dark' ? '#5e81ac' : '#3498db',
+                stroke: theme === 'dark' ? '#81a1c1' : '#2980b9',
+                strokeWidth: 2,
+                rx: 5,
+                ry: 5
+            },
+            plus1: {
+                x: size.width / 2 - 8, y: size.height / 2 - 2,
+                width: 16, height: 4,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff'
+            },
+            plus2: {
+                x: size.width / 2 - 2, y: size.height / 2 - 8,
+                width: 4, height: 16,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff'
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'top',
+                x: size.width / 2,
+                y: 10
+            }
+        }
+    });
+};
+
+const createManualElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 120, height: 80 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'path', selector: 'body' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            body: {
+                d: `M 0,15 Q 30,0 60,15 Q 90,0 120,15 L 120,80 L 0,80 Z`,
+                fill: theme === 'dark' ? '#d08770' : '#e67e22',
+                stroke: theme === 'dark' ? '#bf616a' : '#d35400',
+                strokeWidth: 2
+            },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                fontSize: 12,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                textVerticalAnchor: 'middle',
+                x: size.width / 2,
+                y: size.height / 2 + 5
+            }
+        }
+    });
+};
+
+// Add missing shape creation functions that are referenced in the existing code
+const createActorElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    const position = Array.isArray(elementSpec.position) ?
+        { x: elementSpec.position[0], y: elementSpec.position[1] } :
+        elementSpec.position || { x: 0, y: 0 };
+    const size = elementSpec.size || { width: 60, height: 100 };
+    const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    return new dia.Element({
+        id: elementSpec.id,
+        position,
+        size,
+        markup: [
+            { tagName: 'circle', selector: 'head' },
+            { tagName: 'line', selector: 'body' },
+            { tagName: 'line', selector: 'leftArm' },
+            { tagName: 'line', selector: 'rightArm' },
+            { tagName: 'line', selector: 'leftLeg' },
+            { tagName: 'line', selector: 'rightLeg' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        attrs: {
+            head: {
+                cx: size.width / 2, cy: 15, r: 10,
+                fill: theme === 'dark' ? '#d08770' : '#f39c12',
+                stroke: theme === 'dark' ? '#bf616a' : '#e67e22',
+                strokeWidth: 2
+            },
+            body: { x1: size.width / 2, y1: 25, x2: size.width / 2, y2: 60, stroke: theme === 'dark' ? '#eceff4' : '#2c3e50', strokeWidth: 3 },
+            leftArm: { x1: size.width / 2, y1: 35, x2: size.width / 2 - 15, y2: 50, stroke: theme === 'dark' ? '#eceff4' : '#2c3e50', strokeWidth: 3 },
+            rightArm: { x1: size.width / 2, y1: 35, x2: size.width / 2 + 15, y2: 50, stroke: theme === 'dark' ? '#eceff4' : '#2c3e50', strokeWidth: 3 },
+            leftLeg: { x1: size.width / 2, y1: 60, x2: size.width / 2 - 15, y2: 85, stroke: theme === 'dark' ? '#eceff4' : '#2c3e50', strokeWidth: 3 },
+            rightLeg: { x1: size.width / 2, y1: 60, x2: size.width / 2 + 15, y2: 85, stroke: theme === 'dark' ? '#eceff4' : '#2c3e50', strokeWidth: 3 },
+            label: {
+                text: text,
+                fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
+                fontSize: 10,
+                fontFamily: 'Arial, sans-serif',
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                x: size.width / 2,
+                y: size.height - 5
+            }
+        }
+    });
+};
+
+const createLogicGate = (elementSpec: JointElement, gateType: string, theme: 'light' | 'dark') => {
+    // Fallback to enhanced rectangle for logic gates
+    return createEnhancedRectElement({
+        ...elementSpec,
+        text: `${gateType.toUpperCase()} Gate`
+    }, theme);
+};
+
+const createCustomElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
+    // Fallback to enhanced rectangle for custom elements
+    return createEnhancedRectElement(elementSpec, theme);
 };
