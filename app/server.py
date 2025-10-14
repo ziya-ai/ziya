@@ -716,19 +716,24 @@ async def check_context_overflow(
         continuation_point = find_continuation_point(current_response)
         
         if continuation_point:
-            # Split the response at the continuation point
-            completed_part = current_response[:continuation_point]
-            remaining_part = current_response[continuation_point:].strip()
+            # Find the last complete line before continuation point
+            lines = current_response[:continuation_point].split('\n')
+            complete_lines = lines[:-1]  # All but the potentially partial last line
+            partial_last_line = lines[-1] if lines else ""
             
-            # Add continuation marker to completed part
-            continuation_marker = "\n\n---\n**🔄 Continuing this thread...**\n---\n\n"
-            completed_part += continuation_marker
+            completed_part = '\n'.join(complete_lines)
+            
+            # Add rewind marker that identifies exactly where to splice
+            rewind_marker = f"\n\n<!-- REWIND_MARKER: {len(complete_lines)} -->\n**🔄 Response continues...**\n"
+            completed_part += rewind_marker
             
             # Prepare continuation state
             continuation_state = {
+                "rewind_line_number": len(complete_lines),
+                "partial_last_line": partial_last_line,
+                "rewind_marker": f"<!-- REWIND_MARKER: {len(complete_lines)} -->",
                 "conversation_id": conversation_id,
                 "completed_response": completed_part,
-                "remaining_response": remaining_part,
                 "messages": messages,
                 "context": full_context,
                 "continuation_id": f"{conversation_id}_cont_{int(time.time())}"
@@ -746,8 +751,23 @@ def find_continuation_point(text: str) -> Optional[int]:
     1. End of paragraphs (double newlines)
     2. End of sentences
     3. End of code blocks
+    4. End of complete lines (for code/structured content)
+    3. End of code blocks
     4. Natural word boundaries
     """
+    
+    # For code/structured content, prioritize complete lines
+    lines = text.split('\n')
+    if len(lines) > 10:
+        # Find a line that ends with punctuation or closing brace
+        for i in range(len(lines) - 3, max(0, len(lines) - 10), -1):
+            line = lines[i].strip()
+            if line and line[-1] in ';})]':
+                line_end_pos = sum(len(l) + 1 for l in lines[:i+1]) - 1
+                if line_end_pos < len(text) * 0.9:  # Not too close to end
+                    logger.info(f"🔄 CONTINUATION: Found code line boundary at line {i+1}: '{line[-20:]}'")
+                    return line_end_pos
+    
     # Look for paragraph breaks first
     paragraph_breaks = [m.end() for m in re.finditer(r'\n\n+', text)]
     if paragraph_breaks:
@@ -798,32 +818,60 @@ async def handle_continuation(continuation_state: Dict[str, Any]):
         
         # Update messages for continuation
         updated_messages = continuation_state["messages"].copy()
+        # Update messages for continuation
+        updated_messages = continuation_state["messages"].copy()
         
-        # Add the completed part as an AI message
-        from langchain_core.messages import AIMessage, HumanMessage
-        updated_messages.append(AIMessage(content=continuation_state["completed_response"]))
+        # Create continuation prompt that instructs exact pickup point
+        # Much simpler approach - just tell model to continue with zero context about what came before
+        continuation_prompt = "Continue your previous response from where it was cut off. Do not repeat any previous content."
+        updated_messages.append(HumanMessage(content=continuation_prompt))
         
-        # Add a marker for the continuation start
-        continuation_start_marker = "**📝 Continuing from previous response...**\n\n"
-        yield f"data: {json.dumps({'content': continuation_start_marker})}\n\n"
-        
-        # Add continuation prompt with tool execution context
-        continuation_prompt_with_context = f"{continuation_prompt}\n\nIMPORTANT: Do not simulate or hallucinate tool calls. Only use actual tool execution when needed."
-        updated_messages.append(HumanMessage(content=continuation_prompt_with_context))
-        
-        # Stream continuation with clean buffer
+        # Stream continuation and handle rewind markers in frontend
         async for chunk in stream_continuation(updated_messages, continuation_state):
+            # Add rewind marker to first chunk so frontend knows how to splice
+            if hasattr(chunk, 'content') and chunk.content and not continuation_state.get('marker_sent'):
+                chunk.content = f"<!-- REWIND_MARKER: {continuation_state['rewind_line_number']} -->" + chunk.content
+                continuation_state['marker_sent'] = True
             yield chunk
             
     except Exception as e:
         logger.error(f"🔄 CONTINUATION: Error in continuation {continuation_id}: {e}")
         # Yield error and complete the stream
         yield f"data: {json.dumps({'error': f'Continuation error: {str(e)}'})}\n\n"
-    finally:
+            
         # Clean up continuation state
         with _continuation_lock:
             _active_continuations.pop(continuation_id, None)
- 
+
+def splice_continuation_response(original_response: str, continuation_response: str, rewind_marker: str) -> str:
+    """
+    Splice continuation response into original response at the exact rewind marker.
+    This ensures zero duplication around the boundary.
+    """
+    # Find the rewind marker in the original response
+    marker_pos = original_response.find(rewind_marker)
+    if marker_pos == -1:
+        logger.warning("Rewind marker not found, appending continuation")
+        return original_response + continuation_response
+    
+    # Split at the marker
+    before_marker = original_response[:marker_pos]
+    
+    # Find where the continuation marker ends
+    marker_end = original_response.find("**\n", marker_pos)
+    if marker_end == -1:
+        marker_end = marker_pos + len(rewind_marker)
+    else:
+        marker_end += 3  # Include the "**\n"
+    
+    # Splice: everything before marker + continuation response
+    spliced = before_marker + continuation_response
+    
+    logger.info(f"🔄 SPLICE: Spliced continuation at marker, "
+               f"original: {len(original_response)}, continuation: {len(continuation_response)}, "
+               f"result: {len(spliced)}")
+    
+    return spliced
 def create_continuation_prompt(continuation_state: Dict[str, Any]) -> str:
     """Create a prompt for seamless continuation."""
     remaining = continuation_state.get("remaining_response", "")
@@ -1770,14 +1818,24 @@ async def stream_chunks(body):
                     # Always accumulate content in current_response for tool detection
                     current_response += content_str
 
-                    # Check for context overflow before processing further
-                    # Check every 100 chunks to avoid performance impact
-                    if (not overflow_checked and 
-                        chunk_count % 100 == 0 and
-                        len(current_response) > 10000):  # Only check if response is getting substantial
+                    # More frequent overflow checking - check every 20 chunks or when approaching token limits
+                    if not overflow_checked:
+                        # Estimate tokens more frequently
+                        estimated_tokens = len(current_response) // 4
+                        token_threshold = get_response_continuation_threshold()
+                        
+                        # Check if we're approaching 90% of the limit OR every 20 chunks
+                        should_check = (
+                            estimated_tokens > token_threshold * 0.9 or
+                            chunk_count % 20 == 0 or
+                            len(current_response) > 15000  # Lower character threshold
+                        )
+                        
+                        if should_check:
+                            logger.info(f"🔄 OVERFLOW_CHECK: tokens={estimated_tokens}, threshold={token_threshold}, chunk_count={chunk_count}")
 
                         overflow_info = await check_context_overflow(
-                            current_response, 
+                            current_response,
                             conversation_id, 
                             messages_for_model, 
                             full_context
@@ -2240,6 +2298,14 @@ async def stream_chunks(body):
                         # This avoids creating a new stream and resending context
 
                         # Continue to next iteration to get model's response after tool execution
+                        # Mark rewind boundary before continuing to next iteration
+                        if current_response:
+                            lines = current_response.split('\n')
+                            rewind_marker = f"<!-- REWIND_MARKER: {len(lines)} -->"
+                            rewind_content = f"\n{rewind_marker}\n**🔄 Response continues...**\n"
+                            yield f"data: {json.dumps({'content': rewind_content})}\n\n"
+                            logger.info(f"🔄 AGENT_REWIND: Marked boundary at line {len(lines)} before iteration continue")
+                        
                         continue
                     else:
                         logger.warning("🔍 STREAM: Tool execution returned no changes")
@@ -2260,6 +2326,14 @@ async def stream_chunks(body):
                 # If tools were executed, we need iteration 2 for the response
                 if iteration == 1 and tool_executed:
                     logger.info("🔍 AGENT: Tools executed, continuing to iteration 2 for response")
+                    # Mark rewind boundary before continuing to next iteration
+                    if current_response:
+                        lines = current_response.split('\n')
+                        rewind_marker = f"<!-- REWIND_MARKER: {len(lines)} -->"
+                        rewind_content = f"\n\n{rewind_marker}\n**🔄 Response continues...**\n"
+                        yield f"data: {json.dumps({'content': rewind_content})}\n\n"
+                        logger.info(f"🔄 ITERATION_REWIND: Marked boundary at line {len(lines)} before iteration continue")
+                    
                     continue
                 
                 # After iteration 2, we're done
@@ -2339,11 +2413,29 @@ async def stream_chunks(body):
                         
                         await asyncio.sleep(wait_time)
                         
+                        # Mark rewind boundary before recursive continuation
+                        if current_response:
+                            lines = current_response.split('\n')
+                            rewind_marker = f"<!-- REWIND_MARKER: {len(lines)} -->"
+                            content = f'{rewind_marker}\n**🔄 Response continues...**\n'
+                            yield f"data: {json.dumps({'content': content})}\n\n"
+                            logger.info(f"🔄 RETRY_REWIND: Marked boundary at line {len(lines)} before recursive call")
+                        
                         # End current stream and trigger new one via recursive call
                         yield f"data: {json.dumps({'retry_with_fresh_stream': True})}\n\n"
                         
                         # Start completely new stream
                         async for chunk in stream_chunks(body):
+                            # For the first chunk of continuation, prepend the rewind marker
+                            if current_response and 'data: {' in chunk and '"content":' in chunk:
+                                try:
+                                    chunk_data = json.loads(chunk.split('data: ')[1].split('\n\n')[0])
+                                    if chunk_data.get('content') and not chunk_data['content'].startswith('<!-- REWIND_MARKER:'):
+                                        line_count = len(current_response.split('\n'))
+                                        chunk_data['content'] = f"<!-- REWIND_MARKER: {line_count} -->" + chunk_data['content']
+                                        chunk = f"data: {json.dumps(chunk_data)}\n\n"
+                                except:
+                                    pass  # If parsing fails, just yield original chunk
                             yield chunk
                         return
                 
@@ -2588,6 +2680,14 @@ async def favicon():
 
 # Cache for folder structure with timestamp
 _folder_cache = {'timestamp': 0, 'data': None}
+_background_scan_thread = None
+
+def invalidate_folder_cache():
+    """Invalidate the folder structure cache."""
+    global _folder_cache
+    logger.info("🔄 Invalidating folder structure cache")
+    _folder_cache['data'] = None
+    _folder_cache['timestamp'] = 0
 
 
 
@@ -3156,70 +3256,53 @@ def get_model_id():
 
 
 def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
-    """
-    Get folder structure with caching and timeout protection.
+    """Get folder structure with caching and background scanning."""
+    from app.utils.directory_util import get_folder_structure, get_scan_progress
+    import threading
     
-    This function will:
-    1. Return cached results if they're fresh (less than 10 seconds old)
-    2. Implement timeout protection for large directories
-    3. Cache results for future requests
-    4. Handle errors gracefully
-    
-    Args:
-        directory: The directory to scan
-        ignored_patterns: Patterns to ignore
-        max_depth: Maximum depth to traverse
-        
-    Returns:
-        Dict with folder structure or error message
-    """
     current_time = time.time()
     cache_age = current_time - _folder_cache['timestamp']
 
-    # Return cached results if they're fresh (less than 10 seconds old)
-    if _folder_cache['data'] is not None and cache_age < 10:
-        logger.debug(f"Returning cached folder structure (age: {cache_age:.1f}s)")
+    # Check if scan is already in progress
+    scan_status = get_scan_progress()
+    is_scanning = scan_status.get("active", False)
+    
+    # If scan is active, return scanning indicator immediately
+    if is_scanning:
+        logger.info("Scan in progress, returning scanning indicator")
+        return {"_scanning": True, "children": {}}
+    
+    # Return cached results if available (even if old - cache is persistent)
+    if _folder_cache['data'] is not None:
+        logger.info(f"Returning cached folder structure (age: {cache_age:.1f}s)")
         return _folder_cache['data']
     
-    try:
-        # Set a maximum time limit for scanning (30 seconds)
-        max_scan_time = 30
-        start_time = time.time()
+    # No cache available - start background scan
+    global _background_scan_thread
+    if _background_scan_thread is None or not _background_scan_thread.is_alive():
+        def background_scan():
+            try:
+                from app.utils.directory_util import _scan_progress
+                _scan_progress["active"] = True
+                _scan_progress["progress"] = {"directories": 0, "files": 0, "elapsed": 0}
+                
+                logger.info(f"🔥 Background scan starting for {directory}")
+                result = get_folder_structure(directory, ignored_patterns, max_depth)
+                logger.info(f"🔥 Scan complete: {len(result)} entries")
+                _folder_cache['data'] = result
+                _folder_cache['timestamp'] = time.time()
+            except Exception as e:
+                logger.error(f"🔥 Scan error: {e}")
+            finally:
+                _scan_progress["active"] = False
         
-        # Special handling for home directory
-        if directory == os.path.expanduser("~"):
-            logger.warning("Home directory scan requested - this may be slow or fail")
-            # Return a helpful error for home directory
-            return {
-                "error": "Home directory scans are not recommended",
-                "suggestion": "Please use a specific project directory instead of your home directory"
-            }
-        
-        # Import the folder structure function from directory_util
-        from app.utils.directory_util import get_folder_structure
-        
-        # Get the folder structure with timeout protection
-        result = get_folder_structure(directory, ignored_patterns, max_depth)
-        
-        # Check if scan took too long
-        scan_time = time.time() - start_time
-        if scan_time > max_scan_time:
-            logger.warning(f"Folder scan took too long: {scan_time:.1f}s")
-            return {
-                "error": f"Scan took too long ({scan_time:.1f}s)",
-                "suggestion": "Try scanning a smaller directory or increasing the timeout"
-            }
-        
-        # Cache the successful result
-        _folder_cache['data'] = result
-        _folder_cache['timestamp'] = current_time
-        logger.info(f"Refreshed folder structure cache in {scan_time:.2f}s")
-        
-        return result
-    except Exception as e:
-        logger.error(f"Error during folder scan: {str(e)}")
-        # Return error but don't cache it
-        return {"error": f"Scan failed: {str(e)}"}
+        _background_scan_thread = threading.Thread(target=background_scan, daemon=True)
+        _background_scan_thread.start()
+        logger.info("🔥 Started background scan")
+        time.sleep(0.05)  # Let thread start
+    
+    # Return scanning indicator
+    return {"_scanning": True, "children": {}}
 
 @app.get('/api/folders')
 async def api_get_folders():
@@ -3272,6 +3355,10 @@ async def api_get_folders():
                 ("__pycache__", user_codebase_dir)
             ]
         
+        # Check if a scan is in progress BEFORE we call get_cached_folder_structure
+        from app.utils.directory_util import get_scan_progress
+        scan_status_before = get_scan_progress()
+        
         # Use our enhanced cached folder structure function
         result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
         
@@ -3306,6 +3393,7 @@ async def api_get_folders():
         else:
             logger.debug("No files with token counts found in folder structure")
         
+        # The _scanning flag is already set by get_cached_folder_structure when appropriate
         return result
     except Exception as e:
         logger.error(f"Error in api_get_folders: {e}")
