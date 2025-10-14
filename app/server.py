@@ -937,8 +937,6 @@ async def stream_chunks(body):
     # Check if we should use direct streaming
     if use_direct_streaming:
         logger.info("🚀 DIRECT_STREAMING: Using StreamingToolExecutor for direct streaming")
-        logger.info(f"🔍 REQUEST_DEBUG: body keys = {list(body.keys())}")
-        logger.info(f"🔍 REQUEST_DEBUG: body = {body}")
         
         # Extract data from body for StreamingToolExecutor
         question = body.get("question", "")
@@ -2681,13 +2679,22 @@ async def favicon():
 # Cache for folder structure with timestamp
 _folder_cache = {'timestamp': 0, 'data': None}
 _background_scan_thread = None
+_last_cache_invalidation = 0
+_cache_invalidation_debounce = 2.0  # seconds
 
 def invalidate_folder_cache():
-    """Invalidate the folder structure cache."""
-    global _folder_cache
+    """Invalidate the folder structure cache with debouncing."""
+    global _folder_cache, _last_cache_invalidation
+    current_time = time.time()
+    
+    # Debounce: only invalidate if enough time has passed
+    if current_time - _last_cache_invalidation < _cache_invalidation_debounce:
+        return
+    
     logger.info("🔄 Invalidating folder structure cache")
     _folder_cache['data'] = None
     _folder_cache['timestamp'] = 0
+    _last_cache_invalidation = current_time
 
 
 
@@ -4276,7 +4283,7 @@ async def restart_stream_with_context(request: Request):
         
         # Build enhanced context body
         enhanced_body = {
-            'question': "Continue with the enhanced context that now includes the referenced files.",
+            'question': "The referenced files have been added to your context.",
             'conversation_id': conversation_id,
             'config': {
                 'files': all_files,  # Use all files including newly added ones
