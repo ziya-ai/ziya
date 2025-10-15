@@ -334,10 +334,11 @@ class ModelManager:
         Args:
             model_kwargs: Dict of model kwargs to filter
             model_config: Model configuration dict
-            
-        Returns:
-            Dict: Filtered model kwargs
         """
+        # Check if we're repeatedly processing the same kwargs
+        if hasattr(cls, '_last_filter_log') and cls._last_filter_log == (model_kwargs, model_config):
+            return cls.filter_model_kwargs_cached(model_kwargs, model_config)
+        
         # Create cache keys
         model_config_str = json.dumps(model_config, sort_keys=True)
         model_config_hash = hashlib.md5(model_config_str.encode()).hexdigest()[:8]
@@ -352,7 +353,8 @@ class ModelManager:
             logger.debug(f"Using cached filtered kwargs for {cache_key}")
             return cls._state['filtered_kwargs_cache'][cache_key]
         
-        logger.debug(f"Filtering model kwargs: {model_kwargs}")
+        # Only log first time, then use debug level
+        logger.info(f"Computing model kwargs for {model_config.get('name', 'unknown')}: {model_kwargs}")
         
         # Get supported parameters from the model config
         supported_params = []
@@ -398,7 +400,8 @@ class ModelManager:
         elif not supports_max_input_tokens and 'max_input_tokens' in supported_params:
             supported_params.remove('max_input_tokens')
         
-        logger.info(f"Supported parameters for model: {supported_params}")
+        # Only log this once per process, not every time it's called
+        logger.debug(f"Supported parameters for model: {supported_params}")
         
         # Filter the kwargs
         filtered_kwargs = {}
@@ -411,6 +414,7 @@ class ModelManager:
         # Cache the result
         cls._state['filtered_kwargs_cache'][cache_key] = filtered_kwargs
         logger.debug(f"Cached filtered kwargs for {cache_key}")
+        cls._last_filter_log = (model_kwargs, model_config)
         
         return filtered_kwargs
             
@@ -675,10 +679,10 @@ class ModelManager:
             
             # Test the client to ensure it's working properly
             try:
-                _ = bedrock_client.meta.service_name
+                _ = bedrock_client.meta.region_name
                 logger.info("Bedrock client validation successful")
             except (AttributeError, RecursionError) as e:
-                logger.error(f"Created client has compatibility issues: {e}")
+                logger.debug(f"Client validation failed, creating fallback: {e}")
                 # Force recreation without session profile if needed
                 bedrock_client = boto3.client('bedrock-runtime', region_name=region)
             
@@ -980,8 +984,6 @@ class ModelManager:
             logger.info(f"Region updated to: {region}")
             cls._state['aws_region'] = region
         
-        logger.info(f"Selected model_id: {model_id} for region: {updated_region}")
-
         logger.info(f"Selected model_id: {model_id} for region: {region}")
         
         # Check for model ID override from environment
