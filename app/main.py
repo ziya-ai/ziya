@@ -369,6 +369,7 @@ def start_server(args):
             os.environ["ZIYA_AUTH_CHECKED"] = "true"
             os.environ["ZIYA_PARENT_AUTH_COMPLETE"] = "true"
             
+            logger.info("=== STARTUP PHASE 1: Authentication Complete ===")
             # Skip model initialization completely - we'll initialize on demand
             # This avoids the double initialization issue
             logger.info("Authentication successful, starting server...")
@@ -376,6 +377,7 @@ def start_server(args):
             # Pass the environment variable to child processes
             os.environ["ZIYA_SKIP_INIT"] = "true"
             
+            logger.info("=== STARTUP PHASE 2: Server Initialization ===")
             # Import here to avoid circular imports
             import uvicorn
             from app.server import app, invalidate_folder_cache
@@ -390,6 +392,7 @@ def start_server(args):
             initialize_file_watcher(file_state_manager, os.getcwd(), invalidate_folder_cache)
             logger.info("File watcher initialized with folder cache invalidation")
             
+            logger.info("=== STARTUP PHASE 3: Starting Server ===")
             # Use uvicorn directly instead of langchain_cli.serve()
             uvicorn.run(app, host="0.0.0.0", port=args.port)
             
