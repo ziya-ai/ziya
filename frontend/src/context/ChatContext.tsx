@@ -466,12 +466,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     setCurrentFolderId(conversation.folderId ?? null);
                 }, 0);
             }
-            // Only clear streaming content map for conversations that are no longer streaming
-            setStreamedContentMap(prev => {
-                const next = new Map(prev);
-                // Keep streaming content for active streaming conversations
-                return next;
-            });
 
             console.log('Current conversation changed:', {
                 from: currentConversationId,
@@ -506,7 +500,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setTimeout(scrollToPosition, 200);
             setTimeout(scrollToPosition, 400);
         }
-        setStreamedContentMap(new Map());
+        
+        // Only clear streamed content for conversations that are NOT actively streaming
+        setStreamedContentMap(prev => {
+            const next = new Map(prev);
+            // Keep streaming content for active streaming conversations
+            for (const [id, content] of prev) {
+                if (!streamingConversations.has(id)) {
+                    next.delete(id);
+                }
+            }
+            return next;
+        });
     }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave, isTopToBottom]);
 
     // Folder management functions
