@@ -105,7 +105,7 @@ class MCPManager:
             logger.info(f"Found MCP config file at: {user_config}")
             return str(user_config)
             
-        logger.info(f"No MCP config file found. Searched paths: {self.config_search_paths}")
+        logger.debug(f"No MCP config file found. Searched paths: {self.config_search_paths}")
         return None
         
     def get_config_search_info(self) -> Dict[str, Any]:
@@ -118,12 +118,15 @@ class MCPManager:
 
     def refresh_config_path(self):
         """Re-search for config files and update the config path."""
+        # Only log if path actually changes to reduce noise
         old_path = self.config_path
         self.config_path = self._find_config_file()
         if old_path != self.config_path:
             logger.info(f"Config path changed from {old_path} to {self.config_path}")
+        elif old_path is None and self.config_path is None:
+            logger.debug("No MCP config file found in standard locations")
         else:
-            logger.info(f"Config path unchanged: {self.config_path}")
+            logger.debug(f"Config path unchanged: {self.config_path}")
 
     async def initialize(self) -> bool:
         """
@@ -169,9 +172,9 @@ class MCPManager:
                     logger.error(f"Error loading user MCP config from {self.config_path}: {e}")
             else:
                 if self.config_path:
-                    logger.info(f"No MCP config file found at {self.config_path}. Using built-in server defaults.")
+                    logger.debug(f"No MCP config file found at {self.config_path}. Using built-in server defaults.")
                 else:
-                    logger.info(f"No MCP configuration file found. Searched: {getattr(self, 'config_search_paths', [])}. Using built-in server defaults.")
+                    logger.debug(f"No MCP configuration file found. Searched: {getattr(self, 'config_search_paths', [])}. Using built-in server defaults.")
             self.server_configs = server_configs # Store the final merged configs
         
             # Connect to each configured server
