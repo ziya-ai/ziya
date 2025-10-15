@@ -2801,10 +2801,17 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     // Extract file title early from the diff content, even during streaming
     const extractFileTitle = useCallback((diffContent: string): string => {
         if (!diffContent) return '';
-
         const lines = diffContent.split('\n');
 
-        // Look for git diff header
+        // Check for new file creation first
+        const isNewFile = lines.some(line => line.includes('new file mode')) ||
+                         lines.some(line => line.startsWith('--- /dev/null'));
+        
+        // Check for file deletion
+        const isDeletedFile = lines.some(line => line.includes('deleted file mode')) ||
+                             lines.some(line => line.startsWith('+++ /dev/null'));
+
+        // Look for git diff header  
         for (const line of lines) {
             if (line.startsWith('diff --git')) {
                 const match = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
@@ -2812,32 +2819,44 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                     const oldPath = match[1];
                     const newPath = match[2];
 
-                    // Handle new file creation (old path is /dev/null)
+                    // Handle new file creation - check for isNewFile flag first
+                    if (isNewFile) {
+                        return `Create New File: ${newPath}`;
+                    }
+                    // Handle new file creation (old path is /dev/null in git header - rare)
                     if (oldPath === '/dev/null') {
-                        return `Create: ${newPath}`;
+                        return `Create New File: ${newPath}`;
                     }
                     // Handle file deletion (new path is /dev/null)  
                     if (newPath === '/dev/null') {
-                        return `Delete: ${oldPath}`;
+                        return `Delete File: ${oldPath}`;
                     }
-                    // Regular file modification - prefer new path, fallback to old path
-                    return newPath || oldPath;
+                    // Handle file rename (different paths)
+                    if (oldPath !== newPath) {
+                        return `Rename: ${oldPath} → ${newPath}`;
+                    }
+                    // Regular file modification
+                    return `Modify: ${newPath || oldPath}`;
                 }
             }
+            
+            // Also check unified diff headers for new/deleted files
             // Look for unified diff headers
             if (line.startsWith('+++ b/')) {
-                return line.substring(6);
+                const filePath = line.substring(6);
+                if (isNewFile) {
+                    return `Create New File: ${filePath}`;
+                }
+                return filePath;
             }
             // Handle new file creation from unified diff headers
-            if (line.startsWith('+++ b/') && lines.some(l => l.startsWith('--- /dev/null'))) {
-                return `Create: ${line.substring(6)}`;
-            }
             if (line.startsWith('--- a/')) {
+                const filePath = line.substring(6);
                 // Check if this is a deletion diff
-                if (lines.some(l => l.startsWith('+++ /dev/null'))) {
-                    return `Delete: ${line.substring(6)}`;
+                if (isDeletedFile) {
+                    return `Delete File: ${filePath}`;
                 }
-                return line.substring(6);
+                return filePath;
             }
         }
 
