@@ -35,7 +35,7 @@ def get_extended_prompt(model_name: Optional[str] = None,
     """
     if context is None:
         context = {}
-    logger.error(f"🔍 EXECUTION_TRACE: get_extended_prompt() called for model: {model_name}")
+    logger.debug(f"Getting extended prompt for model: {model_name}")
     
     logger.info("PROMPT_DEBUG: get_extended_prompt called with:")
     logger.info(f"PROMPT_DEBUG:   model_name='{model_name}'")
@@ -62,7 +62,7 @@ def get_extended_prompt(model_name: Optional[str] = None,
     # Get the original template
     template = original_template
     
-    logger.error(f"🔍 EXECUTION_TRACE: Original template length: {len(template)}")
+    logger.debug(f"Original template length: {len(template)}")
     # Apply extensions
     extended_template = PromptExtensionManager.apply_extensions(
         prompt=template,
@@ -72,7 +72,7 @@ def get_extended_prompt(model_name: Optional[str] = None,
         context=context
     )
     
-    logger.error(f"🔍 EXECUTION_TRACE: Extended template length: {len(extended_template)}")
+    logger.debug(f"Extended template length: {len(extended_template)}")
     logger.info(f"PROMPT_MANAGER: Final extended template length: {len(extended_template)}")
     logger.info(f"PROMPT_MANAGER: Original template length: {len(original_template)}")
     logger.info(f"PROMPT_MANAGER: Extended template length: {len(extended_template)}")
