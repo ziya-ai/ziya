@@ -7,6 +7,7 @@ type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'process
 interface ErrorResponse {
     error: string;
     detail: string;
+    conversation_id?: string;  // Add conversation_id for proper error routing
     event?: string;
     status_code?: number;
     retry_after?: string;
@@ -499,9 +500,13 @@ export const sendPayload = async (
                     const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(data);
 
                     if (errorResponse) {
+                        // Use conversation_id from error response if available, otherwise fall back to local conversationId
+                        const targetConversationId = errorResponse.conversation_id || conversationId;
+                        
                         console.log("Current content when error detected:", currentContent.substring(0, 200) + "...");
                         console.log("Current content length:", currentContent.length);
                         console.log("Error detected in SSE data:", errorResponse);
+                        console.log("Error routing - local conversationId:", conversationId, "error conversation_id:", errorResponse.conversation_id, "target:", targetConversationId);
 
                         // For throttling errors, include original request data for retry
                         if (errorResponse.error === 'throttling_error' || errorResponse.error === 'throttling_error_exhausted') {
@@ -550,7 +555,7 @@ export const sendPayload = async (
                         message[isPartialResponse ? 'warning' : 'error']({
                             content: errorMessage,
                             duration: isPartialResponse ? 15 : 10,
-                            key: `stream-error-${conversationId}`
+                            key: `stream-error-${targetConversationId}`
                         });
                         errorOccurred = true;
 
@@ -560,14 +565,14 @@ export const sendPayload = async (
                                 role: 'assistant',
                                 content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']'
                             };
-                            addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
+                            addMessageToConversation(partialMessage, targetConversationId, targetConversationId !== conversationId);
                             console.log('Preserved partial content as message:', currentContent.length, 'characters');
                         }
 
                         // Clean up streaming state
                         setStreamedContentMap((prev: Map<string, string>) => {
                             const next = new Map(prev);
-                            next.delete(conversationId);
+                            next.delete(targetConversationId);
                             return next;
                         });
                         return;
