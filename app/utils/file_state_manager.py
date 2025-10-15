@@ -1,8 +1,12 @@
 from dataclasses import dataclass
 import json
 import os
+import time
+import shutil
+import threading
 from typing import Dict, List, Optional, Set, Tuple
 import hashlib
+import shutil
 from difflib import SequenceMatcher
 from app.utils.file_utils import read_file_content
 from app.utils.logging_utils import logger
@@ -31,8 +35,25 @@ class FileStateManager:
         """Load file states from disk."""
         try:
             if os.path.exists(self.state_file):
+                # Check file size before loading
+                file_size = os.path.getsize(self.state_file)
+                if file_size > 50 * 1024 * 1024:  # 50MB limit
+                    logger.warning(f"File state file is corrupted (size: {file_size:,} bytes). Creating backup and resetting.")
+                    backup_file = self.state_file + f".backup.{int(time.time())}"
+                    shutil.move(self.state_file, backup_file)
+                    self.conversation_states = {}
+                    return
+                
                 with open(self.state_file, 'r') as f:
-                    data = json.load(f)
+                    try:
+                        data = json.load(f)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"File state JSON corrupted: {e}. Resetting.")
+                        backup_file = self.state_file + f".backup.{int(time.time())}"
+                        shutil.move(self.state_file, backup_file)
+                        self.conversation_states = {}
+                        return
+                        
                     for conv_id, files in data.items():
                         self.conversation_states[conv_id] = {}
                         for file_path, state_data in files.items():
@@ -45,7 +66,8 @@ class FileStateManager:
                                 last_seen_content=state_data['last_seen_content'],
                                 last_context_submission_content=state_data.get('last_context_submission_content', state_data['current_content'])
                             )
-                logger.info(f"Loaded file states for {len(self.conversation_states)} conversations")
+                if self.conversation_states:
+                    logger.info(f"Loaded file states for {len(self.conversation_states)} conversations")
         except Exception as e:
             logger.warning(f"Failed to load file states: {e}")
             self.conversation_states = {}
