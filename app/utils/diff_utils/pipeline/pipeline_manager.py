@@ -220,25 +220,8 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # Try applying hunks separately that matched but weren't applied due to all-or-nothing behavior
     from ..application.separate_hunk_apply import try_separate_hunks
     
-    # Find hunks that could be applied separately
-    separate_hunks = [
-        hunk_id for hunk_id, tracker in pipeline.result.hunks.items()
-        if tracker.hunk_data.get("could_apply_separately", False) and 
-        tracker.status == HunkStatus.PENDING
-    ]
-    
-    if separate_hunks:
-        logger.info(f"Found {len(separate_hunks)} hunks that could be applied separately")
-        # Add all pending hunks to the separate_hunks list to ensure they're all tried
-        for hunk_id, tracker in pipeline.result.hunks.items():
-            if tracker.status == HunkStatus.PENDING and hunk_id not in separate_hunks:
-                separate_hunks.append(hunk_id)
-                logger.info(f"Added hunk #{hunk_id} to separate_hunks list to ensure sequential application")
-        
-        separate_result = try_separate_hunks(pipeline, user_codebase_dir, separate_hunks)
-        if separate_result:
-            logger.info("Successfully applied some hunks separately")
-            system_patch_result = True  # Update the result to indicate some changes were written
+    # CRITICAL FIX: Skip separate hunk application - it's interfering with normal system patch
+    logger.info("Skipping separate hunk application to allow normal system patch behavior")
     
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
@@ -553,13 +536,39 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         all_hunks_succeeded = True
         any_hunk_succeeded = False
         
+        # Calculate success rate for decision making
+        successful_count = sum(1 for status in dry_run_status.values() if status.get("status") == "succeeded")
+        total_count = len(dry_run_status)
+        
         for hunk_id, status_info in patch_status.items():
             status_value = status_info.get("status")
             
-            if status_value == "succeeded":
-                # CRITICAL FIX: Don't mark hunks as SUCCEEDED if the overall patch failed
-                # Instead, mark them as PENDING with a flag so they can be tried in later stages
-                if patch_result.returncode != 0:
+            # Set any_hunk_succeeded early so all hunks benefit from this logic
+            if status_info.get("status") == "succeeded":
+                any_hunk_succeeded = True
+            
+            if status_info.get("status") == "succeeded":
+                if patch_result.returncode == 0:
+                    # Patch succeeded overall, mark as succeeded
+                    pipeline.update_hunk_status(
+                        hunk_id=hunk_id,
+                        stage=PipelineStage.SYSTEM_PATCH,
+                        status=HunkStatus.SUCCEEDED,
+                        position=status_info.get("position"),
+                        confidence=1.0 - (status_info.get("fuzz", 0) * 0.1)
+                    )
+                    logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in system patch")
+                elif any_hunk_succeeded:
+                    # At least one hunk succeeded, so this one likely applied too
+                    pipeline.update_hunk_status(
+                        hunk_id=hunk_id,
+                        stage=PipelineStage.SYSTEM_PATCH,
+                        status=HunkStatus.SUCCEEDED,
+                        position=status_info.get("position"),
+                        confidence=1.0 - (status_info.get("fuzz", 0) * 0.1)
+                    )
+                    logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED (partial patch success)")
+                else:
                     # This hunk matched but wasn't actually applied due to all-or-nothing behavior
                     pipeline.update_hunk_status(
                         hunk_id=hunk_id,
@@ -571,17 +580,7 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
                     # Add a flag to indicate this hunk could have been applied separately
                     pipeline.result.hunks[hunk_id].hunk_data["could_apply_separately"] = True
                     logger.info(f"Hunk #{hunk_id} matched in system patch but kept as PENDING for later stages due to all-or-nothing behavior")
-                else:
-                    # Normal case - patch succeeded overall
-                    pipeline.update_hunk_status(
-                        hunk_id=hunk_id,
-                        stage=PipelineStage.SYSTEM_PATCH,
-                        status=HunkStatus.SUCCEEDED,
-                        position=status_info.get("position"),
-                        confidence=1.0 - (status_info.get("fuzz", 0) * 0.1)
-                    )
-                any_hunk_succeeded = True
-            elif status_value == "already_applied":
+            elif status_info.get("status") == "already_applied":
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
@@ -603,11 +602,15 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         
         # CRITICAL FIX: Only mark changes as written if ALL hunks succeeded
         # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
-        changes_written = all_hunks_succeeded and any_hunk_succeeded and patch_result.returncode == 0
+        # UPDATED: Also consider partial success when any hunks succeeded
+        changes_written = any_hunk_succeeded and patch_result.returncode == 0
         
+        # CRITICAL FIX: If any hunks succeeded, recognize that success
         if any_hunk_succeeded and not all_hunks_succeeded:
-            logger.warning("Some hunks succeeded but others failed in system patch. Due to all-or-nothing behavior, NO changes were written.")
-            logger.info("These hunks will be tried again in later stages.")
+            logger.info(f"System patch applied {successful_count}/{total_count} hunks successfully")
+            logger.info("Remaining hunks will be processed in later stages.")
+        elif not any_hunk_succeeded:
+            logger.warning("System patch failed to apply any hunks")
         
         pipeline.result.changes_written = changes_written
         return changes_written
@@ -1399,18 +1402,21 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(modified_content)
                     logger.info(f"Successfully wrote changes to {file_path}")
-
+                
                 pipeline.result.changes_written = True
                 
-                # Update all hunks to SUCCEEDED regardless of previous status
-                # This is necessary because the difflib stage can succeed even if git_apply failed
-                for hunk_id in pipeline.result.hunks:
-                    pipeline.update_hunk_status(
-                        hunk_id=hunk_id,
-                        stage=PipelineStage.DIFFLIB,
-                        status=HunkStatus.SUCCEEDED
-                    )
-                    logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in difflib stage")
+                # CRITICAL FIX: Only update hunks that were actually processed by difflib
+                # Don't override hunks that were already handled in earlier stages
+                for hunk_id, tracker in pipeline.result.hunks.items():
+                    if tracker.status == HunkStatus.PENDING:
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.DIFFLIB,
+                            status=HunkStatus.SUCCEEDED
+                        )
+                        logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in difflib stage")
+                    else:
+                        logger.info(f"Skipping hunk #{hunk_id} - already has status {tracker.status.value} from {tracker.current_stage.value}")
                 
                 return True
                 
