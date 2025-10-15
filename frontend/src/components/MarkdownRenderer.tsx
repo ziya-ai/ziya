@@ -2784,6 +2784,7 @@ interface DiffViewWrapperProps {
 const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
+    const { currentConversationId } = useChatContext(); // Add access to currentConversationId
     const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty');
     const [isVisible, setIsVisible] = useState<boolean>(true);
     const [currentContent, setCurrentContent] = useState<string>(token.text || '');
@@ -2802,8 +2803,8 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     const extractFileTitle = useCallback((diffContent: string): string => {
         if (!diffContent) return '';
         const lines = diffContent.split('\n');
-
-        // Check for new file creation first
+        
+        // Check for new file creation first - prioritize 'new file mode' over git header paths
         const isNewFile = lines.some(line => line.includes('new file mode')) ||
                          lines.some(line => line.startsWith('--- /dev/null'));
         
@@ -2821,11 +2822,11 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
 
                     // Handle new file creation - check for isNewFile flag first
                     if (isNewFile) {
-                        return `Create New File: ${newPath}`;
+                        return `Create New File: ${newPath !== '/dev/null' ? newPath : oldPath}`;
                     }
-                    // Handle new file creation (old path is /dev/null in git header - rare)
-                    if (oldPath === '/dev/null') {
-                        return `Create New File: ${newPath}`;
+                    // Only use git header /dev/null detection if we don't have 'new file mode' marker
+                    if (oldPath === '/dev/null' && !isNewFile) {
+                        return `Create New File: ${newPath !== '/dev/null' ? newPath : 'Unknown'}`;
                     }
                     // Handle file deletion (new path is /dev/null)  
                     if (newPath === '/dev/null') {
@@ -2844,14 +2845,20 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             // Look for unified diff headers
             if (line.startsWith('+++ b/')) {
                 const filePath = line.substring(6);
-                if (isNewFile) {
+                if (isNewFile && filePath !== '/dev/null') {
                     return `Create New File: ${filePath}`;
                 }
-                return filePath;
+                return filePath !== '/dev/null' ? filePath : 'Unknown file';
             }
             // Handle new file creation from unified diff headers
-            if (line.startsWith('--- a/')) {
+            if (line.startsWith('--- a/') || line.startsWith('--- /dev/null')) {
                 const filePath = line.substring(6);
+                
+                // Skip /dev/null paths for new files - look for the +++ line instead
+                if (filePath === '/dev/null' && isNewFile) {
+                    continue; // Keep looking for the actual file path
+                }
+                
                 // Check if this is a deletion diff
                 if (isDeletedFile) {
                     return `Delete File: ${filePath}`;
@@ -2875,6 +2882,12 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             observer.disconnect();
         };
     }, []);
+
+    // Clear cached file title when conversation changes to prevent sticky /dev/null labels
+    useEffect(() => {
+        initialFileTitleRef.current = null;
+        parsedFilesRef.current = []; // Also clear parsed files cache
+    }, [currentConversationId]);
 
     // Cleanup async operations
     useEffect(() => {
@@ -2943,10 +2956,13 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
         // Store the first non-empty title we extract
         if (extractedTitle && extractedTitle !== 'Unknown file' && !initialFileTitleRef.current) {
             initialFileTitleRef.current = extractedTitle;
+        } else if (!isGlobalStreaming) {
+            // When not streaming, always use the fresh title to prevent stale cache
+            return extractedTitle;
         }
 
         // During streaming, use the initial title if current extraction fails
-        return (isGlobalStreaming && initialFileTitleRef.current) ? initialFileTitleRef.current : extractedTitle;
+        return (isGlobalStreaming && initialFileTitleRef.current && extractedTitle === 'Unknown file') ? initialFileTitleRef.current : extractedTitle;
     }, [currentContent, extractFileTitle, isGlobalStreaming]);
 
     // Track streaming state in a ref to avoid re-renders
