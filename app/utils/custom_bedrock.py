@@ -43,11 +43,14 @@ class CustomBedrockClient:
         # avoiding unnecessary client creation during normal operation
         self.client = client
         
+        
         # Validate the client is working properly
         try:
-            _ = self.client.meta.service_name
+            # Use region_name which is more reliable than service_name
+            _ = self.client.meta.region_name
+            logger.debug("Bedrock client validation successful")
         except (AttributeError, RecursionError) as e:
-            logger.warning(f"Provided client has compatibility issues, creating fallback: {e}")
+            logger.debug(f"Client validation failed, creating fallback: {e}")
             import boto3
             region = getattr(getattr(client, 'meta', None), 'region_name', 'us-west-2')
             self.client = boto3.client('bedrock-runtime', region_name=region)
