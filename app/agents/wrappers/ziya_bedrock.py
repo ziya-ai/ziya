@@ -100,10 +100,11 @@ class ZiyaBedrock(Runnable):
         if client:
             try:
                 # Test if the client is working properly by accessing a simple property
-                _ = client.meta.service_name
+                _ = client.meta.region_name
                 bedrock_client = client
+                logger.debug("Bedrock client validation successful")
             except (AttributeError, RecursionError) as e:
-                logger.warning(f"Provided client has compatibility issues: {e}. Creating new client.")
+                logger.debug(f"Client validation failed, creating fallback: {e}")
                 # Create a fresh client if the provided one has issues
                 import boto3
                 bedrock_client = boto3.client('bedrock-runtime', region_name=region_name)
