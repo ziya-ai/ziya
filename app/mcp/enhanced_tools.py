@@ -564,16 +564,30 @@ async def _reset_counter_async():
     """Reset the execution counter (for testing)."""
     global _execution_counter
     _execution_counter = 0
-    _last_execution_time.clear()
+    return True
+
+
+# Global cache for secure MCP tools
+_secure_tool_cache: Optional[List[BaseTool]] = None
+_tool_cache_timestamp: float = 0
+TOOL_CACHE_TTL = 300  # 5 minutes
+
 
 def create_secure_mcp_tools() -> List[BaseTool]:
     """
     Create secure MCP tools from available MCP tools.
+    Uses caching to avoid recreating tools unnecessarily during startup.
     
     Returns:
         List of secure MCP tools
     """
     secure_tools = []
+    
+    # Check cache first
+    global _secure_tool_cache, _tool_cache_timestamp
+    if _secure_tool_cache and (time.time() - _tool_cache_timestamp < TOOL_CACHE_TTL):
+        logger.debug(f"🔐 Using cached secure MCP tools ({len(_secure_tool_cache)} tools)")
+        return _secure_tool_cache
     
     # Check if secure mode is enabled
     secure_mode_enabled = os.environ.get("ZIYA_SECURE_MCP", "true").lower() in ("true", "1", "yes")
@@ -614,11 +628,15 @@ def create_secure_mcp_tools() -> List[BaseTool]:
             )
             
             secure_tools.append(secure_tool)
-            logger.info(f"🔐 Created secure MCP tool: {secure_name}")
-        
-        logger.info(f"🔐 Created {len(secure_tools)} secure MCP tools")
-        
     except Exception as e:
-        logger.error(f"Error creating secure MCP tools: {e}")
+        logger.warning(f"Failed to create secure MCP tools: {str(e)}")
+        return []
+    
+    # Cache the result
+    _secure_tool_cache = secure_tools
+    _tool_cache_timestamp = time.time()
+    
+    logger.info(f"🔐 Created {len(secure_tools)} secure MCP tools")
+    return secure_tools
     
     return secure_tools
