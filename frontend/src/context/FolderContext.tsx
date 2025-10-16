@@ -326,9 +326,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   useEffect(() => {
     const checkFolderProgress = async () => {
       try {
+        console.log('Checking folder progress...');
         const response = await fetch('/folder-progress');
+        console.log('Progress response:', response.ok, response.status);
         if (response.ok) {
           const data = await response.json();
+          console.log('Progress data:', data);
           if (data.active) {
             setScanProgress({
               directories: data.progress?.directories || 0,
@@ -349,6 +352,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     };
 
     // Only check progress if scanning is active
+    console.log('isScanning changed:', isScanning);
     if (isScanning) {
       checkFolderProgress();
     };
@@ -418,15 +422,23 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           return;
         }
 
+        console.log('Folders response:', { _scanning: data._scanning, _stale_and_scanning: data._stale_and_scanning });
         if (data._scanning || data._stale_and_scanning) {
+          console.log('Setting isScanning to TRUE');
           setIsScanning(true);
           setScanError(null);
           startProgressPolling();
           if (data._stale_and_scanning) {
             const { _stale_and_scanning, ...folderData } = data;
-            setFolders(folderData);
-            const treeNodes = convertToTreeData(folderData);
-            setTreeData(treeNodes);
+            if (folderData && Object.keys(folderData).length > 0) {
+              setFolders(folderData);
+              try {
+                const treeNodes = convertToTreeData(folderData);
+                setTreeData(treeNodes);
+              } catch (conversionError) {
+                console.error('Error converting stale folders to tree data:', conversionError);
+              }
+            }
           }
         } else {
           setIsScanning(false);
@@ -435,9 +447,22 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             clearInterval(progressIntervalRef.current);
             progressIntervalRef.current = null;
           }
-          setFolders(data);
-          const treeNodes = convertToTreeData(data);
-          setTreeData(treeNodes);
+          
+          // Validate data before setting
+          if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+            setFolders(data);
+            try {
+              const treeNodes = convertToTreeData(data);
+              setTreeData(treeNodes);
+            } catch (conversionError) {
+              console.error('Error converting folders to tree data:', conversionError);
+              setScanError('Failed to process folder structure');
+            }
+          } else {
+            console.warn('Received empty or invalid folder data');
+            setFolders({});
+            setTreeData([]);
+          }
         }
       } catch (error) {
         setScanError(error instanceof Error ? error.message : 'Unknown error');

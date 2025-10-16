@@ -4,6 +4,7 @@ Middleware for handling streaming responses and errors.
 
 import os
 import json
+import re
 from typing import AsyncIterator, Any
 from app.agents.wrappers.nova_formatter import NovaFormatter
 from fastapi import Request

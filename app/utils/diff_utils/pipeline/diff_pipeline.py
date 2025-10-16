@@ -77,6 +77,7 @@ class PipelineResult:
     error: Optional[str] = None
     status: str = "pending"  # Add a status field to track the overall status
     request_id: Optional[str] = None  # Store the request ID for tracking
+    _parsed_hunks_cache: Optional[List[Dict[str, Any]]] = field(default=None, init=False, repr=False)  # Cache for parsed hunks
 
     # Removed redundant methods and properties to avoid confusion
     # We'll use the existing succeeded_hunks, failed_hunks, etc. properties consistently
@@ -257,6 +258,41 @@ class DiffPipeline:
         self.current_diff = diff_content
         self.result = PipelineResult(file_path=file_path, original_diff=diff_content)
         self.current_stage = PipelineStage.INIT
+        self._file_content_cache: Optional[Tuple[str, List[str]]] = None  # Cache for file content
+    
+    def get_parsed_hunks(self) -> List[Dict[str, Any]]:
+        """
+        Get parsed hunks with caching to avoid redundant parsing.
+        
+        Returns:
+            List of parsed hunk dictionaries
+        """
+        if self.result._parsed_hunks_cache is None:
+            from ..parsing.diff_parser import parse_unified_diff_exact_plus
+            self.result._parsed_hunks_cache = list(parse_unified_diff_exact_plus(
+                self.current_diff, self.file_path))
+        return self.result._parsed_hunks_cache
+    
+    def get_file_content(self) -> Tuple[str, List[str]]:
+        """
+        Get file content with caching to avoid redundant reads.
+        
+        Returns:
+            Tuple of (full_content, lines_list)
+        """
+        if self._file_content_cache is None:
+            try:
+                with open(self.file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    lines = content.splitlines()
+                self._file_content_cache = (content, lines)
+            except FileNotFoundError:
+                self._file_content_cache = ("", [])
+        return self._file_content_cache
+    
+    def invalidate_file_cache(self) -> None:
+        """Invalidate the file content cache after modifications."""
+        self._file_content_cache = None
         
     def initialize_hunks(self, hunks: List[Dict[str, Any]]) -> None:
         """

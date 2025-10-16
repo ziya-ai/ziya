@@ -532,10 +532,216 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.vconcat) spec.vconcat.forEach((s: any) => convertOrdinalToNominal(s.encoding));
       if (spec.layer) spec.layer.forEach((s: any) => convertOrdinalToNominal(s.encoding));
 
+      // Fix literal color values being used as field references
+      const fixLiteralColorFields = (encoding: any, dataValues: any[]) => {
+        if (!encoding || !dataValues || dataValues.length === 0) return;
+        
+        ['color', 'fill', 'stroke'].forEach(channel => {
+          const channelSpec = encoding[channel];
+          if (channelSpec?.field && channelSpec?.type === 'nominal') {
+            // Check if the field contains literal color values (hex codes)
+            const fieldValues = [...new Set(dataValues.map(d => d[channelSpec.field]))].filter(v => v !== null && v !== undefined);
+            const hasHexColors = fieldValues.some(value => 
+              typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value)
+            );
+            
+            if (hasHexColors) {
+              console.log(`🔧 LITERAL-COLOR-FIX: Converting literal color field "${channelSpec.field}" in ${channel} channel`);
+              
+              // Create a proper scale mapping the field values to themselves as colors
+              channelSpec.scale = {
+                domain: fieldValues,
+                range: fieldValues, // Use the hex values as the actual colors
+                type: 'ordinal'
+              };
+              
+              // Update legend to show meaningful labels if possible
+              if (channelSpec.legend === undefined) {
+                // Try to find a more meaningful field for legend labels
+                const meaningfulFields = ['signal', 'type', 'category', 'label', 'name'];
+                const labelField = meaningfulFields.find(field => 
+                  dataValues.length > 0 && dataValues[0].hasOwnProperty(field)
+                );
+                
+                if (labelField) {
+                  // Create mapping from color to meaningful label
+                  const colorToLabel = new Map();
+                  dataValues.forEach(d => {
+                    if (d[channelSpec.field] && d[labelField]) {
+                      colorToLabel.set(d[channelSpec.field], d[labelField]);
+                    }
+                  });
+                  
+                  // Update domain and range to use meaningful labels
+                  const uniqueLabels = [...new Set(Array.from(colorToLabel.values()))];
+                  const labelToColor = new Map();
+                  colorToLabel.forEach((label, color) => {
+                    labelToColor.set(label, color);
+                  });
+                  
+                  channelSpec.scale.domain = uniqueLabels;
+                  channelSpec.scale.range = uniqueLabels.map(label => labelToColor.get(label));
+                  channelSpec.field = labelField;
+                  
+                  console.log(`🔧 LITERAL-COLOR-FIX: Switched to meaningful field "${labelField}" with proper color mapping`);
+                }
+              }
+            }
+          }
+        });
+      };
+
+      // Fix grid-based layouts with overlapping elements and poor axis labeling
+      const fixGridLayoutIssues = (spec: any) => {
+        if (!spec.layer || !Array.isArray(spec.layer) || !spec.data?.values) return;
+        
+        const dataValues = spec.data.values;
+        
+        // Check if this looks like a grid layout (has x,y coordinates and multiple layers)
+        const hasGridCoordinates = dataValues.every(d => 
+          typeof d.x === 'number' && typeof d.y === 'number'
+        );
+        
+        if (!hasGridCoordinates) return;
+        
+        console.log('🔧 GRID-LAYOUT-FIX: Detected grid-based layout with overlapping elements');
+        
+        // Check for layers that use the same x/y fields but with different ranges (causing overlap)
+        const hasOverlappingRanges = spec.layer.some((layer, i) => {
+          if (!layer.encoding?.x?.field || !layer.encoding?.y?.field) return false;
+          
+          return spec.layer.some((otherLayer, j) => {
+            if (i >= j || !otherLayer.encoding?.x?.field || !otherLayer.encoding?.y?.field) return false;
+            
+            const sameFields = layer.encoding.x.field === otherLayer.encoding.x.field &&
+                              layer.encoding.y.field === otherLayer.encoding.y.field;
+            const differentRanges = JSON.stringify(layer.encoding.x.scale?.range) !== 
+                                   JSON.stringify(otherLayer.encoding.x.scale?.range);
+            
+            return sameFields && differentRanges;
+          });
+        });
+        
+        if (hasOverlappingRanges) {
+          console.log('🔧 GRID-LAYOUT-FIX: Found overlapping ranges, standardizing positioning');
+          
+          // Get unique x and y values to determine grid dimensions
+          const uniqueX = [...new Set(dataValues.map(d => d.x))].sort((a, b) => (a as number) - (b as number));
+          const uniqueY = [...new Set(dataValues.map(d => d.y))].sort((a, b) => (a as number) - (b as number));
+          
+          // Find the best fields to use for meaningful axis labels (generic approach)
+          const availableFields = Object.keys(dataValues[0] || {});
+          const xLabelField = availableFields.find(field => 
+            field !== 'x' && field !== 'y' && field !== 'color' &&
+            dataValues.every(d => d.x !== undefined && d[field] !== undefined)
+          ) || 'x';
+          const yLabelField = availableFields.find(field => 
+            field !== 'x' && field !== 'y' && field !== 'color' && field !== xLabelField &&
+            dataValues.every(d => d.y !== undefined && d[field] !== undefined)
+          ) || 'y';
+          
+          console.log('🔧 GRID-LAYOUT-FIX: Grid dimensions:', { uniqueX, uniqueY, xLabelField, yLabelField });
+          
+          // Calculate proper spacing for grid
+          const cellWidth = Math.max(100, (spec.width || 600) / (uniqueX.length + 1));
+          const cellHeight = Math.max(60, (spec.height || 400) / (uniqueY.length + 1));
+          
+          // Standardize all layers to use the same consistent positioning
+          spec.layer.forEach((layer, index) => {
+            // Handle rectangle layer (usually first layer with fill encoding)
+            if (layer.encoding?.x?.field === 'x' && layer.encoding?.fill) {
+              // Fix mark sizing to ensure consistent rectangle dimensions
+              // Remove explicit width/height and let ordinal bands handle sizing
+              const { width, height, ...markProps } = layer.mark;
+              layer.mark = {
+                ...markProps,
+                type: 'rect'
+              };
+              
+              console.log('🔧 GRID-LAYOUT-FIX: Removed explicit width/height from rect mark to use ordinal bands');
+            }
+            
+            // Update encoding for any layer using x/y coordinates
+            if (layer.encoding?.x?.field === 'x') {
+              
+              layer.encoding.x = {
+                field: xLabelField,
+                type: 'ordinal',
+                axis: index === 0 ? {
+                  title: xLabelField.charAt(0).toUpperCase() + xLabelField.slice(1).replace('_', ' '),
+                  labelAngle: -45,
+                  labelLimit: 120,
+                  labelPadding: 10,
+                  titlePadding: 15,
+                  offset: 5,
+                  grid: false,
+                  ticks: true,
+                  labelFontSize: 10
+                } : { 
+                  labels: false, ticks: false, title: null, grid: false 
+                }
+              };
+              layer.encoding.y = {
+                field: yLabelField,  
+                type: 'ordinal',
+                axis: index === 0 ? {
+                  title: yLabelField.charAt(0).toUpperCase() + yLabelField.slice(1).replace('_', ' '),
+                  labelAngle: 0,
+                  labelPadding: 10,
+                  titlePadding: 15,
+                  offset: 5,
+                  grid: false,
+                  ticks: true,
+                  labelFontSize: 11
+                } : { 
+                  labels: false, ticks: false, title: null, grid: false 
+                }
+              };
+            }
+            // Handle text layers - remove them entirely as they'll be redundant with proper axis labels
+            if (layer.mark?.type === 'text') {
+              // Check if this text layer shows symbols or other meaningful data
+              const textField = layer.encoding?.text?.field;
+              if (textField && textField !== xLabelField && textField !== yLabelField) {
+                // This is a symbol/data text layer - preserve it but fix its positioning
+                console.log('🔧 GRID-LAYOUT-FIX: Preserving symbol text layer', index, 'field:', textField);
+                
+                // Update positioning to match the rectangle layer
+                layer.encoding.x = {
+                  field: xLabelField,
+                  type: 'ordinal',
+                  axis: null // No axis for text layer
+                };
+                layer.encoding.y = {
+                  field: yLabelField,
+                  type: 'ordinal', 
+                  axis: null // No axis for text layer
+                };
+                
+                // Ensure text is visible with proper styling
+                if (!layer.mark.color) {
+                  layer.mark.color = 'black';
+                }
+                if (!layer.mark.fontSize) {
+                  layer.mark.fontSize = 12;
+                }
+              } else {
+                console.log('🔧 GRID-LAYOUT-FIX: Removing redundant text layer', index);
+                layer._remove = true;
+              }
+            }
+          });
+          
+          // Remove marked layers
+          spec.layer = spec.layer.filter((layer: any) => !layer._remove);
+          
+          console.log('🔧 GRID-LAYOUT-FIX: Applied consistent grid positioning');
+        }
+      };
+      
       // Fix 1.95: Add explicit domain for nominal scales with range but no domain
       const addDomainForNominalScales = (encoding: any, dataValues: any[]) => {
         if (!encoding || !dataValues || dataValues.length === 0) return;
-        
         ['color', 'fill', 'stroke', 'size', 'shape', 'opacity'].forEach(channel => {
           const channelSpec = encoding[channel];
           if (channelSpec?.field && channelSpec?.type === 'nominal' && channelSpec?.scale?.range && !channelSpec?.scale?.domain) {
@@ -565,23 +771,34 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       if (spec.data?.values) {
         addDomainForNominalScales(spec.encoding, spec.data.values);
+        fixLiteralColorFields(spec.encoding, spec.data.values);
+        fixGridLayoutIssues(spec);
       }
       if (spec.hconcat) {
         spec.hconcat.forEach((s: any) => {
           const dataValues = s.data?.values || spec.data?.values;
-          if (dataValues) addDomainForNominalScales(s.encoding, dataValues);
+          if (dataValues) {
+            addDomainForNominalScales(s.encoding, dataValues);
+            fixLiteralColorFields(s.encoding, dataValues);
+          }
         });
       }
       if (spec.vconcat) {
         spec.vconcat.forEach((s: any) => {
           const dataValues = s.data?.values || spec.data?.values;
-          if (dataValues) addDomainForNominalScales(s.encoding, dataValues);
+          if (dataValues) {
+            addDomainForNominalScales(s.encoding, dataValues);
+            fixLiteralColorFields(s.encoding, dataValues);
+          }
         });
       }
       if (spec.layer) {
         spec.layer.forEach((s: any) => {
           const dataValues = s.data?.values || spec.data?.values;
-          if (dataValues) addDomainForNominalScales(s.encoding, dataValues);
+          if (dataValues) {
+            addDomainForNominalScales(s.encoding, dataValues);
+            fixLiteralColorFields(s.encoding, dataValues);
+          }
         });
       }
 
@@ -3105,24 +3322,26 @@ ${svgData}`;
         }
 
         // Re-add the actions container after clearing innerHTML
-        if (actionsContainer.parentNode !== container) {
-          container.insertBefore(actionsContainer, container.firstChild);
-        }
+        container.insertBefore(actionsContainer, container.firstChild);
       } else {
         // Restore the visualization
         const sourceView = container.querySelector('pre');
         if (sourceView) {
           container.removeChild(sourceView);
         }
+        
         // Restore the vega container
-        if (originalVegaContainer) {
+        if (originalVegaContainer && originalVegaContainer.parentNode !== container) {
           originalVegaContainer.style.display = '';
-          if (originalVegaContainer.parentNode !== container) {
-            container.appendChild(originalVegaContainer);
-          }
+          container.appendChild(originalVegaContainer);
+        } else if (originalVegaContainer) {
+          originalVegaContainer.style.display = '';
         } else {
           // Re-render the visualization if the container was lost
-          vegaEmbed(container, vegaSpec, embedOptions);
+          const renderContainer = document.createElement('div');
+          renderContainer.style.cssText = 'width: 100%; max-width: 100%; overflow: hidden; box-sizing: border-box;';
+          container.appendChild(renderContainer);
+          vegaEmbed(renderContainer, vegaSpec, embedOptions);
         }
         // Re-add the actions container
         container.insertBefore(actionsContainer, container.firstChild);

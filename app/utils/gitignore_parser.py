@@ -122,8 +122,8 @@ class IgnoreRule(collections.namedtuple('IgnoreRule_', IGNORE_RULE_FIELDS)):
             try:
                 rel_path = str(_normalize_path(abs_path).relative_to(self.base_path))
             except ValueError:
-                # If the path is not a subpath of the base path, treat it as a separate path
-                rel_path = str(_normalize_path(abs_path))
+                # If the path is not a subpath of the base path, this rule doesn't apply
+                return False
         else:
             rel_path = str(_normalize_path(abs_path))
         # Path() strips the trailing slash, so we need to preserve it

@@ -46,6 +46,7 @@ interface ChatContext {
     scrollToBottom: () => void;
     userHasScrolled: boolean;
     setUserHasScrolled: Dispatch<SetStateAction<boolean>>;
+    recordManualScroll: () => void;
     folders: ConversationFolder[];
     setFolders: Dispatch<SetStateAction<ConversationFolder[]>>;
     currentFolderId: string | null;
@@ -108,6 +109,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
+    const lastManualScrollTime = useRef<number>(0);
+    const manualScrollCooldownActive = useRef<boolean>(false);
     const [messageUpdateCounter, setMessageUpdateCounter] = useState(0);
 
     // Monitor ChatProvider render performance
@@ -115,12 +118,42 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     // Modified scrollToBottom function to respect user scroll
     const scrollToBottom = () => {
+        const now = Date.now();
+        const timeSinceManualScroll = now - lastManualScrollTime.current;
+        const SCROLL_COOLDOWN = 5000; // 5 seconds
+        
+        // If we're in cooldown period, don't autoscroll
+        if (manualScrollCooldownActive.current && timeSinceManualScroll < SCROLL_COOLDOWN) {
+            return;
+        }
+        
+        // If cooldown period has passed, reset the manual scroll state
+        if (manualScrollCooldownActive.current && timeSinceManualScroll >= SCROLL_COOLDOWN) {
+            manualScrollCooldownActive.current = false;
+            setUserHasScrolled(false);
+        }
+        
         const chatContainer = document.querySelector('.chat-container');
-        if (chatContainer && isTopToBottom && !userHasScrolled && isStreamingAny) {
-            // Only scroll during active streaming to prevent unexpected jumps
+        if (chatContainer && isTopToBottom && !manualScrollCooldownActive.current && isStreamingAny) {
             chatContainer.scrollTop = chatContainer.scrollHeight;
+        } else if (chatContainer && !isTopToBottom && !manualScrollCooldownActive.current && isStreamingAny) {
+            chatContainer.scrollTop = 0;
         }
     };
+
+    // Function to record manual scroll events
+    const recordManualScroll = useCallback(() => {
+        lastManualScrollTime.current = Date.now();
+        manualScrollCooldownActive.current = true;
+        setUserHasScrolled(true);
+        console.log('📜 Manual scroll recorded - autoscroll disabled for 5 seconds');
+    }, []);
+    
+    // Make timing accessible for external checks
+    (recordManualScroll as any).lastScrollTime = lastManualScrollTime.current;
+    
+    // Make timing accessible for external checks
+    (recordManualScroll as any).getTimeSinceLastScroll = () => Date.now() - lastManualScrollTime.current;
 
     useEffect(() => {
         conversationsRef.current = conversations;
@@ -433,12 +466,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     setCurrentFolderId(conversation.folderId ?? null);
                 }, 0);
             }
-            // Only clear streaming content map for conversations that are no longer streaming
-            setStreamedContentMap(prev => {
-                const next = new Map(prev);
-                // Keep streaming content for active streaming conversations
-                return next;
-            });
 
             console.log('Current conversation changed:', {
                 from: currentConversationId,
@@ -473,7 +500,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setTimeout(scrollToPosition, 200);
             setTimeout(scrollToPosition, 400);
         }
-        setStreamedContentMap(new Map());
+        
+        // Only clear streamed content for conversations that are NOT actively streaming
+        setStreamedContentMap(prev => {
+            const next = new Map(prev);
+            // Keep streaming content for active streaming conversations
+            for (const [id, content] of prev) {
+                if (!streamingConversations.has(id)) {
+                    next.delete(id);
+                }
+            }
+            return next;
+        });
     }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave, isTopToBottom]);
 
     // Folder management functions
@@ -881,6 +919,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         scrollToBottom,
         userHasScrolled,
         setUserHasScrolled,
+        recordManualScroll,
         folders,
         setFolders,
         currentFolderId,
@@ -926,6 +965,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         scrollToBottom,
         userHasScrolled,
         setUserHasScrolled,
+        recordManualScroll,
         folders,
         setFolders,
         currentFolderId,

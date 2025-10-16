@@ -220,25 +220,8 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # Try applying hunks separately that matched but weren't applied due to all-or-nothing behavior
     from ..application.separate_hunk_apply import try_separate_hunks
     
-    # Find hunks that could be applied separately
-    separate_hunks = [
-        hunk_id for hunk_id, tracker in pipeline.result.hunks.items()
-        if tracker.hunk_data.get("could_apply_separately", False) and 
-        tracker.status == HunkStatus.PENDING
-    ]
-    
-    if separate_hunks:
-        logger.info(f"Found {len(separate_hunks)} hunks that could be applied separately")
-        # Add all pending hunks to the separate_hunks list to ensure they're all tried
-        for hunk_id, tracker in pipeline.result.hunks.items():
-            if tracker.status == HunkStatus.PENDING and hunk_id not in separate_hunks:
-                separate_hunks.append(hunk_id)
-                logger.info(f"Added hunk #{hunk_id} to separate_hunks list to ensure sequential application")
-        
-        separate_result = try_separate_hunks(pipeline, user_codebase_dir, separate_hunks)
-        if separate_result:
-            logger.info("Successfully applied some hunks separately")
-            system_patch_result = True  # Update the result to indicate some changes were written
+    # CRITICAL FIX: Skip separate hunk application - it's interfering with normal system patch
+    logger.info("Skipping separate hunk application to allow normal system patch behavior")
     
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
@@ -399,6 +382,111 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         
     return final_result_dict
 
+def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_diff: str) -> bool:
+    """
+    Apply patch directly without dry-run for small diffs (optimization).
+    
+    Args:
+        pipeline: The diff pipeline
+        user_codebase_dir: The base directory of the user's codebase
+        git_diff: The git diff to apply
+        
+    Returns:
+        True if any changes were written, False otherwise
+    """
+    logger.debug("Applying patch directly without dry-run")
+    
+    # Calculate adaptive timeout based on diff size
+    diff_lines = len(git_diff.splitlines())
+    timeout = min(10, max(2, diff_lines / 100))  # 2-10 seconds
+    
+    patch_command = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '-i', '-']
+    
+    try:
+        patch_result = subprocess.run(
+            patch_command,
+            input=git_diff,
+            encoding='utf-8',
+            cwd=user_codebase_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        
+        logger.debug(f"Patch stdout: {patch_result.stdout}")
+        logger.debug(f"Patch stderr: {patch_result.stderr}")
+        logger.debug(f"Patch return code: {patch_result.returncode}")
+        
+        # Handle misordered hunks
+        if "misordered hunks" in patch_result.stderr:
+            logger.warning("Patch reported misordered hunks - marking all hunks as failed")
+            for hunk_id in pipeline.result.hunks:
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.SYSTEM_PATCH,
+                    status=HunkStatus.FAILED,
+                    error_details={"error": "misordered hunks"}
+                )
+            return False
+        
+        # Parse the patch output
+        patch_status = parse_patch_output(patch_result.stdout, patch_result.stderr)
+        
+        # Update hunk statuses
+        any_hunk_succeeded = False
+        for hunk_id, status_info in patch_status.items():
+            status_value = status_info.get("status")
+            
+            if status_value == "succeeded":
+                any_hunk_succeeded = True
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.SYSTEM_PATCH,
+                    status=HunkStatus.SUCCEEDED,
+                    position=status_info.get("position")
+                )
+            elif status_value == "already_applied":
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.SYSTEM_PATCH,
+                    status=HunkStatus.ALREADY_APPLIED,
+                    position=status_info.get("position")
+                )
+            else:
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.SYSTEM_PATCH,
+                    status=HunkStatus.FAILED,
+                    error_details={"error": status_info.get("error", "Unknown error")}
+                )
+        
+        # Invalidate file cache after successful patch
+        if any_hunk_succeeded:
+            pipeline.invalidate_file_cache()
+        
+        return any_hunk_succeeded
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"Patch command timed out after {timeout}s")
+        for hunk_id in pipeline.result.hunks:
+            pipeline.update_hunk_status(
+                hunk_id=hunk_id,
+                stage=PipelineStage.SYSTEM_PATCH,
+                status=HunkStatus.FAILED,
+                error_details={"error": "timeout"}
+            )
+        return False
+    except Exception as e:
+        logger.error(f"Error applying patch: {str(e)}")
+        for hunk_id in pipeline.result.hunks:
+            pipeline.update_hunk_status(
+                hunk_id=hunk_id,
+                stage=PipelineStage.SYSTEM_PATCH,
+                status=HunkStatus.FAILED,
+                error_details={"error": str(e)}
+            )
+        return False
+
 def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff: str) -> bool:
     """
     Run the system patch stage of the pipeline.
@@ -413,6 +501,18 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
     """
     logger.info("Starting system patch stage...")
 
+    # OPTIMIZATION: Skip dry-run for small diffs to improve performance
+    total_changes = len([l for l in git_diff.splitlines() if l.startswith(('+', '-')) and not l.startswith(('+++', '---'))])
+    skip_dry_run = (
+        total_changes < 100 and 
+        not os.environ.get('ZIYA_FORCE_DRY_RUN') and
+        len(pipeline.result.hunks) <= 5  # Also check hunk count
+    )
+    
+    if skip_dry_run:
+        logger.info(f"Skipping dry-run for small diff ({total_changes} changes, {len(pipeline.result.hunks)} hunks)")
+        return apply_patch_directly(pipeline, user_codebase_dir, git_diff)
+
      # Log the exact input being passed to patch
     logger.debug(f"Running patch command (dry-run): {' '.join(['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '--dry-run', '-i', '-'])}")
     logger.debug(f"Patch input string (repr):\n{repr(git_diff)}") # Log with repr to see hidden chars/newlines
@@ -420,6 +520,10 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
     
     # Do a dry run to see what we're up against
     try:
+        # Calculate adaptive timeout based on diff size
+        diff_lines = len(git_diff.splitlines())
+        timeout = min(10, max(2, diff_lines / 100))  # 2-10 seconds
+        
         patch_command_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '--dry-run', '-i', '-']
         logger.debug(f"Running patch command (dry-run): {' '.join(patch_command_dry)}")
         logger.debug(f"Patch input string (repr):\n{repr(git_diff)}") # Log with repr to see hidden chars/newlines
@@ -433,7 +537,7 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
             cwd=user_codebase_dir,
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=timeout
         )
         
         logger.debug(f"Patch dry run stdout: {patch_result.stdout}")
@@ -443,17 +547,35 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         # Parse the dry run output
         dry_run_status = parse_patch_output(patch_result.stdout, patch_result.stderr)
         
-        # Check if any hunks need verification due to "Reversed (or previously applied)" message
-        needs_verification = False
-        for hunk_id, status in dry_run_status.items():
-            if status.get("status") == "needs_verification":
-                needs_verification = True
-                break
-                
-        # If any hunks need verification, we need to do additional checks
-        if needs_verification:
-            logger.info("Detected 'Reversed (or previously applied)' message, performing additional verification")
-            verify_hunks_with_file_content(pipeline, dry_run_status)
+        # OPTIMIZATION: Lazy verification - only verify when necessary
+        needs_verification_count = sum(1 for s in dry_run_status.values() 
+                                       if s.get("status") == "needs_verification")
+        total_hunks = len(dry_run_status)
+        
+        if needs_verification_count > 0:
+            # Scenario 1: All hunks need verification (likely all already applied)
+            if needs_verification_count == total_hunks:
+                logger.info(f"All {total_hunks} hunks need verification - performing detailed check")
+                verify_hunks_with_file_content(pipeline, dry_run_status)
+            
+            # Scenario 2: Single hunk diff needs verification (high confidence needed)
+            elif total_hunks == 1:
+                logger.info("Single hunk needs verification - performing detailed check")
+                verify_hunks_with_file_content(pipeline, dry_run_status)
+            
+            # Scenario 3: Small subset needs verification (< 30%)
+            elif needs_verification_count < total_hunks * 0.3:
+                logger.info(f"Only {needs_verification_count}/{total_hunks} hunks need verification - skipping and trying other methods")
+                # Mark as failed to try other methods
+                for hunk_id, status in dry_run_status.items():
+                    if status.get("status") == "needs_verification":
+                        dry_run_status[hunk_id]["status"] = "failed"
+                        dry_run_status[hunk_id]["error"] = "Ambiguous patch result, trying alternative methods"
+            
+            # Scenario 4: Majority needs verification (verify all)
+            else:
+                logger.info(f"{needs_verification_count}/{total_hunks} hunks need verification - performing detailed check")
+                verify_hunks_with_file_content(pipeline, dry_run_status)
         
         # Check if all changes are already applied
         # We need to check both stdout and stderr for errors
@@ -527,7 +649,7 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
             cwd=user_codebase_dir,
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=timeout  # Reuse the same adaptive timeout
         )
         
         logger.debug(f"Patch stdout: {patch_result.stdout}")
@@ -553,13 +675,39 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         all_hunks_succeeded = True
         any_hunk_succeeded = False
         
+        # Calculate success rate for decision making
+        successful_count = sum(1 for status in dry_run_status.values() if status.get("status") == "succeeded")
+        total_count = len(dry_run_status)
+        
         for hunk_id, status_info in patch_status.items():
             status_value = status_info.get("status")
             
-            if status_value == "succeeded":
-                # CRITICAL FIX: Don't mark hunks as SUCCEEDED if the overall patch failed
-                # Instead, mark them as PENDING with a flag so they can be tried in later stages
-                if patch_result.returncode != 0:
+            # Set any_hunk_succeeded early so all hunks benefit from this logic
+            if status_info.get("status") == "succeeded":
+                any_hunk_succeeded = True
+            
+            if status_info.get("status") == "succeeded":
+                if patch_result.returncode == 0:
+                    # Patch succeeded overall, mark as succeeded
+                    pipeline.update_hunk_status(
+                        hunk_id=hunk_id,
+                        stage=PipelineStage.SYSTEM_PATCH,
+                        status=HunkStatus.SUCCEEDED,
+                        position=status_info.get("position"),
+                        confidence=1.0 - (status_info.get("fuzz", 0) * 0.1)
+                    )
+                    logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in system patch")
+                elif any_hunk_succeeded:
+                    # At least one hunk succeeded, so this one likely applied too
+                    pipeline.update_hunk_status(
+                        hunk_id=hunk_id,
+                        stage=PipelineStage.SYSTEM_PATCH,
+                        status=HunkStatus.SUCCEEDED,
+                        position=status_info.get("position"),
+                        confidence=1.0 - (status_info.get("fuzz", 0) * 0.1)
+                    )
+                    logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED (partial patch success)")
+                else:
                     # This hunk matched but wasn't actually applied due to all-or-nothing behavior
                     pipeline.update_hunk_status(
                         hunk_id=hunk_id,
@@ -571,17 +719,7 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
                     # Add a flag to indicate this hunk could have been applied separately
                     pipeline.result.hunks[hunk_id].hunk_data["could_apply_separately"] = True
                     logger.info(f"Hunk #{hunk_id} matched in system patch but kept as PENDING for later stages due to all-or-nothing behavior")
-                else:
-                    # Normal case - patch succeeded overall
-                    pipeline.update_hunk_status(
-                        hunk_id=hunk_id,
-                        stage=PipelineStage.SYSTEM_PATCH,
-                        status=HunkStatus.SUCCEEDED,
-                        position=status_info.get("position"),
-                        confidence=1.0 - (status_info.get("fuzz", 0) * 0.1)
-                    )
-                any_hunk_succeeded = True
-            elif status_value == "already_applied":
+            elif status_info.get("status") == "already_applied":
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
@@ -603,11 +741,15 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         
         # CRITICAL FIX: Only mark changes as written if ALL hunks succeeded
         # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
-        changes_written = all_hunks_succeeded and any_hunk_succeeded and patch_result.returncode == 0
+        # UPDATED: Also consider partial success when any hunks succeeded
+        changes_written = any_hunk_succeeded and patch_result.returncode == 0
         
+        # CRITICAL FIX: If any hunks succeeded, recognize that success
         if any_hunk_succeeded and not all_hunks_succeeded:
-            logger.warning("Some hunks succeeded but others failed in system patch. Due to all-or-nothing behavior, NO changes were written.")
-            logger.info("These hunks will be tried again in later stages.")
+            logger.info(f"System patch applied {successful_count}/{total_count} hunks successfully")
+            logger.info("Remaining hunks will be processed in later stages.")
+        elif not any_hunk_succeeded:
+            logger.warning("System patch failed to apply any hunks")
         
         pipeline.result.changes_written = changes_written
         return changes_written
@@ -1399,18 +1541,21 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(modified_content)
                     logger.info(f"Successfully wrote changes to {file_path}")
-
+                
                 pipeline.result.changes_written = True
                 
-                # Update all hunks to SUCCEEDED regardless of previous status
-                # This is necessary because the difflib stage can succeed even if git_apply failed
-                for hunk_id in pipeline.result.hunks:
-                    pipeline.update_hunk_status(
-                        hunk_id=hunk_id,
-                        stage=PipelineStage.DIFFLIB,
-                        status=HunkStatus.SUCCEEDED
-                    )
-                    logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in difflib stage")
+                # CRITICAL FIX: Only update hunks that were actually processed by difflib
+                # Don't override hunks that were already handled in earlier stages
+                for hunk_id, tracker in pipeline.result.hunks.items():
+                    if tracker.status == HunkStatus.PENDING:
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.DIFFLIB,
+                            status=HunkStatus.SUCCEEDED
+                        )
+                        logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in difflib stage")
+                    else:
+                        logger.info(f"Skipping hunk #{hunk_id} - already has status {tracker.status.value} from {tracker.current_stage.value}")
                 
                 return True
                 
@@ -1639,12 +1784,10 @@ def verify_hunks_with_file_content(pipeline: DiffPipeline, hunk_status: Dict[int
     """
     from ..validation.validators import is_hunk_already_applied
     
-    # Read the file content
-    try:
-        with open(pipeline.file_path, 'r', encoding='utf-8') as f:
-            file_content = f.read()
-            file_lines = file_content.splitlines()
-    except FileNotFoundError:
+    # Use cached file content from pipeline
+    file_content, file_lines = pipeline.get_file_content()
+    
+    if not file_content and not file_lines:
         logger.warning(f"File not found: {pipeline.file_path}")
         # Mark all needs_verification hunks as failed
         for hunk_id, status in hunk_status.items():
@@ -1653,10 +1796,9 @@ def verify_hunks_with_file_content(pipeline: DiffPipeline, hunk_status: Dict[int
                 hunk_status[hunk_id]["error"] = "File not found"
         return
         
-    # Parse the hunks from the diff
-    from ..parsing.diff_parser import parse_unified_diff_exact_plus
+    # Use cached parsed hunks from pipeline
     try:
-        hunks = list(parse_unified_diff_exact_plus(pipeline.current_diff, pipeline.file_path))
+        hunks = pipeline.get_parsed_hunks()
     except Exception as e:
         logger.error(f"Error parsing diff: {str(e)}")
         # Mark all needs_verification hunks as failed

@@ -88,7 +88,7 @@ def use_git_to_apply_code_diff_legacy(git_diff: str, file_path: str) -> None:
     return original_func(git_diff, file_path)
 
 # Replace the original function with the pipeline-based version
-def use_git_to_apply_code_diff(git_diff: str, file_path: str):
+def use_git_to_apply_code_diff(git_diff: str, file_path: str, request_id: Optional[str] = None):
     """
     Apply a git diff to a file using the refactored diff_utils package.
     

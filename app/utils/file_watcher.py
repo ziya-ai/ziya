@@ -19,35 +19,68 @@ class FileChangeHandler(FileSystemEventHandler):
         self.cache_invalidation_callback = cache_invalidation_callback
         # Track modified files to avoid duplicate events
         self.recently_modified: Dict[str, float] = {}
-        # Debounce period in seconds
-        self.debounce_period = 0.5
+        # Debounce period in seconds - increased for rapid editor saves
+        self.debounce_period = 2.0
+        # Track recent events for better debouncing
+        self.recent_events: Dict[str, float] = {}
+        # Cache invalidation debouncing
+        self.last_cache_invalidation = 0
         
         # Initialize gitignore patterns
         self.ignored_patterns = get_ignored_patterns(self.base_dir)
         self.should_ignore_fn = parse_gitignore_patterns(self.ignored_patterns)
         logger.info(f"FileChangeHandler initialized with {len(self.ignored_patterns)} gitignore patterns")
+    
+    def _is_editor_temp_file(self, path: str) -> bool:
+        """Check if file is a temporary editor file."""
+        basename = os.path.basename(path)
+        # Vi/Vim temp files
+        if basename.endswith('~') or basename.startswith('.') and basename.endswith('.swp'):
+            return True
+        # Vi numbered temp files (like 4913)
+        if basename.isdigit():
+            return True
+        # Emacs temp files
+        if basename.startswith('#') and basename.endswith('#'):
+            return True
+        # Python atomic write temp files (e.g., file.pyc.4347779232)
+        if '.pyc.' in basename and basename.split('.pyc.')[1].isdigit():
+            return True
+        # __pycache__ directory files
+        if '__pycache__' in path:
+            return True
+        return False
         
     def _should_ignore_path(self, abs_path: str) -> bool:
         """Check if a path should be ignored based on gitignore patterns."""
         try:
-            # Handle non-existent files (like during deletion events)
-            if not os.path.exists(abs_path) and os.path.dirname(abs_path):
-                # For deleted files, check if the parent directory should be ignored
-                parent_dir = os.path.dirname(abs_path)
+            # Check if the path itself should be ignored
+            if self.should_ignore_fn(abs_path):
+                return True
+            
+            # Also check if any parent directory should be ignored
+            parent_dir = os.path.dirname(abs_path)
+            while parent_dir and parent_dir != self.base_dir and len(parent_dir) > len(self.base_dir):
                 if self.should_ignore_fn(parent_dir):
                     return True
-                # Use the filename pattern matching
-                filename = os.path.basename(abs_path)
-                for pattern, base in self.ignored_patterns:
-                    if pattern == filename or pattern == f"*{os.path.splitext(filename)[1]}":
-                        return True
-                return False
+                parent_dir = os.path.dirname(parent_dir)
             
-            return self.should_ignore_fn(abs_path)
+            return False
         except Exception as e:
             logger.warning(f"Error checking if path should be ignored: {abs_path}, {str(e)}")
-            # Default to not ignoring in case of errors
             return False
+        
+    def _should_process_event(self, rel_path: str, event_type: str) -> bool:
+        """Check if we should process this event based on debouncing."""
+        current_time = time.time()
+        event_key = f"{rel_path}:{event_type}"
+        
+        if event_key in self.recent_events:
+            if current_time - self.recent_events[event_key] < self.debounce_period:
+                return False
+        
+        self.recent_events[event_key] = current_time
+        return True
         
     def on_modified(self, event: FileSystemEvent):
         """Handle file modification events."""
@@ -61,6 +94,10 @@ class FileChangeHandler(FileSystemEventHandler):
             
         rel_path = os.path.relpath(abs_path, self.base_dir)
         
+        # Skip editor temp files
+        if self._is_editor_temp_file(abs_path):
+            return
+        
         # Skip non-processable files
         if not is_processable_file(abs_path):
             return
@@ -70,14 +107,9 @@ class FileChangeHandler(FileSystemEventHandler):
             logger.debug(f"Ignoring modified file (matches gitignore): {rel_path}")
             return
             
-        # Debounce - skip if this file was recently modified
-        current_time = time.time()
-        if rel_path in self.recently_modified:
-            if current_time - self.recently_modified[rel_path] < self.debounce_period:
-                return
-                
-        # Mark as recently modified
-        self.recently_modified[rel_path] = current_time
+        # Enhanced debouncing
+        if not self._should_process_event(rel_path, "modified"):
+            return
         
         logger.info(f"File modified: {rel_path}")
         
@@ -91,9 +123,7 @@ class FileChangeHandler(FileSystemEventHandler):
             # Update all conversations that include this file
             self._update_conversations(rel_path, content)
             
-            # Invalidate folder cache if callback is provided
-            if self.cache_invalidation_callback:
-                self.cache_invalidation_callback()
+            self._debounced_cache_invalidation()
         except Exception as e:
             logger.error(f"Error processing modified file {rel_path}: {str(e)}")
     
@@ -109,6 +139,10 @@ class FileChangeHandler(FileSystemEventHandler):
             
         rel_path = os.path.relpath(abs_path, self.base_dir)
         
+        # Skip editor temp files
+        if self._is_editor_temp_file(abs_path):
+            return
+        
         # Skip non-processable files
         if not is_processable_file(abs_path):
             return
@@ -118,11 +152,12 @@ class FileChangeHandler(FileSystemEventHandler):
             logger.debug(f"Ignoring created file (matches gitignore): {rel_path}")
             return
             
+        if not self._should_process_event(rel_path, "created"):
+            return
+            
         logger.info(f"File created: {rel_path}")
         
-        # Invalidate folder cache if callback is provided
-        if self.cache_invalidation_callback:
-            self.cache_invalidation_callback()
+        self._debounced_cache_invalidation()
     
     def on_deleted(self, event: FileSystemEvent):
         """Handle file deletion events."""
@@ -136,23 +171,53 @@ class FileChangeHandler(FileSystemEventHandler):
             
         rel_path = os.path.relpath(abs_path, self.base_dir)
         
+        # Skip editor temp files
+        if self._is_editor_temp_file(abs_path):
+            return
+        
         # Skip files that match gitignore patterns
         if self._should_ignore_path(abs_path):
             logger.debug(f"Ignoring deleted file (matches gitignore): {rel_path}")
             return
             
+        if not self._should_process_event(rel_path, "deleted"):
+            return
+            
         logger.info(f"File deleted: {rel_path}")
         
-        # Invalidate folder cache if callback is provided
-        if self.cache_invalidation_callback:
-            self.cache_invalidation_callback()
+        self._debounced_cache_invalidation()
+    
+    def _debounced_cache_invalidation(self):
+        """Call cache invalidation with debouncing to prevent excessive calls."""
+        if not self.cache_invalidation_callback:
+            return
+            
+        current_time = time.time()
+        
+        # Only call if enough time has passed since last call
+        if current_time - self.last_cache_invalidation < 2.0:  # 2 second debounce
+            return
+            
+        self.last_cache_invalidation = current_time
+        self.cache_invalidation_callback()
     
     def _update_conversations(self, file_path: str, content: str):
         """Update all conversations that include this file."""
+        # Periodically clean up temporary conversations (every 10 file changes)
+        if not hasattr(self, '_update_count'):
+            self._update_count = 0
+        self._update_count += 1
+        if self._update_count % 10 == 0:
+            self.file_state_manager.cleanup_temporary_conversations()
+        
         # Find all conversations that include this file
         updated_conversations = []
         
         for conv_id, files in self.file_state_manager.conversation_states.items():
+            # Skip temporary precision_ conversations
+            if conv_id.startswith('precision_'):
+                continue
+                
             if file_path in files:
                 # Update the file state
                 changed_lines = self.file_state_manager.update_file_state(conv_id, file_path, content)
