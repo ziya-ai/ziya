@@ -232,6 +232,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
   return (
     <StyledTreeItem
       className={itemClassName.trim()}
+      // Store the nodeId as a data attribute for drag/drop target identification
+      data-node-id={nodeId}
       style={style}
       nodeId={nodeId}
       label={
@@ -673,21 +675,36 @@ const MUIChatHistory = () => {
   const handleMoveConversation = async (conversationId: string, folderId: string | null) => {
     console.log('🔧 handleMoveConversation called:', { conversationId, folderId });
 
+    // Get the original conversation ID for finding the conversation
+    const originalConversationId = conversationId;
+    
     // Strip conv- prefix if present
+    let cleanConversationId = conversationId;
     if (conversationId.startsWith('conv-')) {
-      conversationId = conversationId.substring(5);
-      console.log('🔧 Stripped conv- prefix, new ID:', conversationId);
+      cleanConversationId = conversationId.substring(5);
+      console.log('🔧 Stripped conv- prefix, new ID:', cleanConversationId);
     }
 
+    // Get the current folder ID before the move to compare
+    const conversationBeforeMove = conversations.find(c => c.id === cleanConversationId);
+    const currentFolderId = conversationBeforeMove?.folderId ?? null;
+    console.log('🔧 Current folder ID before move:', currentFolderId, 'Target folder ID:', folderId);
+
     try {
-      console.log('🔧 Calling moveConversationToFolder with:', { conversationId, folderId });
-      await moveConversationToFolder(conversationId, folderId);
+      // Check if we're actually moving to a different folder
+      if (currentFolderId === folderId) {
+        console.log('🔧 No move needed - conversation is already in target folder:', folderId);
+        return; // Exit early without showing success message
+      }
+
+      console.log('🔧 Calling moveConversationToFolder with:', { conversationId: cleanConversationId, folderId });
+      await moveConversationToFolder(cleanConversationId, folderId);
 
       // Force a re-render by checking if the state actually changed
       setTimeout(() => {
-        const updatedConv = conversations.find(c => c.id === conversationId);
+        const updatedConv = conversations.find(c => c.id === cleanConversationId);
         console.log('📊 Conversation state after move:', {
-          id: conversationId,
+          id: cleanConversationId,
           folderId: updatedConv?.folderId,
           expectedFolderId: folderId,
           moveWorked: updatedConv?.folderId === folderId
@@ -698,7 +715,14 @@ const MUIChatHistory = () => {
         }
       }, 100);
 
-      message.success('Conversation moved successfully');
+      // Show a more descriptive success message
+      const targetFolderName = folderId 
+        ? folders.find(f => f.id === folderId)?.name || 'selected folder'
+        : 'root';
+      const sourceFolderName = currentFolderId 
+        ? folders.find(f => f.id === currentFolderId)?.name || 'previous folder'
+        : 'root';
+      message.success(`Conversation moved from ${sourceFolderName} to ${targetFolderName}`);
       console.log('✅ Move completed successfully');
     } catch (error) {
       console.error('❌ Move failed:', error);
@@ -1009,81 +1033,37 @@ const MUIChatHistory = () => {
         const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
         const dropTarget = elementBelow?.closest('.MuiTreeItem-content');
 
-        // Better drop target detection using our node mapping
+        // Better drop target detection using stored nodeId data attribute
         let targetNodeId: string | undefined;
         let insertionType = insertionContext?.type || 'below'; // Use captured context
 
+        // Get the actual nodeId from the TreeItem's data attribute
+        if (dropTarget) {
+          const treeItem = dropTarget.closest('[data-node-id]');
+          if (treeItem) {
+            targetNodeId = treeItem.getAttribute('data-node-id') || undefined;
+            console.log('🎯 Found exact target nodeId from DOM:', targetNodeId);
+          }
+        }
+
         if (dropTarget) {
           console.log('📍 Using captured insertion context:', insertionType);
-
-          const dropTargetText = dropTarget.textContent?.trim();
-          console.log('🔍 Looking for node with text:', dropTargetText);
+          console.log('🔍 Target nodeId from data attribute:', targetNodeId);
 
           // Determine target based on insertion type
           if (insertionType === 'inside') {
-            // Dropping INSIDE a folder - find the folder GUID
-            const matchingFolder = folders.find(folder => {
-              // Try multiple matching strategies
-              const expectedText = `${folder.name}(${conversations.filter(c => c.folderId === folder.id).length})`.trim();
-              const matches = expectedText === dropTargetText;
-              if (!matches) {
-                // Try matching just the folder name without count
-                const nameOnlyMatches = folder.name.trim() === dropTargetText;
-                // Try matching with different folder name patterns
-                const folderNamePatterns = [
-                  folder.name.trim(),
-                  `${folder.name}(0)`, // Empty folder
-                  folder.name.split('/').pop()?.trim() // Last part of path for nested folders
-                ].filter(Boolean);
-
-                if (nameOnlyMatches || folderNamePatterns.some(pattern => pattern === dropTargetText)) {
-                  console.log('🔍 Matched folder by name only:', folder.name);
-                  return true;
-                }
-              }
-              return matches;
-            });
-
-            if (matchingFolder) {
-              targetNodeId = matchingFolder.id;
-            }
-
+            // Dropping INSIDE a folder - targetNodeId is already correct from data attribute
           } else {
-            // Dropping above/below - determine the parent context
-            const matchingConversation = conversations.find(conv =>
-              conv.title.trim() === dropTargetText
-            );
-
-            if (matchingConversation) {
-              // When dropping above/below a conversation, move to the same folder as that conversation
-              targetNodeId = matchingConversation.folderId || undefined;
+            // Dropping above/below - adjust target based on what we're dropping relative to
+            if (targetNodeId?.startsWith('conv-')) {
+              // Dropping relative to a conversation - move to same folder as that conversation
+              const conversationId = targetNodeId.substring(5);
+              const conversation = conversations.find(c => c.id === conversationId);
+              targetNodeId = conversation?.folderId || undefined;
             } else {
-              const matchingFolder = folders.find(folder => {
-                const expectedText = `${folder.name}(${conversations.filter(c => c.folderId === folder.id).length})`.trim();
-                const matches = expectedText === dropTargetText;
-                if (!matches) {
-                  // Also try matching just the folder name without count
-                  const nameOnlyMatches = folder.name.trim() === dropTargetText;
-                  return nameOnlyMatches;
-                }
-              });
-
-              if (matchingFolder) {
-                if (insertionType === 'inside') {
-                  // Dropping INSIDE the folder - use the folder's ID
-                  targetNodeId = matchingFolder.id;
-                } else {
-                  // Dropping above/below the folder - move to the same level as the folder
-                  targetNodeId = matchingFolder.parentId || undefined;
-                }
-                console.log('🎯 Found folder target:', {
-                  targetNodeId,
-                  matchingFolder: matchingFolder.name,
-                  insertionType,
-                  parentId: matchingFolder.parentId
-                });
-
-              }
+              // Dropping above/below a folder - move to same level as that folder  
+              const folder = folders.find(f => f.id === targetNodeId);
+              targetNodeId = folder?.parentId || undefined;
             }
           }
 
@@ -1095,6 +1075,10 @@ const MUIChatHistory = () => {
         }
 
         console.log('🎯 Final target resolution:', { targetNodeId, draggedId: customDragState.draggedNodeId });
+        console.log('🎯 Target folder details:', {
+          targetFolder: targetNodeId ? folders.find(f => f.id === targetNodeId) : null,
+          exactMatch: true // Now using exact nodeId match instead of text matching
+        });
         endCustomDrag(targetNodeId ?? undefined);
       }
     };

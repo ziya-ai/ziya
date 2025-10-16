@@ -2661,7 +2661,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
 
             // Show subtle notification
             message.info({
-                content: `Added missing files: ${addedFiles.join(', ')}. Restarting with enhanced context...`,
+                content: `Adding missing files to context: ${addedFiles.join(', ')}...`,
                 duration: 3,
                 key: `context-enhanced-${currentConversationId}`
             });
@@ -2710,21 +2710,21 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         }
     }, [currentConversationId]);
 
-    // Function to retry with enhanced context
-    const retryWithEnhancedContext = async () => {
+    // Function to add files to context
+    const addMissingFilesToContext = async () => {
         setNeedsContextEnhancement(false);
         try {
             const allCurrentFiles = Array.from(checkedKeys).map(String);
             await restartStreamWithEnhancedContext(currentConversationId, missingFilesList, allCurrentFiles);
 
             message.success({
-                content: `Retrying with enhanced context including: ${missingFilesList.join(', ')}`,
+                content: `Added missing files to context: ${missingFilesList.join(', ')}`,
                 duration: 3,
-                key: `context-retry-${currentConversationId}`
+                key: `context-enhanced-${currentConversationId}`
             });
         } catch (error) {
-            console.error('Error retrying with enhanced context:', error);
-            message.error('Failed to retry with enhanced context. Please try your request again.');
+            console.error('Error adding files to context:', error);
+            message.error('Failed to add files to context. Please try again.');
         }
     };
 
@@ -2747,10 +2747,10 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
                     <Button
                         type="primary"
                         size="small"
-                        onClick={retryWithEnhancedContext}
+                        onClick={addMissingFilesToContext}
                         style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
                     >
-                        Retry with Enhanced Context
+                        Add Files to Context
                     </Button>
                 </div>
             ) : null}
@@ -2784,6 +2784,7 @@ interface DiffViewWrapperProps {
 const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
+    const { currentConversationId } = useChatContext(); // Add access to currentConversationId
     const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty');
     const [isVisible, setIsVisible] = useState<boolean>(true);
     const [currentContent, setCurrentContent] = useState<string>(token.text || '');
@@ -2801,10 +2802,17 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     // Extract file title early from the diff content, even during streaming
     const extractFileTitle = useCallback((diffContent: string): string => {
         if (!diffContent) return '';
-
         const lines = diffContent.split('\n');
+        
+        // Check for new file creation first - prioritize 'new file mode' over git header paths
+        const isNewFile = lines.some(line => line.includes('new file mode')) ||
+                         lines.some(line => line.startsWith('--- /dev/null'));
+        
+        // Check for file deletion
+        const isDeletedFile = lines.some(line => line.includes('deleted file mode')) ||
+                             lines.some(line => line.startsWith('+++ /dev/null'));
 
-        // Look for git diff header
+        // Look for git diff header  
         for (const line of lines) {
             if (line.startsWith('diff --git')) {
                 const match = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
@@ -2812,32 +2820,50 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                     const oldPath = match[1];
                     const newPath = match[2];
 
-                    // Handle new file creation (old path is /dev/null)
-                    if (oldPath === '/dev/null') {
-                        return `Create: ${newPath}`;
+                    // Handle new file creation - check for isNewFile flag first
+                    if (isNewFile) {
+                        return `Create New File: ${newPath !== '/dev/null' ? newPath : oldPath}`;
+                    }
+                    // Only use git header /dev/null detection if we don't have 'new file mode' marker
+                    if (oldPath === '/dev/null' && !isNewFile) {
+                        return `Create New File: ${newPath !== '/dev/null' ? newPath : 'Unknown'}`;
                     }
                     // Handle file deletion (new path is /dev/null)  
                     if (newPath === '/dev/null') {
-                        return `Delete: ${oldPath}`;
+                        return `Delete File: ${oldPath}`;
                     }
-                    // Regular file modification - prefer new path, fallback to old path
-                    return newPath || oldPath;
+                    // Handle file rename (different paths)
+                    if (oldPath !== newPath) {
+                        return `Rename: ${oldPath} → ${newPath}`;
+                    }
+                    // Regular file modification
+                    return `Modify: ${newPath || oldPath}`;
                 }
             }
+            
+            // Also check unified diff headers for new/deleted files
             // Look for unified diff headers
             if (line.startsWith('+++ b/')) {
-                return line.substring(6);
+                const filePath = line.substring(6);
+                if (isNewFile && filePath !== '/dev/null') {
+                    return `Create New File: ${filePath}`;
+                }
+                return filePath !== '/dev/null' ? filePath : 'Unknown file';
             }
             // Handle new file creation from unified diff headers
-            if (line.startsWith('+++ b/') && lines.some(l => l.startsWith('--- /dev/null'))) {
-                return `Create: ${line.substring(6)}`;
-            }
-            if (line.startsWith('--- a/')) {
-                // Check if this is a deletion diff
-                if (lines.some(l => l.startsWith('+++ /dev/null'))) {
-                    return `Delete: ${line.substring(6)}`;
+            if (line.startsWith('--- a/') || line.startsWith('--- /dev/null')) {
+                const filePath = line.substring(6);
+                
+                // Skip /dev/null paths for new files - look for the +++ line instead
+                if (filePath === '/dev/null' && isNewFile) {
+                    continue; // Keep looking for the actual file path
                 }
-                return line.substring(6);
+                
+                // Check if this is a deletion diff
+                if (isDeletedFile) {
+                    return `Delete File: ${filePath}`;
+                }
+                return filePath;
             }
         }
 
@@ -2856,6 +2882,12 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             observer.disconnect();
         };
     }, []);
+
+    // Clear cached file title when conversation changes to prevent sticky /dev/null labels
+    useEffect(() => {
+        initialFileTitleRef.current = null;
+        parsedFilesRef.current = []; // Also clear parsed files cache
+    }, [currentConversationId]);
 
     // Cleanup async operations
     useEffect(() => {
@@ -2924,10 +2956,13 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
         // Store the first non-empty title we extract
         if (extractedTitle && extractedTitle !== 'Unknown file' && !initialFileTitleRef.current) {
             initialFileTitleRef.current = extractedTitle;
+        } else if (!isGlobalStreaming) {
+            // When not streaming, always use the fresh title to prevent stale cache
+            return extractedTitle;
         }
 
         // During streaming, use the initial title if current extraction fails
-        return (isGlobalStreaming && initialFileTitleRef.current) ? initialFileTitleRef.current : extractedTitle;
+        return (isGlobalStreaming && initialFileTitleRef.current && extractedTitle === 'Unknown file') ? initialFileTitleRef.current : extractedTitle;
     }, [currentContent, extractFileTitle, isGlobalStreaming]);
 
     // Track streaming state in a ref to avoid re-renders
@@ -3091,7 +3126,19 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 
         // Only update DOM if content has changed
         if (contentRef.current.innerHTML !== highlighted) {
-            contentRef.current.innerHTML = highlighted;
+            // Safely set innerHTML while preventing script execution
+            if (contentRef.current) {
+                // Create a document fragment to safely parse the HTML
+                const template = document.createElement('template');
+                template.innerHTML = highlighted;
+                
+                // Remove any potentially dangerous elements
+                template.content.querySelectorAll('script, object, embed, iframe').forEach(el => el.remove());
+                
+                // Clear and append the safe content
+                contentRef.current.innerHTML = '';
+                contentRef.current.appendChild(template.content.cloneNode(true));
+            }
             contentRef.current.style.visibility = 'visible';
             // Debug log for streaming updates
             if (content.endsWith('\n') || content.includes('```')) {
@@ -3224,7 +3271,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 // Define the possible determined types
 type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'file-operation' | 'tool' |
-    'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
+    'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' |
@@ -3326,6 +3373,8 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         }
 
         if (lang === 'mermaid') return 'mermaid';  // Check mermaid FIRST
+        if (lang === 'joint' || lang === 'jointjs') return 'joint';
+        if (lang === 'diagram') return 'joint';  // Also support 'diagram' as joint type
         if (lang === 'diff') {
             console.log('✅ MarkdownRenderer - DETECTED AS DIFF (lang tag)');
             return 'diff';
@@ -3636,6 +3685,30 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             isStreaming={isStreaming}
                         />
                     );
+
+                case 'joint':
+                case 'jointjs':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    
+                    // Try to parse as JSON first, otherwise treat as definition string
+                    let jointSpec;
+                    try {
+                        jointSpec = JSON.parse(tokenWithText.text);
+                        // Ensure it has the joint type
+                        if (!jointSpec.type) {
+                            jointSpec.type = 'joint';
+                        }
+                    } catch (error) {
+                        // If JSON parsing fails, treat as definition string
+                        jointSpec = {
+                            type: 'joint',
+                            definition: tokenWithText.text,
+                            isStreaming: isStreaming,
+                            forceRender: true
+                        };
+                    }
+                    
+                    return <D3Renderer key={index} spec={jointSpec} type="d3" isStreaming={isStreaming} />;
 
                 case 'tool':
                     if (!hasText(tokenWithText) || !tokenWithText.toolName) {
@@ -4320,7 +4393,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // First check if this is a diff or code block that shouldn't have math processing
             const isDiff = processedMarkdown.includes('diff --git') ||
                 (processedMarkdown.includes('```diff') && processedMarkdown.includes('+++')) ||
-                (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m));
+                (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m)) ||
+                // Skip processing for content containing tool sentinels or template variables
+                // TODO: Get actual sentinel values from backend instead of hardcoding
+                processedMarkdown.includes('<TOOL_SENTINEL>') || 
+                processedMarkdown.includes('</TOOL_SENTINEL>') ||
+                /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
 
             const hasCodeBlocks = processedMarkdown.includes('```');
 

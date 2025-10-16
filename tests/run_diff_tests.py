@@ -11,6 +11,7 @@ import tempfile
 import shutil
 import difflib
 import logging
+import time
 from app.utils.code_util import use_git_to_apply_code_diff, PatchApplicationError
 
 # Configure logging - will be adjusted based on command line arguments
@@ -912,14 +913,23 @@ class PrettyTestResult(unittest.TestResult):
         super(PrettyTestResult, self).__init__()
         self.test_results = []
         self.current_test = None
+        self.test_start_time = None
+        
     def startTest(self, test):
         self.current_test = test
+        self.test_start_time = time.time()
+        
     def addSuccess(self, test):
-        self.test_results.append((test, 'PASS', None))
+        execution_time = time.time() - self.test_start_time if self.test_start_time else 0
+        self.test_results.append((test, 'PASS', None, execution_time))
+        
     def addError(self, test, err):
-        self.test_results.append((test, 'ERROR', err))
+        execution_time = time.time() - self.test_start_time if self.test_start_time else 0
+        self.test_results.append((test, 'ERROR', err, execution_time))
+        
     def addFailure(self, test, err):
-        self.test_results.append((test, 'FAIL', err))
+        execution_time = time.time() - self.test_start_time if self.test_start_time else 0
+        self.test_results.append((test, 'FAIL', err, execution_time))
 
     def printSummary(self):
         print("\n" + "=" * 80)
@@ -930,23 +940,37 @@ class PrettyTestResult(unittest.TestResult):
         passed_tests = []
         failed_tests = []
         
-        for test, status, error in self.test_results:
+        for test, status, error, exec_time in self.test_results:
             case_name = test._testMethodName
             if '(case=' in str(test):
                 # Extract case name for parameterized tests
                 case_name = f"{test._testMethodName} ({str(test).split('case=')[1].rstrip(')')}"
             
             if status == 'PASS':
-                passed_tests.append(case_name)
+                passed_tests.append((case_name, exec_time))
             else:
-                failed_tests.append((case_name, status, error))
+                failed_tests.append((case_name, status, error, exec_time))
 
         # Print passed tests first
         print("\033[92mPASSED TESTS:\033[0m")
         print("-" * 80)
         if passed_tests:
-            for case_name in sorted(passed_tests):
-                print(f"\033[92m✓\033[0m {case_name}")
+            for case_name, exec_time in sorted(passed_tests, key=lambda x: x[0]):
+                # Color code based on execution time thresholds
+                if exec_time > 5.0:
+                    time_color = "\033[91m"      # Red if > 5s
+                elif exec_time > 2.0:
+                    time_color = "\033[38;5;214m"  # Orange if > 2s
+                elif exec_time > 1.0:
+                    time_color = "\033[93m"      # Yellow if > 1s
+                else:
+                    time_color = "\033[0m"       # Default color
+                time_str = f"{exec_time:.2f}s"
+                # Format time with color and reset
+                time_display = f"{time_color}{time_str}\033[0m"
+                # Pad the case name and align time to the right
+                case_padded = case_name.ljust(60)
+                print(f"\033[92m✓\033[0m {case_padded} {time_display}")
         else:
             print("No tests passed")
 
@@ -954,8 +978,21 @@ class PrettyTestResult(unittest.TestResult):
         if failed_tests:
             print("\n\033[91mFAILED TESTS:\033[0m")
             print("-" * 80)
-            for case_name, status, error in sorted(failed_tests):
-                print(f"\033[91m✗\033[0m {case_name} ({status})")
+            for case_name, status, error, exec_time in sorted(failed_tests, key=lambda x: x[0]):
+                # Color code based on execution time thresholds
+                if exec_time > 5.0:
+                    time_color = "\033[91m"      # Red if > 5s
+                elif exec_time > 2.0:
+                    time_color = "\033[38;5;214m"  # Orange if > 2s
+                elif exec_time > 1.0:
+                    time_color = "\033[93m"      # Yellow if > 1s
+                else:
+                    time_color = "\033[0m"       # Default color
+                time_str = f"{exec_time:.2f}s"
+                time_display = f"{time_color}{time_str}\033[0m"
+                # Pad the case name and align time to the right
+                case_padded = case_name.ljust(50)
+                print(f"\033[91m✗\033[0m {case_padded} ({status}) {time_display}")
                 import traceback
                 if error:
                     if status == 'ERROR':
@@ -973,6 +1010,15 @@ class PrettyTestResult(unittest.TestResult):
         
         # Print detailed mode summary table
         self.print_mode_summary()
+        
+        # Print timing statistics
+        if self.test_results:
+            total_time = sum(exec_time for _, _, _, exec_time in self.test_results)
+            avg_time = total_time / len(self.test_results)
+            slow_tests = [t for t in self.test_results if t[3] > 5.0]
+            print(f"\nTiming: Total {total_time:.2f}s, Average {avg_time:.2f}s per test")
+            if slow_tests:
+                print(f"\033[91m{len(slow_tests)} tests took longer than 5 seconds\033[0m")
         
     def print_mode_summary(self, mode_name="Test"):
         """Print a summary table for a single test mode."""
@@ -997,23 +1043,24 @@ class PrettyTestResult(unittest.TestResult):
         
         # Define column widths
         test_name_width = 40
-        status_width = 20
+        status_width = 15
+        time_width = 12
         
         # Print table header
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 75)
         print(f"{mode_name} Mode Summary")
-        print("=" * 70)
+        print("=" * 75)
         
-        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+")
-        print("| {:<38} | {:^18} |".format("Test Name", "Status"))
-        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+")
+        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+" + "-" * time_width + "+")
+        print("| {:<38} | {:^13} | {:^10} |".format("Test Name", "Status", "Time"))
+        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+" + "-" * time_width + "+")
         
         # Count passes and failures
         pass_count = 0
         fail_count = 0
         
         # Print results for each test
-        for test, status, _ in self.test_results:
+        for test, status, _, exec_time in self.test_results:
             test_name = test._testMethodName
             
             if status == 'PASS':
@@ -1025,24 +1072,45 @@ class PrettyTestResult(unittest.TestResult):
                 status_display = f"{RED}FAIL{RESET}"
                 test_name_display = f"{RED}{test_name}{RESET}"
             
+            # Format time display with color for slow tests
+            if exec_time > 5.0:
+                time_color = RED               # Red if > 5s
+            elif exec_time > 2.0:
+                time_color = "\033[38;5;214m"  # Orange if > 2s
+            elif exec_time > 1.0:
+                time_color = "\033[93m"        # Yellow if > 1s
+            else:
+                time_color = RESET             # Default color
+            time_display = f"{time_color}{exec_time:.2f}s{RESET}"
+            
+            # Don't use ansi_center for colored time strings as it breaks alignment
+            # Instead, format the time string with proper padding manually
+            time_str_clean = f"{exec_time:.2f}s"
+            time_padding = max(0, (time_width - 2 - len(time_str_clean)) // 2)
+            time_centered = " " * time_padding + time_display + " " * (time_width - 2 - len(time_str_clean) - time_padding)
+            
             # Calculate padding for test name to account for ANSI codes
             test_name_padding = test_name_width - visible_len(test_name_display) - 2  # -2 for the spaces around the cell content
             status_centered = ansi_center(status_display, status_width-2)
             
-            print("| {} | {} |".format(
+            print("| {} | {} | {} |".format(
                 test_name_display + " " * test_name_padding,
-                status_centered
+                status_centered,
+                time_centered
             ))
         
         # Print summary
-        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+")
+        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+" + "-" * time_width + "+")
         total_tests = len(self.test_results)
+        total_time = sum(exec_time for _, _, _, exec_time in self.test_results)
         summary = f"{GREEN}{pass_count}{RESET}/{total_tests} passed ({RED}{fail_count}{RESET} failed)"
+        time_summary = f"{total_time:.2f}s"
         summary_centered = ansi_center(summary, status_width-2)
+        time_summary_centered = ansi_center(time_summary, time_width-2)
         
-        print("| {:<38} | {} |".format("TOTAL", summary_centered))
-        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+")
-        print("=" * 70)
+        print("| {:<38} | {} | {} |".format("TOTAL", summary_centered, time_summary_centered))
+        print("+" + "-" * test_name_width + "+" + "-" * status_width + "+" + "-" * time_width + "+")
+        print("=" * 75)
 
 if __name__ == '__main__':
     import argparse
@@ -1095,7 +1163,7 @@ if __name__ == '__main__':
         
         # Format results for storage
         formatted_results = {}
-        for test, status, _ in results.test_results:
+        for test, status, _, _ in results.test_results:
             test_name = test._testMethodName
             if '(case=' in str(test):
                 # Extract case name for parameterized tests
@@ -1138,7 +1206,7 @@ if __name__ == '__main__':
             return
             
         # Extract results dictionaries
-        current = {test._testMethodName: status for test, status, _ in current_results.test_results}
+        current = {test._testMethodName: status for test, status, _, _ in current_results.test_results}
         previous = previous_results.get("results", {})
         
         # Find changes
@@ -1276,14 +1344,14 @@ if __name__ == '__main__':
         
         # Get all test names from both runs
         all_tests = set()
-        for test, _, _ in normal_result.test_results:
+        for test, _, _, _ in normal_result.test_results:
             all_tests.add(test._testMethodName)
-        for test, _, _ in difflib_result.test_results:
+        for test, _, _, _ in difflib_result.test_results:
             all_tests.add(test._testMethodName)
         
         # Create results dictionaries
-        normal_results = {test._testMethodName: status for test, status, _ in normal_result.test_results}
-        difflib_results = {test._testMethodName: status for test, status, _ in difflib_result.test_results}
+        normal_results = {test._testMethodName: status for test, status, _, _ in normal_result.test_results}
+        difflib_results = {test._testMethodName: status for test, status, _, _ in difflib_result.test_results}
         
         # Define column widths
         test_name_width = 40

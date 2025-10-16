@@ -58,10 +58,20 @@ class PrecisionPromptSystem:
             )
             
             # Format the prompt with file context
+            # Escape curly braces in both question and codebase to prevent .format() from interpreting them
+            safe_question = (question.replace('{', '{{').replace('}', '}}') 
+                           if question and not ('{{' in question or '}}' in question)
+                           else question) if question else ""
+            
+            # Also escape codebase content to prevent template interpretation
+            safe_codebase = (file_context.replace('{', '{{').replace('}', '}}')
+                           if file_context and not ('{{' in file_context or '}}' in file_context)
+                           else file_context) if file_context else ""
+            
             formatted_messages = extended_prompt.format_messages(
-                codebase=file_context,
+                codebase=safe_codebase,
                 tools="",  # Tools are handled natively
-                question=question
+                question=safe_question
             )
             
             # Convert to dict format
