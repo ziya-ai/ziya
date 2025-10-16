@@ -226,10 +226,12 @@ def _get_tool_call_formats_from_mcp(available_tools: list) -> str:
                 
                 format_sections.append(f"""**{display_name} Format:**
 ```
-{TOOL_SENTINEL_OPEN}
-<name>{display_name}</name>
-<arguments>{example_args}</arguments>
-{TOOL_SENTINEL_CLOSE}
+""" + TOOL_SENTINEL_OPEN + """
+<name>""" + display_name + """</name>
+<arguments>
+""" + example_args + """
+</arguments>
+""" + TOOL_SENTINEL_CLOSE + """
 ```""")
         
         if format_sections:

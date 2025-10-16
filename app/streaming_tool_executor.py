@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import json
+import re
 import boto3
 import logging
 import os
@@ -107,6 +108,34 @@ class StreamingToolExecutor:
         
         # Only consider exact matches as similar to avoid blocking legitimate exploration
         return norm1 == norm2
+
+    def _get_text_after_last_structured_content(self, text: str) -> str:
+        """Get text that appears after the last tool result, diff block, or code block."""
+        # Find the last occurrence of structured content markers
+        last_positions = []
+        
+        # Check for tool blocks
+        tool_pattern = r'```?```'
+        for match in re.finditer(tool_pattern, text, re.DOTALL):
+            last_positions.append(match.end())
+        
+        # Check for diff blocks  
+        diff_pattern = r'```diff.*?```'
+        for match in re.finditer(diff_pattern, text, re.DOTALL):
+            last_positions.append(match.end())
+            
+        # Check for any code blocks
+        code_pattern = r'```.*?```'
+        for match in re.finditer(code_pattern, text, re.DOTALL):
+            last_positions.append(match.end())
+        
+        if last_positions:
+            # Return text after the last structured content block
+            last_pos = max(last_positions)
+            return text[last_pos:].strip()
+        else:
+            # No structured content found, return the entire text
+            return text.strip()
 
     async def _execute_fake_tool(self, tool_name, command, assistant_text, tool_results, mcp_manager):
         """Execute a fake tool call detected in the text stream"""
@@ -451,9 +480,8 @@ class StreamingToolExecutor:
                             # DISABLED: This was causing premature execution of incomplete commands
                             if False and (('```tool:' in assistant_text and '```' in assistant_text[assistant_text.find('```tool:') + 8:]) or \
                                ('run_shell_command\n$' in assistant_text and '\n' in assistant_text[assistant_text.find('run_shell_command\n$') + 20:]) or \
-                               (':mcp_run_shell_command\n$' in assistant_text and '\n' in assistant_text[assistant_text.find(':mcp_run_shell_command\n$') + 23:])):
+                              (':mcp_run_shell_command\n$' in assistant_text and '\n' in assistant_text[assistant_text.find(':mcp_run_shell_command\n$') + 23:])):
                                 # Extract and execute fake tool calls with multiple patterns
-                                import re
                                 patterns = [
                                     r'```tool:(mcp_\w+)\n\$\s*([^`]+)```',  # Full markdown blocks only
                                     r'run_shell_command\n\$\s*([^\n]+)\n',    # Complete lines only
@@ -739,6 +767,17 @@ class StreamingToolExecutor:
                             continuation_count += 1
                             logger.info(f"🔄 INCOMPLETE_BLOCK: Detected incomplete {code_block_tracker['block_type']} block, auto-continuing (attempt {continuation_count})")
                             
+                            # Mark rewind boundary before auto-continuation
+                            assistant_lines = assistant_text.split('\n')
+                            last_complete_line = len(assistant_lines) - 2 if assistant_lines[-1].strip() == '' else len(assistant_lines) - 1
+                            partial_content = assistant_lines[-1] if assistant_lines else ""
+                            rewind_marker = f"<!-- REWIND_MARKER: {last_complete_line}|PARTIAL:{partial_content} -->"
+                            yield track_yield({
+                                'type': 'text',
+                                'content': f"{rewind_marker}\n**🔄 Block continues...**\n",
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                            })
+                            
                             # Send heartbeat before continuation to keep connection alive
                             yield {
                                 'type': 'heartbeat',
@@ -860,13 +899,28 @@ class StreamingToolExecutor:
                         if code_block_tracker.get('in_block'):
                             logger.warning(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still incomplete after max continuations, ending stream anyway")
                         
-                        # Check if the text suggests the model is about to make a tool call
-                        # Only check the last 200 characters to avoid issues with long accumulated text
-                        text_end = assistant_text[-200:].lower().strip()
-                        suggests_tool_call = text_end.endswith(':')
+                        # Check if there's already substantial commentary after the last tool/diff/code block
+                        text_after_last_block = self._get_text_after_last_structured_content(assistant_text)
+                        word_count_after_block = len(text_after_last_block.split()) if text_after_last_block else 0
                         
-                        if suggests_tool_call and iteration < 3:  # More conservative limit
-                            logger.info(f"🔍 POTENTIAL_TOOL_CALL: Text suggests model wants to make a tool call, continuing: '{assistant_text[-50:]}'")
+                        # If we have 20+ words after the last block and it ends properly, consider it complete
+                        if (word_count_after_block >= 20 and 
+                            text_after_last_block.rstrip().endswith(('.', '!', '?'))):
+                            logger.info(f"🔍 COMPLETE_RESPONSE: Found {word_count_after_block} words after last block, ending stream: '{text_after_last_block[-50:]}'")
+                            yield {'type': 'stream_end'}
+                            break
+                        
+                        # Otherwise check if we should continue
+                        text_end = assistant_text[-200:].strip()
+                        suggests_continuation = (
+                            text_end.endswith((':')) or  # About to make tool call  
+                            assistant_text.endswith('```') or  # Just finished code block - might add explanation
+                            word_count_after_block < 20 or  # Not enough commentary yet
+                            not text_after_last_block.rstrip().endswith(('.', '!', '?'))  # Doesn't end properly
+                        )
+                        
+                        if suggests_continuation and iteration < 5:
+                            logger.info(f"🔍 CONTINUE_RESPONSE: Only {word_count_after_block} words after last block, continuing: '{text_after_last_block[-30:] if text_after_last_block else text_end}'")
                             continue
                         else:
                             logger.info(f"🔍 STREAM_END: Model produced text without tools, ending stream")
@@ -887,6 +941,7 @@ class StreamingToolExecutor:
                         continue
 
             except Exception as e:
+                logger.error(f"Error in stream_with_tools iteration {iteration}: {str(e)}", exc_info=True)
                 yield {'type': 'error', 'content': f'Error: {e}'}
                 return
 
@@ -927,7 +982,11 @@ class StreamingToolExecutor:
         """Continue an incomplete code block by making a new API call."""
         try:
             block_type = code_block_tracker['block_type']
-            continuation_prompt = f"Continue the incomplete {block_type} code block from where it left off and close it with ```. Output ONLY the continuation of the code block, no explanations."
+            # Preserve diff context in continuation prompt
+            if block_type == 'diff':
+                continuation_prompt = f"Continue the incomplete diff block from where it left off. Maintain all + and - line prefixes. Output ONLY the continuation of the diff content, preserving the exact diff format."
+            else:
+                continuation_prompt = f"Continue the incomplete {block_type} code block from where it left off and close it with ```. Output ONLY the continuation of the code block, no explanations."
             
             continuation_conversation = conversation.copy()
             

@@ -645,7 +645,10 @@ class RetryingChatBedrock(Runnable):
         
         # Ensure each stream has its own conversation tracking
         #stream_id = f"stream_{id(self)}_{hash(str(messages))}"
-        stream_id = "unbound"
+        # Extract conversation_id from config for proper error routing
+        conversation_id = config.get('conversation_id') if config else None
+        stream_id = conversation_id or f"stream_{id(self)}_{int(time.time())}"
+        logger.info(f"Using stream_id for error routing: {stream_id}")
 
         logger.info(f"RETRYING_CHAT_BEDROCK.astream: Input type: {type(input)}")
         if hasattr(self.model, 'tools'): # Check if the underlying model has 'tools'
@@ -900,6 +903,7 @@ class RetryingChatBedrock(Runnable):
                     "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
                     "status_code": 429,
                     "retry_after": "5",
+                    "conversation_id": conversation_id,  # Add conversation_id for frontend routing
                     "stream_id": stream_id,
                     "preserved_content": ''.join(accumulated_content) if accumulated_content else None,
                     "preserved_text": accumulated_text if accumulated_text else None,
@@ -1093,6 +1097,7 @@ class RetryingChatBedrock(Runnable):
                 else:
                     # Show the actual error instead of masking it
                     error_message = {
+                        "conversation_id": conversation_id,  # Add conversation_id for frontend routing
                         "error": f"⚠️ Error: {error_str}",
                         "type": "general"
                     }
@@ -1172,6 +1177,7 @@ class RetryingChatBedrock(Runnable):
                 error_message = {
                     "error": error_type,
                     "detail": detail,
+                    "conversation_id": conversation_id,  # Add conversation_id for frontend routing
                     "status_code": status_code
                 }
                 if retry_after:
@@ -1794,7 +1800,7 @@ def create_agent_chain(chat_model: BaseChatModel):
     from langchain.agents import create_xml_agent
     import hashlib
     from app.agents.models import ModelManager
-    logger.error("🔍 EXECUTION_TRACE: create_agent_chain() called")
+    logger.debug("Creating agent chain")
     
     # Create cache key based on model configuration
     model_id = ModelManager.get_model_id() or getattr(chat_model, 'model_id', 'unknown')
@@ -1816,12 +1822,6 @@ def create_agent_chain(chat_model: BaseChatModel):
             else:
                 mcp_tools = create_secure_mcp_tools()
                 logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
-            
-            if mcp_manager.is_initialized:
-                mcp_tools = create_secure_mcp_tools()
-                logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
-            else:
-                logger.warning("MCP manager not initialized, no MCP tools available")
         
         except Exception as e:
             logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
@@ -1923,9 +1923,18 @@ def create_agent_chain(chat_model: BaseChatModel):
                     # Add system message from prompt
                     if hasattr(prompt_template, 'messages') and prompt_template.messages:
                         system_msg = prompt_template.messages[0]
-                        if hasattr(system_msg, 'format'):
-                            formatted_content = system_msg.format(**mapped_input)
-                            messages.append(SystemMessage(content=formatted_content))
+                        # Escape curly braces in user input to prevent .format() from interpreting them
+                        safe_mapped_input = {
+                            k: v.replace('{', '{{').replace('}', '}}') if isinstance(v, str) and not (
+                                '{{' in v or '}}' in v  # Skip if already escaped
+                            ) else v
+                            for k, v in mapped_input.items()
+                        }
+                        formatted_content = system_msg.format(**safe_mapped_input)
+                        # Don't escape codebase content as it may already contain properly escaped MCP examples
+                        # Only escape user-provided content (questions and chat history)
+                        formatted_content = system_msg.format(**safe_mapped_input)
+                        messages.append(SystemMessage(content=formatted_content))
                     
                     # Add user question
                     question = mapped_input.get("question", "")
