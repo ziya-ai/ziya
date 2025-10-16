@@ -500,6 +500,7 @@ export const sendPayload = async (
                     const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(data);
 
                     if (errorResponse) {
+                        // Use conversation_id from error response if available, otherwise fall back to local conversationId
                         const targetConversationId = errorResponse.conversation_id || conversationId;
                         
                         console.log("Current content when error detected:", currentContent.substring(0, 200) + "...");
@@ -600,6 +601,20 @@ export const sendPayload = async (
                             continue;
                         }
 
+                        // Process the JSON object
+                        if (jsonData.heartbeat) {
+                            console.log("Received heartbeat, skipping");
+                            continue;
+                        }
+
+                        // Handle done marker
+                        if (jsonData.done) {
+                            console.log("Received done marker in JSON data");
+                            // Don't return here - let the stream complete naturally
+                            // The done marker just indicates no more content chunks
+                            continue;
+                        }
+
                         // Handle throttling status messages
                         if (jsonData.type === 'throttling_status') {
                             console.log('Throttling status:', jsonData.message);
@@ -653,6 +668,7 @@ export const sendPayload = async (
                             // Update the map immediately to reflect the spliced content
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
+                                // Always use the latest currentContent value
                                 next.set(conversationId, currentContent);
                                 return next;
                             });
