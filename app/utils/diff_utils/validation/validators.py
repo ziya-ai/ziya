@@ -111,6 +111,9 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     
     return old_content_exists and new_content_exists
 
+from functools import lru_cache
+
+@lru_cache(maxsize=8192)
 def normalize_line_for_comparison(line: str) -> str:
     """
     Normalize a line for comparison, handling whitespace, invisible characters, and escape sequences.
