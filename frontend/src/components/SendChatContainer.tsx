@@ -6,7 +6,8 @@ import { Message } from "../utils/types";
 import { convertKeysToStrings } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
 import { Button, Input, message } from 'antd';
-import { SendOutlined } from "@ant-design/icons";
+import { SendOutlined, StopOutlined } from "@ant-design/icons";
+import StopStreamButton from './StopStreamButton';
 import { useQuestionContext } from '../context/QuestionContext';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 
@@ -47,6 +48,26 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     const [throttlingError, setThrottlingError] = useState<any>(null);
 
     const { question, setQuestion } = useQuestionContext();
+
+    // Track if we've received any content yet to distinguish "Sending" vs "Processing"
+    const [hasReceivedContent, setHasReceivedContent] = useState(false);
+    
+    // Reset content tracking when streaming starts
+    useEffect(() => {
+        if (streamingConversations.has(currentConversationId)) {
+            setHasReceivedContent(false);
+        }
+    }, [streamingConversations, currentConversationId]);
+    
+    // Monitor streamed content to detect when first content arrives
+    useEffect(() => {
+        const currentStreamedContent = streamedContentMap.get(currentConversationId);
+        if (currentStreamedContent && currentStreamedContent.trim().length > 0 && !hasReceivedContent) {
+            setHasReceivedContent(true);
+        }
+    }, [streamedContentMap, currentConversationId, hasReceivedContent]);
+
+    const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
 
     // Check if the last message suggests continuation is needed
     useEffect(() => {
@@ -118,12 +139,12 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     );
 
     const buttonTitle = useMemo(() =>
-        streamingConversations.has(currentConversationId)
+        isCurrentlyStreaming
             ? "Waiting for AI response..."
             : currentMessages[currentMessages.length - 1]?.role === 'human'
                 ? "AI response may have failed - click Send to retry"
                 : "Send message",
-        [streamingConversations, currentConversationId, currentMessages]
+        [isCurrentlyStreaming, currentMessages]
     );
 
     const handleSendPayload = async (isRetry: boolean = false, retryContent?: string) => {
@@ -299,16 +320,39 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                     }
                 }}
             />
-            <Button
-                type="primary"
-                onClick={() => handleSendPayload()}
-                disabled={isDisabled}
-                icon={<SendOutlined />}
-                style={{ marginLeft: '10px' }}
-                title={buttonTitle}
-            >
-                {streamingConversations.has(currentConversationId) ? 'Sending...' : 'Send'}
-            </Button>
+            <div style={{ marginLeft: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {!isCurrentlyStreaming ? (
+                    <Button
+                        type="primary"
+                        onClick={() => handleSendPayload()}
+                        disabled={isDisabled}
+                        icon={<SendOutlined />}
+                        title={buttonTitle}
+                    >
+                        Send
+                    </Button>
+                ) : (
+                    <>
+                        <Button
+                            type="default"
+                            disabled
+                            icon={<SendOutlined />}
+                            title="Response in progress..."
+                        >
+                            {!hasReceivedContent ? 'Sending...' : 'Processing...'}
+                        </Button>
+                        <StopStreamButton
+                            conversationId={currentConversationId}
+                            size="middle"
+                            style={{
+                                height: '32px', // Match the disabled send button height
+                                display: 'flex',
+                                alignItems: 'center'
+                            }}
+                        />
+                    </>
+                )}
+            </div>
         </div>
         </div>
     );
