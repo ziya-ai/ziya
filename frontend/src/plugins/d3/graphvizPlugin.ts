@@ -12,6 +12,12 @@ export interface GraphvizSpec {
 }
 
 const isGraphvizSpec = (spec: any): spec is GraphvizSpec => {
+    // Handle JSON-wrapped graphviz specs
+    if (typeof spec === 'object' && spec !== null && spec.type === 'graphviz' && spec.definition) {
+        return typeof spec.definition === 'string' && spec.definition.trim().length > 0;
+    }
+    
+    // Handle direct graphviz spec objects
     return (
         typeof spec === 'object' &&
         spec !== null &&
@@ -23,6 +29,160 @@ const isGraphvizSpec = (spec: any): spec is GraphvizSpec => {
 
 // Store the current theme for each container to detect changes
 const containerThemes = new WeakMap<HTMLElement, boolean>();
+
+// Move helper functions to the top to avoid reference errors
+// Helper function to calculate luminance component (sRGB)
+const getLuminanceComponent = (colorValue: number) => {
+    const normalized = colorValue / 255;
+    return normalized <= 0.03928 
+        ? normalized / 12.92 
+        : Math.pow((normalized + 0.055) / 1.055, 2.4);
+};
+
+// Enhanced background detection with proper sRGB luminance calculation
+const isLightBackground = (color: string): boolean => {
+    if (!color || color === 'transparent' || color === 'none') {
+        return false;
+    }
+    
+    // Parse color to RGB values
+    let r = 0, g = 0, b = 0;
+    
+    // Handle hex format
+    const hexMatch = color.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+    if (hexMatch) {
+        r = parseInt(hexMatch[1], 16);
+        g = parseInt(hexMatch[2], 16);
+        b = parseInt(hexMatch[3], 16);
+    }
+    // Handle rgb() format
+    else if (color.startsWith('rgb')) {
+        const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (rgbMatch) {
+            r = parseInt(rgbMatch[1]);
+            g = parseInt(rgbMatch[2]);
+            b = parseInt(rgbMatch[3]);
+        } else {
+            return false;
+        }
+    }
+    // Handle named colors
+    else {
+        const lightNamedColors = [
+            'white', 'lightblue', 'lightgreen', 'lightgrey', 'lightgray', 'pink',
+            '#aed6f1', '#d4e6f1', '#d5f5e3', '#f5f5f5', '#e6e6e6', '#f0f0f0',
+            '#ffffff', '#f8f9fa', '#e9ecef', '#dee2e6', '#ced4da', '#adb5bd'
+        ];
+        return lightNamedColors.some(c => c.toLowerCase() === color.toLowerCase());
+    }
+    
+    // Calculate proper sRGB luminance
+    const rLum = getLuminanceComponent(r);
+    const gLum = getLuminanceComponent(g);
+    const bLum = getLuminanceComponent(b);
+    
+    const luminance = 0.2126 * rLum + 0.7152 * gLum + 0.0722 * bLum;
+    
+    // Use threshold where anything above 0.4 luminance is considered light
+    return luminance > 0.4;
+};
+
+// Get optimal text color (borrowed from Vega-Lite)
+const getOptimalTextColor = (backgroundColor: string): string => {
+    const hexToRgb = (hex: string) => {
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+        } : null;
+    };
+    
+    const rgb = hexToRgb(backgroundColor);
+    if (!rgb) return '#000000';
+    
+    // Special handling for yellow and yellow-ish colors
+    if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+        return '#000000'; // Always use black on yellow
+    }
+    
+    // Calculate luminance and use conservative threshold
+    const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+    return luminance > 0.4 ? '#000000' : '#ffffff';
+};
+
+// Enhanced text visibility function
+const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
+    console.log('🔍 GRAPHVIZ-TEXT-FIX: Starting comprehensive text visibility enhancement');
+    
+    // Process all text elements with comprehensive background detection
+    const textElements = svgElement.querySelectorAll('text');
+    let fixedCount = 0;
+    
+    textElements.forEach((textEl, index) => {
+        const textContent = textEl.textContent?.trim();
+        if (!textContent) return;
+        
+        console.log(`🔍 Processing text element ${index}: "${textContent}"`);
+        
+        let backgroundColor: string | null = null;
+        const currentTextColor = textEl.getAttribute('fill') || '';
+        
+        // Strategy 1: Check parent group for background shapes (most reliable)
+        const parentGroup = textEl.closest('g');
+        if (parentGroup) {
+            const backgroundShape = parentGroup.querySelector('ellipse, polygon, rect, circle, path[fill]:not([fill="none"])');
+            if (backgroundShape) {
+                const fill = backgroundShape.getAttribute('fill');
+                const computedFill = window.getComputedStyle(backgroundShape).fill;
+                backgroundColor = (computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)') ? computedFill : fill;
+                console.log(`  Found background from shape: ${backgroundColor}`);
+            }
+        }
+        
+        // Strategy 2: Check if this is an edge label - use page background for contrast
+        if (!backgroundColor && parentGroup?.classList.contains('edge')) {
+            backgroundColor = isDarkMode ? '#2e3440' : '#ffffff'; // Use page background
+            console.log(`  Using page background for edge label: ${backgroundColor}`);
+        }
+        
+        // Strategy 3: Check if this is a cluster label
+        if (!backgroundColor && parentGroup?.classList.contains('cluster')) {
+            const clusterBg = parentGroup.querySelector('polygon');
+            if (clusterBg) {
+                const fill = clusterBg.getAttribute('fill');
+                const computedFill = window.getComputedStyle(clusterBg).fill;
+                backgroundColor = (computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)') ? computedFill : fill;
+                console.log(`  Found cluster background: ${backgroundColor}`);
+            }
+        }
+        
+        if (backgroundColor) {
+            const isLight = isLightBackground(backgroundColor);
+            const optimalColor = getOptimalTextColor(backgroundColor);
+            
+            console.log(`  Background analysis: ${backgroundColor} -> isLight: ${isLight} -> optimal text: ${optimalColor}`);
+            
+            if (isLight || (isDarkMode && currentTextColor === '#ffffff' && isLight)) {
+                textEl.setAttribute('fill', optimalColor);
+                (textEl as SVGElement).style.setProperty('fill', optimalColor, 'important');
+                console.log(`  ✅ Fixed text "${textContent}": ${currentTextColor} -> ${optimalColor} on background ${backgroundColor}`);
+                fixedCount++;
+            } else {
+                console.log(`  ✓ Text "${textContent}" already has good contrast`);
+            }
+        } else {
+            // Fallback: use high contrast color based on page mode
+            const fallbackColor = isDarkMode ? '#ffffff' : '#000000';
+            if (currentTextColor !== fallbackColor) {
+                textEl.setAttribute('fill', fallbackColor);
+                console.log(`  📝 Applied fallback color to "${textContent}": ${fallbackColor}`);
+            }
+        }
+    });
+    
+    console.log(`🔍 GRAPHVIZ-TEXT-FIX: Enhanced ${fixedCount} text elements out of ${textElements.length} total`);
+};
 
 export const graphvizPlugin: D3RenderPlugin = {
     name: 'graphviz-renderer',
@@ -38,7 +198,20 @@ export const graphvizPlugin: D3RenderPlugin = {
             overflow: 'visible'
         }
     },
-    canHandle: isGraphvizSpec,
+    
+    canHandle: (spec: any): boolean => {
+        // Handle JSON-wrapped graphviz specs like {"type": "graphviz", "definition": "..."}
+        if (typeof spec === 'object' && spec !== null && spec.type === 'graphviz' && spec.definition) {
+            return typeof spec.definition === 'string' && spec.definition.trim().length > 0;
+        }
+        
+        // Handle direct graphviz spec objects
+        if (isGraphvizSpec(spec)) {
+            return true;
+        }
+        
+        return false;
+    },
 
     // Helper to check if a graphviz definition is complete
     isDefinitionComplete: (definition: string): boolean => {
@@ -51,9 +224,70 @@ export const graphvizPlugin: D3RenderPlugin = {
         // A complete definition should have balanced braces and end with a closing brace
         return openBraces === closeBraces && openBraces > 0 && definition.includes('}');
     },
-
     render: async (container: HTMLElement, d3: any, spec: GraphvizSpec, isDarkMode: boolean) => {
         try {
+            // Handle JSON-wrapped specs vs direct definition strings
+            let rawDefinition: string;
+            
+            // COMPREHENSIVE DEBUG: Log everything about the spec
+            console.log('=== GRAPHVIZ DEBUG START ===');
+            console.log('Spec type:', typeof spec);
+            console.log('Spec is null:', spec === null);
+            console.log('Spec keys:', spec ? Object.keys(spec) : 'N/A');
+            console.log('Spec stringified:', JSON.stringify(spec, null, 2));
+            console.log('Spec.definition exists:', !!(spec && typeof spec === 'object' && 'definition' in spec));
+            console.log('Spec.definition type:', spec && typeof spec === 'object' && 'definition' in spec ? typeof spec.definition : 'N/A');
+            console.log('Spec.definition value (first 200):', spec && typeof spec === 'object' && spec.definition ? spec.definition.substring(0, 200) : 'N/A');
+            console.log('=== GRAPHVIZ DEBUG END ===');
+            
+            console.log('Graphviz render called with spec:', typeof spec, spec);
+            
+            if (typeof spec === 'object' && spec !== null && spec.definition) {
+                // CRITICAL FIX: Use the definition directly if it exists in the spec object
+                let def = spec.definition;
+                
+                // Handle double-wrapped JSON definitions
+                if (typeof def === 'string' && def.trim().startsWith('{')) {
+                    try {
+                        const parsed = JSON.parse(def);
+                        if (parsed.type === 'graphviz' && parsed.definition) {
+                            rawDefinition = parsed.definition;
+                            console.log('Extracted definition from double-wrapped JSON');
+                        } else {
+                            rawDefinition = def;
+                            console.log('Using definition string as-is');
+                        }
+                    } catch {
+                        rawDefinition = def;
+                        console.log('JSON parse failed, using definition string as-is');
+                    }
+                } else {
+                    rawDefinition = def;
+                    console.log('Using definition directly from spec object');
+                }
+            } else if (typeof spec === 'string') {
+                console.log('Processing string spec');
+                // Try to parse as JSON first
+                try {
+                    const parsed = JSON.parse(spec);
+                    if (parsed.definition) {
+                        rawDefinition = parsed.definition;
+                        console.log('Extracted definition from JSON string');
+                    } else {
+                        rawDefinition = extractDefinitionFromYAML(spec, 'graphviz');
+                        console.log('Used YAML extraction from string');
+                    }
+                } catch {
+                    rawDefinition = extractDefinitionFromYAML(spec, 'graphviz');
+                    console.log('Used YAML extraction fallback');
+                }
+            } else {
+                console.error('Invalid spec format:', spec);
+                throw new Error('Invalid graphviz spec: no definition found');
+            }
+            
+            console.log('Raw definition (first 200 chars):', rawDefinition.substring(0, 200));
+            
             const hasExistingContent = container.querySelector('svg') !== null;
             // Show loading spinner immediately
             const loadingSpinner = document.createElement('div');
@@ -105,7 +339,7 @@ export const graphvizPlugin: D3RenderPlugin = {
             }
 
             // Only proceed with rendering when we have a complete definition
-            if (!spec.definition || spec.definition.trim().length < 10) {
+            if (!rawDefinition || rawDefinition.trim().length < 10) {
                 console.log('Graphviz: Definition too short, waiting for more content');
                 return; // Exit early and wait for complete definition
             }
@@ -114,7 +348,7 @@ export const graphvizPlugin: D3RenderPlugin = {
             if (hasExistingContent && spec.isStreaming) {
                 return; // Keep existing content during streaming if definition is incomplete
             }
-            console.log(`Rendering Graphviz diagram with ${spec.definition.length} chars`);
+            console.log(`Rendering Graphviz diagram with ${rawDefinition.length} chars`);
 
             // Store the current theme for this container
             containerThemes.set(container, isDarkMode);
@@ -162,7 +396,10 @@ export const graphvizPlugin: D3RenderPlugin = {
             const vizInstance = await Viz.instance();
 
             // Extract actual content from YAML wrapper if present
-            let processedDefinition = extractDefinitionFromYAML(spec.definition, 'graphviz');
+            let processedDefinition = rawDefinition;
+            
+            console.log('Starting with rawDefinition:', rawDefinition.substring(0, 100));
+            console.log('processedDefinition initialized as:', processedDefinition.substring(0, 100));
 
             // Fix invalid arrow syntax and edge label format
             processedDefinition = processedDefinition.replace(
@@ -189,6 +426,8 @@ export const graphvizPlugin: D3RenderPlugin = {
 
             // Add theme attributes to dot with more styling options
             let themedDot = processedDefinition;
+            
+            console.log('themedDot before theme application:', themedDot.substring(0, 100));
 
             // Only add theme attributes if the graph has a proper structure
             if (processedDefinition.match(/^(\s*(?:di)?graph\s+[^{]*{)/)) {
@@ -214,6 +453,9 @@ export const graphvizPlugin: D3RenderPlugin = {
                 }
             }
 
+            console.log('Final themedDot being sent to Viz.js:', themedDot.substring(0, 100));
+            console.log('themedDot full length:', themedDot.length);
+            
             const element = await vizInstance.renderSVGElement(themedDot);
 
             // Apply theme to SVG elements with more specific styling
@@ -240,7 +482,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                         // In dark mode, override light cluster backgrounds
                         if (isDarkMode) {
                             // Check if this is a light color that needs to be darkened
-                            if (isLightColor(originalFill)) {
+                            if (isLightBackground(originalFill)) {
                                 // Use a darker color based on the original hue
                                 const darkColor = getDarkVersionOfColor(originalFill);
                                 el.setAttribute('fill', darkColor);
@@ -272,7 +514,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                         // In dark mode, handle node colors
                         if (isDarkMode) {
                             // Check if this is a light color that needs to be darkened
-                            if (originalFill && isLightColor(originalFill)) {
+                            if (originalFill && isLightBackground(originalFill)) {
                                 // For white or very light colors, use our node colors
                                 if (originalFill.toLowerCase() === '#ffffff' ||
                                     originalFill.toLowerCase() === 'white' ||
@@ -312,62 +554,30 @@ export const graphvizPlugin: D3RenderPlugin = {
                     }
                 }
             }
-
-            // Second pass: Apply text colors based on their parent node colors
-            // and ensure edges are visible against backgrounds
+            
+            // Add debugging checkpoint before text fixes
+            console.log('🔍 GRAPHVIZ-DEBUG: About to apply text visibility fixes');
+            console.log('🔍 GRAPHVIZ-DEBUG: Element type:', element.tagName);
+            console.log('🔍 GRAPHVIZ-DEBUG: Text elements found:', element.querySelectorAll('text').length);
+            
+            // Apply enhanced text visibility immediately
+            console.log('🔍 GRAPHVIZ-DEBUG: Calling enhanceTextVisibility immediately');
+            enhanceTextVisibility(element, isDarkMode);
+            
+            // Make debugging functions globally available
+            (window as any).graphvizTextDebug = { element, enhanceTextVisibility, isLightBackground, getDarkVersionOfColor };
+            
+            // Apply delayed text visibility fix (borrowed from Mermaid approach)
+            setTimeout(() => {
+                console.log('🔍 GRAPHVIZ-DELAYED-FIX: Applying delayed text visibility fixes');
+                enhanceTextVisibility(element, isDarkMode);
+            }, 500);
+            
+            // Apply edge and path styling
             for (let i = 0; i < elements.length; i++) {
                 const el = elements[i];
-
-                if (el.tagName === 'text') {
-                    // Default text color based on page mode
-                    // Use the opposite of the page background for maximum visibility
-                    const defaultTextColor = isDarkMode ? '#ffffff' : '#000000';
-                    el.setAttribute('fill', defaultTextColor);
-
-                    // For node labels, ensure text is readable against node background
-                    const parent = el.parentElement;
-                    if (parent) {
-                        // Find the node shape element (ellipse, polygon) in the parent
-                        const nodeShape = parent.querySelector('ellipse, polygon');
-
-                        if (nodeShape) {
-                            // Get the current fill color of the node
-                            const currentFill = nodeShape.getAttribute('fill');
-
-                            // If we have a background color, set text color based on its brightness
-                            if (currentFill) {
-                                const isLightBackground = isLightColor(currentFill);
-                                el.setAttribute('fill', isLightBackground ? '#000000' : '#ffffff');
-                            }
-
-                            // Add debug attributes
-                            el.setAttribute('data-bg-color', currentFill || 'unknown');
-                            el.setAttribute('data-is-light', isLightColor(currentFill || '') ? 'true' : 'false');
-                        } else if (parent.classList.contains('cluster')) {
-                            // This is a cluster label
-                            // Find the cluster background
-                            const clusterBg = parent.querySelector('polygon');
-                            if (clusterBg) {
-                                const bgColor = clusterBg.getAttribute('fill');
-                                // If we have a background color, set text color based on its brightness
-                                if (bgColor) {
-                                    const isLightBackground = isLightColor(bgColor);
-                                    el.setAttribute('fill', isLightBackground ? '#000000' : '#ffffff');
-                                }
-                            }
-                        } else if (parent.classList.contains('edge')) {
-                            // This is an edge label - use the default text color based on page mode
-                            // This ensures edge labels are visible against the page background
-                            el.setAttribute('fill', defaultTextColor);
-                        }
-                    }
-
-                    // Special case for graph labels (which might not have a direct node parent)
-                    if (parent && parent.classList.contains('graph')) {
-                        // Graph labels should match the default text color for the page mode
-                        el.setAttribute('fill', defaultTextColor);
-                    }
-                } else if (el.tagName === 'path') {
+                
+                if (el.tagName === 'path') {
                     // Edge paths
                     if (!el.getAttribute('fill') || el.getAttribute('fill') === 'none') {
                         // Make sure edges are visible with high contrast color
@@ -638,6 +848,33 @@ ${svgData}`;
                 graphvizPlugin.render(container, d3, spec, !isDarkMode);
             };
             actionsContainer.appendChild(themeButton);
+            
+            // Add debug button to manually trigger text fixes
+            const debugButton = document.createElement('button');
+            debugButton.innerHTML = '🔍 Debug';
+            debugButton.className = 'diagram-action-button graphviz-debug-button';
+            debugButton.onclick = () => {
+                console.log('=== GRAPHVIZ DEBUG ANALYSIS ===');
+                const svg = container.querySelector('svg');
+                if (svg) {
+                    const textElements = svg.querySelectorAll('text');
+                    console.log(`Found ${textElements.length} text elements:`);
+                    
+                    textElements.forEach((textEl, i) => {
+                        const content = textEl.textContent?.trim();
+                        const fill = textEl.getAttribute('fill');
+                        const computedFill = window.getComputedStyle(textEl).fill;
+                        const parent = textEl.parentElement;
+                        const parentBg = parent?.querySelector('ellipse, polygon, rect, circle')?.getAttribute('fill');
+                        
+                        console.log(`Text ${i}: "${content}" fill="${fill}" computed="${computedFill}" parentBg="${parentBg}"`);
+                    });
+                    
+                    // Manually trigger the fix
+                    enhanceTextVisibility(svg, isDarkMode);
+                }
+            };
+            actionsContainer.appendChild(debugButton);
         } catch (error) {
             console.error('Graphviz rendering error:', error);
 
@@ -658,71 +895,7 @@ ${svgData}`;
     }
 };
 
-// Helper function to determine if a color is light or dark
-function isLightColor(color: string): boolean {
-    // Default to assuming it's a dark color if we can't parse it
-    if (!color || color === 'transparent' || color === 'none') {
-        return false;
-    }
-
-    // Handle specific named colors that we know are light
-    const lightNamedColors = [
-        'white', 'lightblue', 'lightgreen', 'lightgrey', 'lightgray', 'pink',
-        '#aed6f1', '#d4e6f1', '#d5f5e3', '#f5f5f5', '#e6e6e6', '#f0f0f0',
-        '#ffffff', '#f8f9fa', '#e9ecef', '#dee2e6', '#ced4da', '#adb5bd'
-    ];
-
-    // Case-insensitive check for light named colors
-    if (lightNamedColors.some(c => c.toLowerCase() === color.toLowerCase())) {
-        return true;
-    }
-
-    // Get brightness value
-    const brightness = getBrightness(color);
-
-    // More conservative threshold - if in doubt, assume it's light
-    // This ensures we don't put white text on ambiguous backgrounds
-    return brightness > 0.5;
-}
-
-// Helper function to calculate brightness of a color
-function getBrightness(color: string): number {
-    // Convert hex or named colors to RGB
-    let r, g, b;
-
-    if (color.startsWith('#')) {
-        // Handle hex colors
-        const hex = color.substring(1);
-        if (hex.length === 3) {
-            r = parseInt(hex[0] + hex[0], 16);
-            g = parseInt(hex[1] + hex[1], 16);
-            b = parseInt(hex[2] + hex[2], 16);
-        } else {
-            r = parseInt(hex.substring(0, 2), 16);
-            g = parseInt(hex.substring(2, 4), 16);
-            b = parseInt(hex.substring(4, 6), 16);
-        }
-    } else if (color.startsWith('rgb')) {
-        // Handle rgb/rgba colors
-        const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/);
-        if (match) {
-            r = parseInt(match[1], 10);
-            g = parseInt(match[2], 10);
-            b = parseInt(match[3], 10);
-        } else {
-            // Can't parse, assume dark
-            return 0;
-        }
-    } else {
-        // Can't parse, assume dark
-        return 0;
-    }
-
-    // Calculate perceived brightness using the formula:
-    // (0.299*R + 0.587*G + 0.114*B)
-    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-}
-
+// Move existing helper functions to the end and keep the ones that are still used
 // Helper function to get a dark version of a color
 function getDarkVersionOfColor(color: string): string {
     // For named colors, map to dark equivalents
@@ -780,4 +953,42 @@ function getDarkVersionOfColor(color: string): string {
     } catch (e) {
         return '#2e3440'; // Default dark color if parsing fails
     }
+}
+
+// Helper function to calculate brightness of a color (needed for getDarkVersionOfColor compatibility)
+function getBrightness(color: string): number {
+    // Convert hex or named colors to RGB
+    let r, g, b;
+
+    if (color.startsWith('#')) {
+        // Handle hex colors
+        const hex = color.substring(1);
+        if (hex.length === 3) {
+            r = parseInt(hex[0] + hex[0], 16);
+            g = parseInt(hex[1] + hex[1], 16);
+            b = parseInt(hex[2] + hex[2], 16);
+        } else {
+            r = parseInt(hex.substring(0, 2), 16);
+            g = parseInt(hex.substring(2, 4), 16);
+            b = parseInt(hex.substring(4, 6), 16);
+        }
+    } else if (color.startsWith('rgb')) {
+        // Handle rgb/rgba colors
+        const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/);
+        if (match) {
+            r = parseInt(match[1], 10);
+            g = parseInt(match[2], 10);
+            b = parseInt(match[3], 10);
+        } else {
+            // Can't parse, assume dark
+            return 0;
+        }
+    } else {
+        // Can't parse, assume dark
+        return 0;
+    }
+
+    // Calculate perceived brightness using the formula:
+    // (0.299*R + 0.587*G + 0.114*B)
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 }
