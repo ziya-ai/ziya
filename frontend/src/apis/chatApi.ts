@@ -7,6 +7,7 @@ type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'process
 interface ErrorResponse {
     error: string;
     detail: string;
+  
     conversation_id?: string;
     event?: string;
     status_code?: number;
@@ -646,6 +647,20 @@ export const sendPayload = async (
                     try {
                         // Parse the JSON data
                         const jsonData = JSON.parse(data);
+
+                        // Process the JSON object
+                        if (jsonData.heartbeat) {
+                            console.log("Received heartbeat, skipping");
+                            continue;
+                        }
+
+                        // Handle done marker
+                        if (jsonData.done) {
+                            console.log("Received done marker in JSON data");
+                            // Don't return here - let the stream complete naturally
+                            // The done marker just indicates no more content chunks
+                            continue;
+                        }
 
                         // Process the JSON object
                         if (jsonData.heartbeat) {

@@ -115,6 +115,18 @@ class FileChangeHandler(FileSystemEventHandler):
         self.recent_events[event_key] = current_time
         return True
         
+    def _should_process_event(self, rel_path: str, event_type: str) -> bool:
+        """Check if we should process this event based on debouncing."""
+        current_time = time.time()
+        event_key = f"{rel_path}:{event_type}"
+        
+        if event_key in self.recent_events:
+            if current_time - self.recent_events[event_key] < self.debounce_period:
+                return False
+        
+        self.recent_events[event_key] = current_time
+        return True
+        
     def on_modified(self, event: FileSystemEvent):
         """Handle file modification events."""
         if event.is_directory:

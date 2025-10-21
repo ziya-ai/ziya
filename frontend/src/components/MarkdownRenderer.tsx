@@ -2799,6 +2799,14 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     const extractFileTitle = useCallback((diffContent: string): string => {
         if (!diffContent) return '';
         const lines = diffContent.split('\n');
+        
+        // Check for new file creation first - prioritize 'new file mode' over git header paths
+        const isNewFile = lines.some(line => line.includes('new file mode')) ||
+                         lines.some(line => line.startsWith('--- /dev/null'));
+        
+        // Check for file deletion
+        const isDeletedFile = lines.some(line => line.includes('deleted file mode')) ||
+                             lines.some(line => line.startsWith('+++ /dev/null'));
 
         // Check for new file creation first - prioritize 'new file mode' over git header paths
         const isNewFile = lines.some(line => line.includes('new file mode')) ||

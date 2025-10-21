@@ -275,6 +275,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
     def process_dir(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory recursively."""
+        print(f"DEBUG process_dir: path={path}, depth={depth}, max_depth={max_depth}")
+        
         # Resolve symlinks to detect loops
         real_path = os.path.realpath(path)
         
@@ -405,8 +407,11 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     global _visited_directories
     _visited_directories.clear()
     
+    print(f"DEBUG: About to call process_dir for {directory}")
     # Process the root directory
     root_result = process_dir(directory, 1)
+    print(f"DEBUG: After process_dir, root_result keys: {list(root_result.keys())}")
+    print(f"DEBUG: root_result['children'] has {len(root_result.get('children', {}))} entries")
     
     # Check if we need to include external paths
     include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")

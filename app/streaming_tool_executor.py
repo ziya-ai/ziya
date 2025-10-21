@@ -829,6 +829,17 @@ class StreamingToolExecutor:
                             # CRITICAL: Add delay to ensure rewind marker is sent before continuation
                             await asyncio.sleep(0.1)
                             
+                            # Mark rewind boundary before auto-continuation
+                            assistant_lines = assistant_text.split('\n')
+                            last_complete_line = len(assistant_lines) - 2 if assistant_lines[-1].strip() == '' else len(assistant_lines) - 1
+                            partial_content = assistant_lines[-1] if assistant_lines else ""
+                            rewind_marker = f"<!-- REWIND_MARKER: {last_complete_line}|PARTIAL:{partial_content} -->"
+                            yield track_yield({
+                                'type': 'text',
+                                'content': f"{rewind_marker}\n**🔄 Block continues...**\n",
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                            })
+                            
                             # Send heartbeat before continuation to keep connection alive
                             yield {
                                 'type': 'heartbeat',
