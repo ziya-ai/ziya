@@ -93,10 +93,27 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         MAX_TOOL_OUTPUT_LENGTH = 5000
         successful_tool_outputs = []  # Track successful tool executions
         tool_sequence_count = 0
-        # content_buffer = ""  # Disabled buffering for real-time streaming
         partial_response_preserved = False
+        
         try:
             async for chunk in original_iterator:
+                # Check if this is a continuation boundary - pass through immediately without buffering
+                chunk_str = str(chunk) if not isinstance(chunk, str) else chunk
+                
+                # Parse to check for continuation_boundary flag
+                try:
+                    if 'data: {' in chunk_str:
+                        data_part = chunk_str.split('data: ', 1)[1].split('\n\n', 1)[0]
+                        chunk_data = json.loads(data_part)
+                        
+                        # If this is a continuation boundary, yield immediately as atomic unit
+                        if chunk_data.get('continuation_boundary'):
+                            logger.info("🔄 MIDDLEWARE: Detected continuation boundary, passing through atomically")
+                            yield chunk_str
+                            continue
+                except:
+                    pass  # Not JSON or doesn't have the flag, continue normal processing
+                
                 # Log chunk info for debugging
                 logger.info("=== AGENT astream received chunk ===")
                 logger.info(f"Chunk type: {type(chunk)}")
@@ -141,13 +158,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             try:
                                 # Try to parse as JSON to validate
                                 json_obj = json.loads(chunk)
-                                # If it's valid JSON, pass it through as properly serialized JSON
-                                chunk_content = json.dumps(json_obj)
-                                
-                                # DEBUGGING: Check if JSON serialization changed size
-                                if len(chunk_content) != chunk_size and json_obj.get('type') in ['tool_execution', 'tool_display']:
-                                    logger.warning(f"🔍 JSON_SIZE_CHANGE: Original {chunk_size} -> Serialized {len(chunk_content)} chars")
-                                
+                                # If it's valid JSON, pass it through without double-encoding
                                 yield f"data: {json.dumps(json_obj)}\n\n"
                             except json.JSONDecodeError:
                                 # If it's not valid JSON, just pass it as a string
@@ -350,18 +361,16 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             try:
                                 # Try to parse as JSON to validate
                                 json_obj = json.loads(chunk)
-                                # If it's valid JSON, pass it through as properly serialized JSON
-                                chunk_content = json.dumps(json_obj)
                                 yield f"data: {json.dumps(json_obj)}\n\n"
                                 
                                 # DEBUGGING: Track large JSON objects
-                                if len(chunk_content) > 5000:
-                                    logger.warning(f"🔍 MIDDLEWARE_LARGE_JSON: {len(chunk_content)} chars, type={json_obj.get('type')}")
+                                if len(json.dumps(json_obj)) > 5000:
+                                    logger.warning(f"🔍 MIDDLEWARE_LARGE_JSON: {len(json.dumps(json_obj))} chars, type={json_obj.get('type')}")
                                 if json_obj.get('type') in ['tool_execution', 'tool_display']:
-                                        result_size = len(json_obj.get('result', ''))
-                                        logger.warning(f"🔍 MIDDLEWARE_TOOL_RESULT: tool={json_obj.get('tool_name')}, result_size={result_size}")
-                                        if result_size == 0:
-                                            logger.error(f"🔍 MIDDLEWARE_EMPTY_RESULT: Tool result is empty after JSON processing!")
+                                    result_size = len(json_obj.get('result', ''))
+                                    logger.warning(f"🔍 MIDDLEWARE_TOOL_RESULT: tool={json_obj.get('tool_name')}, result_size={result_size}")
+                                    if result_size == 0:
+                                        logger.error(f"🔍 MIDDLEWARE_EMPTY_RESULT: Tool result is empty after JSON processing!")
                             except json.JSONDecodeError:
                                 # If it's not valid JSON, just pass it as a string
                                 yield f"data: {chunk}\n\n"
