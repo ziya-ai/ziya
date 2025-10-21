@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, message, Form } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
 import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo } from './ModelConfigModal';
+import { isSafari } from '../utils/browserUtils';
 
 // Extend the ModelInfo interface to include display_name property
 interface ExtendedModelInfo extends ModelInfo {
@@ -334,24 +335,44 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       }
 
       const currentSettings = await verifyResponse.json();
+      
+      // Normalize the server response to match expected format
+      const normalizedActualSettings = {
+        temperature: currentSettings.settings.temperature,
+        top_k: currentSettings.settings.top_k,
+        max_output_tokens: currentSettings.settings.max_output_tokens,
+        max_input_tokens: currentSettings.settings.max_input_tokens,
+        thinking_mode: currentSettings.settings.thinking_mode === "1" || currentSettings.settings.thinking_mode === true || currentSettings.settings.thinking_mode === 1
+      };
+      
+      // Normalize the expected settings to ensure consistent types
+      const normalizedExpectedSettings = {
+        temperature: newSettings.temperature,
+        top_k: newSettings.top_k,
+        max_output_tokens: newSettings.max_output_tokens,
+        max_input_tokens: newSettings.max_input_tokens,
+        thinking_mode: Boolean(newSettings.thinking_mode)
+      };
 
       // Helper function to compare numbers with tolerance
       const isClose = (a: number, b: number, tolerance = 0.001) => Math.abs(a - b) <= tolerance;
 
       // Check if settings match what we tried to set, with tolerance for floating point
       const settingsMatch = {
-        temperature: isClose(currentSettings.settings.temperature, newSettings.temperature),
-        top_k: currentSettings.settings.top_k === newSettings.top_k,
-        max_output_tokens: currentSettings.settings.max_output_tokens === newSettings.max_output_tokens,
-        thinking_mode: currentSettings.settings.thinking_mode === newSettings.thinking_mode
+        temperature: isClose(normalizedActualSettings.temperature, normalizedExpectedSettings.temperature),
+        top_k: normalizedActualSettings.top_k === normalizedExpectedSettings.top_k,
+        max_output_tokens: normalizedActualSettings.max_output_tokens === normalizedExpectedSettings.max_output_tokens,
+        thinking_mode: normalizedActualSettings.thinking_mode === normalizedExpectedSettings.thinking_mode
       };
 
       const allMatch = Object.values(settingsMatch).every(match => match);
 
       if (!allMatch) {
         console.error('Settings mismatch:', {
-          expected: newSettings,
-          actual: currentSettings.settings
+          expected: normalizedExpectedSettings,
+          actual: normalizedActualSettings,
+          rawActual: currentSettings.settings,
+          settingsMatch
         });
         throw new Error('Some settings did not update correctly');
       }
@@ -361,7 +382,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       }
 
       // Only update local state if verification succeeds
-      setSettings(newSettings);
+      setSettings(normalizedExpectedSettings);
       message.success('Model settings updated and verified');
 
       // Dispatch event for token display update
@@ -378,6 +399,9 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
   return (
     <>
       <Button
+        title={isSafari() ? 
+          'Model configuration (Note: Some features may not work properly in Safari)' : 
+          'Model configuration'}
         type="text"
         icon={<SettingOutlined />}
         onClick={() => setModalVisible(true)}

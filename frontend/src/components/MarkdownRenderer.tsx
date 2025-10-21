@@ -1,11 +1,9 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId } from 'react';
-import 'prismjs/themes/prism.css';
 import { marked, Tokens } from 'marked';
 import { Alert, Button, message, Tooltip } from 'antd';
 import { parseDiff, tokenize } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
-import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
@@ -15,10 +13,8 @@ import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
 } from '@ant-design/icons';
-import 'prismjs/themes/prism.css';
-import { loadPrismLanguage } from '../utils/prismLoader';
+import { loadPrismLanguage, type PrismStatic } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
-import type * as PrismType from 'prismjs';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
@@ -291,7 +287,7 @@ interface ErrorBoundaryState {
 
 declare global {
     interface Window {
-        Prism: typeof PrismType;
+        Prism: PrismStatic;
         diffElementPaths?: Map<string, string>;
         diffViewType?: 'unified' | 'split';
         diffShowLineNumbers?: boolean;
@@ -2803,14 +2799,14 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     const extractFileTitle = useCallback((diffContent: string): string => {
         if (!diffContent) return '';
         const lines = diffContent.split('\n');
-        
+
         // Check for new file creation first - prioritize 'new file mode' over git header paths
         const isNewFile = lines.some(line => line.includes('new file mode')) ||
-                         lines.some(line => line.startsWith('--- /dev/null'));
-        
+            lines.some(line => line.startsWith('--- /dev/null'));
+
         // Check for file deletion
         const isDeletedFile = lines.some(line => line.includes('deleted file mode')) ||
-                             lines.some(line => line.startsWith('+++ /dev/null'));
+            lines.some(line => line.startsWith('+++ /dev/null'));
 
         // Look for git diff header  
         for (const line of lines) {
@@ -2840,7 +2836,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                     return `Modify: ${newPath || oldPath}`;
                 }
             }
-            
+
             // Also check unified diff headers for new/deleted files
             // Look for unified diff headers
             if (line.startsWith('+++ b/')) {
@@ -2853,12 +2849,12 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             // Handle new file creation from unified diff headers
             if (line.startsWith('--- a/') || line.startsWith('--- /dev/null')) {
                 const filePath = line.substring(6);
-                
+
                 // Skip /dev/null paths for new files - look for the +++ line instead
                 if (filePath === '/dev/null' && isNewFile) {
                     continue; // Keep looking for the actual file path
                 }
-                
+
                 // Check if this is a deletion diff
                 if (isDeletedFile) {
                     return `Delete File: ${filePath}`;
@@ -3072,7 +3068,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
-    const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
+    const [prismInstance, setPrismInstance] = useState<PrismStatic | null>(null);
     const [debugInfo, setDebugInfo] = useState<any>({});
     const renderCountRef = useRef(0);
 
@@ -3131,10 +3127,10 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 // Create a document fragment to safely parse the HTML
                 const template = document.createElement('template');
                 template.innerHTML = highlighted;
-                
+
                 // Remove any potentially dangerous elements
                 template.content.querySelectorAll('script, object, embed, iframe').forEach(el => el.remove());
-                
+
                 // Clear and append the safe content
                 contentRef.current.innerHTML = '';
                 contentRef.current.appendChild(template.content.cloneNode(true));
@@ -3689,7 +3685,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'joint':
                 case 'jointjs':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
-                    
+
                     // Try to parse as JSON first, otherwise treat as definition string
                     let jointSpec;
                     try {
@@ -3707,7 +3703,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             forceRender: true
                         };
                     }
-                    
+
                     return <D3Renderer key={index} spec={jointSpec} type="d3" isStreaming={isStreaming} />;
 
                 case 'tool':
@@ -3761,16 +3757,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     // CORE FIX: Check if this code block contains diff content and should use file-based language detection
                     const rawCodeText = decodeHtmlEntities(tokenWithText.text || '');
-                    
+
                     // Add debugging to see if this fix is being triggered
                     const isDiffContent = rawCodeText.includes('diff --git') ||
                         rawCodeText.includes('new file mode') ||
                         rawCodeText.includes('deleted file mode') ||
                         (rawCodeText.includes('+++') && rawCodeText.includes('---'));
-                    
+
                     if ((!tokenWithText.lang || tokenWithText.lang === 'plaintext') &&
                         isDiffContent) {
-                        
+
                         console.log('🔍 DIFF_FIX: Applying language fix for diff content:', {
                             hasLang: !!tokenWithText.lang,
                             currentLang: tokenWithText.lang,
@@ -3787,8 +3783,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                     gitMatch[2] === '/dev/null' ? gitMatch[1] :
                                         (gitMatch[2] || gitMatch[1]);
                                 tokenWithText.lang = detectLanguage(filePath);
-                                console.log('🔍 DIFF_FIX: Language detection result:', { 
-                                    filePath, 
+                                console.log('🔍 DIFF_FIX: Language detection result:', {
+                                    filePath,
                                     detectedLang: tokenWithText.lang,
                                     gitMatch1: gitMatch[1],
                                     gitMatch2: gitMatch[2]
@@ -4396,7 +4392,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m)) ||
                 // Skip processing for content containing tool sentinels or template variables
                 // TODO: Get actual sentinel values from backend instead of hardcoding
-                processedMarkdown.includes('<TOOL_SENTINEL>') || 
+                processedMarkdown.includes('<TOOL_SENTINEL>') ||
                 processedMarkdown.includes('</TOOL_SENTINEL>') ||
                 /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
 
