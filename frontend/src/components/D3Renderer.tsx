@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo, CSSProperties, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { Spin, Modal } from 'antd';
-import vegaEmbed from 'vega-embed';
-import * as d3 from 'd3';
 import { D3RenderPlugin } from '../types/d3';
 import { d3RenderPlugins } from '../plugins/d3/registry';
 import { isDiagramDefinitionComplete } from '../utils/diagramUtils';
 import { ContainerSizingManager } from '../utils/containerSizing';
+import { isSafari } from '../utils/browserUtils';
 
 type RenderType = 'auto' | 'vega-lite' | 'd3';
 
@@ -118,9 +117,25 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const [errorDetails, setErrorDetails] = useState<string[]>([]);
     const cleanupRef = useRef<(() => void) | null>(null);
     const simulationRef = useRef<any>(null);
+    const [vegaEmbed, setVegaEmbed] = useState<any>(null);
+    const [d3, setD3] = useState<any>(null);
+    
+    // Lazy load D3 and Vega when needed
+    useEffect(() => {
+        const loadVisualizationLibs = async () => {
+            const [d3Module, vegaModule] = await Promise.all([
+                import('d3'),
+                import('vega-embed')
+            ]);
+            setD3(d3Module);
+            setVegaEmbed(vegaModule.default);
+        };
+        loadVisualizationLibs();
+    }, []);
     const [isSourceModalVisible, setIsSourceModalVisible] = useState(false);
     const renderIdRef = useRef<number>(0);
     const mounted = useRef(true);
+    const isRenderingRef = useRef(false);
     const lastSpecRef = useRef<any>(null);
     const streamingContentRef = useRef<string | null>(null);
     const lastUsedPluginRef = useRef<D3RenderPlugin | null>(null);
@@ -214,7 +229,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     simulationRef.current = null;
                 }
                 if (d3ContainerRef.current) {
-                    d3.select(d3ContainerRef.current).selectAll('*').on('.', null);
+                    d3?.select(d3ContainerRef.current).selectAll('*').on('.', null);
                     d3ContainerRef.current.innerHTML = '';
                 }
             } catch (e) {
@@ -226,6 +241,13 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // Initialize visualization with useCallback for better performance and dependency tracking
     const initializeVisualization = useCallback(async (forceRender = false) => {
         if (!mounted.current) return;
+        
+        // Prevent concurrent renders that cause loops in Safari
+        if (isRenderingRef.current && !forceRender) {
+            console.log('Skipping concurrent render to prevent Safari loop');
+            return;
+        }
+        
         // Once we start rendering, hide the spinner permanently
         if (!renderingStarted) {
             setRenderingStarted(true);
@@ -235,6 +257,8 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         if ((!hasAttemptedRender || !isStreaming) && !hasSuccessfulRenderRef.current && !showRawContent) {
             setIsLoading(true);
         }
+        
+        isRenderingRef.current = true;
         try {
             // Clear previous cleanup functions
             cleanupFunctionsRef.current.forEach(cleanup => cleanup());
@@ -518,8 +542,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     setIsLoading(false);
                 }
             }
+        } finally {
+            isRenderingRef.current = false;
         }
-    }, [spec, type, width, height, isDarkMode, isStreaming, isMarkdownBlockClosed, config, onLoad, onError, isLoading, hasAttemptedRender, mounted, renderingStarted, renderError]);
+    }, [spec, type, width, height, isStreaming, isMarkdownBlockClosed, config, onLoad, onError]);
 
     // Main rendering useEffect with stable dependencies
     useEffect(() => {
@@ -540,16 +566,45 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     }, [spec, isStreaming, isMarkdownBlockClosed, forceRender, initializeVisualization]);
     // Separate effect for theme changes to avoid circular dependencies
     useEffect(() => {
+        // Show Safari-specific warning for diagram rendering issues
+        if (isSafari() && (renderError || !hasSuccessfulRenderRef.current)) {
+            console.warn('🍎 SAFARI-COMPAT: Safari detected with rendering issues. Consider showing browser upgrade notice.');
+        }
+        
+        // Detect Safari for theme change handling
+        const safariDetected = isSafari();
+        
+        // For Safari users, add an additional notice about potential issues
+        if (safariDetected && renderError) {
+            console.warn('🍎 SAFARI-NOTICE: Diagram rendering failed on Safari. This is a known compatibility issue.');
+        }
+        
         // Only re-render for theme changes if we've already had a successful render
         // and this isn't the initial theme setting  
-        if (lastSpecRef.current && hasSuccessfulRenderRef.current && renderingStarted &&
+        if (lastSpecRef.current && hasSuccessfulRenderRef.current && renderingStarted && 
             isDarkMode !== initialThemeRef.current) {
             console.log('Theme changed, re-rendering visualization');
-            setTimeout(() => {
-                initializeVisualization();
-            }, 100);
+            
+            // Use a longer debounce for Safari to prevent render loops
+            const debounceTime = safariDetected ? 1000 : 100; // Even longer for Safari
+            
+            const themeChangeTimer = setTimeout(() => {
+                // Extra safety check for Safari
+                if (isSafari() && isRenderingRef.current) {
+                    console.log('Safari: Skipping theme change render due to concurrent operation');
+                    return;
+                }
+                
+                try {
+                    initializeVisualization(true); // Force render on theme change
+                } catch (error) {
+                    console.error('Theme change render failed:', error);
+                }
+            }, debounceTime);
+            
+            return () => clearTimeout(themeChangeTimer);
         }
-    }, [isDarkMode, initializeVisualization]);
+    }, [isDarkMode]); // Remove initializeVisualization dependency to break circular dependency
 
     const isD3Render = useMemo(() => {
         const plugin = typeof spec === 'object' && spec !== null ? findPlugin(spec) : undefined;
@@ -834,6 +889,21 @@ ${svgData}`;
             ) : null}
 
             {isD3Render ? (
+                <>
+                    {isSafari() && (
+                        <div style={{
+                            backgroundColor: isDarkMode ? '#2b2111' : '#fffbe6',
+                            border: `1px solid ${isDarkMode ? '#d4b106' : '#d4b106'}`,
+                            borderRadius: '4px',
+                            padding: '12px',
+                            margin: '8px 0',
+                            fontSize: '13px',
+                            color: isDarkMode ? '#faad14' : '#d46b08'
+                        }}>
+                            ⚠️ <strong>Safari Compatibility Notice:</strong> Diagrams may not render correctly in Safari. 
+                            For best results, please use Chrome, Edge, Firefox, or another modern browser.
+                        </div>
+                    )}
                 <div
                     ref={d3ContainerRef}
                     className={`d3-container ${currentPlugin?.name ? `${currentPlugin.name}-container` : ''}`}
@@ -848,6 +918,7 @@ ${svgData}`;
                         ...containerStyles
                     }}
                 />
+                </>
             ) : (
                 <div
                     ref={vegaContainerRef}
@@ -899,6 +970,21 @@ ${svgData}`;
                     maxHeight: '60vh',
                     color: isDarkMode ? '#e6e6e6' : '#24292e'
                 }}>
+                    <div style={{
+                        fontWeight: 'bold',
+                        color: isDarkMode ? '#58a6ff' : '#0366d6',
+                        marginBottom: '12px',
+                        fontSize: '14px'
+                    }}>
+                        {(() => {
+                            if (typeof spec === 'object' && spec?.type === 'mermaid') return '🧩 Mermaid Diagram Source:';
+                            if (typeof spec === 'object' && (spec?.$schema?.includes('vega-lite') || spec?.mark)) return '📊 Vega-Lite Specification:';
+                            if (typeof spec === 'object' && spec?.type === 'graphviz') return '🔗 Graphviz Source:';
+                            if (typeof spec === 'string' && spec.includes('graph') && spec.includes('->')) return '🔗 Graphviz Source:';
+                            if (typeof spec === 'string' && (spec.includes('flowchart') || spec.includes('sequenceDiagram'))) return '🧩 Mermaid Diagram Source:';
+                            return '📄 Diagram Source:';
+                        })()}
+                    </div>
                     <code>{typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code>
                 </pre>
             </Modal>

@@ -1,4 +1,3 @@
-import * as d3 from 'd3';
 import { VegaLiteSpec, D3Spec } from './types';
 
 interface NetworkNode extends d3.SimulationNodeDatum {
@@ -17,6 +16,7 @@ interface NetworkLink extends d3.SimulationLinkDatum<NetworkNode> {
 export const createNetworkGraph = (
     nodes: NetworkNode[],
     links: NetworkLink[],
+    d3: typeof import('d3'), // D3 instance passed from component
     options: {
         width?: number;
         height?: number;
@@ -28,7 +28,7 @@ export const createNetworkGraph = (
 ): D3Spec => ({
     type: 'custom',
     renderer: 'd3',
-    render: (container: SVGSVGElement, width: number, height: number, isDarkMode: boolean) => {
+    render: (container: SVGSVGElement, width: number, height: number, isDarkMode: boolean, d3: typeof import('d3')) => {
         // Create force simulation
         const simulation = d3.forceSimulation<NetworkNode>(nodes)
             .force('link', d3.forceLink<NetworkNode, NetworkLink>(links)
