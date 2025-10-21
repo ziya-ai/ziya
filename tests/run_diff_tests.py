@@ -907,6 +907,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test case for closing braces incorrectly marked as already applied"""
         self.run_diff_test('MRE_closing_braces_false_applied')
 
+    def test_mermaid_console_log_removal(self):
+        """Test removing console.log statements from mermaidPlugin.ts text visibility functions"""
+        self.run_diff_test('mermaid_console_log_removal')
+
 
 class PrettyTestResult(unittest.TestResult):
     def __init__(self):
