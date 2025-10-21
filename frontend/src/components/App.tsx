@@ -17,6 +17,7 @@ import { useTheme } from '../context/ThemeContext';
 import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
+import { SafariWarning } from './SafariWarning';
 
 const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
 const MCPStatusModal = React.lazy(() => import("./MCPStatusModal"));
@@ -601,6 +602,7 @@ export const App: React.FC = () => {
     return (
         <ExtensionErrorBoundary>
             <ProfilerWrapper id="App">
+                <SafariWarning />
                 <ConfigProvider
                     theme={{
                         algorithm: themeAlgorithm,
