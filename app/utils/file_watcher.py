@@ -20,9 +20,11 @@ class FileChangeHandler(FileSystemEventHandler):
         # Track modified files to avoid duplicate events
         self.recently_modified: Dict[str, float] = {}
         # Debounce period in seconds - increased for rapid editor saves
-        self.debounce_period = 2.0
+        self.debounce_period = 1.0  # Reduced to be more responsive
         # Track recent events for better debouncing
         self.recent_events: Dict[str, float] = {}
+        # Track atomic write sequences (delete -> create -> modify)
+        self.atomic_write_sequences: Dict[str, Dict[str, float]] = {}
         # Cache invalidation debouncing
         self.last_cache_invalidation = 0
         
@@ -69,12 +71,43 @@ class FileChangeHandler(FileSystemEventHandler):
         except Exception as e:
             logger.warning(f"Error checking if path should be ignored: {abs_path}, {str(e)}")
             return False
-        
+            
     def _should_process_event(self, rel_path: str, event_type: str) -> bool:
         """Check if we should process this event based on debouncing."""
         current_time = time.time()
         event_key = f"{rel_path}:{event_type}"
         
+        # Handle atomic write sequences - suppress delete/create events if modify follows quickly
+        if event_type in ['deleted', 'created']:
+            if rel_path not in self.atomic_write_sequences:
+                self.atomic_write_sequences[rel_path] = {}
+            
+            self.atomic_write_sequences[rel_path][event_type] = current_time
+            
+            # If we see delete -> create -> modify sequence within 0.5 seconds, suppress delete and create
+            if event_type == 'deleted':
+                # Start tracking this potential atomic write
+                return False  # Don't log delete events - wait to see if it's atomic
+            elif event_type == 'created':
+                # Check if this follows a recent delete
+                delete_time = self.atomic_write_sequences[rel_path].get('deleted', 0)
+                if current_time - delete_time < 0.5:
+                    # This is likely an atomic write - suppress the create event too
+                    return False
+        
+        # For modify events, always process but clean up atomic write tracking
+        if event_type == 'modified':
+            # Clean up old atomic write tracking for this file
+            if rel_path in self.atomic_write_sequences:
+                # Check if this was part of an atomic write sequence
+                sequence = self.atomic_write_sequences[rel_path]
+                was_atomic_write = ('deleted' in sequence and 'created' in sequence and 
+                                  current_time - sequence.get('created', 0) < 0.5)
+                del self.atomic_write_sequences[rel_path]
+                # Log that this was an atomic write for debugging
+                if was_atomic_write:
+                    logger.debug(f"Detected atomic write sequence for {rel_path}")
+            
         if event_key in self.recent_events:
             if current_time - self.recent_events[event_key] < self.debounce_period:
                 return False
@@ -108,22 +141,35 @@ class FileChangeHandler(FileSystemEventHandler):
             return
             
         # Enhanced debouncing
-        if not self._should_process_event(rel_path, "modified"):
-            return
+        should_process = self._should_process_event(rel_path, "modified")
         
-        logger.info(f"File modified: {rel_path}")
+        # Always log file updates immediately, regardless of debouncing
+        is_in_context = any(
+            rel_path in files 
+            for conv_id, files in self.file_state_manager.conversation_states.items()
+            if not conv_id.startswith('precision_')
+        )
+        
+        context_status = " (in context)" if is_in_context else " (not in context)"
+        logger.info(f"📝 File updated: {rel_path}{context_status}")
+        
+        if not should_process:
+            return
         
         # Read the file content
         try:
             content = read_file_content(abs_path)
             if not content:
-                logger.warning(f"Failed to read content from modified file: {rel_path}")
+                if is_in_context:
+                    logger.warning(f"Failed to read content from modified file: {rel_path}")
                 return
                 
             # Update all conversations that include this file
             self._update_conversations(rel_path, content)
             
+            # Only invalidate cache if we actually updated conversations
             self._debounced_cache_invalidation()
+            
         except Exception as e:
             logger.error(f"Error processing modified file {rel_path}: {str(e)}")
     
@@ -155,7 +201,14 @@ class FileChangeHandler(FileSystemEventHandler):
         if not self._should_process_event(rel_path, "created"):
             return
             
-        logger.info(f"File created: {rel_path}")
+        # Check if this file is in any conversation context
+        is_in_context = any(
+            rel_path in files 
+            for conv_id, files in self.file_state_manager.conversation_states.items()
+            if not conv_id.startswith('precision_')
+        )
+        
+        logger.info(f"File created: {rel_path}" + (" (in context)" if is_in_context else ""))
         
         self._debounced_cache_invalidation()
     
@@ -165,6 +218,13 @@ class FileChangeHandler(FileSystemEventHandler):
             return
             
         # Get the relative path from the base directory
+        abs_path = os.path.abspath(event.src_path)
+        if not abs_path.startswith(self.base_dir):
+            return
+            
+        rel_path = os.path.relpath(abs_path, self.base_dir)
+        
+        # Skip editor temp files
         abs_path = os.path.abspath(event.src_path)
         if not abs_path.startswith(self.base_dir):
             return
@@ -183,7 +243,14 @@ class FileChangeHandler(FileSystemEventHandler):
         if not self._should_process_event(rel_path, "deleted"):
             return
             
-        logger.info(f"File deleted: {rel_path}")
+        # Check if this file was in any conversation context
+        was_in_context = any(
+            rel_path in files 
+            for conv_id, files in self.file_state_manager.conversation_states.items()
+            if not conv_id.startswith('precision_')
+        )
+        
+        logger.info(f"File deleted: {rel_path}" + (" (was in context)" if was_in_context else ""))
         
         self._debounced_cache_invalidation()
     
@@ -195,7 +262,7 @@ class FileChangeHandler(FileSystemEventHandler):
         current_time = time.time()
         
         # Only call if enough time has passed since last call
-        if current_time - self.last_cache_invalidation < 2.0:  # 2 second debounce
+        if current_time - self.last_cache_invalidation < 3.0:  # 3 second debounce
             return
             
         self.last_cache_invalidation = current_time
@@ -210,7 +277,6 @@ class FileChangeHandler(FileSystemEventHandler):
         if self._update_count % 10 == 0:
             self.file_state_manager.cleanup_temporary_conversations()
         
-        # Find all conversations that include this file
         updated_conversations = []
         
         for conv_id, files in self.file_state_manager.conversation_states.items():
@@ -223,14 +289,34 @@ class FileChangeHandler(FileSystemEventHandler):
                 changed_lines = self.file_state_manager.update_file_state(conv_id, file_path, content)
                 if changed_lines:
                     updated_conversations.append(conv_id)
-                    logger.info(f"Updated file {file_path} in conversation {conv_id} with {len(changed_lines)} changed lines")
+                    logger.debug(f"Updated file {file_path} in conversation {conv_id} with {len(changed_lines)} changed lines")
         
         if updated_conversations:
-            logger.info(f"Updated file {file_path} in {len(updated_conversations)} conversations")
+            logger.info(f"Updated {file_path} in {len(updated_conversations)} conversation{'s' if len(updated_conversations) > 1 else ''}")
             # Save the updated state
             self.file_state_manager._save_state()
+            
+            # Only invalidate cache when we actually updated conversations
+            self._debounced_cache_invalidation()
         else:
-            logger.debug(f"File {file_path} not found in any active conversations")
+            # Periodically clean up old atomic write tracking
+            if not hasattr(self, '_last_cleanup') or time.time() - self._last_cleanup > 60:
+                self.cleanup_old_atomic_sequences()
+                self._last_cleanup = time.time()
+            # Don't log or invalidate cache for files not in any conversations
+                self.cleanup_old_atomic_sequences()
+                self._last_cleanup = time.time()
+            # Don't log or invalidate cache for files not in any conversations
+    
+    def cleanup_old_atomic_sequences(self):
+        """Remove old atomic write sequence tracking entries."""
+        current_time = time.time()
+        to_remove = [
+            path for path, events in self.atomic_write_sequences.items()
+            if all(current_time - timestamp > 5.0 for timestamp in events.values())
+        ]
+        for path in to_remove:
+            del self.atomic_write_sequences[path]
 
 
 class FileWatcher:
