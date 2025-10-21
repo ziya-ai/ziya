@@ -140,6 +140,18 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             }
 
             // Check for throttling errors - but only in error-formatted messages
+            // Check for authentication errors in plain text
+            if (dataContent.includes('mwinit') || 
+                (dataContent.includes('credential') && dataContent.includes('error')) ||
+                dataContent.includes('authentication') ||
+                dataContent.includes('AWS credentials have expired')) {
+                return {
+                    error: 'auth_error',
+                    detail: 'AWS credentials have expired. Please run mwinit to authenticate and try again.',
+                    status_code: 401
+                };
+            }
+            
             // Be much more strict about what constitutes a throttling error
             if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
                 !dataContent.includes('reached max retries') &&
@@ -316,6 +328,37 @@ async function handleStreamError(response: Response): Promise<Error> {
         return new Error(text || `HTTP error ${response.status}`);
     } catch (error) {
         return new Error(`HTTP error ${response.status}`);
+    }
+}
+
+/**
+ * Show error message inline if it's long, otherwise as popup
+ */
+function showError(errorDetail: string, conversationId: string, addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void, messageType: 'error' | 'warning' = 'error') {
+    if (errorDetail.length > 100) {
+        // Show inline as a collapsible message
+        const errorMessage: Message = {
+            role: 'system',
+            content: `<details style="margin: 16px 0; padding: 12px; background: ${messageType === 'error' ? '#fff2f0' : '#fffbe6'}; border: 1px solid ${messageType === 'error' ? '#ffccc7' : '#ffe58f'}; border-radius: 6px;">
+<summary style="cursor: pointer; font-weight: bold; color: ${messageType === 'error' ? '#cf1322' : '#d46b08'}; display: flex; align-items: center; gap: 8px;">
+<span>${messageType === 'error' ? '❌' : '⚠️'}</span>
+<span>${messageType === 'error' ? 'Error' : 'Warning'} Details</span>
+<span style="font-weight: normal; opacity: 0.7;">(Click to expand)</span>
+</summary>
+<div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid ${messageType === 'error' ? '#ffd6cc' : '#fff1b8'}; white-space: pre-wrap; font-family: monospace; font-size: 13px; color: ${messageType === 'error' ? '#8c1f1f' : '#8c5f00'};">
+${errorDetail}
+</div>
+</details>`,
+            _timestamp: Date.now()
+        };
+        addMessageToConversation(errorMessage, conversationId);
+    } else {
+        // Show as popup for short messages
+        if (messageType === 'error') {
+            message.error(errorDetail);
+        } else {
+            message.warning(errorDetail);
+        }
     }
 }
 
@@ -497,11 +540,34 @@ export const sendPayload = async (
                     // Skip error checking if the data looks like it contains tool execution results
                     const containsCodeBlock = data.includes('```');
                     const containsToolExecution = data.includes('tool_execution') || data.includes('⟩') || data.includes('⟨');
+
                     const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(data);
 
+                    // NEW LOGIC: Distinguish between fatal and recoverable errors
+                    const hasSubstantialContent = currentContent.length > 1000; // More than 1KB of content
+                    const isRecoverableError = errorResponse && (
+                        errorResponse.error === 'timeout' ||
+                        errorResponse.detail?.includes('timeout') ||
+                        errorResponse.detail?.includes('ReadTimeoutError') ||
+                        errorResponse.detail?.includes('Read timeout') ||
+                        (errorResponse.error === 'stream_error' && hasSubstantialContent)
+                    );
+
                     if (errorResponse) {
+                        // Handle recoverable errors after substantial content differently
+                        if (hasSubstantialContent && isRecoverableError) {
+                            console.log('Recoverable error after substantial content - preserving and continuing:', {
+                                contentLength: currentContent.length,
+                                errorType: errorResponse.error,
+                                errorDetail: errorResponse.detail
+                            });
+
+                            // Show warning but continue processing
+                            showError(`Stream interrupted by ${errorResponse.error} after generating ${Math.round(currentContent.length / 1000)}KB of content. Content preserved.`, conversationId, addMessageToConversation, 'warning');
+                        }
+
                         const targetConversationId = errorResponse.conversation_id || conversationId;
-                        
+
                         console.log("Current content when error detected:", currentContent.substring(0, 200) + "...");
                         console.log("Current content length:", currentContent.length);
                         console.log("Error detected in SSE data:", errorResponse);
@@ -546,23 +612,18 @@ export const sendPayload = async (
                         }
 
                         // Show different message for partial responses vs complete failures
-                        const isPartialResponse = currentContent.length > 0;
-                        const errorMessage = isPartialResponse
+                        const errorMessage = currentContent.length > 0
                             ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
                             : errorResponse.detail || 'An error occurred';
-
-                        message[isPartialResponse ? 'warning' : 'error']({
-                            content: errorMessage,
-                            duration: isPartialResponse ? 15 : 10,
-                            key: `stream-error-${targetConversationId}`
-                        });
+                        showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error');
                         errorOccurred = true;
 
                         // If we have accumulated content, add it to the conversation before removing the stream
                         if (currentContent && currentContent.trim()) {
                             const partialMessage: Message = {
                                 role: 'assistant',
-                                content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']'
+                                content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']',
+                                _timestamp: Date.now()
                             };
                             addMessageToConversation(partialMessage, targetConversationId, targetConversationId !== conversationId);
                             console.log('Preserved partial content as message:', currentContent.length, 'characters');
@@ -603,25 +664,14 @@ export const sendPayload = async (
                         // Handle throttling status messages
                         if (jsonData.type === 'throttling_status') {
                             console.log('Throttling status:', jsonData.message);
-                            message.info({
-                                content: jsonData.message,
-                                duration: jsonData.delay + 1,
-                                key: `throttling-${conversationId}`
-                            });
+                            showError(jsonData.message, conversationId, addMessageToConversation, 'warning');
                             continue;
                         }
 
                         // Handle throttling failure
                         if (jsonData.type === 'throttling_failed') {
                             console.log('Throttling failed:', jsonData.message);
-                            message.error({
-                                content: jsonData.message + ' Click to retry.',
-                                duration: 0,
-                                key: `throttling-failed-${conversationId}`,
-                                onClick: () => {
-                                    window.location.reload();
-                                }
-                            });
+                            showError(jsonData.message + ' Please retry your request.', conversationId, addMessageToConversation, 'error');
                             errorOccurred = true;
                             return;
                         }
@@ -629,34 +679,87 @@ export const sendPayload = async (
                         // SIMPLIFIED CONTENT PROCESSING - Single path for all content
                         let contentToAdd = '';
 
-                        // Check for rewind markers that indicate continuation splicing
-                        if (jsonData.content && jsonData.content.includes('<!-- REWIND_MARKER:')) {
-                            const rewindMatch = jsonData.content.match(/<!-- REWIND_MARKER: (\d+)(?:\|PARTIAL:([^-]*))? -->/);
+                        // Check for rewind markers in accumulated content first
+                        if (currentContent.includes('<!-- REWIND_MARKER:')) {
+                            const rewindMatch = currentContent.match(/<!-- REWIND_MARKER: (\d+)(?:\|PARTIAL:([^-]*))? -->/);
                             if (rewindMatch) {
                                 const partialContent = rewindMatch[2] || '';
-                                console.log(`🔄 REWIND: Detected marker with partial: "${partialContent}"`);
+                                console.log(`🔄 REWIND: Detected marker in accumulated content with partial: "${partialContent}"`);
+                                console.log(`🔄 REWIND: Trimming last incomplete line and continuing`);
+
+                                // Remove everything from the rewind marker onwards
+                                const lines = currentContent.split('\n');
+                                const markerIndex = lines.findIndex(line => line.includes('<!-- REWIND_MARKER:'));
+                                if (markerIndex >= 0) {
+                                    const beforeRewind = lines.slice(0, markerIndex).join('\n');
+                                    currentContent = beforeRewind;
+                                    console.log(`🔄 REWIND: Reset content to before marker, length: ${currentContent.length}`);
+                                    // Update the map immediately
+                                    setStreamedContentMap((prev: Map<string, string>) => {
+                                        const next = new Map(prev);
+                                        next.set(conversationId, currentContent);
+                                        return next;
+                                    });
+                                }
                             }
-                            console.log(`🔄 REWIND: Trimming last incomplete line and continuing`);
-                            // Simply remove the last incomplete line and append continuation
+                        }
+
+                        // Check for rewind markers that indicate continuation splicing
+                        if (jsonData.content && jsonData.content.includes('<!-- REWIND_MARKER:')) {
+                            const rewindMatch = jsonData.content.match(/<!-- REWIND_MARKER: (\d+)/);
+                            if (rewindMatch) {
+                                const rewindLine = parseInt(rewindMatch[1], 10);
+                                console.log(`🔄 REWIND: Detected marker at line ${rewindLine}`);
+                                
+                                // Rewind to the specified line number
+                                const lines = currentContent.split('\n');
+                                currentContent = lines.slice(0, rewindLine).join('\n');
+                                
+                                console.log(`🔄 REWIND: Rewound to line ${rewindLine}, waiting for continuation chunks`);
+                                // Update the map immediately to reflect the rewound content
+                                setStreamedContentMap((prev: Map<string, string>) => {
+                                    const next = new Map(prev);
+                                    next.set(conversationId, currentContent);
+                                    return next;
+                                });
+                                
+                                // Skip this chunk - continuation will come in separate chunks
+                                continue;
+                            }
+                        }
+
+                        // Handle continuation rewind markers
+                        if (jsonData.type === 'continuation_rewind') {
+                            console.log('🔄 REWIND: Received continuation rewind marker:', jsonData);
+                            // Remove the last incomplete line based on rewind_line
                             const lines = currentContent.split('\n');
-                            const beforeRewind = lines.slice(0, -1).join('\n'); // Remove last line
+                            if (jsonData.rewind_line && lines.length > jsonData.rewind_line) {
+                                const beforeRewind = lines.slice(0, jsonData.rewind_line).join('\n');
+                                currentContent = beforeRewind;
+                                console.log(`🔄 REWIND: Trimmed content to line ${jsonData.rewind_line}, length: ${currentContent.length}`);
+                                setStreamedContentMap((prev: Map<string, string>) => {
+                                    const next = new Map(prev);
+                                    next.set(conversationId, currentContent);
+                                    return next;
+                                });
+                            }
+                            continue;
+                        }
 
-                            // Clean the continuation content of markers and continuation text
-                            const continuationContent = jsonData.content
-                                .replace(/<!-- REWIND_MARKER: \d+(?:\|PARTIAL:[^-]*)? -->/, '')
-                                .replace(/\*\*🔄 Response continues\.\.\.\*\*\n?/, '')
-                                .replace(/\*\*🔄 Block continues\.\.\.\*\*\n?/, '')
-                                .replace(/^\n+/, ''); // Remove leading newlines
+                        // Handle continuation failure
+                        if (jsonData.type === 'continuation_failed') {
+                            console.log('🔄 CONTINUATION_FAILED:', jsonData);
+                            const failureMessage = jsonData.can_retry
+                                ? '⚠️ Response continuation was interrupted due to rate limiting. Click "Retry" to continue.'
+                                : '❌ Response continuation failed. The response may be incomplete.';
 
-                            currentContent = beforeRewind + '\n' + continuationContent;
-                            console.log(`🔄 REWIND: Trimmed and spliced, result length: ${currentContent.length}`);
-                            // Update the map immediately to reflect the spliced content
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
-                            continue; // Skip normal content processing
+                            showError(failureMessage, conversationId, addMessageToConversation, 'warning');
+
+                            // Add retry button or indicator if applicable
+                            if (jsonData.can_retry) {
+                                // Could add a retry mechanism here
+                            }
+                            continue;
                         }
 
                         if (jsonData.content) {
@@ -981,18 +1084,15 @@ export const sendPayload = async (
                                                     ? `${errorResponse.detail || 'An error occurred'} (Partial response preserved - ${currentContent.length} characters)`
                                                     : errorResponse.detail || 'An error occurred';
 
-                                                message[isPartialResponse ? 'warning' : 'error']({
-                                                    content: errorMessage,
-                                                    duration: isPartialResponse ? 15 : 10,
-                                                    key: `stream-error-${conversationId}`
-                                                });
+                                                showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
                                                 errorOccurred = true;
 
                                                 // Preserve partial content before removing stream
                                                 if (currentContent && currentContent.trim()) {
                                                     const partialMessage: Message = {
                                                         role: 'assistant',
-                                                        content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']'
+                                                        content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']',
+                                                        _timestamp: Date.now()
                                                     };
                                                     addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
                                                 }
@@ -1120,16 +1220,28 @@ export const sendPayload = async (
                                 // Check for nested errors in LangChain ops structure
                                 const nestedError = extractErrorFromNestedOps(chunk);
                                 if (nestedError) {
+                                    // Handle recoverable errors after substantial content
+                                    const hasSubstantialContent = currentContent.length > 1000;
+                                    const isRecoverableError = (
+                                        nestedError.error === 'timeout' ||
+                                        nestedError.detail?.includes('timeout') ||
+                                        nestedError.detail?.includes('ReadTimeoutError') ||
+                                        nestedError.detail?.includes('Read timeout')
+                                    );
+
+                                    if (hasSubstantialContent && isRecoverableError) {
+                                        console.log('Recoverable nested error after substantial content - preserving:', currentContent.length, 'characters');
+                                        showError(`${nestedError.detail} (${Math.round(currentContent.length / 1000)}KB content preserved)`, conversationId, addMessageToConversation, 'warning');
+                                    }
+
                                     console.log("Nested error detected in ops structure:", nestedError);
 
-                                    // Show different message for partial responses vs complete failures
+                                    // Define isPartialResponse for this scope
                                     const isPartialResponse = currentContent.length > 0;
-                                    const errorMessage = isPartialResponse
-                                        ? `${nestedError.detail} (Partial response preserved - ${currentContent.length} characters)`
-                                        : nestedError.detail || 'An error occurred';
+                                    const errorMessage = nestedError.detail || 'An error occurred';
 
                                     // Dispatch preserved content event before showing error
-                                    if (isPartialResponse && currentContent.length > 0) {
+                                    if (isPartialResponse) {
                                         document.dispatchEvent(new CustomEvent('preservedContent', {
                                             detail: {
                                                 existing_streamed_content: currentContent,
@@ -1141,7 +1253,8 @@ export const sendPayload = async (
                                         // Save partial content even without the preserved content event
                                         const partialMessage: Message = {
                                             role: 'assistant',
-                                            content: currentContent + '\n\n[Response interrupted: ' + (nestedError.detail || 'An error occurred during processing') + ']'
+                                            content: currentContent + '\n\n[Response interrupted: ' + (nestedError.detail || 'An error occurred during processing') + ']',
+                                            _timestamp: Date.now()
                                         };
                                         addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
                                         console.log('Saved partial content directly:', currentContent.length, 'characters');
@@ -1153,11 +1266,7 @@ export const sendPayload = async (
                                     }
 
                                     const messageType = isPartialResponse ? 'warning' : 'error';
-                                    message[messageType]({
-                                        content: errorMessage,
-                                        duration: isPartialResponse ? 15 : 10,
-                                        key: `stream-error-${conversationId}`
-                                    });
+                                    showError(errorMessage, conversationId, addMessageToConversation, messageType);
                                     errorOccurred = true;
                                     break;
                                 }
@@ -1180,11 +1289,12 @@ export const sendPayload = async (
                         if (currentContent && currentContent.trim()) {
                             const partialMessage: Message = {
                                 role: 'assistant',
-                                content: currentContent + '\n\n[Stream interrupted - partial response saved]'
+                                content: currentContent + '\n\n[Stream interrupted - partial response saved]',
+                                _timestamp: Date.now()
                             };
                             addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
                             console.log('💾 Saved partial content on abort:', currentContent.length, 'characters');
-                            message.warning(`Stream interrupted. Saved ${currentContent.length} characters of partial response.`);
+                            showError(`Stream interrupted. Saved ${currentContent.length} characters of partial response.`, conversationId, addMessageToConversation, 'warning');
                         } else {
                             message.error('Stream reading error. Check JS console for details.');
                         }
@@ -1263,42 +1373,52 @@ export const sendPayload = async (
                 const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(currentContent);
 
                 if (errorResponse) {
-                    console.log("Error detected in final content:", errorResponse);
+                    // Handle recoverable errors after substantial content
+                    const hasSubstantialContent = currentContent.length > 1000;
+                    const isRecoverableError = (
+                        errorResponse.error === 'timeout' ||
+                        errorResponse.detail?.includes('timeout') ||
+                        errorResponse.detail?.includes('ReadTimeoutError') ||
+                        errorResponse.detail?.includes('Read timeout')
+                    );
 
-                    const isPartialResponse = currentContent.length > 0;
+                    if (hasSubstantialContent && isRecoverableError) {
+                        console.log('Final content check - recoverable error after substantial content, preserving');
+                        // Don't treat this as an error, just complete normally
+                        // The content will be added to conversation below
+                    } else {
+                        console.log("Error detected in final content:", errorResponse);
 
-                    // Dispatch preserved content event before showing error and removing stream
-                    if (isPartialResponse) {
-                        document.dispatchEvent(new CustomEvent('preservedContent', {
-                            detail: {
-                                existing_streamed_content: currentContent,
-                                error_detail: errorResponse.detail || 'An error occurred during processing'
-                            }
-                        }));
+                        const isPartialResponse = currentContent.length > 0;
+
+                        // Dispatch preserved content event before showing error and removing stream
+                        if (isPartialResponse) {
+                            document.dispatchEvent(new CustomEvent('preservedContent', {
+                                detail: {
+                                    existing_streamed_content: currentContent,
+                                    error_detail: errorResponse.detail || 'An error occurred during processing'
+                                }
+                            }));
+                        }
+
+                        const errorMessage = isPartialResponse
+                            ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
+                            : errorResponse.detail || 'An error occurred';
+                        showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
+                        errorOccurred = true;
+                        removeStreamingConversation(conversationId);
+
+                        // Still return the partial content so it can be used
+                        return currentContent || '';
                     }
-
-                    const errorMessage = isPartialResponse
-                        ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
-                        : errorResponse.detail || 'An error occurred';
-
-                    const messageType = isPartialResponse ? 'warning' : 'error';
-                    message[messageType]({
-                        content: errorMessage,
-                        duration: isPartialResponse ? 15 : 10,
-                        key: `stream-error-${conversationId}`
-                    });
-                    errorOccurred = true;
-                    removeStreamingConversation(conversationId);
-
-                    // Still return the partial content so it can be used
-                    return currentContent || '';
                 }
 
                 // Even if we detect an error in the final content, save what we have
                 if (errorOccurred && currentContent && currentContent.trim()) {
                     const partialMessage: Message = {
                         role: 'assistant',
-                        content: currentContent
+                        content: currentContent,
+                        _timestamp: Date.now()
                     };
 
                     const isNonCurrentConversation = !isStreamingToCurrentConversation;
@@ -1311,7 +1431,8 @@ export const sendPayload = async (
                 // Create a message object for the AI response
                 const aiMessage: Message = {
                     role: 'assistant',
-                    content: currentContent
+                    content: currentContent,
+                    _timestamp: Date.now()
                 };
 
                 const isNonCurrentConversation = !isStreamingToCurrentConversation;
