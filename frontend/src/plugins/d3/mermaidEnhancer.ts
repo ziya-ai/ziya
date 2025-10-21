@@ -1870,47 +1870,6 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['gantt']
   });
 
-  // Add a preprocessor to fix line break issues in sankey diagrams  
-  registerPreprocessor((def: string, type: string) => {
-    if (!def.trim().startsWith('sankey')) {
-      return def;
-    }
-
-    console.log('🔍 SANKEY-FIX: Processing sankey diagram');
-
-    // Fix line break issues in sankey diagrams
-    let lines = def.split('\n');
-    let result: string[] = [];
-
-    for (let line of lines) {
-      let trimmedLine = line.trim();
-
-      // Skip empty lines
-      if (!trimmedLine) {
-        continue;
-      }
-
-      // Keep the sankey-beta header as is
-      if (trimmedLine.startsWith('sankey')) {
-        result.push(trimmedLine);
-      } else if (trimmedLine.includes(',')) {
-        // Ensure each data line has proper comma separation and no extra whitespace
-        // Also ensure all data lines have exactly 3 parts: source,target,value
-        const parts = trimmedLine.split(',').map(p => p.trim());
-        if (parts.length >= 3) {
-          result.push(`    ${parts[0]},${parts[1]},${parts[2]}`);
-        }
-      }
-    }
-
-    console.log('🔍 SANKEY-FIX: Processing complete');
-    return result.join('\n');
-  }, {
-    name: 'sankey-format-fix',
-    priority: 315, // Higher priority
-    diagramTypes: ['sankey']
-  });
-
   // Add comprehensive block diagram node label fixer
   registerPreprocessor((def: string, type: string) => {
     if (!def.trim().startsWith('block')) {
@@ -2849,9 +2808,20 @@ export function enhanceMermaid(mermaid: any): void {
   // Replace with enhanced version
   mermaid.render = async function(id: string, definition: string, ...args: any[]): Promise<any> {
     try {
-      // Determine diagram type
+      // CRITICAL DEBUG: Log exactly what the enhancer receives
+      console.log('🔧 ENHANCER-INPUT: Received definition:', {
+        type: typeof definition,
+        length: definition?.length || 0,
+        first50: definition?.substring(0, 50) || 'N/A',
+        startsWithBrace: definition?.trim().startsWith('{') || false
+      });
+      
+      // Determine diagram type  
+      // The definition parameter should already be the raw mermaid definition at this point
+      let actualDefinition = definition;
+      
       let diagramType: string;
-      const lines = definition.trim().split('\n');
+      const lines = actualDefinition.trim().split('\n');
       let typeLine = lines[0]?.trim() || '';
       if (typeLine === '---' && lines.length > 1) {
         let inFrontmatterDetect = true;
@@ -2927,7 +2897,7 @@ export function enhanceMermaid(mermaid: any): void {
 
       console.log('🔍 FALLBACK: Using original render method');
       // Call the original render with processed definition
-      const result = await originalRender.call(this, id, markedDef, ...args);
+      const result = await originalRender.call(this, id, processedDef, ...args);
 
       console.log('🔍 RENDER-RESULT: Mermaid render completed, result type:', typeof result);
 
