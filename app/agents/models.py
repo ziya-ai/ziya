@@ -337,7 +337,17 @@ class ModelManager:
         """
         # Check if we're repeatedly processing the same kwargs
         if hasattr(cls, '_last_filter_log') and cls._last_filter_log == (model_kwargs, model_config):
-            return cls.filter_model_kwargs_cached(model_kwargs, model_config)
+            # Use existing cache logic instead of calling non-existent method
+            model_config_str = json.dumps(model_config, sort_keys=True)
+            model_config_hash = hashlib.md5(model_config_str.encode()).hexdigest()[:8]
+            
+            kwargs_str = json.dumps(model_kwargs, sort_keys=True)
+            kwargs_hash = hashlib.md5(kwargs_str.encode()).hexdigest()[:8]
+            
+            cache_key = f"{model_config_hash}_{kwargs_hash}"
+            
+            if cache_key in cls._state['filtered_kwargs_cache']:
+                return cls._state['filtered_kwargs_cache'][cache_key]
         
         # Create cache keys
         model_config_str = json.dumps(model_config, sort_keys=True)
@@ -546,90 +556,6 @@ class ModelManager:
                 'top_k': int(os.environ.get("ZIYA_TOP_K", 15)),
                 'thinking_mode': os.environ.get("ZIYA_THINKING_MODE") == "1"
             }
-
-    @classmethod
-    def get_model_settings(cls, config_or_model=None) -> Dict[str, Any]:
-        """
-        Get model settings from environment variables or config.
-        Handles parameter mapping and type conversion automatically.
-        
-        Args:
-            config_or_model: Either a config dict or a model instance
-            
-        Returns:
-            dict: Model settings with proper parameter mappings
-        """
-        # Get config
-        if hasattr(config_or_model, 'model_id'):
-            model = config_or_model
-            endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
-            model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
-            config_dict = cls.get_model_config(endpoint, model_name)
-        elif isinstance(config_or_model, dict):
-            config_dict = config_or_model
-        else:
-            endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
-            model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
-            config_dict = cls.get_model_config(endpoint, model_name)
-            
-        # Start with config values
-        settings = {}
-        
-        # Apply environment variable overrides with proper type conversion
-        for env_var, config_key in cls.ENV_VAR_MAPPING.items():
-            if env_var in os.environ:
-                value = os.environ[env_var]
-                
-                # Convert to appropriate type based on the config's existing value
-                if config_key in config_dict:
-                    if isinstance(config_dict[config_key], bool):
-                        value = value.lower() in ('true', 'yes', '1', 't', 'y')
-                    elif isinstance(config_dict[config_key], int):
-                        value = int(value)
-                    elif isinstance(config_dict[config_key], float):
-                        value = float(value)
-                        
-                settings[config_key] = value
-                
-        # Get supported parameters for this model
-        supported_params = []
-        model_params = config_dict.get('supported_parameters', [])
-        if model_params:
-            supported_params.extend(model_params)
-        
-        # If model has a family, get parameters from family
-        if 'family' in config_dict:
-            family_name = config_dict['family']
-            if family_name in config.MODEL_FAMILIES:
-                family_config = config.MODEL_FAMILIES[family_name]
-                
-                # Get parameters from family
-                family_params = family_config.get('supported_parameters', [])
-                if family_params:
-                    supported_params.extend(family_params)
-                    
-                # Check for parent family parameters
-                if 'parent' in family_config and family_config['parent'] in config.MODEL_FAMILIES:
-                    parent_family = config.MODEL_FAMILIES[family_config['parent']]
-                    parent_params = parent_family.get('supported_parameters', [])
-                    if parent_params:
-                        supported_params.extend(parent_params)
-        
-        # Filter settings to only include supported parameters
-        filtered_settings = {}
-        for key, value in settings.items():
-            if key in supported_params or key not in ['top_k', 'top_p']:  # Always include non-model parameters
-                filtered_settings[key] = value
-
-        # Apply parameter mappings
-        parameter_mappings = config_dict.get("parameter_mappings", {})
-        for source_param, target_params in parameter_mappings.items():
-            if source_param in filtered_settings:
-                for target_param in target_params:
-                    if target_param != source_param:  # Avoid duplicate assignments
-                        filtered_settings[target_param] = filtered_settings[source_param]
-                        
-        return filtered_settings
 
     @classmethod
     def _get_client_config_hash(cls, aws_profile: str, region: str, model_id: str) -> str:
