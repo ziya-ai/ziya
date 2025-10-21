@@ -277,14 +277,14 @@ class MCPClient:
             self.process.stdin.write(request_json)
             self.process.stdin.flush()
             write_time = time.time() - write_start
-            logger.info(f"🔍 MCP_TIMING: Write took {write_time*1000:.1f}ms")
+            logger.debug(f"🔍 MCP_TIMING: Write took {write_time*1000:.1f}ms")
             
             # Read response
             try:
                 read_start = time.time()
                 response_line = self.process.stdout.readline()
                 read_time = time.time() - read_start
-                logger.info(f"🔍 MCP_TIMING: Read took {read_time*1000:.1f}ms")
+                logger.debug(f"🔍 MCP_TIMING: Read took {read_time*1000:.1f}ms")
                 timeout_occurred = False
             except Exception as e:
                 logger.error(f"Error reading from MCP server: {e}")
@@ -335,7 +335,7 @@ class MCPClient:
             # Update successful call timestamp
             self._last_successful_call = time.time()
             total_time = time.time() - start_time
-            logger.info(f"🔍 MCP_TIMING: Total request took {total_time*1000:.1f}ms for method '{method}'")
+            logger.debug(f"🔍 MCP_TIMING: Total request took {total_time*1000:.1f}ms for method '{method}'")
             return response.get("result")
             
         except Exception as e:
