@@ -71,6 +71,64 @@ class ErrorHandlingMiddleware:
         # Try to run the app, catch any exceptions
         try:
             await self.app(scope, receive, safe_send)
+        except ValidationError as exc:
+            # Handle pydantic validation errors that contain credential issues
+            error_message = str(exc)
+            if "mwinit" in error_message.lower() or "credential" in error_message.lower() or "authentication" in error_message.lower():
+                logger.warning(f"Credential validation error: {error_message}")
+                
+                # Check if this is a streaming request
+                is_streaming_request = False
+                for key, value in scope.get("headers", []):
+                    if key.lower() == b"accept" and b"text/event-stream" in value.lower():
+                        is_streaming_request = True
+                        break
+                        
+                if is_streaming_request:
+                    try:
+                        await safe_send({
+                            "type": "http.response.start",
+                            "status": 200,
+                            "headers": [
+                                (b"content-type", b"text/event-stream"),
+                                (b"cache-control", b"no-cache"),
+                                (b"connection", b"keep-alive"),
+                                (b"access-control-allow-origin", b"*"),
+                            ]
+                        })
+                        
+                        error_content = {
+                            "error": "auth_error",
+                            "detail": "AWS credentials have expired. Please run 'mwinit' to authenticate and try again.",
+                            "status_code": 401
+                        }
+                        
+                        await safe_send({
+                            "type": "http.response.body",
+                            "body": f"data: {json.dumps(error_content)}\n\ndata: [DONE]\n\n".encode('utf-8'),
+                            "more_body": False
+                        })
+                        return
+                    except Exception as e:
+                        logger.error(f"Failed to send streaming auth error response: {e}")
+                else:
+                    try:
+                        response = JSONResponse(
+                            content={
+                                "error": "auth_error",
+                                "detail": "AWS credentials have expired. Please run 'mwinit' to authenticate and try again.",
+                                "status_code": 401
+                            },
+                            status_code=401
+                        )
+                        await response(scope, receive, send)
+                        return
+                    except Exception as e:
+                        logger.error(f"Failed to send JSON auth response: {e}")
+            else:
+                # Handle other validation errors normally
+                logger.warning(f"Validation error: {error_message}")
+                # Continue with existing validation error handling...
         except KnownCredentialException as exc:
             # For known credential issues, just return the message without traceback
             error_message = str(exc)
