@@ -1,0 +1,5 @@
+{
+  "description": "Remove console.log statements from mermaidPlugin.ts text visibility functions",
+  "target_file": "frontend/src/plugins/d3/mermaidPlugin.ts",
+  "expected_to_fail": false
+}
