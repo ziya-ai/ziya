@@ -87,6 +87,13 @@ from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
 from app.middleware.continuation import ContinuationMiddleware
 
+# WebSocket support for real-time feedback
+from fastapi.websockets import WebSocket, WebSocketDisconnect
+import json
+ 
+# Track active WebSocket connections for feedback
+active_feedback_connections = {}
+
 def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False) -> List:
     """
     Build messages for streaming using the extended prompt template.
@@ -159,6 +166,45 @@ app = FastAPI(
     description="API for Ziya, a code assistant powered by LLMs",
     version="0.1.0",
 )
+
+@app.websocket("/ws/feedback/{conversation_id}")
+async def feedback_websocket(websocket: WebSocket, conversation_id: str):
+    """WebSocket endpoint for real-time streaming feedback."""
+    await websocket.accept()
+    logger.info(f"🔄 FEEDBACK: WebSocket connected for conversation {conversation_id}")
+    
+    # Register this connection
+    active_feedback_connections[conversation_id] = {
+        'websocket': websocket,
+        'connected_at': time.time(),
+        'feedback_queue': asyncio.Queue()
+    }
+    
+    try:
+        while True:
+            try:
+                # Listen for feedback messages
+                data = await websocket.receive_json()
+                feedback_type = data.get('type')
+                
+                if feedback_type == 'tool_feedback':
+                    logger.info(f"🔄 FEEDBACK: Received tool feedback for {conversation_id}: {data.get('message', '')}")
+                    
+                    # Add to feedback queue for tool execution to consume
+                    if conversation_id in active_feedback_connections:
+                        await active_feedback_connections[conversation_id]['feedback_queue'].put(data)
+                elif feedback_type == 'interrupt':
+                    logger.info(f"🔄 FEEDBACK: Received interrupt request for {conversation_id}")
+                    # Signal tool execution to pause/stop
+                    await active_feedback_connections[conversation_id]['feedback_queue'].put({'type': 'interrupt'})
+                
+            except WebSocketDisconnect:
+                logger.info(f"🔄 FEEDBACK: WebSocket disconnected for {conversation_id}")
+                break
+    finally:
+        # Clean up connection
+        if conversation_id in active_feedback_connections:
+            del active_feedback_connections[conversation_id]
 
 # PRIORITY ROUTE: /api/chat - MUST BE FIRST TO TAKE PRECEDENCE
 @app.post('/api/chat')
@@ -1731,6 +1777,12 @@ async def stream_chunks(body):
             # Handle credential errors specifically
             error_str = str(e)
             if "mwinit" in error_str.lower() or "authentication" in error_str.lower() or "credential" in error_str.lower():
+                # Preserve conversation context in error response
+                conversation_id = body.get("conversation_id")
+                if conversation_id:
+                    logger.info(f"Adding conversation_id to credential error: {conversation_id}")
+                else:
+                    logger.warning("No conversation_id available for credential error")
                 logger.error(f"Credential error during model binding: {e}")
                 credential_error = {
                     "error": "auth_error",
@@ -2409,6 +2461,10 @@ async def stream_chunks(body):
                                      "ThrottlingException" in error_str and
                                      "reached max retries" in error_str)
                 
+                # Preserve conversation context for throttling errors
+                conversation_id = body.get("conversation_id")
+                logger.info(f"Throttling error for conversation: {conversation_id}")
+                
                 # Use two-tier retry: first within stream, then new stream
                 if (is_timeout_error or is_token_throttling):
                     # Tier 1: Quick retries within same stream
@@ -2533,6 +2589,7 @@ async def stream_chunks(body):
                     logger.info("🔍 AGENT: Handling ValidationError in streaming context, sending SSE error")
                     error_data = {
                         "error": "validation_error",
+                        "conversation_id": body.get("conversation_id"),
                         "detail": str(e),
                         "status_code": 413
                     }

@@ -2,6 +2,55 @@ import { SetStateAction, Dispatch } from 'react';
 import { message } from 'antd';
 import { Message } from '../utils/types';
 
+// WebSocket for real-time feedback
+class FeedbackWebSocket {
+    private ws: WebSocket | null = null;
+    private conversationId: string | null = null;
+
+    connect(conversationId: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            this.conversationId = conversationId;
+            const wsUrl = `ws://${window.location.host}/ws/feedback/${conversationId}`;
+            this.ws = new WebSocket(wsUrl);
+
+            this.ws.onopen = () => {
+                console.log('🔄 FEEDBACK: WebSocket connected');
+                resolve();
+            };
+
+            this.ws.onerror = (error) => {
+                console.error('🔄 FEEDBACK: WebSocket error:', error);
+                reject(error);
+            };
+
+            this.ws.onclose = () => {
+                console.log('🔄 FEEDBACK: WebSocket closed');
+            };
+        });
+    }
+
+    sendFeedback(toolId: string, feedback: string) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({
+                type: 'tool_feedback',
+                tool_id: toolId,
+                message: feedback
+            }));
+            console.log('🔄 FEEDBACK: Sent feedback:', feedback);
+        }
+    }
+
+    disconnect() {
+        this.ws?.close();
+        this.ws = null;
+    }
+}
+
+const feedbackWebSocket = new FeedbackWebSocket();
+
+// Make WebSocket available globally for components
+(window as any).feedbackWebSocket = feedbackWebSocket;
+
 type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error';
 
 interface ErrorResponse {
@@ -141,7 +190,7 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
 
             // Check for throttling errors - but only in error-formatted messages
             // Check for authentication errors in plain text
-            if (dataContent.includes('mwinit') || 
+            if (dataContent.includes('mwinit') ||
                 (dataContent.includes('credential') && dataContent.includes('error')) ||
                 dataContent.includes('authentication') ||
                 dataContent.includes('AWS credentials have expired')) {
@@ -151,7 +200,7 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
                     status_code: 401
                 };
             }
-            
+
             // Be much more strict about what constitutes a throttling error
             if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
                 !dataContent.includes('reached max retries') &&
@@ -377,9 +426,24 @@ export const sendPayload = async (
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
+    let containsDiff = false;
     let currentThinkingContent = '';
     let errorOccurred = false;
-    let containsDiff = false;  // Flag to track if content contains diff blocks
+    let activeFeedbackToolId: string | null = null;
+
+    // Connect feedback WebSocket
+    try {
+        console.log('🔄 FEEDBACK: Attempting to connect WebSocket for conversation:', conversationId);
+        await feedbackWebSocket.connect(conversationId);
+        console.log('🔄 FEEDBACK: WebSocket connected successfully');
+
+        // Notify components that WebSocket is ready
+        (window as any).feedbackWebSocketReady = true;
+    } catch (e) {
+        console.error('🔄 FEEDBACK: Failed to connect WebSocket:', e);
+        console.warn('Failed to connect feedback WebSocket:', e);
+        (window as any).feedbackWebSocketReady = false;
+    }
 
     // Create an AbortController to handle cancellation
     const abortController = new AbortController();
@@ -414,6 +478,9 @@ export const sendPayload = async (
 
             removeStreamingConversation(conversationId);
             setIsStreaming(false);
+
+            // Disconnect feedback WebSocket
+            feedbackWebSocket.disconnect();
         }
     };
     document.addEventListener('abortStream', abortListener as EventListener);
@@ -566,7 +633,17 @@ export const sendPayload = async (
                             showError(`Stream interrupted by ${errorResponse.error} after generating ${Math.round(currentContent.length / 1000)}KB of content. Content preserved.`, conversationId, addMessageToConversation, 'warning');
                         }
 
-                        const targetConversationId = errorResponse.conversation_id || conversationId;
+                        // CRITICAL: Always use the conversation_id from the original request
+                        // Don't let server errors override the target conversation
+                        const actualTargetId = conversationId; // Always use the original request's conversation ID
+
+                        console.log("Error routing debug:", {
+                            originalConversationId: conversationId,
+                            errorConversationId: errorResponse.conversation_id,
+                            actualTargetId
+                        });
+
+                        const targetConversationId = actualTargetId;
 
                         console.log("Current content when error detected:", currentContent.substring(0, 200) + "...");
                         console.log("Current content length:", currentContent.length);
@@ -710,11 +787,11 @@ export const sendPayload = async (
                             if (rewindMatch) {
                                 const rewindLine = parseInt(rewindMatch[1], 10);
                                 console.log(`🔄 REWIND: Detected marker at line ${rewindLine}`);
-                                
+
                                 // Rewind to the specified line number
                                 const lines = currentContent.split('\n');
                                 currentContent = lines.slice(0, rewindLine).join('\n');
-                                
+
                                 console.log(`🔄 REWIND: Rewound to line ${rewindLine}, waiting for continuation chunks`);
                                 // Update the map immediately to reflect the rewound content
                                 setStreamedContentMap((prev: Map<string, string>) => {
@@ -722,7 +799,7 @@ export const sendPayload = async (
                                     next.set(conversationId, currentContent);
                                     return next;
                                 });
-                                
+
                                 // Skip this chunk - continuation will come in separate chunks
                                 continue;
                             }
@@ -784,31 +861,22 @@ export const sendPayload = async (
                             });
                         }
 
-                        // Handle tool events separately (simplified)
-                        if (jsonData.tool_start) {
-                            const toolData = jsonData.tool_start;
-                            console.log('🔧 TOOL_START received:', toolData);
+                        // Handle feedback readiness
+                        if (jsonData.type === 'feedback_ready') {
+                            activeFeedbackToolId = jsonData.tool_id;
+                            console.log('🔄 FEEDBACK: Tool ready for feedback:', jsonData.tool_name);
 
-                            let toolName = toolData.tool_name;
-                            if (!toolName.startsWith('mcp_')) {
-                                toolName = `mcp_${toolName}`;
-                            }
-                            toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
-
-                            let inputDisplay = '';
-                            if (toolData.args && toolData.args.command) {
-                                inputDisplay = `$ ${toolData.args.command}`;
-                            }
-
-                            const toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: ${inputDisplay}\n\`\`\`\n\n`;
-                            currentContent += toolStartDisplay;
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
+                            // Dispatch event to enable feedback UI
+                            document.dispatchEvent(new CustomEvent('feedbackReady', {
+                                detail: {
+                                    toolId: jsonData.tool_id,
+                                    toolName: jsonData.tool_name,
+                                    conversationId
+                                }
+                            }));
                         }
 
+                        // Handle tool events separately (simplified)
                         if (jsonData.tool_result) {
                             const toolData = jsonData.tool_result;
                             console.log('🔧 TOOL_RESULT received:', toolData);
@@ -1508,8 +1576,10 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
     return fetch('/api/chat', {
         method: 'POST',
         headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
             // conversation_id is now in the payload body
+            // But also add it to headers for error middleware
+            'X-Conversation-Id': conversationId || ''
         },
         body: JSON.stringify(payload),
         signal
