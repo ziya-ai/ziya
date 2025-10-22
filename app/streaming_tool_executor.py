@@ -733,30 +733,15 @@ class StreamingToolExecutor:
                                         'tool_use_id': tool_id,
                                         'content': f"ERROR: {error_msg}. Please try a different approach or fix the command."
                                     }
+
+                                completed_tools.add(tool_id)
+                            
+                            except json.JSONDecodeError as e:
+                                logger.error(f"🔍 JSON_PARSE_ERROR: Failed to parse tool arguments: {e}")
                                 completed_tools.add(tool_id)
 
-                            except Exception as e:
-                                error_msg = f"Tool error: {str(e)}"
-                                
-                                # Add error to tool_results so it gets fed back to the model
-                                tool_results.append({
-                                    'tool_id': tool_id,
-                                    'tool_name': tool_name,
-                                    'result': f"ERROR: {error_msg}. Please try a different approach or fix the command."
-                                })
-                                
-                                # Frontend error display
-                                yield {'type': 'tool_display', 'tool_name': 'unknown', 'result': f"ERROR: {error_msg}"}
-                                
-                                # Clean error for model
-                                yield {
-                                    'type': 'tool_result_for_model',
-                                    'tool_use_id': tool_id or 'unknown',
-                                    'content': f"ERROR: {error_msg}. Please try a different approach or fix the command."
-                                }
-
                     elif chunk['type'] == 'message_stop':
-                        # Flush any remaining content from buffers before stopping
+                        # Flush any remaining content from buffers before stopping  
                         # Flush block opening buffer first
                         if hasattr(self, '_block_opening_buffer') and self._block_opening_buffer:
                             assistant_text += self._block_opening_buffer

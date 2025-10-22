@@ -314,6 +314,29 @@ class ErrorHandlingMiddleware:
                 return
             
             # Handle throttling exceptions
+            # Extract conversation_id from request body if available
+            conversation_id = None
+            try:
+                if scope.get("method") == "POST":
+                    # Try to extract conversation_id from request body
+                    # This is a bit tricky since we're in ASGI middleware
+                    # We'll need to look at the receive callable to get the body
+                    pass  # Will implement body parsing below
+            except Exception:
+                pass
+            
+            # For throttling errors, try to extract conversation_id from the error message
+            # or from request context if available
+            if ("ThrottlingException" in error_message or "Too many requests" in error_message):
+                # Check if we can extract conversation_id from scope or other context
+                request_headers = dict(scope.get("headers", []))
+                conversation_id_header = request_headers.get(b"x-conversation-id")
+                if conversation_id_header:
+                    conversation_id = conversation_id_header.decode('utf-8')
+                    logger.info(f"Extracted conversation_id from headers: {conversation_id}")
+                else:
+                    logger.warning("Could not extract conversation_id for throttling error")
+            
             if "ThrottlingException" in error_message or "Too many requests" in error_message:
                 logger.info("Detected throttling error in middleware")
                 
@@ -333,6 +356,7 @@ class ErrorHandlingMiddleware:
                         # Send error message as SSE data
                         error_data = {
                             "error": "throttling_error",
+                            "conversation_id": conversation_id,
                             "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
                             "status_code": 429,
                             "retry_after": "5",
@@ -366,6 +390,7 @@ class ErrorHandlingMiddleware:
                         response = JSONResponse(
                             content={
                                 "error": "throttling_error",
+                                "conversation_id": conversation_id,
                                 "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
                                 "status_code": 429,
                                 "retry_after": "5"
