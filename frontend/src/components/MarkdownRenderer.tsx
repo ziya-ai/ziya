@@ -4213,7 +4213,29 @@ const markedOptions = {
 
 // Math rendering component
 const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, displayMode }) => {
-    const katex = require('katex');
+    const [katex, setKatex] = useState<any>(null);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        const loadKatex = async () => {
+            try {
+                const katexModule = await import('katex');
+                setKatex(katexModule);
+            } catch (error) {
+                console.warn('Failed to load KaTeX:', error);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        loadKatex();
+    }, []);
+
+    if (isLoading || !katex) {
+        // Fallback while KaTeX is loading or if it fails
+        return displayMode ?
+            <div className="math-fallback" style={{ fontFamily: 'monospace', padding: '4px' }}>{math}</div> :
+            <span className="math-fallback" style={{ fontFamily: 'monospace' }}>{math}</span>;
+    }
 
     try {
         const html = katex.renderToString(math, {
