@@ -137,6 +137,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const mounted = useRef(true);
     const isRenderingRef = useRef(false);
     const lastSpecRef = useRef<any>(null);
+    const specHashRef = useRef<string>('');
     const streamingContentRef = useRef<string | null>(null);
     const lastUsedPluginRef = useRef<D3RenderPlugin | null>(null);
     const lastValidSpecRef = useRef<any>(null);
@@ -550,6 +551,15 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // Main rendering useEffect with stable dependencies
     useEffect(() => {
         if (!mounted.current) return;
+        
+        // Create a simple hash of the spec to detect changes without JSON.stringify
+        const specHash = typeof spec === 'string' ? spec : 
+            (spec?.definition || '') + (spec?.type || '') + (spec?.timestamp || '');
+        
+        if (specHash === specHashRef.current && !forceRender) {
+            return;
+        }
+        specHashRef.current = specHash;
 
         // Trigger rendering immediately when markdown block closes, even during streaming
         const shouldRender = (
