@@ -131,10 +131,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         return () => {
             document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
         };
-    }, []);
+    }, [currentConversationId]);
 
     const isDisabled = useMemo(() =>
         isQuestionEmpty(question) || streamingConversations.has(currentConversationId),
+        [question, streamingConversations, currentConversationId]
+    );
+    
+    // Allow textarea input during streaming for real-time feedback
+    const isTextAreaDisabled = useMemo(() =>
+        false, // Never disable textarea - allow typing during streaming
         [question, streamingConversations, currentConversationId]
     );
 
@@ -280,10 +286,26 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     };
 
     const handleContinue = () => {
+        // Reset user scroll state when continuing (same as new message)
+        setUserHasScrolled(false);
+        
         const continuePrompt = "Please continue your previous response.";
         setQuestion(continuePrompt);
         handleSendPayload(false, continuePrompt);
         setShowContinueButton(false);
+        
+        // Scroll to bottom immediately for continue action (same as new message)
+        setTimeout(() => {
+            const chatContainer = document.querySelector('.chat-container') as HTMLElement;
+            if (chatContainer) {
+                const { scrollHeight, clientHeight } = chatContainer;
+                const targetScrollTop = scrollHeight - clientHeight;
+                chatContainer.scrollTo({
+                    top: Math.max(0, targetScrollTop),
+                    behavior: 'auto'
+                });
+            }
+        }, 50);
     };
 
     return (
@@ -309,10 +331,17 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 value={question}
                 onChange={handleQuestionChange}
                 id="chat-question-textarea"
-                placeholder="Enter your question.."
+                placeholder={
+                    isCurrentlyStreaming 
+                        ? "AI is responding... (you can type feedback for tools)" 
+                        : "Enter your question.."
+                }
                 autoComplete="off"
                 autoSize={{ minRows: 1 }}
-                className="input-textarea"
+                className={`input-textarea ${
+                    isCurrentlyStreaming ? 'streaming-input' : ''
+                }`}
+                disabled={isTextAreaDisabled}
                 onPressEnter={(event) => {
                     if (!event.shiftKey && !isQuestionEmpty(question)) {
                         event.preventDefault();
