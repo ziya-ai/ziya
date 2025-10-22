@@ -69,8 +69,8 @@ const isLightBackground = (color: string): boolean => {
     // Handle named colors
     else {
         const lightNamedColors = [
-            'white', 'lightblue', 'lightgreen', 'lightgrey', 'lightgray', 'pink',
-            '#aed6f1', '#d4e6f1', '#d5f5e3', '#f5f5f5', '#e6e6e6', '#f0f0f0',
+            'white', 'lightblue', 'lightgreen', 'lightyellow', 'lightgrey', 'lightgray', 'pink',
+            'yellow', '#aed6f1', '#d4e6f1', '#d5f5e3', '#f5f5f5', '#e6e6e6', '#f0f0f0',
             '#ffffff', '#f8f9fa', '#e9ecef', '#dee2e6', '#ced4da', '#adb5bd'
         ];
         return lightNamedColors.some(c => c.toLowerCase() === color.toLowerCase());
@@ -163,7 +163,7 @@ const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
             
             console.log(`  Background analysis: ${backgroundColor} -> isLight: ${isLight} -> optimal text: ${optimalColor}`);
             
-            if (isLight || (isDarkMode && currentTextColor === '#ffffff' && isLight)) {
+            if (isLight) {
                 textEl.setAttribute('fill', optimalColor);
                 (textEl as SVGElement).style.setProperty('fill', optimalColor, 'important');
                 console.log(`  ✅ Fixed text "${textContent}": ${currentTextColor} -> ${optimalColor} on background ${backgroundColor}`);
@@ -226,6 +226,16 @@ export const graphvizPlugin: D3RenderPlugin = {
     },
     render: async (container: HTMLElement, d3: any, spec: GraphvizSpec, isDarkMode: boolean) => {
         try {
+            // Lazy load Viz.js only when actually needed
+            let Viz;
+            try {
+                const VizModule = await import('@viz-js/viz');
+                Viz = VizModule;
+            } catch (error) {
+                console.error('Failed to load Viz.js for Graphviz rendering:', error);
+                throw new Error('Graphviz rendering library failed to load');
+            }
+            
             // Handle JSON-wrapped specs vs direct definition strings
             let rawDefinition: string;
             
@@ -326,7 +336,7 @@ export const graphvizPlugin: D3RenderPlugin = {
 
             // Conservative streaming approach - only render when markdown block is closed
             // This allows the content to display as highlighted code during streaming
-            if (spec.isStreaming && !spec.isMarkdownBlockClosed && !spec.forceRender) {
+            if (!spec.isMarkdownBlockClosed && !spec.forceRender) {
                 console.log('Graphviz: Markdown block still open, letting content display as code');
                 // Don't show a waiting message - let the markdown renderer show the code
                 // Just remove the loading spinner and return
@@ -823,13 +833,33 @@ ${svgData}`;
                 sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
 
                 if (showingSource) {
-                    wrapper.innerHTML = `<pre style="
-                        background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
-                        padding: 16px;
-                        border-radius: 4px;
-                        overflow: auto;
-                        color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
-                    "><code>${spec.definition}</code></pre>`;
+                    wrapper.innerHTML = `
+                        <div style="
+                            backgroundColor: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+                            border: 1px solid ${isDarkMode ? '#303030' : '#e1e4e8'};
+                            borderRadius: '6px';
+                            padding: '16px';
+                            margin: '16px 0'
+                        ">
+                            <div style="
+                                fontSize: '12px';
+                                color: ${isDarkMode ? '#8b949e' : '#586069'};
+                                marginBottom: '8px';
+                                fontWeight: 'bold'
+                            ">
+                                🔗 Graphviz Source:
+                            </div>
+                            <pre style="
+                                margin: 0;
+                                color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
+                                fontSize: '13px';
+                                lineHeight: '1.45';
+                                whiteSpace: 'pre-wrap';
+                                wordBreak: 'break-word';
+                                fontFamily: 'Monaco, Menlo, \"Ubuntu Mono\", monospace'
+                            "><code>${spec.definition}</code></pre>
+                        </div>
+                    `;
                 } else {
                     wrapper.innerHTML = originalContent;
                 }
