@@ -2175,3 +2175,36 @@ body:not(.dark) .token.attr-name {
 .dark .mermaid-error pre {
   background-color: rgba(255,255,255,0.1);
 }
+
+/* Streaming input visual feedback */
+.streaming-input {
+  background: linear-gradient(
+    -45deg, 
+    transparent 0%, 
+    rgba(24, 144, 255, 0.08) 25%, 
+    transparent 50%, 
+    rgba(24, 144, 255, 0.08) 75%, 
+    transparent 100%
+  ) !important;
+  background-size: 40px 40px;
+  animation: streaming-gradient 3s linear infinite;
+  border-color: rgba(24, 144, 255, 0.4) !important;
+  transition: all 0.3s ease;
+}
+
+.dark .streaming-input {
+  background: linear-gradient(
+    -45deg, 
+    transparent 0%, 
+    rgba(64, 169, 243, 0.1) 25%, 
+    transparent 50%, 
+    rgba(64, 169, 243, 0.1) 75%, 
+    transparent 100%
+  ) !important;
+  border-color: rgba(64, 169, 243, 0.5) !important;
+}
+
+@keyframes streaming-gradient {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 40px 40px; }
+}
