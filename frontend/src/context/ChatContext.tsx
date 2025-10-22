@@ -116,27 +116,37 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Monitor ChatProvider render performance
     // Remove performance monitoring that's causing overhead
 
-    // Modified scrollToBottom function to respect user scroll
+    // Improved scrollToBottom function with better user scroll respect
     const scrollToBottom = () => {
         const now = Date.now();
         const timeSinceManualScroll = now - lastManualScrollTime.current;
         const SCROLL_COOLDOWN = 5000; // 5 seconds
         
-        // If we're in cooldown period, don't autoscroll
+        // If we're in cooldown period from manual scroll, don't autoscroll
         if (manualScrollCooldownActive.current && timeSinceManualScroll < SCROLL_COOLDOWN) {
             return;
         }
         
-        // If cooldown period has passed, reset the manual scroll state
+        // If cooldown period has passed, reset manual scroll state
         if (manualScrollCooldownActive.current && timeSinceManualScroll >= SCROLL_COOLDOWN) {
             manualScrollCooldownActive.current = false;
             setUserHasScrolled(false);
         }
         
+        // Only autoscroll if we have actual streaming content (not just waiting)
+        const hasActiveContent = Array.from(streamingConversations).some(id => {
+            const content = streamedContentMap.get(id);
+            return content && content.trim().length > 0;
+        });
+        
+        if (!hasActiveContent) {
+            return; // Don't scroll during "waiting" phase
+        }
+        
         const chatContainer = document.querySelector('.chat-container');
-        if (chatContainer && isTopToBottom && !manualScrollCooldownActive.current && isStreamingAny) {
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-        } else if (chatContainer && !isTopToBottom && !manualScrollCooldownActive.current && isStreamingAny) {
+        if (chatContainer && isTopToBottom && !manualScrollCooldownActive.current) {
+            chatContainer.scrollTop = chatContainer.scrollHeight - chatContainer.clientHeight;
+        } else if (chatContainer && !isTopToBottom && !manualScrollCooldownActive.current) {
             chatContainer.scrollTop = 0;
         }
     };
@@ -239,8 +249,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Queue-based save system to prevent race conditions
     const queueSave = useCallback(async (conversations: Conversation[]) => {
         saveQueue.current = saveQueue.current.then(async () => {
-            await db.saveConversations(conversations);
-            await createBackup(conversations);
+            // For large conversations, use incremental saves
+            const largeConversations = conversations.filter(c => 
+                c.messages.length > 100 || 
+                JSON.stringify(c).length > 100000
+            );
+            
+            if (largeConversations.length > 0) {
+                console.log(`Using incremental save for ${largeConversations.length} large conversations`);
+                // Save large conversations with compression
+                await db.saveConversations(largeConversations);
+                
+                // Save smaller conversations normally  
+                const smallConversations = conversations.filter(c => !largeConversations.includes(c));
+                if (smallConversations.length > 0) {
+                    await db.saveConversations(smallConversations);
+                }
+            } else {
+                await db.saveConversations(conversations);
+            }
         });
         return saveQueue.current;
     }, [createBackup]);
