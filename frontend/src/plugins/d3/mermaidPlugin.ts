@@ -217,7 +217,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         container.appendChild(loadingSpinner);
 
         // This allows the content to display as highlighted code during streaming
-        if (spec.isStreaming && !spec.isMarkdownBlockClosed && !spec.forceRender) {
+        if (!spec.isMarkdownBlockClosed && !spec.forceRender) {
             console.log('Mermaid: Markdown block still open, letting content display as code');
             // Don't show a waiting message - let the markdown renderer show the code
             // Just remove the loading spinner and return
