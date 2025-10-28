@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, Suspense, memo, useCallback, useMemo } from "react";
-import { List } from 'react-window';
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip } from 'antd';
@@ -53,24 +52,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     // Use memoized state instead of direct context access
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
     
-    // Virtualized rendering for large conversations (300k+ tokens)
-    const VIRTUAL_THRESHOLD = 50; // Start virtualizing after 50 messages
-    const shouldVirtualize = currentMessages.length > VIRTUAL_THRESHOLD;
-    
-    const renderMessage = useCallback(({ index, style }: { index: number; style: React.CSSProperties }) => {
-        const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
-        const msg = currentMessages[actualIndex];
-        
-        if (!msg) return <div style={style} />;
-        
-        return (
-            <div style={style} className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}`}>
-                {/* Message rendering logic moved here */}
-            </div>
-        );
-    }, [currentMessages, isTopToBottom]);
-    
-    const displayMessages = shouldVirtualize ? null : (isTopToBottom ? currentMessages : [...currentMessages].reverse());
+    const displayMessages = isTopToBottom ? currentMessages : [...currentMessages].reverse();
 
     // Keep track of rendered messages for performance monitoring
     const renderedCountRef = useRef(0);
@@ -481,20 +463,10 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             ) : null
                         )}
                     </div>;
-                }) || (shouldVirtualize ? (
-                    <div style={{ height: '400px', width: '100%' }}>
-                        <List
-                            height={400}
-                            rowCount={currentMessages.length}
-                            rowHeight={100}
-                            width="100%"
-                            rowComponent={renderMessage}
-                        />
-                    </div>
-                ) : null)}
+                })}
                 
                 {/* Fallback for when no messages to display */}
-                {(!displayMessages || displayMessages.length === 0) && !shouldVirtualize && (
+                {(!displayMessages || displayMessages.length === 0) && (
                     <div style={{ 
                         textAlign: 'center', 
                         padding: '2rem', 
