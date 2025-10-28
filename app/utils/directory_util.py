@@ -321,6 +321,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         
         try:
             entries = os.listdir(path)
+            logger.info(f"📁 Directory {path} has {len(entries)} entries: {entries}")
         except PermissionError:
             logger.debug(f"Permission denied for {path}")
             dir_time = time.time() - dir_start_time
@@ -383,10 +384,13 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                         pass
             elif os.path.isfile(entry_path):
                 tokens = estimate_tokens_fast(entry_path)
+                logger.info(f"📄 File {entry}: tokens={tokens}")
                 if tokens > 0:
                     scan_stats['files_processed'] += 1  # Fix: increment counter for processed files
                     result['children'][entry] = {'token_count': tokens}
                     total_tokens += tokens
+                else:
+                    logger.info(f"⏭️  Skipping file {entry} - zero tokens")
         
         result['token_count'] = total_tokens
         
@@ -496,16 +500,22 @@ def estimate_tokens_fast(file_path: str) -> int:
         # Get file size
         file_size = os.path.getsize(file_path)
         
-        # Skip very large files immediately
-        if file_size > 1024 * 1024:  # 1MB
-            return 0
+        # For very large files (>10MB), estimate tokens without reading
+        # This prevents hanging on huge files while keeping them visible
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            logger.info(f"Large file detected: {file_path} ({file_size / (1024*1024):.1f}MB) - using size-based estimate")
+            # Rough estimate: 4.1 chars per token
+            base_chars_per_token = 4.1
+            estimated_tokens = int(file_size / base_chars_per_token)
+            multiplier = get_file_type_multiplier(file_path)
+            return int(estimated_tokens * multiplier)
         
         # Quick binary check using file extension
         _, ext = os.path.splitext(file_path.lower())
         if ext in {'.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
                   '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
                   '.woff', '.woff2', '.ttf', '.eot', '.zip', '.key', '.crt', '.p12', '.pfx',
-                  '.der', '.pem'}:  # Added certificate and key file extensions
+                  '.der', '.pem', '.stl', '.obj', '.fbx', '.blend'}:  # Binary 3D formats only
             return 0
         
         # Estimate tokens based on file size and type
