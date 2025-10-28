@@ -957,6 +957,7 @@ export const sendPayload = async (
                             const toolStartSuffix = `\n\`\`\`\n\n`;
                             const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
 
+                            if (lastStartIndex !== -1) {
                                 const blockEndIndex = currentContent.indexOf(toolStartSuffix, lastStartIndex);
                                 if (blockEndIndex !== -1) {
                                     currentContent = currentContent.substring(0, lastStartIndex) + toolResultDisplay + currentContent.substring(blockEndIndex + toolStartSuffix.length);
