@@ -41,6 +41,7 @@ export const ThrottlingErrorDisplay: React.FC<ThrottlingErrorDisplayProps> = ({
   const [isWaitingForRetry, setIsWaitingForRetry] = useState(false);
   
   const {
+    streamedContentMap,
     setStreamedContentMap,
     setIsStreaming,
     removeStreamingConversation,
@@ -80,6 +81,7 @@ export const ThrottlingErrorDisplay: React.FC<ThrottlingErrorDisplayProps> = ({
         question,
         checkedItems,
         conversationId,
+        streamedContentMap,
         setStreamedContentMap,
         setIsStreaming,
         removeStreamingConversation,

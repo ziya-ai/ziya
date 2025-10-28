@@ -17,6 +17,7 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
         currentConversationId,
         addMessageToConversation,
         setIsStreaming,
+	streamedContentMap,
 	setStreamedContentMap,
 	removeStreamingConversation,
 	streamingConversations
@@ -35,6 +36,7 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
                 lastHumanMessage.content,
                 convertKeysToStrings(checkedKeys),
                 currentConversationId,
+                streamedContentMap,
                 setStreamedContentMap,
                 setIsStreaming,
                 removeStreamingConversation,
