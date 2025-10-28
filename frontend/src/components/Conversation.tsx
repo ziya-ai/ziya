@@ -489,7 +489,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             rowHeight={100}
                             width="100%"
                             rowComponent={renderMessage}
-                            rowProps={{}}
                         />
                     </div>
                 ) : null)}
