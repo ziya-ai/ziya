@@ -1,0 +1,28 @@
+diff --git a/app/routes/mcp_registry_routes.py b/app/routes/mcp_registry_routes.py
+--- a/app/routes/mcp_registry_routes.py
++++ b/app/routes/mcp_registry_routes.py
+@@ -209,4 +209,22 @@ async def get_service_detail(
+         logger.error(f"Error getting service detail: {e}")
+         raise HTTPException(status_code=500, detail=str(e))
++
++
++@router.get("/test-connection")
++async def test_registry_connection():
++    """Test connection to MCP Registry providers."""
++    try:
++        provider_registry = get_provider_registry()
++        results = {}
++        
++        for provider in provider_registry.get_available_providers():
++            if hasattr(provider, 'test_connection'):
++                try:
++                    result = await provider.test_connection()
++                    results[provider.identifier] = {"success": result}
++                except Exception as e:
++                    results[provider.identifier] = {"success": False, "error": str(e)}
++        
++        return {"connection_tests": results}
++        
++    except Exception as e:
++        logger.error(f"Error testing registry connections: {e}")
++        raise HTTPException(status_code=500, detail=str(e))

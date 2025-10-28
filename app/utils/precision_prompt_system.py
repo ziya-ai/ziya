@@ -58,20 +58,36 @@ class PrecisionPromptSystem:
             )
             
             # Format the prompt with file context
-            # Escape curly braces in both question and codebase to prevent .format() from interpreting them
-            safe_question = (question.replace('{', '{{').replace('}', '}}') 
-                           if question and not ('{{' in question or '}}' in question)
-                           else question) if question else ""
+            # Escape curly braces but preserve template literals like ${variable}
+            import re
+            def escape_braces_preserve_template_literals(text):
+                if not text or '{{' in text or '}}' in text:
+                    return text
+                # Temporarily replace template literals with placeholders
+                placeholders = []
+                def save_template(match):
+                    placeholders.append(match.group(0))
+                    return f'__TEMPLATE_{len(placeholders)-1}__'
+                
+                # Save template literals
+                text = re.sub(r'\$\{[^}]*\}', save_template, text)
+                
+                # Escape remaining braces
+                text = text.replace('{', '{{').replace('}', '}}')
+                
+                # Restore template literals
+                for i, placeholder_text in enumerate(placeholders):
+                    text = text.replace(f'__TEMPLATE_{i}__', placeholder_text)
+                
+                return text
             
-            # Also escape codebase content to prevent template interpretation
-            safe_codebase = (file_context.replace('{', '{{').replace('}', '}}')
-                           if file_context and not ('{{' in file_context or '}}' in file_context)
-                           else file_context) if file_context else ""
+            # Don't escape question - it's user input, not a template
+            safe_codebase = escape_braces_preserve_template_literals(file_context) if file_context else ""
             
             formatted_messages = extended_prompt.format_messages(
                 codebase=safe_codebase,
                 tools="",  # Tools are handled natively
-                question=safe_question
+                question=question if question else ""
             )
             
             # Convert to dict format

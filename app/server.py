@@ -87,6 +87,13 @@ from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
 from app.middleware.continuation import ContinuationMiddleware
 
+# WebSocket support for real-time feedback
+from fastapi.websockets import WebSocket, WebSocketDisconnect
+import json
+ 
+# Track active WebSocket connections for feedback
+active_feedback_connections = {}
+
 def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False) -> List:
     """
     Build messages for streaming using the extended prompt template.
@@ -159,6 +166,45 @@ app = FastAPI(
     description="API for Ziya, a code assistant powered by LLMs",
     version="0.1.0",
 )
+
+@app.websocket("/ws/feedback/{conversation_id}")
+async def feedback_websocket(websocket: WebSocket, conversation_id: str):
+    """WebSocket endpoint for real-time streaming feedback."""
+    await websocket.accept()
+    logger.info(f"🔄 FEEDBACK: WebSocket connected for conversation {conversation_id}")
+    
+    # Register this connection
+    active_feedback_connections[conversation_id] = {
+        'websocket': websocket,
+        'connected_at': time.time(),
+        'feedback_queue': asyncio.Queue()
+    }
+    
+    try:
+        while True:
+            try:
+                # Listen for feedback messages
+                data = await websocket.receive_json()
+                feedback_type = data.get('type')
+                
+                if feedback_type == 'tool_feedback':
+                    logger.info(f"🔄 FEEDBACK: Received tool feedback for {conversation_id}: {data.get('message', '')}")
+                    
+                    # Add to feedback queue for tool execution to consume
+                    if conversation_id in active_feedback_connections:
+                        await active_feedback_connections[conversation_id]['feedback_queue'].put(data)
+                elif feedback_type == 'interrupt':
+                    logger.info(f"🔄 FEEDBACK: Received interrupt request for {conversation_id}")
+                    # Signal tool execution to pause/stop
+                    await active_feedback_connections[conversation_id]['feedback_queue'].put({'type': 'interrupt'})
+                
+            except WebSocketDisconnect:
+                logger.info(f"🔄 FEEDBACK: WebSocket disconnected for {conversation_id}")
+                break
+    finally:
+        # Clean up connection
+        if conversation_id in active_feedback_connections:
+            del active_feedback_connections[conversation_id]
 
 # PRIORITY ROUTE: /api/chat - MUST BE FIRST TO TAKE PRECEDENCE
 @app.post('/api/chat')
@@ -361,8 +407,9 @@ app.include_router(ast_router)
 @app.middleware("http")
 async def connection_state_middleware(request: Request, call_next):
     """Track connection state to handle disconnections gracefully."""
-    # Log ALL requests to trace routing
-    logger.info(f"🔍 MIDDLEWARE: Request {request.method} {request.url.path}")
+    # Only log API requests, not static assets
+    if not request.url.path.startswith('/static/'):
+        logger.info(f"🔍 MIDDLEWARE: Request {request.method} {request.url.path}")
     
     try:
         # Initialize connection state
@@ -382,6 +429,10 @@ async def connection_state_middleware(request: Request, call_next):
 # Import and include MCP routes
 from app.routes.mcp_routes import router as mcp_router
 app.include_router(mcp_router)
+
+# Import and include MCP registry routes
+from app.routes.mcp_registry_routes import router as mcp_registry_router
+app.include_router(mcp_registry_router)
 
 # Import and include AST routes
 from app.routes.ast_routes import router as ast_router
@@ -947,6 +998,17 @@ async def stream_chunks(body):
         logger.info(f"🔍 DIRECT_STREAMING_DEBUG: question='{question}', chat_history={len(chat_history)}, files={len(files)}")
         
         if question:
+            # Check for common connectivity-related errors early
+            try:
+                # Quick connectivity check before expensive operations
+                from app.agents.models import ModelManager
+                state = ModelManager.get_state()
+                if state.get('last_auth_error') and 'i/o timeout' in str(state.get('last_auth_error')):
+                    yield f"data: {json.dumps({'error': 'Network connectivity issue detected. Please check your internet connection and try again.', 'error_type': 'connectivity'})}\n\n"
+                    return
+            except Exception as conn_check_error:
+                logger.debug(f"Connectivity pre-check failed: {conn_check_error}")
+            
             try:
                 from app.streaming_tool_executor import StreamingToolExecutor
                 from app.agents.models import ModelManager
@@ -1001,6 +1063,9 @@ async def stream_chunks(body):
                         break
                     elif chunk.get('type') == 'error':
                         yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error')})}\n\n"
+                    elif chunk.get('type') == 'heartbeat':
+                        # Pass through heartbeat messages
+                        yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\\n\\n"
                     elif chunk.get('type') == 'tool_result_for_model':
                         # Don't stream to frontend - this is for model conversation only
                         logger.debug(f"Tool result for model conversation: {chunk.get('tool_use_id')}")
@@ -1020,11 +1085,20 @@ async def stream_chunks(body):
                 # Expected error for non-Bedrock endpoints - fall through to LangChain silently
                 logger.info(f"🚀 DIRECT_STREAMING: {ve} - falling back to LangChain")
             except Exception as e:
+                # Check if this is a connectivity-related error
+                error_str = str(e)
+                if any(indicator in error_str.lower() for indicator in ['i/o timeout', 'dial tcp', 'lookup', 'network', 'connection']):
+                    yield f"data: {json.dumps({'error': 'Network connectivity issue. Please check your internet connection and try again.', 'error_type': 'connectivity', 'technical_details': str(e)[:200]})}\n\n"
+                    return
+                    
+            except Exception as e:
                 import traceback
                 error_details = traceback.format_exc()
                 logger.error(f"🚀 DIRECT_STREAMING: Error in StreamingToolExecutor: {e}")
                 logger.error(f"🚀 DIRECT_STREAMING: Full traceback:\n{error_details}")
                 # Fall through to LangChain path
+                yield f"data: {json.dumps({'error': f'Service initialization failed: {str(e)[:100]}...', 'error_type': 'initialization'})}\n\n"
+                return
         
         logger.info("🚀 DIRECT_STREAMING: No question found or error occurred, falling back to LangChain")
     
@@ -1699,8 +1773,32 @@ async def stream_chunks(body):
             logger.info(f"🔍 STREAM_CHUNKS: Created {len(mcp_tools)} MCP tools for iteration")
         except Exception as e:
             logger.warning(f"Failed to get MCP tools for iteration: {e}")
+        
         # Allow tool calls to complete - only stop at the END of tool calls
-        model_with_stop = model_instance.bind(stop=["</TOOL_SENTINEL>"])
+        try:
+            model_with_stop = model_instance.bind(stop=["</TOOL_SENTINEL>"])
+        except Exception as e:
+            # Handle credential errors specifically
+            error_str = str(e)
+            if "mwinit" in error_str.lower() or "authentication" in error_str.lower() or "credential" in error_str.lower():
+                # Preserve conversation context in error response
+                conversation_id = body.get("conversation_id")
+                if conversation_id:
+                    logger.info(f"Adding conversation_id to credential error: {conversation_id}")
+                else:
+                    logger.warning("No conversation_id available for credential error")
+                logger.error(f"Credential error during model binding: {e}")
+                credential_error = {
+                    "error": "auth_error",
+                    "detail": "AWS credentials have expired. Please run 'mwinit' to authenticate and try again.",
+                    "status_code": 401,
+                    "technical_details": error_str
+                }
+                yield f"data: {json.dumps(credential_error)}\n\n"
+                yield f"data: [DONE]\n\n"
+                return
+            raise  # Re-raise other errors
+        
         logger.info(f"🔍 STREAM_CHUNKS: model_with_stop type: {type(model_with_stop)}")
 
         # Agent iteration loop for tool execution
@@ -2294,16 +2392,6 @@ async def stream_chunks(body):
                         # CRITICAL: Don't break! Continue in the same iteration to let model respond
                         # We want to stay in iteration 1 and let the model continue generating
                         # This avoids creating a new stream and resending context
-
-                        # Continue to next iteration to get model's response after tool execution
-                        # Mark rewind boundary before continuing to next iteration
-                        if current_response:
-                            lines = current_response.split('\n')
-                            rewind_marker = f"<!-- REWIND_MARKER: {len(lines)} -->"
-                            rewind_content = f"\n{rewind_marker}\n**🔄 Response continues...**\n"
-                            yield f"data: {json.dumps({'content': rewind_content})}\n\n"
-                            logger.info(f"🔄 AGENT_REWIND: Marked boundary at line {len(lines)} before iteration continue")
-                        
                         continue
                     else:
                         logger.warning("🔍 STREAM: Tool execution returned no changes")
@@ -2329,7 +2417,8 @@ async def stream_chunks(body):
                         lines = current_response.split('\n')
                         rewind_marker = f"<!-- REWIND_MARKER: {len(lines)} -->"
                         rewind_content = f"\n\n{rewind_marker}\n**🔄 Response continues...**\n"
-                        yield f"data: {json.dumps({'content': rewind_content})}\n\n"
+                        # Send as atomic unit with continuation flag
+                        yield f"data: {json.dumps({'content': rewind_content, 'continuation_boundary': True})}\n\n"
                         logger.info(f"🔄 ITERATION_REWIND: Marked boundary at line {len(lines)} before iteration continue")
                     
                     continue
@@ -2376,6 +2465,10 @@ async def stream_chunks(body):
                                      "ThrottlingException" in error_str and
                                      "reached max retries" in error_str)
                 
+                # Preserve conversation context for throttling errors
+                conversation_id = body.get("conversation_id")
+                logger.info(f"Throttling error for conversation: {conversation_id}")
+                
                 # Use two-tier retry: first within stream, then new stream
                 if (is_timeout_error or is_token_throttling):
                     # Tier 1: Quick retries within same stream
@@ -2416,7 +2509,8 @@ async def stream_chunks(body):
                             lines = current_response.split('\n')
                             rewind_marker = f"<!-- REWIND_MARKER: {len(lines)} -->"
                             content = f'{rewind_marker}\n**🔄 Response continues...**\n'
-                            yield f"data: {json.dumps({'content': content})}\n\n"
+                            # Send as atomic unit with continuation flag
+                            yield f"data: {json.dumps({'content': content, 'continuation_boundary': True})}\n\n"
                             logger.info(f"🔄 RETRY_REWIND: Marked boundary at line {len(lines)} before recursive call")
                         
                         # End current stream and trigger new one via recursive call
@@ -2499,6 +2593,7 @@ async def stream_chunks(body):
                     logger.info("🔍 AGENT: Handling ValidationError in streaming context, sending SSE error")
                     error_data = {
                         "error": "validation_error",
+                        "conversation_id": body.get("conversation_id"),
                         "detail": str(e),
                         "status_code": 413
                     }
@@ -2562,16 +2657,35 @@ async def stream_chunks(body):
         await cleanup_stream(conversation_id)
         # Don't re-raise connection errors as they're expected when clients disconnect
         
+    except (AttributeError, NameError) as e:
+        logger.error(f"Code error in stream_chunks: {str(e)}", exc_info=True)
+        # This indicates missing code/methods - provide helpful error to user
+        yield f"data: {json.dumps({'error': 'Service configuration issue. Please contact support.', 'error_type': 'configuration', 'technical_details': str(e)})}\n\n"
+        if conversation_id:
+            await cleanup_stream(conversation_id)
+            
     except Exception as e:
         logger.error(f"Unhandled exception in stream_chunks: {str(e)}", exc_info=True)
+        # Check if this is a connectivity issue
+        if any(indicator in str(e).lower() for indicator in ['i/o timeout', 'dial tcp', 'lookup', 'network', 'connection']):
+            yield f"data: {json.dumps({'error': 'Network connectivity issue. Please check your internet connection and try again.', 'error_type': 'connectivity'})}\n\n"
+        else:
+            yield f"data: {json.dumps({'error': f'An unexpected error occurred: {str(e)[:100]}...', 'error_type': 'unexpected'})}\n\n"
         if conversation_id: # Ensure cleanup if conversation_id was set
             await cleanup_stream(conversation_id)
 
 # Override the stream endpoint with our error handling
 # DISABLED: Manual /ziya/stream endpoint conflicts with /api/chat
-# @app.post("/ziya/stream")
+async def stream_endpoint(request: Request, body: dict = None):
     """Stream the agent's response with centralized error handling."""
+    if body is None:
+        body = await request.json()
+        
     try:
+        # Get agent executor from ModelManager
+        from app.agents.agent import get_or_create_agent_executor
+        agent_executor = get_or_create_agent_executor()
+        
         first_chunk = True
         # Stream the response
         async for chunk in agent_executor.astream_log(body):
@@ -2691,7 +2805,6 @@ def invalidate_folder_cache():
     if current_time - _last_cache_invalidation < _cache_invalidation_debounce:
         return
     
-    logger.info("🔄 Invalidating folder structure cache")
     _folder_cache['data'] = None
     _folder_cache['timestamp'] = 0
     _last_cache_invalidation = current_time
@@ -2785,23 +2898,32 @@ async def get_folder(request: FolderRequest):
 @app.get("/folder-progress")
 async def get_folder_progress():
     """Get current folder scanning progress."""
-    # progress = get_scan_progress()
+    from app.utils.directory_util import get_scan_progress
+    progress = get_scan_progress()
     # Only return active=True if there's actual progress to report
-    # if progress["active"] and not progress["progress"]:
-    #     # No actual progress data, don't report as active
-    #     progress["active"] = False
-    #     progress["progress"] = {}
-    # return progress
-    return {"active": False, "progress": {}}
+    if progress["active"] and not progress["progress"]:
+        # No actual progress data, don't report as active
+        progress["active"] = False
+        progress["progress"] = {}
+    return progress
 
 @app.post("/folder-cancel")
 async def cancel_folder_scan():
     """Cancel current folder scanning operation."""
-    # was_active = cancel_scan()
-    # if was_active:
-    #     logger.info("Folder scan cancellation requested")
-    logger.info("Folder scan cancellation not available")
-    return {"cancelled": False}
+    from app.utils.directory_util import cancel_scan
+    was_active = cancel_scan()
+    if was_active:
+        logger.info("Folder scan cancellation requested")
+    return {"cancelled": was_active}
+
+@app.post("/api/clear-folder-cache")
+async def clear_folder_cache():
+    """Clear the folder structure cache."""
+    global _folder_cache
+    _folder_cache['data'] = None
+    _folder_cache['timestamp'] = 0
+    logger.info("Folder cache cleared")
+    return {"cleared": True}
 
 @app.post("/file")
 async def get_file(request: FileRequest):

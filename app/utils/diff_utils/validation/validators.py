@@ -208,6 +208,17 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     """
     removed_lines, added_lines = extract_diff_changes(hunk)
     
+    # Debug logging
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug(f"Malformed check - Removed: {len(removed_lines)} lines, Added: {len(added_lines)} lines")
+    if removed_lines:
+        logger.debug(f"First removed line repr: {repr(removed_lines[0][:50] if removed_lines[0] else 'empty')}")
+    if added_lines:
+        logger.debug(f"First added line repr: {repr(added_lines[0][:50] if added_lines[0] else 'empty')}")
+    logger.debug(f"added_lines is truthy: {bool(added_lines)}")
+    logger.debug(f"removed_lines is truthy: {bool(removed_lines)}")
+    
     # Convert to normalized strings for searching, but use exact content for whitespace-sensitive comparison
     file_content_exact = "\n".join(file_lines)
     file_content_normalized = "\n".join([normalize_line_for_comparison(line) for line in file_lines])
@@ -216,6 +227,7 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     
     # 1. Replacement operations: trying to add existing content while removing non-existent content
     if removed_lines and added_lines:
+        logger.debug("Checking replacement operation (both removed and added lines)")
         removed_content_exact = "\n".join(removed_lines)
         added_content_exact = "\n".join(added_lines)
         removed_content_normalized = "\n".join([normalize_line_for_comparison(line) for line in removed_lines])
@@ -227,11 +239,31 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
         old_content_exists_normalized = removed_content_normalized in file_content_normalized
         new_content_exists_normalized = added_content_normalized in file_content_normalized
         
-        # Malformed pattern 1: both old and new content exist exactly (clear duplication)
+        # CRITICAL FIX: Only flag as malformed if both old and new content exist IN PROXIMITY
+        # If they exist far apart in the file, this is likely a case of incorrect line numbers
+        # in the diff, not actual duplication/corruption
+        if (old_content_exists_exact and new_content_exists_exact) or \
+           (old_content_exists_normalized and new_content_exists_normalized):
+            # Find positions of both contents
+            old_pos = file_content_normalized.find(removed_content_normalized)
+            new_pos = file_content_normalized.find(added_content_normalized)
+            
+            if old_pos >= 0 and new_pos >= 0:
+                # Calculate distance in characters
+                distance = abs(old_pos - new_pos)
+                # Calculate expected proximity based on content size
+                max_proximity = max(len(removed_content_normalized), len(added_content_normalized)) * 3
+                
+                # Only flag as malformed if they're close together (within 3x the content size)
+                if distance > max_proximity:
+                    logger.debug(f"Old and new content exist but are far apart (distance: {distance}, max: {max_proximity}) - likely incorrect line numbers, not malformed")
+                    return False
+        
+        # Malformed pattern 1: both old and new content exist exactly in proximity (clear duplication)
         if old_content_exists_exact and new_content_exists_exact:
             return True
         
-        # Malformed pattern 2: both old and new content exist in normalized form (duplication with variations)
+        # Malformed pattern 2: both old and new content exist in normalized form in proximity (duplication with variations)
         if old_content_exists_normalized and new_content_exists_normalized:
             # Exception: if this is a whitespace-only change, don't flag as malformed
             if removed_content_exact.replace('\t', '    ').replace(' ', '') == added_content_exact.replace('\t', '    ').replace(' ', ''):
@@ -242,6 +274,12 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
             if all(normalize_line_for_comparison(added_line) in removed_content_normalized for added_line in added_lines):
                 return False  # This is likely a legitimate simplification (e.g., "return a + b" -> "return a")
             
+            # Exception: if this is a net deletion (removing more lines than adding) and the added content
+            # exists in the file, this is likely a legitimate deletion where the "added" lines are just
+            # the remaining context that was already there
+            if len(removed_lines) > len(added_lines):
+                return False  # This is a legitimate deletion hunk
+            
             return True
         
         # Malformed pattern 3: new content exists but old doesn't (trying to add existing content)
@@ -251,12 +289,13 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
                 return False  # Don't flag short changes as malformed
             return True
     
-    # 2. Pure removals: trying to remove content that doesn't exist
+    # 2. Pure removals: Don't flag as malformed - let the difflib stage handle it
+    # Pure deletions are not malformed even if the content doesn't exist exactly
     elif removed_lines and not added_lines:
-        removed_content = "\n".join([normalize_line_for_comparison(line) for line in removed_lines])
-        if removed_content not in file_content_normalized:
-            return True
+        logger.debug("Pure removal detected - not flagging as malformed")
+        return False
     
+    logger.debug("Returning False - no malformed patterns detected")
     return False
 
 

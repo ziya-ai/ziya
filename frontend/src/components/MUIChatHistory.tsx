@@ -731,7 +731,7 @@ const MUIChatHistory = () => {
   };
 
   // Handle moving a folder
-  const handleMoveFolder = async (folderId: string, targetParentId: string | null) => {
+  const handleMoveFolder = async (folderId: string, targetParentId: string | null, insertionContext?: { type: string; targetNodeId?: string }) => {
     try {
       const folder = folders.find(f => f.id === folderId);
       if (!folder) return;
@@ -754,10 +754,50 @@ const MUIChatHistory = () => {
         return;
       }
 
+      // Calculate the appropriate timestamp for ordering
+      let orderingTimestamp = Date.now();
+      
+      if (insertionContext && (insertionContext.type === 'above' || insertionContext.type === 'below')) {
+        // Find the target folder for insertion ordering
+        const targetFolder = folders.find(f => f.id === insertionContext.targetNodeId);
+        
+        if (targetFolder) {
+          // Get all sibling folders in the target parent
+          const siblings = folders
+            .filter(f => f.parentId === targetParentId && f.id !== folderId)
+            .sort((a, b) => (a.updatedAt || a.createdAt || 0) - (b.updatedAt || b.createdAt || 0));
+          
+          const targetIndex = siblings.findIndex(f => f.id === targetFolder.id);
+          
+          if (targetIndex !== -1) {
+            if (insertionContext.type === 'above') {
+              // Insert before target - set timestamp slightly before target
+              const targetTime = targetFolder.updatedAt || targetFolder.createdAt || Date.now();
+              const previousFolder = targetIndex > 0 ? siblings[targetIndex - 1] : null;
+              const previousTime = previousFolder ? (previousFolder.updatedAt || previousFolder.createdAt || 0) : 0;
+              
+              // Set timestamp between previous and target
+              orderingTimestamp = previousTime + Math.floor((targetTime - previousTime) / 2);
+              if (orderingTimestamp <= previousTime) orderingTimestamp = previousTime + 1;
+            } else {
+              // Insert after target - set timestamp slightly after target
+              const targetTime = targetFolder.updatedAt || targetFolder.createdAt || Date.now();
+              const nextFolder = targetIndex < siblings.length - 1 ? siblings[targetIndex + 1] : null;
+              const nextTime = nextFolder ? (nextFolder.updatedAt || nextFolder.createdAt || Date.now() + 10000) : Date.now() + 10000;
+              
+              // Set timestamp between target and next
+              orderingTimestamp = targetTime + Math.floor((nextTime - targetTime) / 2);
+              if (orderingTimestamp <= targetTime) orderingTimestamp = targetTime + 1;
+            }
+          }
+        }
+      }
+
       // Update the folder's parent
       const updatedFolder = {
         ...folder,
-        parentId: targetParentId
+        parentId: targetParentId,
+        updatedAt: orderingTimestamp
       };
 
       await updateFolder(updatedFolder);
@@ -770,6 +810,13 @@ const MUIChatHistory = () => {
 
   const startCustomDrag = useCallback((nodeId: string, nodeType: 'folder' | 'conversation', text: string) => {
     const ghostElement = createDragGhost(text);
+    
+    // Clean up any existing ghost elements first (defensive programming)
+    const existingGhost = document.getElementById('mui-drag-ghost');
+    if (existingGhost && existingGhost !== ghostElement) {
+      console.log('🧹 DRAG_START: Cleaning up existing ghost element');
+      existingGhost.remove();
+    }
 
     setCustomDragState({
       isDragging: true,
@@ -780,7 +827,7 @@ const MUIChatHistory = () => {
     });
   }, [createDragGhost]);
 
-  const endCustomDrag = useCallback(async (dropTargetId?: string | undefined) => {
+  const endCustomDrag = useCallback(async (dropTargetId?: string | undefined, insertionContext?: { type: string; targetNodeId?: string }) => {
     if (!customDragState.isDragging || !customDragState.draggedNodeId) return;
     // Clear all visual feedback
     document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
@@ -810,7 +857,7 @@ const MUIChatHistory = () => {
           await handleMoveConversation(customDragState.draggedNodeId, targetFolderId);
         } else if (customDragState.draggedNodeType === 'folder') {
           const targetParentId = dropTargetId.startsWith('conv-') ? null : dropTargetId;
-          await handleMoveFolder(customDragState.draggedNodeId, targetParentId);
+          await handleMoveFolder(customDragState.draggedNodeId, targetParentId, insertionContext);
         }
       } catch (error) {
         console.error('Drop error:', error);
@@ -823,7 +870,7 @@ const MUIChatHistory = () => {
       if (customDragState.draggedNodeType === 'conversation') {
         await handleMoveConversation(customDragState.draggedNodeId, null);
       } else if (customDragState.draggedNodeType === 'folder') {
-        await handleMoveFolder(customDragState.draggedNodeId, null);
+        await handleMoveFolder(customDragState.draggedNodeId, null, insertionContext);
       }
     }
 
@@ -856,6 +903,26 @@ const MUIChatHistory = () => {
 
   // Global mouse tracking for custom drag
   useEffect(() => {
+    const handleMouseLeave = (e: MouseEvent) => {
+      // Check if mouse left the chat history panel
+      const chatHistoryContainer = chatHistoryRef.current;
+      if (!chatHistoryContainer) return;
+      
+      const rect = chatHistoryContainer.getBoundingClientRect();
+      const mouseX = e.clientX;
+      const mouseY = e.clientY;
+      
+      // If mouse is outside the chat history panel bounds
+      if (mouseX < rect.left || mouseX > rect.right || 
+          mouseY < rect.top || mouseY > rect.bottom) {
+        
+        if (customDragState.isDragging) {
+          console.log('🚫 Mouse left chat history panel - canceling drag operation');
+          endCustomDrag(); // Cancel drag without applying any changes
+        }
+      }
+    };
+
     const handleMouseMove = (e: MouseEvent) => {
       if (!customDragState.isDragging || !customDragState.ghostElement) return;
 
@@ -886,6 +953,13 @@ const MUIChatHistory = () => {
       // Enhanced drop zone detection with hierarchical insertion
       const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
       const treeItemBelow = elementBelow?.closest('.MuiTreeItem-content');
+      
+      // Get the target node ID from the tree item
+      let targetNodeId: string | undefined;
+      if (treeItemBelow) {
+        const treeItem = treeItemBelow.closest('[data-node-id]');
+        targetNodeId = treeItem?.getAttribute('data-node-id') || undefined;
+      }
 
       if (treeItemBelow && treeItemBelow instanceof HTMLElement) {
         const dropTargetText = treeItemBelow.textContent?.trim();
@@ -998,6 +1072,7 @@ const MUIChatHistory = () => {
 
         // Store the insertion context for the drop handler
         insertionLine.setAttribute('data-insertion-type', insertionType);
+        insertionLine.setAttribute('data-target-node-id', targetNodeId || '');
         insertionLine.setAttribute('data-target-level', targetLevel.toString());
         insertionLine.setAttribute('data-target-node', dropTargetText || '');
       }
@@ -1009,6 +1084,7 @@ const MUIChatHistory = () => {
         const insertionLine = document.querySelector('.drop-insertion-line');
         const insertionContext = insertionLine ? {
           type: insertionLine.getAttribute('data-insertion-type') || 'below',
+          targetNodeId: insertionLine.getAttribute('data-target-node-id') || undefined,
           level: insertionLine.getAttribute('data-target-level'),
           target: insertionLine.getAttribute('data-target-node')
         } : null;
@@ -1077,9 +1153,10 @@ const MUIChatHistory = () => {
         console.log('🎯 Final target resolution:', { targetNodeId, draggedId: customDragState.draggedNodeId });
         console.log('🎯 Target folder details:', {
           targetFolder: targetNodeId ? folders.find(f => f.id === targetNodeId) : null,
-          exactMatch: true // Now using exact nodeId match instead of text matching
+          exactMatch: true, // Now using exact nodeId match instead of text matching
+          insertionContext: insertionContext
         });
-        endCustomDrag(targetNodeId ?? undefined);
+        endCustomDrag(targetNodeId ?? undefined, insertionContext || undefined);
       }
     };
 
@@ -1093,6 +1170,21 @@ const MUIChatHistory = () => {
       };
     }
   }, [customDragState, endCustomDrag, folders, conversations, pinnedFolders]);
+
+  // Cleanup on component unmount - critical for preventing ghost element leaks
+  useEffect(() => {
+    return () => {
+      // Force cleanup of any remaining drag artifacts on unmount
+      const ghostElement = document.getElementById('mui-drag-ghost');
+      if (ghostElement) {
+        console.log('🧹 UNMOUNT_CLEANUP: Removing orphaned ghost element');
+        ghostElement.remove();
+      }
+      
+      // Clean up any remaining insertion lines
+      document.querySelectorAll('.drop-insertion-line').forEach(line => line.remove());
+    };
+  }, []); // Empty dependency array - only run on unmount
 
   // Function to toggle pin status
   const togglePinFolder = (folderId: string) => {

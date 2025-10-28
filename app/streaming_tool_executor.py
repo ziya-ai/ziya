@@ -67,21 +67,21 @@ class StreamingToolExecutor:
             description = getattr(tool, 'description', 'No description')
             input_schema = getattr(tool, 'input_schema', getattr(tool, 'inputSchema', {}))
             
-            logger.info(f"🔍 TOOL_SCHEMA: Converting tool '{name}', input_schema type: {type(input_schema)}")
+            logger.debug(f"🔍 TOOL_SCHEMA: Converting tool '{name}', input_schema type: {type(input_schema)}")
             
             # Handle different input_schema types
             if isinstance(input_schema, dict):
                 # Already a dict, use as-is
-                logger.info(f"🔍 TOOL_SCHEMA: Tool '{name}' has dict schema with keys: {list(input_schema.keys())}")
+                logger.debug(f"🔍 TOOL_SCHEMA: Tool '{name}' has dict schema with keys: {list(input_schema.keys())}")
             elif hasattr(input_schema, 'model_json_schema'):
                 # Pydantic class - convert to JSON schema
                 input_schema = input_schema.model_json_schema()
-                logger.info(f"🔍 TOOL_SCHEMA: Converted Pydantic schema for '{name}'")
+                logger.debug(f"🔍 TOOL_SCHEMA: Converted Pydantic schema for '{name}'")
             elif input_schema:
                 # Some other object - try to convert
                 try:
                     input_schema = input_schema.model_json_schema()
-                    logger.info(f"🔍 TOOL_SCHEMA: Converted object schema for '{name}'")
+                    logger.debug(f"🔍 TOOL_SCHEMA: Converted object schema for '{name}'")
                 except:
                     logger.warning(f"🔍 TOOL_SCHEMA: Failed to convert schema for '{name}', using empty schema")
                     input_schema = {"type": "object", "properties": {}}
@@ -94,7 +94,7 @@ class StreamingToolExecutor:
                 'description': description,
                 'input_schema': input_schema
             }
-            logger.info(f"🔍 TOOL_SCHEMA: Final schema for '{name}': {json.dumps(result, indent=2)}")
+            logger.debug(f"🔍 TOOL_SCHEMA: Final schema for '{name}': {json.dumps(result, indent=2)}")
             return result
 
     def _commands_similar(self, cmd1: str, cmd2: str) -> bool:
@@ -275,16 +275,16 @@ class StreamingToolExecutor:
             
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4000,
+                "max_tokens": self.model_config.get('max_output_tokens', 4000),
                 "messages": conversation
             }
 
             if system_content:
                 # With precision prompts, system content is already clean - no regex needed
-                logger.info(f"🔍 SYSTEM_DEBUG: Using clean system content length: {len(system_content)}")
-                logger.info(f"🔍 SYSTEM_DEBUG: File count in system content: {system_content.count('File:')}")
+                logger.debug(f"🔍 SYSTEM_DEBUG: Using clean system content length: {len(system_content)}")
+                logger.debug(f"🔍 SYSTEM_DEBUG: File count in system content: {system_content.count('File:')}")
                 
-                system_text = system_content + "\n\nCRITICAL: Use ONLY native tool calling. Never generate markdown like ```tool:mcp_run_shell_command or ```bash. Use the provided tools directly.\n\nIMPORTANT: Only use tools when you need to interact with the system (run commands, check time, etc). If you can answer from the provided context or your reasoning, do so directly without using tools. Don't use echo commands just to show your thinking - just answer directly."
+                system_text = system_content + "\n\nCRITICAL: Use ONLY native tool calling. Never generate fake tool markdown like ```tool:mcp_run_shell_command. Use the provided tools directly.\n\nIMPORTANT: Only use tools when you must interact with the system to fulfill a request (execute commands, read files that aren't in context). For questions, analysis, explanations, or information you can provide from your knowledge or the provided context, respond directly WITHOUT using any tools. Avoid unnecessary tool calls."
                 
                 # Use prompt caching for large system prompts to speed up iterations
                 if len(system_text) > 1024:
@@ -295,14 +295,14 @@ class StreamingToolExecutor:
                             "cache_control": {"type": "ephemeral"}
                         }
                     ]
-                    logger.info(f"🔍 CACHE: Enabled prompt caching for {len(system_text)} char system prompt")
+                    logger.debug(f"🔍 CACHE: Enabled prompt caching for {len(system_text)} char system prompt")
                 else:
                     body["system"] = system_text
                 
-                logger.info(f"🔍 SYSTEM_DEBUG: Final system prompt length: {len(system_text)}")
-                logger.info(f"🔍 SYSTEM_CONTENT_DEBUG: First 500 chars of system prompt: {system_text[:500]}")
-                logger.info(f"🔍 SYSTEM_CONTENT_DEBUG: System prompt contains 'File:' count: {system_text.count('File:')}")
-                logger.info(f"🔍 SYSTEM_CONTENT_DEBUG: Last 500 chars of system prompt: {system_text[-500:]}")
+                logger.debug(f"🔍 SYSTEM_DEBUG: Final system prompt length: {len(system_text)}")
+                logger.debug(f"🔍 SYSTEM_CONTENT_DEBUG: First 500 chars of system prompt: {system_text[:500]}")
+                logger.debug(f"🔍 SYSTEM_CONTENT_DEBUG: System prompt contains 'File:' count: {system_text.count('File:')}")
+                logger.debug(f"🔍 SYSTEM_CONTENT_DEBUG: Last 500 chars of system prompt: {system_text[-500:]}")
             
             # If we've already enabled extended context, keep using it
             if using_extended_context and self.model_config:
@@ -474,6 +474,35 @@ class StreamingToolExecutor:
                             
                         if delta.get('type') == 'text_delta':
                             text = delta.get('text', '')
+                            
+                            # Buffer incomplete code block openings to prevent malformed types
+                            if not hasattr(self, '_block_opening_buffer'):
+                                self._block_opening_buffer = ""
+                            
+                            # Check if we have a buffered incomplete opening
+                            if self._block_opening_buffer:
+                                text = self._block_opening_buffer + text
+                                self._block_opening_buffer = ""
+                            
+                            # Check if text ends with incomplete code block opening
+                            if text.endswith('```') or (text.endswith('`') and text[-3:] != '```'):
+                                # Might be incomplete, buffer it
+                                self._block_opening_buffer = text
+                                continue
+                            elif '```' in text:
+                                # Has opening backticks, check if line is complete
+                                lines = text.split('\n')
+                                last_line = lines[-1]
+                                if last_line.strip().startswith('```') and not last_line.strip().endswith('```'):
+                                    # Incomplete opening line (e.g., "```vega-" without newline)
+                                    # Buffer the last line, process the rest
+                                    if len(lines) > 1:
+                                        text = '\n'.join(lines[:-1]) + '\n'
+                                        self._block_opening_buffer = last_line
+                                    else:
+                                        self._block_opening_buffer = text
+                                        continue
+                            
                             assistant_text += text
                             
                             # Check for fake tool calls in the text and intercept them
@@ -520,36 +549,34 @@ class StreamingToolExecutor:
                             
                             # Check for visualization block boundaries - ensure proper markdown format
                             viz_patterns = ['```vega-lite', '```mermaid', '```graphviz', '```d3']
-                            if any(pattern in text for pattern in viz_patterns):
-                                in_viz_block = True
-                                viz_buffer = text
+                            has_viz_pattern = any(pattern in text for pattern in viz_patterns) or (viz_buffer and any(pattern in viz_buffer + text for pattern in viz_patterns))
+                            
+                            if has_viz_pattern:
+                                # If we're already in a viz block and see a new opening, send the previous one first
+                                if in_viz_block and any(pattern in text for pattern in viz_patterns):
+                                    # New viz block starting - send accumulated buffer first
+                                    if viz_buffer.strip():
+                                        self._update_code_block_tracker(viz_buffer, code_block_tracker)
+                                        yield track_yield({
+                                            'type': 'text',
+                                            'content': viz_buffer,
+                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                        })
+                                    viz_buffer = text
+                                    in_viz_block = True
+                                elif not in_viz_block:
+                                    in_viz_block = True
+                                    viz_buffer = text
+                                else:
+                                    viz_buffer += text
                                 continue
                             elif in_viz_block:
                                 viz_buffer += text
-                                # Check for closing ``` - ensure complete block
-                                if '```' in text and viz_buffer.count('```') >= 2:
-                                    # Complete visualization block - ensure it ends with newline for proper markdown
-                                    if not viz_buffer.endswith('\n'):
-                                        viz_buffer += '\n'
-                                    
-                                    # Flush any pending content first
-                                    if hasattr(self, '_content_optimizer'):
-                                        remaining = self._content_optimizer.flush_remaining()
-                                        if remaining:
-                                            yield track_yield({
-                                                'type': 'text',
-                                                'content': remaining,
-                                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                            })
-                                    if content_buffer.strip():
-                                        yield track_yield({
-                                            'type': 'text',
-                                            'content': content_buffer,
-                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                        })
-                                        content_buffer = ""
-                                    
-                                    # Send complete visualization block
+                                # Check for closing ``` in accumulated buffer
+                                has_closing = any(line.strip() == '```' for line in viz_buffer.split('\n'))
+                                if has_closing:
+                                    # Complete visualization block - send immediately
+                                    self._update_code_block_tracker(viz_buffer, code_block_tracker)
                                     yield track_yield({
                                         'type': 'text',
                                         'content': viz_buffer,
@@ -706,30 +733,26 @@ class StreamingToolExecutor:
                                         'tool_use_id': tool_id,
                                         'content': f"ERROR: {error_msg}. Please try a different approach or fix the command."
                                     }
+
+                                completed_tools.add(tool_id)
+                            
+                            except json.JSONDecodeError as e:
+                                logger.error(f"🔍 JSON_PARSE_ERROR: Failed to parse tool arguments: {e}")
                                 completed_tools.add(tool_id)
 
-                            except Exception as e:
-                                error_msg = f"Tool error: {str(e)}"
-                                
-                                # Add error to tool_results so it gets fed back to the model
-                                tool_results.append({
-                                    'tool_id': tool_id,
-                                    'tool_name': tool_name,
-                                    'result': f"ERROR: {error_msg}. Please try a different approach or fix the command."
-                                })
-                                
-                                # Frontend error display
-                                yield {'type': 'tool_display', 'tool_name': 'unknown', 'result': f"ERROR: {error_msg}"}
-                                
-                                # Clean error for model
-                                yield {
-                                    'type': 'tool_result_for_model',
-                                    'tool_use_id': tool_id or 'unknown',
-                                    'content': f"ERROR: {error_msg}. Please try a different approach or fix the command."
-                                }
-
                     elif chunk['type'] == 'message_stop':
-                        # Flush any remaining content from buffers before stopping
+                        # Flush any remaining content from buffers before stopping  
+                        # Flush block opening buffer first
+                        if hasattr(self, '_block_opening_buffer') and self._block_opening_buffer:
+                            assistant_text += self._block_opening_buffer
+                            self._update_code_block_tracker(self._block_opening_buffer, code_block_tracker)
+                            yield track_yield({
+                                'type': 'text',
+                                'content': self._block_opening_buffer,
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                            })
+                            self._block_opening_buffer = ""
+                        
                         if viz_buffer.strip():
                             self._update_code_block_tracker(viz_buffer, code_block_tracker)
                             yield track_yield({
@@ -755,28 +778,41 @@ class StreamingToolExecutor:
                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                             })
                         
-                        # Check if we ended mid-code-block and auto-continue
+                        # Check if code block is still incomplete
+                        # ENHANCED BLOCK COMPLETION CHECK
+                        final_assistant_text = assistant_text.strip()
+                        
+                        # Check for unclosed code blocks using tracker
+                        logger.info(f"🔍 COMPLETION_CHECK: tracker_in_block={code_block_tracker.get('in_block', False)}")
+                        
                         continuation_count = 0
-                        max_continuations = 10  # Increased for large diagrams/code blocks
+                        max_continuations = 10
                         
-                        # Log tracker state before checking
-                        backtick_count = assistant_text.count('```')
-                        logger.info(f"🔍 TRACKER_STATE: in_block={code_block_tracker['in_block']}, block_type={code_block_tracker.get('block_type')}, backtick_count={backtick_count}, last_50_chars='{assistant_text[-50:]}'")
-                        
-                        while code_block_tracker['in_block'] and continuation_count < max_continuations:
+                        while code_block_tracker.get('in_block') and continuation_count < max_continuations:
                             continuation_count += 1
-                            logger.info(f"🔄 INCOMPLETE_BLOCK: Detected incomplete {code_block_tracker['block_type']} block, auto-continuing (attempt {continuation_count})")
+                            block_type = code_block_tracker.get('block_type', 'code')
+                            logger.info(f"🔄 INCOMPLETE_BLOCK: Detected incomplete {block_type} block, auto-continuing (attempt {continuation_count})")
                             
                             # Mark rewind boundary before auto-continuation
                             assistant_lines = assistant_text.split('\n')
-                            last_complete_line = len(assistant_lines) - 2 if assistant_lines[-1].strip() == '' else len(assistant_lines) - 1
-                            partial_content = assistant_lines[-1] if assistant_lines else ""
-                            rewind_marker = f"<!-- REWIND_MARKER: {last_complete_line}|PARTIAL:{partial_content} -->"
-                            yield track_yield({
+                            # Remove the incomplete last line - rewind to last complete line
+                            if assistant_lines and assistant_lines[-1].strip():
+                                # Last line is incomplete, remove it
+                                assistant_lines = assistant_lines[:-1]
+                                logger.info(f"🔄 REWIND: Removed incomplete last line, rewinding to line {len(assistant_lines)}")
+                            
+                            last_complete_line = len(assistant_lines)
+                            rewind_marker = f"<!-- REWIND_MARKER: {last_complete_line} -->"
+                            rewind_chunk = {
                                 'type': 'text',
                                 'content': f"{rewind_marker}\n**🔄 Block continues...**\n",
                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            })
+                            }
+                            logger.info(f"🔄 YIELDING_REWIND: Rewinding to line {last_complete_line}")
+                            yield track_yield(rewind_chunk)
+                            
+                            # CRITICAL: Add delay to ensure rewind marker is sent before continuation
+                            await asyncio.sleep(0.1)
                             
                             # Send heartbeat before continuation to keep connection alive
                             yield {
@@ -785,20 +821,34 @@ class StreamingToolExecutor:
                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                             }
                             
+                            await asyncio.sleep(0.1)  # Ensure heartbeat is sent
+                            
                             continuation_had_content = False
-                            async for continuation_chunk in self._continue_incomplete_code_block(
-                                conversation, code_block_tracker, mcp_manager, iteration_start_time, assistant_text
-                            ):
-                                if continuation_chunk.get('content'):
-                                    continuation_had_content = True
-                                    self._update_code_block_tracker(continuation_chunk['content'], code_block_tracker)
-                                    assistant_text += continuation_chunk['content']
+                            try:
+                                async for continuation_chunk in self._continue_incomplete_code_block(
+                                    conversation, code_block_tracker, mcp_manager, iteration_start_time, assistant_text
+                                ):
+                                    if continuation_chunk.get('content'):
+                                        continuation_had_content = True
+                                        logger.info(f"🔄 YIELDING_CONTINUATION: {repr(continuation_chunk.get('content', '')[:50])}")
+                                        self._update_code_block_tracker(continuation_chunk['content'], code_block_tracker)
+                                        assistant_text += continuation_chunk['content']
+                                        
+                                        if code_block_tracker['in_block']:
+                                            continuation_chunk['code_block_continuation'] = True
+                                            continuation_chunk['block_type'] = code_block_tracker['block_type']
                                     
-                                    if code_block_tracker['in_block']:
-                                        continuation_chunk['code_block_continuation'] = True
-                                        continuation_chunk['block_type'] = code_block_tracker['block_type']
-                                
-                                yield continuation_chunk
+                                    yield continuation_chunk
+                            except Exception as continuation_error:
+                                logger.error(f"Continuation failed: {continuation_error}")
+                                # Send continuation failure marker
+                                yield {
+                                    'type': 'continuation_failed',
+                                    'reason': str(continuation_error),
+                                    'can_retry': 'ThrottlingException' in str(continuation_error),
+                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                }
+                                break
                             
                             if not continuation_had_content:
                                 logger.info("🔄 CONTINUATION: No content generated, stopping continuation attempts")
@@ -815,7 +865,7 @@ class StreamingToolExecutor:
                     # Build content as list with text and tool_use blocks
                     content_blocks = []
                     if assistant_text.strip():
-                        content_blocks.append({"type": "text", "text": assistant_text})
+                        content_blocks.append({"type": "text", "text": assistant_text.rstrip()})
                     
                     # Add tool_use blocks for each tool that was executed with actual args
                     for tool_result in tool_results:
@@ -895,9 +945,10 @@ class StreamingToolExecutor:
                     
                     # No tools executed - check if we should end the stream
                     if assistant_text.strip():
-                        # Check if code block is still incomplete
+                        # FIRST: Check if code block is still incomplete - if so, continue
                         if code_block_tracker.get('in_block'):
-                            logger.warning(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still incomplete after max continuations, ending stream anyway")
+                            logger.info(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still open, continuing to next iteration")
+                            continue
                         
                         # Check if there's already substantial commentary after the last tool/diff/code block
                         text_after_last_block = self._get_text_after_last_structured_content(assistant_text)
@@ -915,8 +966,7 @@ class StreamingToolExecutor:
                         suggests_continuation = (
                             text_end.endswith((':')) or  # About to make tool call  
                             assistant_text.endswith('```') or  # Just finished code block - might add explanation
-                            word_count_after_block < 20 or  # Not enough commentary yet
-                            not text_after_last_block.rstrip().endswith(('.', '!', '?'))  # Doesn't end properly
+                            (word_count_after_block < 20 and not text_after_last_block.rstrip().endswith(('.', '!', '?')))  # Not enough commentary AND doesn't end properly
                         )
                         
                         if suggests_continuation and iteration < 5:
@@ -950,29 +1000,39 @@ class StreamingToolExecutor:
         if not text:
             return
             
+        # Debug logging to track state changes
+        was_in_block = tracker.get('in_block', False)
+        was_block_type = tracker.get('block_type')
+            
         lines = text.split('\n')
         for line in lines:
             stripped = line.strip()
             if stripped.startswith('```'):
-                if not tracker['in_block']:
-                    # Opening a new block
-                    block_type = stripped[3:].strip() or 'code'
+                # Extract potential language/type after ```
+                lang_or_type = stripped[3:].strip()
+                
+                if lang_or_type:
+                    # Has a language specifier - this is ALWAYS an opening, even if we're in a block
+                    # This handles cases like: ```mermaid\n...\n```vega-lite (no closing ```)
+                    if tracker['in_block']:
+                        logger.debug(f"🔍 TRACKER: Implicitly closing {tracker['block_type']} block, opening {lang_or_type} block")
                     tracker['in_block'] = True
-                    tracker['block_type'] = block_type
+                    tracker['block_type'] = lang_or_type
                     tracker['accumulated_content'] = line + '\n'
-                    logger.debug(f"🔍 TRACKER: Opened {block_type} block")
-                else:
-                    # Closing the current block - any ``` closes it
-                    # Don't require type to match since closing ``` often has no type
+                    logger.debug(f"🔍 TRACKER: Opened {lang_or_type} block")
+                elif tracker['in_block']:
+                    # No language specifier and we're in a block - this is a closing ```
                     tracker['in_block'] = False
                     tracker['block_type'] = None
-                    tracker['accumulated_content'] = ''
                     logger.debug(f"🔍 TRACKER: Closed block")
-            elif tracker['in_block']:
-                tracker['accumulated_content'] += line + '\n'
+        
+        # Log state changes for debugging
+        if was_in_block != tracker.get('in_block') or was_block_type != tracker.get('block_type'):
+            logger.info(f"🔍 TRACKER_STATE_CHANGE: {was_block_type or 'none'}[{was_in_block}] → {tracker.get('block_type') or 'none'}[{tracker.get('in_block')}]")
+            logger.info(f"🔍 TRACKER_TEXT: Processing text: {repr(text[:100])}")
 
     async def _continue_incomplete_code_block(
-        self, 
+        self,
         conversation: List[Dict[str, Any]], 
         code_block_tracker: Dict[str, Any],
         mcp_manager,
@@ -990,28 +1050,24 @@ class StreamingToolExecutor:
             
             continuation_conversation = conversation.copy()
             
-            # Remove incomplete last line
+            # Use text truncated to last complete line
             if assistant_text.strip():
                 lines = assistant_text.split('\n')
-                if len(lines) > 1:
-                    last_line = lines[-1].strip()
-                    if not last_line or ('```' in last_line and not last_line.endswith('```')):
-                        cleaned_text = '\n'.join(lines[:-1])
-                        logger.info(f"🔄 CONTEXT_CLEANUP: Removed incomplete last line: '{last_line}'")
-                    else:
-                        cleaned_text = assistant_text
-                    
-                    if continuation_conversation and continuation_conversation[-1].get('role') == 'assistant':
-                        # Update the last assistant message with cleaned text in proper format
-                        continuation_conversation[-1]['content'] = [{"type": "text", "text": cleaned_text}]
-                    else:
-                        continuation_conversation.append({"role": "assistant", "content": [{"type": "text", "text": cleaned_text}]})
+                # Remove incomplete last line if present
+                if lines and lines[-1].strip():
+                    lines = lines[:-1]
+                cleaned_text = '\n'.join(lines)
+                
+                if continuation_conversation and continuation_conversation[-1].get('role') == 'assistant':
+                    continuation_conversation[-1]['content'] = [{"type": "text", "text": cleaned_text}]
+                else:
+                    continuation_conversation.append({"role": "assistant", "content": [{"type": "text", "text": cleaned_text}]})
             
             continuation_conversation.append({"role": "user", "content": continuation_prompt})
             
             body = {
                 "messages": continuation_conversation,
-                "max_tokens": 2000,
+                "max_tokens": self.model_config.get('max_output_tokens', 2000),
                 "temperature": 0.1,
                 "anthropic_version": "bedrock-2023-05-31"
             }
@@ -1041,6 +1097,7 @@ class StreamingToolExecutor:
             accumulated_start = ""
             header_filtered = False
             chunk_count = 0
+            continuation_buffer = ""  # Buffer for continuation chunks
             
             for event in response['body']:
                 # Send heartbeat every 10 chunks to keep connection alive
@@ -1058,6 +1115,22 @@ class StreamingToolExecutor:
                     delta = chunk.get('delta', {})
                     if delta.get('type') == 'text_delta':
                         text = delta.get('text', '')
+                        
+                        # Buffer continuation text to avoid tiny chunks
+                        continuation_buffer += text
+                        
+                        # Only yield when we have a substantial amount or hit a major boundary
+                        should_yield = (
+                            len(continuation_buffer) >= 200 or  # Substantial chunk size
+                            '```\n' in continuation_buffer or  # Complete code block boundary
+                            continuation_buffer.count('\n') >= 5  # Multiple complete lines
+                        )
+                        
+                        if not should_yield:
+                            continue
+                        
+                        text = continuation_buffer
+                        continuation_buffer = ""
                         
                         if not header_filtered:
                             accumulated_start += text
@@ -1096,6 +1169,15 @@ class StreamingToolExecutor:
                                     'timestamp': f"{int((time.time() - start_time) * 1000)}ms",
                                     'continuation': True
                                 }
+            
+            # Flush any remaining buffered content
+            if continuation_buffer:
+                yield {
+                    'type': 'text',
+                    'content': continuation_buffer,
+                    'timestamp': f"{int((time.time() - start_time) * 1000)}ms",
+                    'continuation': True
+                }
         
         except Exception as e:
             logger.error(f"🔄 CONTINUATION: Error in continuation: {e}")

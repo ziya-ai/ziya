@@ -1,6 +1,6 @@
+// Load CSS themes statically - these are small and need to be available immediately
 import 'prismjs/themes/prism.css';
-import 'prismjs/plugins/show-invisibles/prism-show-invisibles';
-import 'prismjs/components/prism-core';
+import 'prismjs/themes/prism-tomorrow.css';
 
 // Track loaded languages to avoid duplicate loading
 const loadedLanguages = new Set(['plaintext']); // Mark plaintext as loaded by default
@@ -44,6 +44,15 @@ const languageMap: { [key: string]: string } = {
     'markup': 'markup',
     'html': 'markup'
 };
+
+// Languages that depend on 'clike' - based on Prism.js source
+const clikeDependentLanguages = new Set([
+    'c', 'cpp', 'csharp', 'java', 'objectivec', 'swift', 'kotlin', 'scala',
+    'd', 'dart', 'go', 'groovy', 'haxe', 'processing', 'arduino', 'vala'
+]);
+
+const requiresClike = (language: string): boolean => 
+    clikeDependentLanguages.has(language);
 
 // Define Prism interface
 interface PrismToken {
@@ -242,7 +251,7 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                 }
                 case 'python': {
                     // Python-specific dependencies
-                    if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
+                    if (!window.Prism?.languages?.clike) {
                         await import('prismjs/components/prism-clike');
                     }
                     await import('prismjs/components/prism-markup-templating');
@@ -252,41 +261,58 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                 }
                 case 'swift': {
                     // Swift-specific dependencies
-                    if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
-                        await import('prismjs/components/prism-clike');
-                    }
-                    await import('prismjs/components/prism-swift');
+                    await import(/* webpackMode: "lazy" */ 'prismjs/components/prism-swift');
                     break;
                 }
                 case 'objectivec': {
                     // Objective-C specific dependencies
-                    if (!prism.languages.clike || Object.keys(prism.languages.clike).length === 0) {
-                        await import('prismjs/components/prism-clike');
-                    }
-                    await import('prismjs/components/prism-objectivec');
+                    await import(/* webpackMode: "lazy" */ 'prismjs/components/prism-objectivec');
                     // Also mark objc and objective-c as loaded
                     loadedLanguages.add('objc');
                     loadedLanguages.add('objective-c');
                     break;
                 }
-                case 'cpp': {
-                    // C++ specific dependencies
-                    await import('prismjs/components/prism-clike');
-                    await import('prismjs/components/prism-cpp');
-                    break;
-                }
-                default:
-                    if (mappedLanguage !== 'plaintext') try {
-                        // Load other languages directly
-                        await import(/* webpackChunkName: "prism-lang.[request]" */ `prismjs/components/prism-${mappedLanguage}`);
+                default: {
+                    if (mappedLanguage !== 'plaintext') {
+                        try {
+                            // Load other languages directly using dynamic import without webpack chunking
+                            console.debug(`Dynamically loading language: ${mappedLanguage}`);
+                            
+                            // Special handling for C++ - ensure C is loaded first (cpp extends c, not clike)
+                            if (mappedLanguage === 'cpp') {
+                                if (!window.Prism?.languages?.c) {
+                                    await import('prismjs/components/prism-c');
+                                }
+                                console.debug('C++ loading - checking C state:', {
+                                    cExists: !!window.Prism?.languages?.c,
+                                    cType: typeof window.Prism?.languages?.c
+                                });
+                                try {
+                                    // Use string concatenation to prevent webpack static analysis
+                                    const importPath = 'prismjs/components/prism-' + mappedLanguage;
+                                    await import(importPath);
+                                } catch (cppError) {
+                                    console.warn('C++ grammar failed to load, using C fallback:', cppError);
+                                    if (window.Prism?.languages?.c) {
+                                        window.Prism.languages.cpp = window.Prism.languages.c;
+                                    }
+                                    return;
+                            }
+                        } else {
+                            // Use truly dynamic import that webpack cannot analyze
+                            const importPath = 'prismjs/components/prism-' + mappedLanguage;
+                            await import(importPath);
+                        }
                         if (!window.Prism?.languages?.[mappedLanguage]) {
                             throw new Error(`Language ${mappedLanguage} (${language}) failed to load`);
+                            }
+                        } catch (error) {
+                            console.warn(`Failed to load language ${mappedLanguage}:`, error);
+                            throw error;
                         }
-                    } catch (error) {
-                        console.warn(`Failed to load language ${mappedLanguage}:`, error);
-                        throw error;
                     }
                     break;
+                }
             }
             // Mark both the original language and its mapped version as loaded
             loadedLanguages.add(language);
@@ -315,3 +341,6 @@ export const isLanguageLoaded = (language: string): boolean => {
     const mappedLanguage = languageMap[language] || language;
     return prismInstance?.languages[mappedLanguage] !== undefined;
 };
+
+// Export PrismStatic type for use in other files
+export type { PrismStatic };
