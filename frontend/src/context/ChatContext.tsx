@@ -79,7 +79,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
-    const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
+    const [currentConversationId, setCurrentConversationId] = useState<string>(() => {
+        // CRITICAL FIX: Try to restore the last active conversation ID before creating a new one
+        try {
+            const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
+            if (savedCurrentId) {
+                console.log('🔄 RESTORED: Last active conversation ID:', savedCurrentId);
+                return savedCurrentId;
+            }
+        } catch (e) {
+            console.warn('Failed to restore current conversation ID:', e);
+        }
+        
+        // Only create new ID if no saved ID exists
+        const newId = uuidv4();
+        console.log('🆕 CREATED: New conversation ID:', newId);
+        return newId;
+    });
     const currentConversationRef = useRef<string>(currentConversationId);
     const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
@@ -447,6 +463,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         setConversations([...updatedConversations, newConversation]);
                         setCurrentMessages([]);
                         setCurrentConversationId(newId);
+                        
+                        // Persist the new conversation ID immediately
+                        localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
                         resolve();
                     })
                     .catch(error => {
@@ -686,6 +705,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (!isInitialized) {
                 console.log('✅ Setting conversations immediately:', savedConversations.length);
                 setConversations(savedConversations);
+                
+                // CRITICAL: Verify the restored currentConversationId exists in loaded conversations
+                const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
+                if (savedCurrentId && !savedConversations.some(conv => conv.id === savedCurrentId)) {
+                    console.warn(`⚠️ ORPHANED CONVERSATION: Current ID ${savedCurrentId} not found in loaded conversations`);
+                    // Find the most recently accessed conversation as fallback
+                    const mostRecent = savedConversations.reduce((latest, conv) => 
+                        (!latest || (conv.lastAccessedAt || 0) > (latest.lastAccessedAt || 0)) ? conv : latest
+                    );
+                    if (mostRecent) {
+                        console.log('🔄 FALLBACK: Using most recent conversation:', mostRecent.id);
+                        setCurrentConversationId(mostRecent.id);
+                        localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', mostRecent.id);
+                    }
+                }
+                
                 setIsInitialized(true);
             }
 
