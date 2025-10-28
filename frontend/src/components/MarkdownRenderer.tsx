@@ -1,11 +1,9 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId } from 'react';
-import 'prismjs/themes/prism.css';
 import { marked, Tokens } from 'marked';
 import { Alert, Button, message, Tooltip } from 'antd';
 import { parseDiff, tokenize } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
-import 'prismjs/themes/prism-tomorrow.css';  // Add dark theme support
 import { D3Renderer } from './D3Renderer';
 import { useChatContext } from '../context/ChatContext';
 import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
@@ -15,21 +13,35 @@ import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
 } from '@ant-design/icons';
-import 'prismjs/themes/prism.css';
-import { loadPrismLanguage } from '../utils/prismLoader';
+import { loadPrismLanguage, type PrismStatic } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
-import type * as PrismType from 'prismjs';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
 import { restartStreamWithEnhancedContext } from '../apis/chatApi';
+import { formatMCPOutput } from '../utils/mcpFormatter';
 
 // Thinking component for DeepSeek reasoning content
 const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; isStreaming?: boolean }> = ({ children, isDarkMode, isStreaming = false }) => {
     // Start expanded during streaming, collapsed when done
     const [isExpanded, setIsExpanded] = useState(isStreaming);
+    const [htmlContent, setHtmlContent] = useState('');
     const thinkingRenderedRef = useRef(false);
+
+    // Parse markdown in children if it's a string
+    const isString = typeof children === 'string';
+    
+    useEffect(() => {
+        if (isString) {
+            const result = marked.parse(children, { breaks: true, gfm: true });
+            if (typeof result === 'string') {
+                setHtmlContent(result);
+            } else {
+                result.then(setHtmlContent);
+            }
+        }
+    }, [children, isString]);
 
     return (
         <div className={`thinking-block ${isDarkMode ? 'dark' : 'light'}`} style={{
@@ -55,15 +67,14 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
                 <span>🤔 Thinking...</span>
             </div>
             {isExpanded && (
-                <div style={{
-                    padding: '12px',
-                    fontSize: '13px',
-                    fontFamily: 'monospace',
-                    color: isDarkMode ? '#ccc' : '#555',
-                    whiteSpace: 'pre-wrap'
-                }}>
-                    {children}
-                </div>
+                <div 
+                    style={{
+                        padding: '12px',
+                        fontSize: '13px',
+                        color: isDarkMode ? '#ccc' : '#555'
+                    }}
+                    {...(isString ? { dangerouslySetInnerHTML: { __html: htmlContent } } : { children })}
+                />
             )}
         </div>
     );
@@ -109,6 +120,33 @@ interface ToolBlockProps {
 }
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    
+    // Try to format the content intelligently
+    const formattedOutput = useMemo(() => {
+        try {
+            // Parse if it looks like JSON
+            if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
+                const parsed = JSON.parse(content);
+                return formatMCPOutput(toolName, parsed, null, {
+                    defaultCollapsed: true,
+                    maxLength: 10000
+                });
+            }
+        } catch (e) {
+            // Not JSON, continue with regular processing
+        }
+        
+        // For non-JSON content, create a simple formatted output
+        const shouldCollapse = content.length > 500 || content.split('\n').length > 15;
+        return {
+            content,
+            type: 'text' as const,
+            collapsed: shouldCollapse,
+            summary: shouldCollapse ? `Output (${content.length} chars, ${content.split('\n').length} lines)` : undefined
+        };
+    }, [toolName, content]);
+    
     // Check if this is a security error from shell command blocking
     let isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
         content.includes('Command not allowed') ||
@@ -161,8 +199,11 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
 
     const isShellCommand = toolName === 'mcp_run_shell_command';
 
+    const { content: formattedContent, collapsed, summary } = formattedOutput;
+    const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
+    
     // Clean up content by removing any literal tool markers
-    const cleanContent = content
+    const cleanContent = formattedContent
         .replace(/^```tool:mcp_\w+\s*\n?/gm, '')
         .replace(/\n?```\s*$/gm, '')
         .replace(/^```tool:mcp_\w+\s*/gm, '')
@@ -216,16 +257,49 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                 letterSpacing: '0.5px'
             }}>
                 {isShellCommand ? '🔧 Shell Command' : `🛠️ ${toolName.replace('mcp_', '')}`}
+                {shouldShowCollapsed && (
+                    <div style={{
+                        float: 'right',
+                        fontSize: '11px',
+                        opacity: 0.7,
+                        cursor: 'pointer',
+                        fontWeight: 'normal'
+                    }} onClick={(e) => {
+                        e.stopPropagation();
+                        setIsExpanded(!isExpanded);
+                    }}>
+                        {isExpanded ? '▼ Collapse' : '▶ Expand'} {summary && `(${summary})`}
+                    </div>
+                )}
             </div>
-            <pre style={{
+            
+            {shouldShowCollapsed && !isExpanded ? (
+                <div 
+                    style={{
+                        padding: '16px',
+                        color: colors.contentText,
+                        fontSize: '14px',
+                        fontStyle: 'italic',
+                        textAlign: 'center',
+                        cursor: 'pointer'
+                    }}
+                    onClick={() => setIsExpanded(true)}
+                >
+                    {summary} - Click to expand
+                </div>
+            ) : (
+                <pre style={{
                 margin: 0,
                 padding: '16px',
                 color: colors.contentText,
                 whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word'
+                    wordBreak: 'break-word',
+                    maxHeight: isExpanded ? 'none' : '400px',
+                    overflow: isExpanded ? 'visible' : 'auto'
             }}>
-                {cleanContent}
+                    {cleanContent}
             </pre>
+            )}
         </div>
     );
 };
@@ -291,7 +365,7 @@ interface ErrorBoundaryState {
 
 declare global {
     interface Window {
-        Prism: typeof PrismType;
+        Prism: PrismStatic;
         diffElementPaths?: Map<string, string>;
         diffViewType?: 'unified' | 'split';
         diffShowLineNumbers?: boolean;
@@ -468,11 +542,30 @@ const DiffControls = memo(({
 // Helper function to extract all file paths from a diff
 const extractAllFilesFromDiff = (diffContent: string): string[] => {
     const files: string[] = [];
+    const newFiles = new Set<string>(); // Track new file creations
     const lines = diffContent.split('\n');
+
+    // First pass: identify new file creations
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        
+        // Check for new file mode marker
+        if (line.includes('new file mode')) {
+            // Look backwards and forwards for the file path
+            for (let j = Math.max(0, i - 5); j < Math.min(lines.length, i + 5); j++) {
+                const checkLine = lines[j];
+                const plusMatch = checkLine.match(/^\+\+\+ b\/(.+)$/);
+                if (plusMatch && plusMatch[1] !== '/dev/null') {
+                    newFiles.add(plusMatch[1]);
+                }
+            }
+        }
+    }
 
     for (const line of lines) {
         // Extract from git diff headers
-        const gitMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+        // Handle both standard format and malformed Gemini format
+        const gitMatch = line.match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
         if (gitMatch) {
             const newPath = gitMatch[2];
             const oldPath = gitMatch[1];
@@ -492,7 +585,12 @@ const extractAllFilesFromDiff = (diffContent: string): string[] => {
         }
     }
 
-    return [...new Set(files)]; // Remove duplicates
+    // Remove duplicates and filter out new file creations
+    const uniqueFiles = [...new Set(files)];
+    const existingFiles = uniqueFiles.filter(file => !newFiles.has(file));
+    
+    console.log('🔄 CONTEXT_ENHANCEMENT: File analysis:', { allFiles: uniqueFiles, newFiles: Array.from(newFiles), existingFiles });
+    return existingFiles;
 };
 
 // Function to check if files are in current context - do this locally!
@@ -566,7 +664,8 @@ const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
                 inTargetFile = false;
 
                 // Check if this is our target file
-                const fileMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                // Handle both standard format and malformed Gemini format
+                const fileMatch = line.match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
                 if (fileMatch) {
                     const oldPath = fileMatch[1];
                     const newPath = fileMatch[2];
@@ -652,7 +751,8 @@ const fixHaikuStyleDiff = (diff: string): string => {
     const result: string[] = [];
 
     // Extract file path from git header
-    const gitHeaderMatch = lines[0].match(/diff --git a\/(.*?) b\/(.*?)$/);
+    // Handle both standard format and malformed Gemini format  
+    const gitHeaderMatch = lines[0].match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
     if (!gitHeaderMatch) {
         return diff; // Can't fix without git header
     }
@@ -760,7 +860,8 @@ const normalizeGitDiff = (diff: string): string => {
 
         // If no path found from unified headers, try git diff header
         if (!filePath) {
-            const gitMatch = lines[0].match(/diff --git a\/(.*?) b\/(.*?)$/);
+            // Handle both standard format and malformed Gemini format
+            const gitMatch = lines[0].match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
             if (gitMatch && gitMatch[1]) {
                 filePath = gitMatch[1];
             }
@@ -2635,7 +2736,6 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
             if (streamingConversations.has(currentConversationId)) {
                 debouncedCheck(checkMissingFiles);
             } else if (!hasCheckedFilesRef.current) {
-            } else if (!hasCheckedFilesRef.current) {
                 checkMissingFiles();
             }
         }
@@ -2803,19 +2903,20 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     const extractFileTitle = useCallback((diffContent: string): string => {
         if (!diffContent) return '';
         const lines = diffContent.split('\n');
-        
+
         // Check for new file creation first - prioritize 'new file mode' over git header paths
         const isNewFile = lines.some(line => line.includes('new file mode')) ||
-                         lines.some(line => line.startsWith('--- /dev/null'));
-        
+            lines.some(line => line.startsWith('--- /dev/null'));
+
         // Check for file deletion
         const isDeletedFile = lines.some(line => line.includes('deleted file mode')) ||
-                             lines.some(line => line.startsWith('+++ /dev/null'));
+            lines.some(line => line.startsWith('+++ /dev/null'));
 
         // Look for git diff header  
         for (const line of lines) {
             if (line.startsWith('diff --git')) {
-                const match = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                // Handle both standard format and malformed Gemini format
+                const match = line.match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
                 if (match) {
                     const oldPath = match[1];
                     const newPath = match[2];
@@ -2840,7 +2941,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                     return `Modify: ${newPath || oldPath}`;
                 }
             }
-            
+
             // Also check unified diff headers for new/deleted files
             // Look for unified diff headers
             if (line.startsWith('+++ b/')) {
@@ -2853,12 +2954,12 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             // Handle new file creation from unified diff headers
             if (line.startsWith('--- a/') || line.startsWith('--- /dev/null')) {
                 const filePath = line.substring(6);
-                
+
                 // Skip /dev/null paths for new files - look for the +++ line instead
                 if (filePath === '/dev/null' && isNewFile) {
                     continue; // Keep looking for the actual file path
                 }
-                
+
                 // Check if this is a deletion diff
                 if (isDeletedFile) {
                     return `Delete File: ${filePath}`;
@@ -3072,7 +3173,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const [isLanguageLoaded, setIsLanguageLoaded] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
-    const [prismInstance, setPrismInstance] = useState<typeof PrismType | null>(null);
+    const [prismInstance, setPrismInstance] = useState<PrismStatic | null>(null);
     const [debugInfo, setDebugInfo] = useState<any>({});
     const renderCountRef = useRef(0);
 
@@ -3131,10 +3232,10 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 // Create a document fragment to safely parse the HTML
                 const template = document.createElement('template');
                 template.innerHTML = highlighted;
-                
+
                 // Remove any potentially dangerous elements
                 template.content.querySelectorAll('script, object, embed, iframe').forEach(el => el.remove());
-                
+
                 // Clear and append the safe content
                 contentRef.current.innerHTML = '';
                 contentRef.current.appendChild(template.content.cloneNode(true));
@@ -3210,6 +3311,12 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     //  Check if this should be a tool block instead
     if (token.lang?.startsWith('tool:')) {
         const toolName = token.lang.substring(5);
+        
+        // Special handling for thinking blocks
+        if (toolName === 'mcp_sequentialthinking' || token.lang?.startsWith('thinking:')) {
+            return <ThinkingBlock isDarkMode={isDarkMode}>{token.text || ''}</ThinkingBlock>;
+        }
+        
         console.log('🔧 CodeBlock redirecting to ToolBlock:', toolName);
         return <ToolBlock toolName={toolName} content={token.text || ''} isDarkMode={isDarkMode} />;
     }
@@ -3351,6 +3458,16 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             // Only log when debug logging is enabled
             if (isDebugLoggingEnabled()) {
                 debugLog('Tool block detected:', toolName);
+            }
+            return 'tool';
+        }
+
+        // Check for thinking blocks
+        if (lang.startsWith('thinking:')) {
+            const stepInfo = lang.substring(9); // Remove 'thinking:' prefix
+            (token as TokenWithText).toolName = `thinking_${stepInfo}`;
+            if (isDebugLoggingEnabled()) {
+                debugLog('Thinking block detected:', stepInfo);
             }
             return 'tool';
         }
@@ -3689,7 +3806,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'joint':
                 case 'jointjs':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
-                    
+
                     // Try to parse as JSON first, otherwise treat as definition string
                     let jointSpec;
                     try {
@@ -3707,7 +3824,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             forceRender: true
                         };
                     }
-                    
+
                     return <D3Renderer key={index} spec={jointSpec} type="d3" isStreaming={isStreaming} />;
 
                 case 'tool':
@@ -3715,6 +3832,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         console.warn('Tool token missing toolName or text:', { hasText: hasText(tokenWithText), toolName: tokenWithText.toolName });
                         return null;
                     }
+                    console.log('🔧 Rendering ToolBlock:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length, contentPreview: tokenWithText.text?.substring(0, 100) });
 
                     // Check for security errors in tool output and render them prominently
                     const isSecurityError = tokenWithText.text && (
@@ -3733,6 +3851,25 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         }
                         return (
                             <Alert key={index} message="🚫 Command Blocked" description={errorMessage} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
+                        );
+                    }
+
+                    // Special handling for thinking content
+                    if (tokenWithText.toolName?.startsWith('thinking_')) {
+                        return (
+                            <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
+                                {tokenWithText.text}
+                            </ThinkingBlock>
+                        );
+                    }
+
+                    // Special handling for thinking content
+                    if (tokenWithText.toolName?.startsWith('thinking_')) {
+                        const stepInfo = tokenWithText.toolName.substring(9);
+                        return (
+                            <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
+                                {tokenWithText.text}
+                            </ThinkingBlock>
                         );
                     }
 
@@ -3761,16 +3898,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     // CORE FIX: Check if this code block contains diff content and should use file-based language detection
                     const rawCodeText = decodeHtmlEntities(tokenWithText.text || '');
-                    
+
                     // Add debugging to see if this fix is being triggered
                     const isDiffContent = rawCodeText.includes('diff --git') ||
                         rawCodeText.includes('new file mode') ||
                         rawCodeText.includes('deleted file mode') ||
                         (rawCodeText.includes('+++') && rawCodeText.includes('---'));
-                    
+
                     if ((!tokenWithText.lang || tokenWithText.lang === 'plaintext') &&
                         isDiffContent) {
-                        
+
                         console.log('🔍 DIFF_FIX: Applying language fix for diff content:', {
                             hasLang: !!tokenWithText.lang,
                             currentLang: tokenWithText.lang,
@@ -3780,15 +3917,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         // Extract file path from diff content
                         const lines = rawCodeText.split('\n');
                         for (const line of lines) {
-                            const gitMatch = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
+                            // Handle both standard format and malformed Gemini format
+                            const gitMatch = line.match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
                             if (gitMatch) {
                                 // For new files, prefer target path; for deleted files, prefer source path
                                 const filePath = gitMatch[1] === '/dev/null' ? gitMatch[2] :
                                     gitMatch[2] === '/dev/null' ? gitMatch[1] :
                                         (gitMatch[2] || gitMatch[1]);
                                 tokenWithText.lang = detectLanguage(filePath);
-                                console.log('🔍 DIFF_FIX: Language detection result:', { 
-                                    filePath, 
+                                console.log('🔍 DIFF_FIX: Language detection result:', {
+                                    filePath,
                                     detectedLang: tokenWithText.lang,
                                     gitMatch1: gitMatch[1],
                                     gitMatch2: gitMatch[2]
@@ -4217,7 +4355,29 @@ const markedOptions = {
 
 // Math rendering component
 const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, displayMode }) => {
-    const katex = require('katex');
+    const [katex, setKatex] = useState<any>(null);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        const loadKatex = async () => {
+            try {
+                const katexModule = await import('katex');
+                setKatex(katexModule);
+            } catch (error) {
+                console.warn('Failed to load KaTeX:', error);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        loadKatex();
+    }, []);
+
+    if (isLoading || !katex) {
+        // Fallback while KaTeX is loading or if it fails
+        return displayMode ?
+            <div className="math-fallback" style={{ fontFamily: 'monospace', padding: '4px' }}>{math}</div> :
+            <span className="math-fallback" style={{ fontFamily: 'monospace' }}>{math}</span>;
+    }
 
     try {
         const html = katex.renderToString(math, {
@@ -4396,7 +4556,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m)) ||
                 // Skip processing for content containing tool sentinels or template variables
                 // TODO: Get actual sentinel values from backend instead of hardcoding
-                processedMarkdown.includes('<TOOL_SENTINEL>') || 
+                processedMarkdown.includes('<TOOL_SENTINEL>') ||
                 processedMarkdown.includes('</TOOL_SENTINEL>') ||
                 /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
 

@@ -3,16 +3,19 @@ API routes for MCP (Model Context Protocol) management.
 """
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import os
 import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Literal
+from dataclasses import asdict
 
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger
 from app.config.shell_config import DEFAULT_SHELL_CONFIG, get_default_shell_config
+from app.mcp.permissions import get_permissions_manager
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
+
 
 
 class MCPServerConfig(BaseModel):
@@ -32,6 +35,22 @@ class ShellConfig(BaseModel):
 class ServerToggleRequest(BaseModel):
     server_name: str
     enabled: bool
+
+PermissionLevel = Literal["enabled", "disabled", "ask"]
+
+class ServerPermissionUpdateRequest(BaseModel):
+    server_name: str
+    permission: PermissionLevel
+
+class ToolPermissionUpdateRequest(BaseModel):
+    server_name: str
+    tool_name: str
+    permission: PermissionLevel
+
+class PermissionsData(BaseModel):
+    defaults: Dict[str, Any]
+    servers: Dict[str, Any]
+
 
 @router.get("/status")
 async def get_mcp_status():
@@ -482,4 +501,86 @@ async def toggle_server(request: ServerToggleRequest):
     except Exception as e:
         logger.error(f"Error toggling server {request.server_name}: {e}")
         raise HTTPException(status_code=500, detail=f"Error toggling server: {str(e)}")
- 
+
+@router.get("/servers/{server_name}/details")
+async def get_mcp_server_details(server_name: str):
+    """Get details (tools, resources, prompts) for a specific MCP server."""
+    try:
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager.is_initialized or server_name not in mcp_manager.clients:
+            raise HTTPException(status_code=404, detail="Server not found or not initialized")
+        
+        client = mcp_manager.clients[server_name]
+        if not client.is_connected:
+            # Still return details if available, client might be disabled
+            pass
+
+        return {
+            "tools": [asdict(tool) for tool in client.tools],
+            "resources": [asdict(resource) for resource in client.resources],
+            "prompts": [asdict(prompt) for prompt in client.prompts],
+        }
+    except Exception as e:
+        logger.error(f"Error getting details for server {server_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/permissions")
+async def get_mcp_permissions():
+    """Get MCP permission settings."""
+    manager = get_permissions_manager()
+    return manager.get_permissions()
+
+@router.post("/permissions/server")
+async def update_server_permission(request: ServerPermissionUpdateRequest):
+    """Update permission for a specific server."""
+    manager = get_permissions_manager()
+    manager.update_server_permission(request.server_name, request.permission)
+    return {"success": True, "message": f"Permission for server '{request.server_name}' updated."}
+
+@router.post("/permissions/tool")
+async def update_tool_permission(request: ToolPermissionUpdateRequest):
+    """Update permission for a specific tool on a server."""
+    manager = get_permissions_manager()
+    manager.update_tool_permission(request.server_name, request.tool_name, request.permission)
+    return {"success": True, "message": f"Permission for tool '{request.tool_name}' on server '{request.server_name}' updated."}
+@router.get("/servers/{server_name}/details")
+async def get_mcp_server_details(server_name: str):
+    """Get details (tools, resources, prompts) for a specific MCP server."""
+    try:
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager.is_initialized or server_name not in mcp_manager.clients:
+            raise HTTPException(status_code=404, detail="Server not found or not initialized")
+        
+        client = mcp_manager.clients[server_name]
+        if not client.is_connected:
+            # Still return details if available, client might be disabled
+            pass
+
+        return {
+            "tools": [asdict(tool) for tool in client.tools],
+            "resources": [asdict(resource) for resource in client.resources],
+            "prompts": [asdict(prompt) for prompt in client.prompts],
+        }
+    except Exception as e:
+        logger.error(f"Error getting details for server {server_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/permissions")
+async def get_mcp_permissions():
+    """Get MCP permission settings."""
+    manager = get_permissions_manager()
+    return manager.get_permissions()
+
+@router.post("/permissions/server")
+async def update_server_permission(request: ServerPermissionUpdateRequest):
+    """Update permission for a specific server."""
+    manager = get_permissions_manager()
+    manager.update_server_permission(request.server_name, request.permission)
+    return {"success": True, "message": f"Permission for server '{request.server_name}' updated."}
+
+@router.post("/permissions/tool")
+async def update_tool_permission(request: ToolPermissionUpdateRequest):
+    """Update permission for a specific tool on a server."""
+    manager = get_permissions_manager()
+    manager.update_tool_permission(request.server_name, request.tool_name, request.permission)
+    return {"success": True, "message": f"Permission for tool '{request.tool_name}' on server '{request.server_name}' updated."}

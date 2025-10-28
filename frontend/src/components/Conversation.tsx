@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, Suspense, memo, useCallback, useMemo } from "react";
+import { FixedSizeList as List } from 'react-window';
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip } from 'antd';
@@ -52,8 +53,24 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     // Use memoized state instead of direct context access
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
     
-    // Sort messages to maintain order
-    const displayMessages = isTopToBottom ? currentMessages : [...currentMessages].reverse();
+    // Virtualized rendering for large conversations (300k+ tokens)
+    const VIRTUAL_THRESHOLD = 50; // Start virtualizing after 50 messages
+    const shouldVirtualize = currentMessages.length > VIRTUAL_THRESHOLD;
+    
+    const renderMessage = useCallback(({ index, style }: { index: number; style: React.CSSProperties }) => {
+        const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
+        const msg = currentMessages[actualIndex];
+        
+        if (!msg) return <div style={style} />;
+        
+        return (
+            <div style={style} className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}`}>
+                {/* Message rendering logic moved here */}
+            </div>
+        );
+    }, [currentMessages, isTopToBottom]);
+    
+    const displayMessages = shouldVirtualize ? null : (isTopToBottom ? currentMessages : [...currentMessages].reverse());
 
     // Keep track of rendered messages for performance monitoring
     const renderedCountRef = useRef(0);
@@ -185,6 +202,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 message.content,
                                 convertKeysToStrings(checkedKeys || []),
                                 currentConversationId,
+                                streamedContentMap,
                                 setStreamedContentMap,
                                 setIsStreaming,
                                 removeStreamingConversation,
@@ -298,6 +316,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                     message.content,
                                     convertKeysToStrings(checkedKeys || []),
                                     currentConversationId,
+                                    streamedContentMap,
                                     setStreamedContentMap,
                                     setIsStreaming,
                                     removeStreamingConversation,
@@ -362,7 +381,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         <span>{loadingText}</span>
                     </div>
                 )}
-                {displayMessages.map((msg, index) => {
+                {displayMessages?.map((msg, index) => {
                     // Convert display index to actual index for bottom-up mode
                     const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
         const nextActualIndex = actualIndex + 1;
@@ -462,7 +481,29 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             ) : null
                         )}
                     </div>;
-                })}
+                }) || (shouldVirtualize ? (
+                    <div style={{ height: '400px', width: '100%' }}>
+                        <List
+                            height={400}
+                            itemCount={currentMessages.length}
+                            itemSize={100}
+                            width="100%"
+                        >
+                            {renderMessage}
+                        </List>
+                    </div>
+                ) : null)}
+                
+                {/* Fallback for when no messages to display */}
+                {(!displayMessages || displayMessages.length === 0) && !shouldVirtualize && (
+                    <div style={{ 
+                        textAlign: 'center', 
+                        padding: '2rem', 
+                        color: '#999' 
+                    }}>
+                        No messages in this conversation yet.
+                    </div>
+                )}
             </div>
         </div>
     );

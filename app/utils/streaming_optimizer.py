@@ -10,15 +10,34 @@ from typing import Generator, Optional
 class StreamingContentOptimizer:
     """Optimizes content streaming to prevent mid-word splits"""
     
-    def __init__(self, min_chunk_size: int = 15, max_buffer_size: int = 100):
+    def __init__(self, min_chunk_size: int = 15, max_buffer_size: int = 500):
         self.buffer = ""
         self.min_chunk_size = min_chunk_size
         self.max_buffer_size = max_buffer_size
         self.word_boundary = re.compile(r'(\s+)')
+        self.in_code_block = False
         
     def add_content(self, content: str) -> Generator[str, None, None]:
         """Add content and yield optimized chunks"""
         self.buffer += content
+        
+        # Update code block state
+        self._update_code_block_state(content)
+        
+        # NEVER flush if buffer ends with partial code block delimiter
+        if self.buffer.rstrip().endswith('```') and not self.buffer.rstrip().endswith('\n```'):
+            # Buffer ends with ``` but not on its own line - might be ```vega-lite coming
+            return
+        if re.search(r'```[a-z]$', self.buffer):
+            # Buffer ends with ```X where X is a single letter - definitely partial
+            return
+        
+        # NEVER flush in the middle of a code block
+        if self.in_code_block:
+            # Only flush if buffer is extremely large (safety valve)
+            if len(self.buffer) > 5000:
+                yield from self._flush_complete_words()
+            return
         
         # Force flush if buffer gets too large
         if len(self.buffer) > self.max_buffer_size:
@@ -27,6 +46,13 @@ class StreamingContentOptimizer:
         # Check if we have enough content to send
         elif len(self.buffer) >= self.min_chunk_size:
             yield from self._flush_complete_words()
+    
+    def _update_code_block_state(self, content: str) -> None:
+        """Track if we're inside a code block"""
+        # Count all ``` markers in the entire buffer, not just new content
+        # This ensures we have accurate state even if chunks arrive fragmented
+        marker_count = self.buffer.count('```')
+        self.in_code_block = (marker_count % 2) == 1
     
     def _flush_complete_words(self) -> Generator[str, None, None]:
         """Flush complete words from buffer"""

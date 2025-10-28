@@ -1,0 +1,5 @@
+{
+    "target_file": "frontend/src/components/MCPRegistryModal.tsx",
+    "description": "Fix incorrect closing tag - replace </Paragraph> with </div>",
+    "date_added": "2025-10-22"
+}

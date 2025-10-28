@@ -457,6 +457,32 @@ def apply_diff_with_difflib_hybrid_forced(
             initial_pos = clamp(old_start_0based + offset, 0, len(final_lines_with_endings))
             logger.debug(f"Hunk #{hunk_idx}: Adjusted initial_pos={initial_pos} (original={old_start_0based}, offset={offset})")
         
+        # CRITICAL FIX: For pure additions, if the hunk header line number doesn't match the context,
+        # search for where the context lines actually are in the file
+        is_pure_addition = len(h.get('removed_lines', [])) == 0 and len(h.get('added_lines', [])) > 0
+        if is_pure_addition and h.get('old_block'):
+            # Check if context matches at initial_pos
+            context_matches_at_initial = False
+            if initial_pos + len(h['old_block']) <= len(final_lines_with_endings):
+                file_slice = final_lines_with_endings[initial_pos : initial_pos + len(h['old_block'])]
+                normalized_file = [normalize_line_for_comparison(line) for line in file_slice]
+                normalized_context = [normalize_line_for_comparison(line) for line in h['old_block']]
+                context_matches_at_initial = (normalized_file == normalized_context)
+            
+            if not context_matches_at_initial:
+                # Search for the context lines in the file
+                logger.debug(f"Hunk #{hunk_idx}: Pure addition context doesn't match at initial_pos={initial_pos}, searching for context...")
+                normalized_context = [normalize_line_for_comparison(line) for line in h['old_block']]
+                
+                for search_pos in range(len(final_lines_with_endings) - len(h['old_block']) + 1):
+                    file_slice = final_lines_with_endings[search_pos : search_pos + len(h['old_block'])]
+                    normalized_file = [normalize_line_for_comparison(line) for line in file_slice]
+                    
+                    if normalized_file == normalized_context:
+                        logger.info(f"Hunk #{hunk_idx}: Found pure addition context at position {search_pos} (header said {initial_pos})")
+                        initial_pos = search_pos
+                        break
+        
         available_lines = len(final_lines_with_endings) - initial_pos
         actual_old_block_count = len(h['old_block'])
         end_remove_calc = min(initial_pos + actual_old_block_count, len(final_lines_with_endings))
@@ -794,8 +820,26 @@ def apply_diff_with_difflib_hybrid_forced(
             new_lines_content.extend(added_lines_only)
             
             logger.debug(f"Hunk #{hunk_idx}: Pure addition with malformed line numbers - inserting at end of file")
+        elif len(h['removed_lines']) == 0 and len(h['added_lines']) > 0:
+            # CRITICAL FIX: For pure additions where context is found, only insert the added lines
+            # Don't remove/replace the context lines
+            added_lines_only = h['added_lines']
+            
+            new_lines_with_endings = []
+            for line in added_lines_only:
+                new_lines_with_endings.append(line + dominant_ending)
+            
+            # Insert after the context (at the end of old_block)
+            actual_remove_count = 0  # Don't remove any lines
+            insert_pos = remove_pos + len(h['old_block'])
+            end_remove_pos = insert_pos
+            
+            # Skip duplicate check for pure additions
+            skip_duplicate_check = True
+            
+            logger.debug(f"Hunk #{hunk_idx}: Pure addition - inserting {len(added_lines_only)} lines after context at pos={insert_pos}")
         else:
-            # For all other hunks (including normal pure additions), use the standard logic
+            # For all other hunks (with removals), use the standard logic
             actual_remove_count = len(h['old_block']) # Use actual block length
             end_remove_pos = min(remove_pos + actual_remove_count, len(final_lines_with_endings))
             insert_pos = remove_pos

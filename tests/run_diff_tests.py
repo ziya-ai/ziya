@@ -907,6 +907,18 @@ class DiffRegressionTest(unittest.TestCase):
         """Test case for closing braces incorrectly marked as already applied"""
         self.run_diff_test('MRE_closing_braces_false_applied')
 
+    def test_mermaid_console_log_removal(self):
+        """Test removing console.log statements from mermaidPlugin.ts text visibility functions"""
+        self.run_diff_test('mermaid_console_log_removal')
+
+    def test_mcp_registry_modal_closing_tag(self):
+        """Test fixing incorrect closing tag in MCPRegistryModal - replace </Paragraph> with </div>"""
+        self.run_diff_test('mcp_registry_modal_closing_tag')
+
+    def test_mcp_registry_test_connection(self):
+        """Test adding test-connection endpoint to MCP registry routes"""
+        self.run_diff_test('mcp_registry_test_connection')
+
 
 class PrettyTestResult(unittest.TestResult):
     def __init__(self):

@@ -1,0 +1,5 @@
+{
+  "description": "Test adding test-connection endpoint to MCP registry routes - should fail before infrastructure fix",
+  "target_file": "app/routes/mcp_registry_routes.py",
+  "expected_to_fail": true
+}

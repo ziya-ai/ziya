@@ -54,9 +54,6 @@ class ErrorHandlingMiddleware:
                 logger.debug(f"H11 protocol error - connection broken (client likely disconnected): {e}")
                 return  # Silently ignore all protocol errors when connection is broken
         
-        # Track if we've started sending a response
-        response_started = False
-        
         async def safe_send(message):
             nonlocal response_started
             try:
@@ -71,6 +68,64 @@ class ErrorHandlingMiddleware:
         # Try to run the app, catch any exceptions
         try:
             await self.app(scope, receive, safe_send)
+        except ValidationError as exc:
+            # Handle pydantic validation errors that contain credential issues
+            error_message = str(exc)
+            if "mwinit" in error_message.lower() or "credential" in error_message.lower() or "authentication" in error_message.lower():
+                logger.warning(f"Credential validation error: {error_message}")
+                
+                # Check if this is a streaming request
+                is_streaming_request = False
+                for key, value in scope.get("headers", []):
+                    if key.lower() == b"accept" and b"text/event-stream" in value.lower():
+                        is_streaming_request = True
+                        break
+                        
+                if is_streaming_request:
+                    try:
+                        await safe_send({
+                            "type": "http.response.start",
+                            "status": 200,
+                            "headers": [
+                                (b"content-type", b"text/event-stream"),
+                                (b"cache-control", b"no-cache"),
+                                (b"connection", b"keep-alive"),
+                                (b"access-control-allow-origin", b"*"),
+                            ]
+                        })
+                        
+                        error_content = {
+                            "error": "auth_error",
+                            "detail": "AWS credentials have expired. Please run 'mwinit' to authenticate and try again.",
+                            "status_code": 401
+                        }
+                        
+                        await safe_send({
+                            "type": "http.response.body",
+                            "body": f"data: {json.dumps(error_content)}\n\ndata: [DONE]\n\n".encode('utf-8'),
+                            "more_body": False
+                        })
+                        return
+                    except Exception as e:
+                        logger.error(f"Failed to send streaming auth error response: {e}")
+                else:
+                    try:
+                        response = JSONResponse(
+                            content={
+                                "error": "auth_error",
+                                "detail": "AWS credentials have expired. Please run 'mwinit' to authenticate and try again.",
+                                "status_code": 401
+                            },
+                            status_code=401
+                        )
+                        await response(scope, receive, send)
+                        return
+                    except Exception as e:
+                        logger.error(f"Failed to send JSON auth response: {e}")
+            else:
+                # Handle other validation errors normally
+                logger.warning(f"Validation error: {error_message}")
+                # Continue with existing validation error handling...
         except KnownCredentialException as exc:
             # For known credential issues, just return the message without traceback
             error_message = str(exc)
@@ -256,6 +311,29 @@ class ErrorHandlingMiddleware:
                 return
             
             # Handle throttling exceptions
+            # Extract conversation_id from request body if available
+            conversation_id = None
+            try:
+                if scope.get("method") == "POST":
+                    # Try to extract conversation_id from request body
+                    # This is a bit tricky since we're in ASGI middleware
+                    # We'll need to look at the receive callable to get the body
+                    pass  # Will implement body parsing below
+            except Exception:
+                pass
+            
+            # For throttling errors, try to extract conversation_id from the error message
+            # or from request context if available
+            if ("ThrottlingException" in error_message or "Too many requests" in error_message):
+                # Check if we can extract conversation_id from scope or other context
+                request_headers = dict(scope.get("headers", []))
+                conversation_id_header = request_headers.get(b"x-conversation-id")
+                if conversation_id_header:
+                    conversation_id = conversation_id_header.decode('utf-8')
+                    logger.info(f"Extracted conversation_id from headers: {conversation_id}")
+                else:
+                    logger.warning("Could not extract conversation_id for throttling error")
+            
             if "ThrottlingException" in error_message or "Too many requests" in error_message:
                 logger.info("Detected throttling error in middleware")
                 
@@ -275,6 +353,7 @@ class ErrorHandlingMiddleware:
                         # Send error message as SSE data
                         error_data = {
                             "error": "throttling_error",
+                            "conversation_id": conversation_id,
                             "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
                             "status_code": 429,
                             "retry_after": "5",
@@ -308,6 +387,7 @@ class ErrorHandlingMiddleware:
                         response = JSONResponse(
                             content={
                                 "error": "throttling_error",
+                                "conversation_id": conversation_id,
                                 "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
                                 "status_code": 429,
                                 "retry_after": "5"

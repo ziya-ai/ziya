@@ -273,15 +273,6 @@ Remember to strictly adhere to the Git diff format guidelines provided above whe
 
 """
 
-# DEBUG: Check if template contains file markers
-template_file_markers = template.count('File: ')
-print(f"=== TEMPLATE DEBUG ===")
-print(f"Template contains {template_file_markers} 'File: ' markers")
-if template_file_markers > 0:
-    lines = template.split('\n')
-    file_lines = [line.strip() for line in lines if 'File: ' in line]
-    print(f"Template file markers: {file_lines}")
-print("=== END TEMPLATE DEBUG ===")
 # Add AST capabilities to the template if available
 if os.environ.get("ZIYA_ENABLE_AST") == "true" and AST_AVAILABLE:
     # Get AST context and token count

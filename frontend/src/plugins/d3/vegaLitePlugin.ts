@@ -884,6 +884,473 @@ export const vegaLitePlugin: D3RenderPlugin = {
       console.log('🔧 VEGA-PREPROCESS: Preprocessing complete');
       return spec;
     };
+    
+    // Fix 6: Handle rect charts with fixed y values that render as single rectangles
+    const fixRectChartsWithFixedY = (spec: any): any => {
+      if (!spec.mark || (spec.mark !== 'rect' && spec.mark.type !== 'rect')) {
+        return spec;
+      }
+      
+      // Check if we have a fixed y value that would cause stacking
+      if (spec.encoding?.y?.value !== undefined && spec.encoding?.x?.field) {
+        console.log('🔧 RECT-Y-FIX: Detected rect chart with fixed y value, converting to proper visualization');
+        
+        // Analyze the data to determine what kind of chart this should be
+        if (spec.data?.values && Array.isArray(spec.data.values)) {
+          const firstRow = spec.data.values[0] || {};
+          const numericFields = Object.keys(firstRow).filter(key => 
+            key !== spec.encoding.x.field && 
+            (typeof firstRow[key] === 'number' || 
+             spec.transform?.some((t: any) => t.as === key))
+          );
+          
+          // If we have calculated fields or multiple numeric fields, this should probably be a bar chart
+          if (numericFields.length > 0) {
+            console.log(`🔧 RECT-Y-FIX: Converting to bar chart using field: ${numericFields[0]}`);
+            
+            // Convert to bar chart
+            spec.mark = 'bar';
+            
+            // Use the first numeric field or calculated field for y-axis
+            spec.encoding.y = {
+              field: numericFields[0],
+              type: 'quantitative',
+              title: numericFields[0].replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+            };
+            
+            // If there are multiple numeric fields and transforms, suggest using fold transform
+            if (numericFields.length > 1 && !spec.transform?.some((t: any) => t.fold)) {
+              console.log('🔧 RECT-Y-FIX: Multiple numeric fields detected, might benefit from fold transform');
+            }
+          }
+        }
+      }
+      
+      return spec;
+    };
+    
+    // Fix 7: Handle area/line charts missing y-axis encoding after window transforms
+    const fixChartsWithMissingYAfterTransforms = (spec: any): any => {
+      // Check for area or line charts with transforms but missing y encoding
+      if (spec.mark && (spec.mark.type === 'area' || spec.mark === 'area' || spec.mark.type === 'line' || spec.mark === 'line') &&
+          spec.transform && spec.encoding?.x && !spec.encoding?.y) {
+        
+        console.log('🔧 MISSING-Y-FIX: Detected area/line chart with transforms but missing y-axis encoding');
+        
+        // Look for window transforms that create calculated fields
+        const windowTransform = spec.transform.find((t: any) => t.window);
+        if (windowTransform && windowTransform.window && Array.isArray(windowTransform.window)) {
+          const calculatedField = windowTransform.window.find((w: any) => w.as && w.field);
+          
+          if (calculatedField?.as) {
+            console.log(`🔧 MISSING-Y-FIX: Adding y-axis encoding using calculated field: ${calculatedField.as}`);
+            spec.encoding.y = {
+              field: calculatedField.as,
+              type: 'quantitative',
+              title: calculatedField.as.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+            };
+          }
+        }
+        
+        // CRITICAL FIX: Handle case where window transform creates cumulative field but we need better field detection
+        if (!spec.encoding.y && windowTransform?.window) {
+          // Find any calculated field from the window transform
+          const windowOp = windowTransform.window.find((w: any) => w.as);
+          if (windowOp?.as) {
+            console.log(`🔧 MISSING-Y-FIX: Using window transform output field: ${windowOp.as}`);
+            spec.encoding.y = {
+              field: windowOp.as,
+              type: 'quantitative',
+              title: windowOp.as.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+            };
+          }
+        }
+      }
+      
+      return spec;
+    };
+    
+    // Fix 8: Handle arc/pie charts with invalid color schemes (hex instead of scheme name)
+    const fixInvalidColorSchemeInArcs = (spec: any): any => {
+      if (!spec.mark || (spec.mark !== 'arc' && spec.mark.type !== 'arc')) {
+        return spec;
+      }
+      
+      // Fix invalid color scheme (hex color instead of scheme name)
+      if (spec.encoding?.color?.scale?.scheme && typeof spec.encoding.color.scale.scheme === 'string' && 
+          spec.encoding.color.scale.scheme.startsWith('#')) {
+        console.log('🔧 ARC-COLOR-FIX: Converting invalid hex color scheme to proper color range');
+        const hexColor = spec.encoding.color.scale.scheme;
+        delete spec.encoding.color.scale.scheme;
+        
+        // Generate a color palette based on the provided hex color
+        spec.encoding.color.scale.range = generateColorPalette(hexColor, spec.data?.values?.length || 8);
+      }
+      
+      return spec;
+    };
+    
+    // Fix 9: Handle arc/pie charts missing theta2 encoding
+    const fixMissingTheta2InArcs = (spec: any): any => {
+      if (!spec.mark || (spec.mark !== 'arc' && spec.mark.type !== 'arc')) {
+        return spec;
+      }
+      
+      // Add theta2 encoding for proper arc segments if missing
+      if (spec.encoding?.theta && !spec.encoding?.theta2) {
+        console.log('🔧 ARC-THETA2-FIX: Adding theta2 encoding for proper arc segments');
+        spec.encoding.theta2 = { value: 0 };
+      }
+      
+      return spec;
+    };
+    
+    // Helper function to generate a color palette from a base hex color
+    const generateColorPalette = (baseColor: string, count: number): string[] => {
+      // Simple color variations based on the base color
+      const variations = [
+        '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffd93d', 
+        '#ff9ff3', '#54a0ff', '#5f27cd', '#ff9f43', '#0abde3',
+        '#006ba6', '#f18701', '#d00000', '#8900f2', '#a8e6cf'
+      ];
+      
+      // If we have enough variations, use them; otherwise cycle through
+      const palette: string[] = [];
+      for (let i = 0; i < count; i++) {
+        palette.push(variations[i % variations.length]);
+      }
+      return palette;
+    };
+    
+    // Fix 10: Handle layered charts with mismatched y-axis scales
+    const fixLayeredChartsWithMismatchedScales = (spec: any): any => {
+      if (!spec.layer || !Array.isArray(spec.layer) || spec.layer.length < 2) {
+        return spec;
+      }
+      
+      // Check if we have layers with different y-axis fields and scales
+      const yFields = spec.layer.map((layer: any) => layer.encoding?.y?.field).filter(Boolean);
+      const hasLogScale = spec.layer.some((layer: any) => layer.encoding?.y?.scale?.type === 'log');
+      const hasLinearScale = spec.layer.some((layer: any) => !layer.encoding?.y?.scale?.type || layer.encoding?.y?.scale?.type === 'linear');
+      
+      if (yFields.length > 1 && hasLogScale && hasLinearScale) {
+        console.log('🔧 DUAL-AXIS-FIX: Detected layered chart with mismatched y-axis scales');
+        
+        // CRITICAL: Remove problematic domains that cause scale conflicts
+        spec.layer.forEach((layer: any, index: number) => {
+          if (layer.encoding?.y?.scale?.domain) {
+            console.log(`🔧 DUAL-AXIS-FIX: Removing conflicting domain from layer ${index}`);
+            delete layer.encoding.y.scale.domain;
+          }
+        });
+        
+        // Add resolve scales to use independent y-axes
+        spec.resolve = {
+          scale: {
+            y: 'independent'
+          }
+        };
+        
+        // CRITICAL FIX: For nominal x-axis with log y-axis, ensure proper positioning
+        if (spec.layer.some(layer => layer.encoding?.x?.type === 'nominal' && layer.encoding?.y?.scale?.type === 'log')) {
+          console.log('🔧 DUAL-AXIS-FIX: Converting nominal x-axis to ordinal for better log scale compatibility');
+          spec.layer.forEach(layer => {
+            if (layer.encoding?.x?.type === 'nominal') {
+              layer.encoding.x.type = 'ordinal';
+            }
+          });
+        }
+        
+        spec.resolve = {
+          scale: {
+            y: 'independent'
+          }
+        };
+        
+        // Ensure each layer has proper axis configuration
+        spec.layer.forEach((layer, index) => {
+          if (layer.encoding?.y) {
+            if (!layer.encoding.y.axis) {
+              layer.encoding.y.axis = {};
+            }
+            // First layer gets left axis, subsequent layers get right axis
+            layer.encoding.y.axis.orient = index === 0 ? 'left' : 'right';
+            layer.encoding.y.axis.grid = index === 0; // Only show grid for first layer
+          }
+        });
+        
+        spec.layer.forEach((layer: any, index: number) => {
+          if (layer.encoding?.y && index > 0) {
+            // Position subsequent y-axes on the right side
+            if (!layer.encoding.y.axis) {
+              layer.encoding.y.axis = {};
+            }
+            layer.encoding.y.axis.orient = 'right';
+            
+            // Ensure the right axis is visible
+            layer.encoding.y.axis.grid = false; // Avoid grid conflicts
+          }
+        });
+        
+        console.log('🔧 DUAL-AXIS-FIX: Added independent y-axis scaling');
+      }
+      
+      return spec;
+    };
+    
+    // Fix 11: Handle rect charts with fold transforms missing x-axis and color encodings
+    const fixRectChartsWithFoldMissingEncodings = (spec: any): any => {
+      if (!spec.mark || (spec.mark !== 'rect' && spec.mark.type !== 'rect')) {
+        return spec;
+      }
+      
+      // Check if we have a fold transform but missing x or color encodings
+      if (spec.transform?.some((t: any) => t.fold) && spec.encoding?.y && 
+          (!spec.encoding?.x || !spec.encoding?.color)) {
+        
+        console.log('🔧 RECT-FOLD-FIX: Detected rect chart with fold transform missing x/color encodings');
+        
+        const foldTransform = spec.transform.find((t: any) => t.fold);
+        const keyField = foldTransform?.as?.[0] || 'key';    // skill_level
+        const valueField = foldTransform?.as?.[1] || 'value'; // percentage
+        
+        // Add missing x encoding (for the values)
+        if (!spec.encoding.x) {
+          spec.encoding.x = {
+            field: valueField,
+            type: 'quantitative',
+            title: valueField.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          };
+        }
+        
+        // Add missing color encoding (for the categories)  
+        if (!spec.encoding.color) {
+          spec.encoding.color = {
+            field: keyField,
+            type: 'nominal',
+            title: keyField.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          };
+        }
+        
+        console.log(`🔧 RECT-FOLD-FIX: Added x="${valueField}" and color="${keyField}" encodings`);
+      }
+      
+      return spec;
+    };
+    
+    // Fix 12: Handle layered charts with inappropriate y-axis domains
+    const fixInappropriateYAxisDomainsInLayers = (spec: any): any => {
+      if (!spec.layer || !Array.isArray(spec.layer)) {
+        return spec;
+      }
+      
+      console.log('🔧 Y-DOMAIN-FIX: Checking layered chart y-axis domains');
+      
+      spec.layer.forEach((layer: any, index: number) => {
+        if (layer.encoding?.y?.scale?.domain && layer.encoding.y.field) {
+          const yField = layer.encoding.y.field;
+          
+          // Check if the scale domain is inappropriate for the data
+          if (spec.data?.values) {
+            const fieldValues = spec.data.values.map(d => d[yField]).filter(v => v !== undefined);
+            const minVal = Math.min(...fieldValues);
+            const maxVal = Math.max(...fieldValues);
+            const domainMin = layer.encoding.y.scale.domain[0];
+            const domainMax = layer.encoding.y.scale.domain[1];
+            
+            // If the domain is much larger than the data range, remove it to use auto-scaling
+            if (domainMax > maxVal * 5 || domainMin < minVal - (maxVal - minVal)) {
+              console.log(`🔧 Y-DOMAIN-FIX: Removing inappropriate y-axis domain [${domainMin}, ${domainMax}] for field "${yField}" with range [${minVal}, ${maxVal}]`);
+              delete layer.encoding.y.scale.domain;
+            }
+          }
+        }
+      });
+      
+      return spec;
+    };
+    
+    // Fix 13: Handle point charts with fold transforms missing y-axis and color encodings
+    const fixPointChartsWithFoldMissingEncodings = (spec: any): any => {
+      if (!spec.mark || (spec.mark !== 'point' && spec.mark.type !== 'point')) {
+        return spec;
+      }
+      
+      // Check if we have a fold transform and x-axis but missing y-axis or color
+      if (spec.transform?.some((t: any) => t.fold) && spec.encoding?.x && 
+          (!spec.encoding?.y || !spec.encoding?.color)) {
+        
+        console.log('🔧 POINT-FOLD-FIX: Detected point chart with fold transform missing encodings');
+        
+        const foldTransform = spec.transform.find((t: any) => t.fold);
+        const keyField = foldTransform?.as?.[0] || 'key';     // skill_type
+        const valueField = foldTransform?.as?.[1] || 'value'; // level
+        
+        // Add missing y-axis encoding
+        if (!spec.encoding.y) {
+          spec.encoding.y = {
+            field: valueField,
+            type: 'quantitative',
+            title: valueField.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          };
+        }
+        
+        // Add missing color encoding to differentiate skill types
+        if (!spec.encoding.color) {
+          spec.encoding.color = {
+            field: keyField,
+            type: 'nominal',
+            title: keyField.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          };
+        }
+        
+        console.log(`🔧 POINT-FOLD-FIX: Added y="${valueField}" and color="${keyField}" encodings`);
+      }
+      
+      return spec;
+    };
+    
+    // Fix 14: Handle bar charts with fold transforms missing x-axis and color encodings
+    const fixBarChartsWithFoldMissingEncodings = (spec: any): any => {
+      if (!spec.mark || (spec.mark !== 'bar' && spec.mark.type !== 'bar')) {
+        return spec;
+      }
+      
+      // Check if we have a fold transform and y-axis but missing x-axis or color encodings
+      if (spec.transform?.some((t: any) => t.fold) && spec.encoding?.y && 
+          (!spec.encoding?.x || !spec.encoding?.color)) {
+        
+        console.log('🔧 BAR-FOLD-FIX: Detected bar chart with fold transform missing x/color encodings');
+        
+        const foldTransform = spec.transform.find((t: any) => t.fold);
+        const keyField = foldTransform?.as?.[0] || 'key';     // period (before/after)
+        const valueField = foldTransform?.as?.[1] || 'value'; // performance
+        
+        // Add missing x encoding (for the values)
+        if (!spec.encoding.x) {
+          spec.encoding.x = {
+            field: valueField,
+            type: 'quantitative',
+            title: valueField.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          };
+        }
+        
+        // Add missing color encoding (for the categories)
+        if (!spec.encoding.color) {
+          spec.encoding.color = {
+            field: keyField,
+            type: 'nominal',
+            title: keyField.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          };
+        }
+        
+        console.log(`🔧 BAR-FOLD-FIX: Added x="${valueField}" and color="${keyField}" encodings`);
+      }
+      
+      return spec;
+    };
+    
+    // Fix 5: Improve LLM-generated chart compatibility
+    const fixLLMGeneratedCharts = (spec: any): any => {
+      console.log('🔧 LLM-CHART-FIX: Starting LLM-generated chart fixes');
+      
+      // Fix 5.1: Convert sequential numeric fields with nominal type to proper ordinal
+      if (spec.encoding && spec.data?.values) {
+        Object.keys(spec.encoding).forEach(channel => {
+          const channelSpec = spec.encoding[channel];
+          if (channelSpec?.field && channelSpec?.type === 'nominal') {
+            const fieldValues = spec.data.values.map((d: any) => d[channelSpec.field]);
+            
+            // Check if this looks like years (4-digit numbers)
+            const looksLikeYears = fieldValues.every((val: any) => 
+              typeof val === 'number' && val >= 1900 && val <= 2100
+            );
+            
+            if (looksLikeYears && channel === 'x') {
+              console.log(`🔧 LLM-CHART-FIX: Converting numeric years in ${channel} from nominal to ordinal`);
+              channelSpec.type = 'ordinal';
+              // Convert numeric years to strings for better ordinal handling
+              spec.data.values = spec.data.values.map((row: any) => ({
+                ...row,
+                [channelSpec.field]: String(row[channelSpec.field])
+              }));
+            }
+            
+            // Check if this is sequential numbers (like attempts 1,2,3,4,5)
+            const looksLikeSequence = fieldValues.every((val: any) => typeof val === 'number') &&
+              fieldValues.length > 1 && 
+              Math.max(...fieldValues) - Math.min(...fieldValues) === fieldValues.length - 1;
+            
+            if (looksLikeSequence && channel === 'x') {
+              console.log(`🔧 LLM-CHART-FIX: Converting sequential numbers in ${channel} from nominal to ordinal`);
+              channelSpec.type = 'ordinal';
+            }
+          }
+        });
+      }
+      
+      // Fix 5.2: Ensure line charts have proper mark configuration
+      if (spec.mark === 'line' && spec.encoding?.x && spec.encoding?.y) {
+        console.log('🔧 LLM-CHART-FIX: Adding points to line chart for better visibility');
+        spec.mark = {
+          type: 'line',
+          point: true,
+          strokeWidth: 2
+        };
+      }
+      
+      // Fix 5.3: Handle line charts with size encoding (should use point marks instead)
+      if (spec.mark === 'line' && spec.encoding?.size) {
+        console.log('🔧 LLM-CHART-FIX: Converting simple line chart with size encoding to point chart');
+        spec.mark = {
+          type: 'point',
+          filled: true,
+          strokeWidth: 2
+        };
+      }
+      
+      // Fix 5.3b: Handle line charts with point:true and size encoding 
+      if (spec.mark && typeof spec.mark === 'object' && spec.mark.type === 'line' && spec.mark.point && spec.encoding?.size) {
+        console.log('🔧 LLM-CHART-FIX: Converting line+point chart with size encoding to pure point chart');
+        spec.mark = {
+          type: 'point',
+          filled: true,
+          strokeWidth: spec.mark.strokeWidth || 2,
+          color: spec.mark.color
+        };
+      }
+      
+      console.log('🔧 LLM-CHART-FIX: LLM chart fixes complete');
+      return spec;
+    };
+    
+    // Apply LLM fixes before other preprocessing
+    spec = fixRectChartsWithFixedY(spec);
+    
+    // Apply missing Y-axis fix after rect fixes
+    spec = fixChartsWithMissingYAfterTransforms(spec);
+    
+    // Apply arc chart fixes
+    spec = fixInvalidColorSchemeInArcs(spec);
+    spec = fixMissingTheta2InArcs(spec);
+    
+    // Apply layered chart fixes
+    spec = fixLayeredChartsWithMismatchedScales(spec);
+    
+    // Apply rect with fold fixes
+    spec = fixRectChartsWithFoldMissingEncodings(spec);
+    
+    // Apply inappropriate domain fixes
+    spec = fixInappropriateYAxisDomainsInLayers(spec);
+    
+    // Apply point chart fixes
+    spec = fixPointChartsWithFoldMissingEncodings(spec);
+    
+    // Apply bar chart with fold fixes
+    spec = fixBarChartsWithFoldMissingEncodings(spec);
+    
+    // Apply LLM fixes after rect fixes
+    spec = fixLLMGeneratedCharts(spec);
 
     if (typeof spec === 'string') {
       const extractedContent = extractDefinitionFromYAML(spec, 'vega-lite');
@@ -1019,7 +1486,32 @@ export const vegaLitePlugin: D3RenderPlugin = {
     if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
       console.log('🔧 VEGA-POST-PROCESS: Fixing layered chart scales and legends');
       
-      vegaSpec.layer.forEach((layer, index) => {
+      // CRITICAL FIX: Handle layers accessing fields from before fold transform
+      // Check if we have a fold transform at the top level
+      const hasFoldTransform = vegaSpec.transform && vegaSpec.transform.some((t: any) => t.fold);
+      
+      if (hasFoldTransform && vegaSpec.data?.values) {
+        const originalData = vegaSpec.data.values;
+        const foldTransform = vegaSpec.transform.find((t: any) => t.fold);
+        const foldedFields = foldTransform?.fold || [];
+        
+        // Check each layer for field references that aren't in the folded data
+        vegaSpec.layer.forEach((layer: any, index: number) => {
+          if (layer.encoding) {
+            Object.keys(layer.encoding).forEach(channel => {
+              const channelSpec = layer.encoding[channel];
+              if (channelSpec?.field && !foldedFields.includes(channelSpec.field) && 
+                  originalData.length > 0 && originalData[0].hasOwnProperty(channelSpec.field)) {
+                // This layer needs access to the original data
+                console.log(`🔧 FOLD-DATA-FIX: Layer ${index} needs original data for field "${channelSpec.field}"`);
+                layer.data = { values: originalData };
+              }
+            });
+          }
+        });
+      }
+      
+      vegaSpec.layer.forEach((layer: any, index: number) => {
         if (layer.encoding?.y?.scale?.domain && layer.encoding.y.field) {
           const yField = layer.encoding.y.field;
           
@@ -2519,6 +3011,29 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
     }
 
+    // Fix boxplot charts with invalid axis configuration
+    if (vegaSpec.mark && (vegaSpec.mark.type === 'boxplot' || vegaSpec.mark === 'boxplot') &&
+        vegaSpec.encoding && vegaSpec.encoding.x && vegaSpec.encoding.y) {
+      console.log('Fixing boxplot chart axis configuration');
+      
+      // Boxplots need the continuous field on x-axis and categorical on y-axis, or vice versa
+      // Check if we have the axes swapped (continuous on y, categorical on x)
+      if (vegaSpec.encoding.x.type === 'nominal' && vegaSpec.encoding.y.type === 'quantitative') {
+        console.log('Swapping x and y axes for boxplot to put continuous field on x-axis');
+        
+        // Swap the encodings
+        const tempX = vegaSpec.encoding.x;
+        vegaSpec.encoding.x = vegaSpec.encoding.y;
+        vegaSpec.encoding.y = tempX;
+        
+        // Update titles appropriately
+        if (!vegaSpec.encoding.x.title) vegaSpec.encoding.x.title = 'Value';
+        if (!vegaSpec.encoding.y.title) vegaSpec.encoding.y.title = 'Category';
+        
+        console.log('Boxplot axes swapped successfully');
+      }
+    }
+
     // Fix for layered charts with selections
     if ((vegaSpec.layer || vegaSpec.facet || vegaSpec.vconcat || vegaSpec.hconcat) && vegaSpec.params) {
       // Check if we have selection parameters
@@ -3306,7 +3821,12 @@ ${svgData}`;
             box-sizing: border-box;
             color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
         `;
-        sourceView.innerHTML = `<code>${JSON.stringify(vegaSpec, null, 2)}</code>`;
+        sourceView.innerHTML = `<div style="
+          font-weight: bold;
+          color: ${isDarkMode ? '#58a6ff' : '#0366d6'};
+          margin-bottom: 12px;
+          font-size: 14px;
+        ">📊 Vega-Lite Specification:</div><code>${JSON.stringify(vegaSpec, null, 2)}</code>`;
         
         container.innerHTML = '';
         container.appendChild(sourceView);

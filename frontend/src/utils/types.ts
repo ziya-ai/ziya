@@ -131,7 +131,8 @@ export interface D3CustomSpec {
         container: SVGSVGElement,
         width: number,
         height: number,
-        isDarkMode: boolean
+        isDarkMode: boolean,
+        d3: typeof import('d3')
     ) => void;
     options?: BaseChartOptions;
 }

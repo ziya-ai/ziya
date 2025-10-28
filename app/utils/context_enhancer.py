@@ -102,7 +102,6 @@ def is_ast_enabled() -> bool:
     logger.debug(f"AST enablement check: ZIYA_ENABLE_AST={os.environ.get('ZIYA_ENABLE_AST', 'not set')}, env_enabled={env_enabled}, AST_AVAILABLE={AST_AVAILABLE}")
     return env_enabled and AST_AVAILABLE
 
-
 def initialize_ast_if_enabled():
     """Initialize AST capabilities if enabled via environment variable."""
     global _ast_indexing_status
@@ -323,3 +322,16 @@ def enhance_context_with_ast(query: str, context: Dict[str, Any]) -> Dict[str, A
 
 # Initialize AST capabilities on module load if enabled
 initialize_ast_if_enabled()
+
+# Add token counting cache with LRU eviction
+import functools
+
+@functools.lru_cache(maxsize=1000)
+def cached_token_count(content_hash: str, content: str) -> int:
+    """Cached token counting to avoid recomputing for same content"""
+    try:
+        import tiktoken
+        encoding = tiktoken.get_encoding("cl100k_base")
+        return len(encoding.encode(content))
+    except Exception:
+        return len(content) // 4

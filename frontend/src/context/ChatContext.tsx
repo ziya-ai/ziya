@@ -79,7 +79,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
-    const [currentConversationId, setCurrentConversationId] = useState<string>(uuidv4());
+    const [currentConversationId, setCurrentConversationId] = useState<string>(() => {
+        // CRITICAL FIX: Try to restore the last active conversation ID before creating a new one
+        try {
+            const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
+            if (savedCurrentId) {
+                console.log('🔄 RESTORED: Last active conversation ID:', savedCurrentId);
+                return savedCurrentId;
+            }
+        } catch (e) {
+            console.warn('Failed to restore current conversation ID:', e);
+        }
+        
+        // Only create new ID if no saved ID exists
+        const newId = uuidv4();
+        console.log('🆕 CREATED: New conversation ID:', newId);
+        return newId;
+    });
     const currentConversationRef = useRef<string>(currentConversationId);
     const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
@@ -116,27 +132,37 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Monitor ChatProvider render performance
     // Remove performance monitoring that's causing overhead
 
-    // Modified scrollToBottom function to respect user scroll
+    // Improved scrollToBottom function with better user scroll respect
     const scrollToBottom = () => {
         const now = Date.now();
         const timeSinceManualScroll = now - lastManualScrollTime.current;
         const SCROLL_COOLDOWN = 5000; // 5 seconds
         
-        // If we're in cooldown period, don't autoscroll
+        // If we're in cooldown period from manual scroll, don't autoscroll
         if (manualScrollCooldownActive.current && timeSinceManualScroll < SCROLL_COOLDOWN) {
             return;
         }
         
-        // If cooldown period has passed, reset the manual scroll state
+        // If cooldown period has passed, reset manual scroll state
         if (manualScrollCooldownActive.current && timeSinceManualScroll >= SCROLL_COOLDOWN) {
             manualScrollCooldownActive.current = false;
             setUserHasScrolled(false);
         }
         
+        // Only autoscroll if we have actual streaming content (not just waiting)
+        const hasActiveContent = Array.from(streamingConversations).some(id => {
+            const content = streamedContentMap.get(id);
+            return content && content.trim().length > 0;
+        });
+        
+        if (!hasActiveContent) {
+            return; // Don't scroll during "waiting" phase
+        }
+        
         const chatContainer = document.querySelector('.chat-container');
-        if (chatContainer && isTopToBottom && !manualScrollCooldownActive.current && isStreamingAny) {
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-        } else if (chatContainer && !isTopToBottom && !manualScrollCooldownActive.current && isStreamingAny) {
+        if (chatContainer && isTopToBottom && !manualScrollCooldownActive.current) {
+            chatContainer.scrollTop = chatContainer.scrollHeight - chatContainer.clientHeight;
+        } else if (chatContainer && !isTopToBottom && !manualScrollCooldownActive.current) {
             chatContainer.scrollTop = 0;
         }
     };
@@ -239,8 +265,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Queue-based save system to prevent race conditions
     const queueSave = useCallback(async (conversations: Conversation[]) => {
         saveQueue.current = saveQueue.current.then(async () => {
-            await db.saveConversations(conversations);
-            await createBackup(conversations);
+            // For large conversations, use incremental saves
+            const largeConversations = conversations.filter(c => 
+                c.messages.length > 100 || 
+                JSON.stringify(c).length > 100000
+            );
+            
+            if (largeConversations.length > 0) {
+                console.log(`Using incremental save for ${largeConversations.length} large conversations`);
+                // Save large conversations with compression
+                await db.saveConversations(largeConversations);
+                
+                // Save smaller conversations normally  
+                const smallConversations = conversations.filter(c => !largeConversations.includes(c));
+                if (smallConversations.length > 0) {
+                    await db.saveConversations(smallConversations);
+                }
+            } else {
+                await db.saveConversations(conversations);
+            }
         });
         return saveQueue.current;
     }, [createBackup]);
@@ -420,6 +463,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         setConversations([...updatedConversations, newConversation]);
                         setCurrentMessages([]);
                         setCurrentConversationId(newId);
+                        
+                        // Persist the new conversation ID immediately
+                        localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
                         resolve();
                     })
                     .catch(error => {
@@ -659,6 +705,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (!isInitialized) {
                 console.log('✅ Setting conversations immediately:', savedConversations.length);
                 setConversations(savedConversations);
+                
+                // CRITICAL: Verify the restored currentConversationId exists in loaded conversations
+                const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
+                if (savedCurrentId && !savedConversations.some(conv => conv.id === savedCurrentId)) {
+                    console.warn(`⚠️ ORPHANED CONVERSATION: Current ID ${savedCurrentId} not found in loaded conversations`);
+                    // Find the most recently accessed conversation as fallback
+                    const mostRecent = savedConversations.reduce((latest, conv) => 
+                        (!latest || (conv.lastAccessedAt || 0) > (latest.lastAccessedAt || 0)) ? conv : latest
+                    );
+                    if (mostRecent) {
+                        console.log('🔄 FALLBACK: Using most recent conversation:', mostRecent.id);
+                        setCurrentConversationId(mostRecent.id);
+                        localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', mostRecent.id);
+                    }
+                }
+                
                 setIsInitialized(true);
             }
 

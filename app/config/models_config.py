@@ -303,6 +303,18 @@ MODEL_CONFIGS = {
             "family": "claude",
             "supports_context_caching": True,
         },
+        "haiku-4.5": {
+            "model_id": {
+                "us": "anthropic.claude-haiku-4-5-20251001-v1:0"
+            },
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 10000,
+            "supports_max_input_tokens": True,
+            "supports_thinking": False,
+            "family": "claude",
+            "supports_context_caching": True,
+        },
         "nova-pro": {
             "model_id": {
                 "us": "us.amazon.nova-pro-v1:0"
@@ -362,6 +374,18 @@ MODEL_CONFIGS = {
             "context_window": 128000,
             "default_max_output_tokens": 4096,  # Match 120B model for consistency
             "region": "us-west-2"  # OpenAI models only available in us-west-2
+        },
+        "qwen3-coder-480b": {
+            "model_id": {
+                "us": "qwen.qwen3-coder-480b-a35b-v1:0"
+            },
+            "available_regions": ["us-west-2"],
+            "region_restricted": True,
+            "preferred_region": "us-west-2",
+            "family": "oss_openai_gpt",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096
         }
     },
     "google": {

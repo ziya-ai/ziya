@@ -1531,10 +1531,10 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
         try:
             from app.utils.file_utils import read_file_content
             # Get annotated content with change tracking
-            logger.info(f"Getting annotated content for {file_path}")
+            logger.debug(f"Getting annotated content for {file_path}")
             annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
             logger.debug(f"First few annotated lines: {annotated_lines[:3] if annotated_lines else []}")
-            logger.info(f"Got {len(annotated_lines) if annotated_lines else 0} lines for {file_path}, success={success}")
+            logger.debug(f"Got {len(annotated_lines) if annotated_lines else 0} lines for {file_path}, success={success}")
             if success:
                 # Log a preview of the content
                 preview = "\n".join(annotated_lines[:5]) if annotated_lines else "NO CONTENT"
@@ -1542,7 +1542,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
                 combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
             else:
                 # Add file directly to FileStateManager when not found
-                logger.info(f"File {file_path} not in FileStateManager, adding it directly")
+                logger.debug(f"File {file_path} not in FileStateManager, adding it directly")
                 content = read_file_content(full_path)
                 if content:
                     # Ensure conversation exists
@@ -1700,7 +1700,7 @@ def extract_codebase(x):
             if content:
                 file_contents[file_path] = content
                 lines = len(content.splitlines()) if isinstance(content, str) else 0
-                logger.info(f"Successfully loaded {file_path} with {lines} lines")
+                logger.debug(f"Successfully loaded {file_path} with {lines} lines")
             else:
                 logger.warning(f"Failed to read content from {file_path}")
         except Exception as e:
@@ -1923,11 +1923,31 @@ def create_agent_chain(chat_model: BaseChatModel):
                     # Add system message from prompt
                     if hasattr(prompt_template, 'messages') and prompt_template.messages:
                         system_msg = prompt_template.messages[0]
-                        # Escape curly braces in user input to prevent .format() from interpreting them
+                        # Escape curly braces but preserve template literals like ${variable}
+                        import re
+                        def escape_braces_preserve_template_literals(text):
+                            if not isinstance(text, str) or '{{' in text or '}}' in text:
+                                return text
+                            # Temporarily replace template literals with placeholders
+                            placeholders = []
+                            def save_template(match):
+                                placeholders.append(match.group(0))
+                                return f'__TEMPLATE_{len(placeholders)-1}__'
+                            
+                            # Save template literals
+                            text = re.sub(r'\$\{[^}]*\}', save_template, text)
+                            
+                            # Escape remaining braces
+                            text = text.replace('{', '{{').replace('}', '}}')
+                            
+                            # Restore template literals
+                            for i, placeholder_text in enumerate(placeholders):
+                                text = text.replace(f'__TEMPLATE_{i}__', placeholder_text)
+                            
+                            return text
+                        
                         safe_mapped_input = {
-                            k: v.replace('{', '{{').replace('}', '}}') if isinstance(v, str) and not (
-                                '{{' in v or '}}' in v  # Skip if already escaped
-                            ) else v
+                            k: escape_braces_preserve_template_literals(v) if isinstance(v, str) and k != 'question' else v
                             for k, v in mapped_input.items()
                         }
                         formatted_content = system_msg.format(**safe_mapped_input)

@@ -6,7 +6,8 @@ import { Message } from "../utils/types";
 import { convertKeysToStrings } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
 import { Button, Input, message } from 'antd';
-import { SendOutlined } from "@ant-design/icons";
+import { SendOutlined, StopOutlined } from "@ant-design/icons";
+import StopStreamButton from './StopStreamButton';
 import { useQuestionContext } from '../context/QuestionContext';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 
@@ -47,6 +48,26 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     const [throttlingError, setThrottlingError] = useState<any>(null);
 
     const { question, setQuestion } = useQuestionContext();
+
+    // Track if we've received any content yet to distinguish "Sending" vs "Processing"
+    const [hasReceivedContent, setHasReceivedContent] = useState(false);
+    
+    // Reset content tracking when streaming starts
+    useEffect(() => {
+        if (streamingConversations.has(currentConversationId)) {
+            setHasReceivedContent(false);
+        }
+    }, [streamingConversations, currentConversationId]);
+    
+    // Monitor streamed content to detect when first content arrives
+    useEffect(() => {
+        const currentStreamedContent = streamedContentMap.get(currentConversationId);
+        if (currentStreamedContent && currentStreamedContent.trim().length > 0 && !hasReceivedContent) {
+            setHasReceivedContent(true);
+        }
+    }, [streamedContentMap, currentConversationId, hasReceivedContent]);
+
+    const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
 
     // Check if the last message suggests continuation is needed
     useEffect(() => {
@@ -99,9 +120,45 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         };
     }, []);
 
+    // Clear error states when conversation changes
+    useEffect(() => {
+        setThrottlingError(null);
+    }, [currentConversationId]);
+
+    // Clear error states when successfully starting to send
+    useEffect(() => {
+        if (streamingConversations.has(currentConversationId)) {
+            setThrottlingError(null);
+        }
+    }, [streamingConversations, currentConversationId]);
+
     // Listen for throttling errors from chatApi
     useEffect(() => {
         const handleThrottlingError = (event: CustomEvent) => {
+            console.log('Throttling error received:', event.detail);
+            setThrottlingError(event.detail);
+        };
+    }, []);
+
+    // Clear error states when conversation changes
+    useEffect(() => {
+        setThrottlingError(null);
+    }, [currentConversationId]);
+
+    // Clear error states when successfully starting to send
+    useEffect(() => {
+        if (streamingConversations.has(currentConversationId)) {
+            setThrottlingError(null);
+        }
+    }, [streamingConversations, currentConversationId]);
+
+    // Listen for throttling errors from chatApi
+    useEffect(() => {
+        const handleThrottlingError = (event: CustomEvent) => {
+            // Only handle errors for the current conversation
+            if (event.detail.conversation_id && event.detail.conversation_id !== currentConversationId) {
+                return;
+            }
             console.log('Throttling error received:', event.detail);
             setThrottlingError(event.detail);
         };
@@ -110,20 +167,26 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         return () => {
             document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
         };
-    }, []);
+    }, [currentConversationId]); // Keep dependency to recreate listener with current conversation ID
 
     const isDisabled = useMemo(() =>
         isQuestionEmpty(question) || streamingConversations.has(currentConversationId),
         [question, streamingConversations, currentConversationId]
     );
+    
+    // Allow textarea input during streaming for real-time feedback
+    const isTextAreaDisabled = useMemo(() =>
+        false, // Never disable textarea - allow typing during streaming
+        [question, streamingConversations, currentConversationId]
+    );
 
     const buttonTitle = useMemo(() =>
-        streamingConversations.has(currentConversationId)
+        isCurrentlyStreaming
             ? "Waiting for AI response..."
             : currentMessages[currentMessages.length - 1]?.role === 'human'
                 ? "AI response may have failed - click Send to retry"
                 : "Send message",
-        [streamingConversations, currentConversationId, currentMessages]
+        [isCurrentlyStreaming, currentMessages]
     );
 
     const handleSendPayload = async (isRetry: boolean = false, retryContent?: string) => {
@@ -143,6 +206,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
         // Store the question before clearing it
         const currentQuestion = retryContent || question;
+
+        // Clear any existing error states when starting a new request
+        setThrottlingError(null);
 
         setQuestion('');
         setStreamedContentMap(new Map());
@@ -191,6 +257,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 currentQuestion,
                 selectedFiles,
                 targetConversationId,
+                streamedContentMap,
                 setStreamedContentMap,
                 setIsStreaming,
                 removeStreamingConversation,
@@ -218,24 +285,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             // Get the final streamed content
             const finalContent = streamedContentMap.get(currentConversationId) || result;
             if (finalContent) {
-                let isError = false;
                 // Check if result is an error response
                 try {
                     const errorData = JSON.parse(finalContent);
                     if (errorData.error === 'validation_error') {
                         message.error(errorData.detail || 'Selected content is too large. Please reduce the number of files.');
-                        isError = true;
                         return;
                     }
                 } catch (e) { } // Not JSON or not an error response
-                const aiMessage: Message = {
-                    content: finalContent,
-                    role: 'assistant'
-                };
-                // Only add the message if it has content and isn't an error
-                if (!isError && finalContent.trim() !== '') {
-                    addMessageToConversation(aiMessage, currentConversationId);
-                }
+                
+                // Message already added by sendPayload, just clean up streaming state
                 removeStreamingConversation(currentConversationId);
             }
         } catch (error) {
@@ -259,10 +318,26 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     };
 
     const handleContinue = () => {
+        // Reset user scroll state when continuing (same as new message)
+        setUserHasScrolled(false);
+        
         const continuePrompt = "Please continue your previous response.";
         setQuestion(continuePrompt);
         handleSendPayload(false, continuePrompt);
         setShowContinueButton(false);
+        
+        // Scroll to bottom immediately for continue action (same as new message)
+        setTimeout(() => {
+            const chatContainer = document.querySelector('.chat-container') as HTMLElement;
+            if (chatContainer) {
+                const { scrollHeight, clientHeight } = chatContainer;
+                const targetScrollTop = scrollHeight - clientHeight;
+                chatContainer.scrollTo({
+                    top: Math.max(0, targetScrollTop),
+                    behavior: 'auto'
+                });
+            }
+        }, 50);
     };
 
     return (
@@ -288,10 +363,17 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 value={question}
                 onChange={handleQuestionChange}
                 id="chat-question-textarea"
-                placeholder="Enter your question.."
+                placeholder={
+                    isCurrentlyStreaming 
+                        ? "AI is responding... (you can type feedback for tools)" 
+                        : "Enter your question.."
+                }
                 autoComplete="off"
                 autoSize={{ minRows: 1 }}
-                className="input-textarea"
+                className={`input-textarea ${
+                    isCurrentlyStreaming ? 'streaming-input' : ''
+                }`}
+                disabled={isTextAreaDisabled}
                 onPressEnter={(event) => {
                     if (!event.shiftKey && !isQuestionEmpty(question)) {
                         event.preventDefault();
@@ -299,16 +381,39 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                     }
                 }}
             />
-            <Button
-                type="primary"
-                onClick={() => handleSendPayload()}
-                disabled={isDisabled}
-                icon={<SendOutlined />}
-                style={{ marginLeft: '10px' }}
-                title={buttonTitle}
-            >
-                {streamingConversations.has(currentConversationId) ? 'Sending...' : 'Send'}
-            </Button>
+            <div style={{ marginLeft: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {!isCurrentlyStreaming ? (
+                    <Button
+                        type="primary"
+                        onClick={() => handleSendPayload()}
+                        disabled={isDisabled}
+                        icon={<SendOutlined />}
+                        title={buttonTitle}
+                    >
+                        Send
+                    </Button>
+                ) : (
+                    <>
+                        <Button
+                            type="default"
+                            disabled
+                            icon={<SendOutlined />}
+                            title="Response in progress..."
+                        >
+                            {!hasReceivedContent ? 'Sending...' : 'Processing...'}
+                        </Button>
+                        <StopStreamButton
+                            conversationId={currentConversationId}
+                            size="middle"
+                            style={{
+                                height: '32px', // Match the disabled send button height
+                                display: 'flex',
+                                alignItems: 'center'
+                            }}
+                        />
+                    </>
+                )}
+            </div>
         </div>
         </div>
     );
