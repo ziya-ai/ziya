@@ -234,7 +234,7 @@ function formatShellCommand(result: string, options: any): FormattedOutput {
   const shouldCollapse = lineCount > 10;
   
   // Create a more descriptive summary that includes the command
-  let summaryText = undefined;
+  let summaryText: string | undefined = undefined;
   if (shouldCollapse && displayCommand) {
     summaryText = `$ ${displayCommand} - Output (${lineCount} lines, ${result.length} chars)`;
   } else if (shouldCollapse) {
