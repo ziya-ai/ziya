@@ -1017,7 +1017,7 @@ export const sendPayload = async (
 
                             let toolStartDisplay;
                             if (headerCommand) {
-                                toolName}|${headerCommand}\n⏳ Running: ${headerCommand}\n\`\`\`\n\n`;
+                                toolStartDisplay = `\n\`\`\`tool:${toolName}|${headerCommand}\n⏳ Running: ${headerCommand}\n\`\`\`\n\n`;
                             } else {
                                 const inputSummary = jsonData.input && Object.keys(jsonData.input).length > 0
                                     ? ` (${Object.keys(jsonData.input).slice(0, 3).join(', ')}${Object.keys(jsonData.input).length > 3 ? '...' : ''})`
