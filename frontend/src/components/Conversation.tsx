@@ -488,9 +488,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                             itemCount={currentMessages.length}
                             itemSize={100}
                             width="100%"
-                        >
-                            {renderMessage}
-                        </List>
+                            children={renderMessage}
+                        />
                     </div>
                 ) : null)}
                 
