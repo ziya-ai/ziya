@@ -430,6 +430,10 @@ async def connection_state_middleware(request: Request, call_next):
 from app.routes.mcp_routes import router as mcp_router
 app.include_router(mcp_router)
 
+# Import and include MCP registry routes
+from app.routes.mcp_registry_routes import router as mcp_registry_router
+app.include_router(mcp_registry_router)
+
 # Import and include AST routes
 from app.routes.ast_routes import router as ast_router
 initialize_ast_if_enabled()
@@ -2894,23 +2898,32 @@ async def get_folder(request: FolderRequest):
 @app.get("/folder-progress")
 async def get_folder_progress():
     """Get current folder scanning progress."""
-    # progress = get_scan_progress()
+    from app.utils.directory_util import get_scan_progress
+    progress = get_scan_progress()
     # Only return active=True if there's actual progress to report
-    # if progress["active"] and not progress["progress"]:
-    #     # No actual progress data, don't report as active
-    #     progress["active"] = False
-    #     progress["progress"] = {}
-    # return progress
-    return {"active": False, "progress": {}}
+    if progress["active"] and not progress["progress"]:
+        # No actual progress data, don't report as active
+        progress["active"] = False
+        progress["progress"] = {}
+    return progress
 
 @app.post("/folder-cancel")
 async def cancel_folder_scan():
     """Cancel current folder scanning operation."""
-    # was_active = cancel_scan()
-    # if was_active:
-    #     logger.info("Folder scan cancellation requested")
-    logger.info("Folder scan cancellation not available")
-    return {"cancelled": False}
+    from app.utils.directory_util import cancel_scan
+    was_active = cancel_scan()
+    if was_active:
+        logger.info("Folder scan cancellation requested")
+    return {"cancelled": was_active}
+
+@app.post("/api/clear-folder-cache")
+async def clear_folder_cache():
+    """Clear the folder structure cache."""
+    global _folder_cache
+    _folder_cache['data'] = None
+    _folder_cache['timestamp'] = 0
+    logger.info("Folder cache cleared")
+    return {"cleared": True}
 
 @app.post("/file")
 async def get_file(request: FileRequest):
