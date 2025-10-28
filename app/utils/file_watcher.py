@@ -201,7 +201,13 @@ class FileChangeHandler(FileSystemEventHandler):
         if not self._should_process_event(rel_path, "created"):
             return
             
-        # Check if this file is in any conversation context
+        # Additional check: if file already exists and was recently modified,
+        # this might be a false create event from an editor
+        full_path = os.path.join(self.base_dir, rel_path)
+        if os.path.exists(full_path) and os.path.getmtime(full_path) + 1.0 > time.time():
+            logger.debug(f"Suppressing false create event for recently modified file: {rel_path}")
+            return
+            
         is_in_context = any(
             rel_path in files 
             for conv_id, files in self.file_state_manager.conversation_states.items()
