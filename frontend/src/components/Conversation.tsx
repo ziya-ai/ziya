@@ -485,10 +485,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     <div style={{ height: '400px', width: '100%' }}>
                         <List
                             height={400}
-                            itemCount={currentMessages.length}
-                            itemSize={100}
+                            rowCount={currentMessages.length}
+                            rowHeight={100}
                             width="100%"
-                            children={renderMessage}
+                            rowComponent={renderMessage}
+                            rowProps={{}}
                         />
                     </div>
                 ) : null)}
