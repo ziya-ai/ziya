@@ -54,9 +54,6 @@ class ErrorHandlingMiddleware:
                 logger.debug(f"H11 protocol error - connection broken (client likely disconnected): {e}")
                 return  # Silently ignore all protocol errors when connection is broken
         
-        # Track if we've started sending a response
-        response_started = False
-        
         async def safe_send(message):
             nonlocal response_started
             try:
