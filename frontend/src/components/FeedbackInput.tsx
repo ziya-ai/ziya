@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Input, Button, Card, Typography, message } from 'antd';
-import { SendOutlined, StopOutlined } from '@ant-design/icons';
+import { Input, Button, Card, Typography } from 'antd';
+import { SendOutlined, CloseOutlined } from '@ant-design/icons';
 
+const { TextArea } = Input;
 const { Text } = Typography;
 
 interface FeedbackInputProps {
@@ -9,138 +10,125 @@ interface FeedbackInputProps {
     isStreaming: boolean;
 }
 
-const FeedbackInput: React.FC<FeedbackInputProps> = ({ conversationId, isStreaming }) => {
-    const [feedbackText, setFeedbackText] = useState('');
-    const [activeTool, setActiveTool] = useState<{toolId: string, toolName: string} | null>(null);
-    const [isVisible, setIsVisible] = useState(false);
-    const inputRef = useRef<any>(null);
+interface FeedbackReadyEvent {
+    toolId: string;
+    toolName: string;
+    conversationId: string;
+}
 
-    // Listen for feedback readiness events
+const FeedbackInput: React.FC<FeedbackInputProps> = ({ conversationId, isStreaming }) => {
+    const [isVisible, setIsVisible] = useState(false);
+    const [feedbackText, setFeedbackText] = useState('');
+    const [currentToolId, setCurrentToolId] = useState<string | null>(null);
+    const [currentToolName, setCurrentToolName] = useState<string | null>(null);
+    const [isSending, setIsSending] = useState(false);
+    const textAreaRef = useRef<any>(null);
+
     useEffect(() => {
-        const handleFeedbackReady = (event: CustomEvent) => {
-            const { toolId, toolName, conversationId: eventConvId } = event.detail;
+        const handleFeedbackReady = (event: CustomEvent<FeedbackReadyEvent>) => {
+            const { toolId, toolName, conversationId: eventConversationId } = event.detail;
             
-            if (eventConvId === conversationId) {
-                setActiveTool({ toolId, toolName });
+            // Only show feedback input for the current conversation
+            if (eventConversationId === conversationId) {
+                setCurrentToolId(toolId);
+                setCurrentToolName(toolName);
                 setIsVisible(true);
-                console.log('🔄 FEEDBACK: UI enabled for tool:', toolName);
+                setFeedbackText('');
+                
+                // Focus the text area after a short delay
+                setTimeout(() => {
+                    textAreaRef.current?.focus();
+                }, 100);
             }
         };
 
-        const handleToolComplete = () => {
-            setActiveTool(null);
-            setIsVisible(false);
-            setFeedbackText('');
-        };
-
         document.addEventListener('feedbackReady', handleFeedbackReady as EventListener);
-        document.addEventListener('toolComplete', handleToolComplete as EventListener);
 
         return () => {
             document.removeEventListener('feedbackReady', handleFeedbackReady as EventListener);
-            document.removeEventListener('toolComplete', handleToolComplete as EventListener);
         };
     }, [conversationId]);
 
-    // Hide when streaming stops
-    useEffect(() => {
-        if (!isStreaming) {
-            setIsVisible(false);
-            setActiveTool(null);
-        }
-    }, [isStreaming]);
+    const sendFeedback = async () => {
+        if (!currentToolId || !feedbackText.trim() || isSending) return;
 
-    const sendFeedback = () => {
-        if (!feedbackText.trim() || !activeTool) return;
-        
-        console.log('🔄 FEEDBACK: Attempting to send feedback:', feedbackText);
-        
-        // Send feedback via WebSocket
-        const feedbackWS = (window as any).feedbackWebSocket;
-        console.log('🔄 FEEDBACK: WebSocket available:', !!feedbackWS);
-        console.log('🔄 FEEDBACK: WebSocket state:', feedbackWS?.ws?.readyState);
-        
-        if (feedbackWS) {
-            feedbackWS.sendFeedback(activeTool.toolId, feedbackText);
-            
-            // Show visual confirmation
-            message.success({
-                content: `Feedback sent to ${activeTool.toolName}: "${feedbackText}"`,
-                duration: 2
-            });
-            
-            // Clear input and provide visual feedback
-            setFeedbackText('');
-            console.log('🔄 FEEDBACK: Sent to tool:', activeTool.toolName);
+        setIsSending(true);
+
+        try {
+            // Use the global WebSocket if available
+            const feedbackWebSocket = (window as any).feedbackWebSocket;
+            if (feedbackWebSocket && (window as any).feedbackWebSocketReady) {
+                feedbackWebSocket.sendFeedback(currentToolId, feedbackText.trim());
+                console.log('🔄 FEEDBACK: Sent feedback for tool:', currentToolId, 'Message:', feedbackText.trim());
+            } else {
+                console.error('🔄 FEEDBACK: WebSocket not ready or not available');
+            }
+
+            // Close the feedback input
+            closeFeedback();
+        } catch (error) {
+            console.error('🔄 FEEDBACK: Error sending feedback:', error);
+        } finally {
+            setIsSending(false);
         }
+    };
+
+    const closeFeedback = () => {
+        setIsVisible(false);
+        setFeedbackText('');
+        setCurrentToolId(null);
+        setCurrentToolName(null);
     };
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
             sendFeedback();
+        } else if (e.key === 'Escape') {
+            closeFeedback();
         }
     };
 
-    if (!isVisible || !activeTool) {
-        return null;
-    }
+    if (!isVisible || !currentToolName) return null;
 
     return (
-        <Card 
+        <Card
             size="small"
             style={{
                 position: 'fixed',
-                bottom: '80px',
+                bottom: '20px',
                 right: '20px',
-                width: '320px',
-                zIndex: 1000,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                border: '2px solid #1890ff'
+                width: '400px',
+                maxWidth: '90vw',
+                zIndex: 1001,
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
             }}
-            bodyStyle={{ padding: '12px' }}
-        >
-            <div style={{ marginBottom: '8px' }}>
-                <Text strong style={{ color: '#1890ff' }}>
-                    💬 Provide feedback to: {activeTool.toolName}
-                </Text>
-            </div>
-            
-            <div style={{ display: 'flex', gap: '8px' }}>
-                <Input.TextArea
-                    ref={inputRef}
-                    value={feedbackText}
-                    onChange={(e) => setFeedbackText(e.target.value)}
-                    onKeyPress={handleKeyPress}
-                    placeholder="Type feedback (Enter to send, Shift+Enter for newline)"
-                    autoSize={{ minRows: 1, maxRows: 3 }}
-                    style={{ flex: 1 }}
-                />
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <Button
-                        type="primary"
-                        icon={<SendOutlined />}
-                        onClick={sendFeedback}
-                        disabled={!feedbackText.trim()}
-                        size="small"
-                    />
-                    <Button
-                        icon={<StopOutlined />}
-                        onClick={() => setIsVisible(false)}
-                        size="small"
-                        title="Hide feedback"
-                    />
+            title={
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text strong>Provide feedback for {currentToolName}</Text>
+                    <Button type="text" size="small" icon={<CloseOutlined />} onClick={closeFeedback} />
                 </div>
-                
-                {/* Debug button - remove in production */}
+            }
+        >
+            <TextArea
+                ref={textAreaRef}
+                value={feedbackText}
+                onChange={(e) => setFeedbackText(e.target.value)}
+                onKeyDown={handleKeyPress}
+                placeholder="Type your feedback here... (Ctrl+Enter to send, Esc to close)"
+                rows={3}
+                style={{ marginBottom: '12px' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <Button onClick={closeFeedback}>Cancel</Button>
                 <Button
-                    type="dashed"
-                    size="small"
-                    onClick={() => {
-                        console.log('🔄 FEEDBACK DEBUG:', { activeTool, feedbackText, wsReady: (window as any).feedbackWebSocketReady });
-                    }}
+                    type="primary"
+                    icon={<SendOutlined />}
+                    onClick={sendFeedback}
+                    loading={isSending}
+                    disabled={!feedbackText.trim() || isSending}
                 >
-                    Debug
+                    Send Feedback
                 </Button>
             </div>
         </Card>
