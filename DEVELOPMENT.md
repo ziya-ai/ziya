@@ -1,7 +1,7 @@
 ### To Run locally
 First build
 ```bash
-python ziya_build.sh
+python ziya_build.py
 ```
 #### To just test BackEnd changes run
 ```bash
