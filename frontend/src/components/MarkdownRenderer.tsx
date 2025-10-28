@@ -170,24 +170,6 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                 return `🔧 ${encodedCommand}`;
             }
         }
-    
-    // Extract command/query information for display in header
-    const getToolSummary = () => {
-        const isShellCommand = actualToolName === 'mcp_run_shell_command';
-        
-        // If we have encoded command from the lang attribute, use it
-        if (encodedCommand) {
-            if (isShellCommand && encodedCommand.startsWith('$ ')) {
-                return `🔧 ${encodedCommand}`;
-            } else if (encodedCommand.startsWith('Search: ')) {
-                return `🔍 ${encodedCommand}`;
-            } else if (encodedCommand.startsWith('$ ')) {
-                return `🔧 ${encodedCommand}`;
-            } else {
-                // Generic command display
-                return `🔧 ${encodedCommand}`;
-            }
-        }
         
         // Try to extract command from content for shell commands
         if (isShellCommand && content.startsWith('$ ')) {
@@ -200,6 +182,9 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
             const queryMatch = content.match(/Query: "([^"]+)"/);
             if (queryMatch) {
                 return `Search: "${queryMatch[1]}"`;
+            }
+        }
+        
         // For other tools, return generic name
         const cleanToolName = actualToolName.replace('mcp_', '');
         return isShellCommand ? '🔧 Shell Command' : `🛠️ ${cleanToolName}`;
