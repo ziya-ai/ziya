@@ -933,17 +933,30 @@ export const sendPayload = async (
                                 defaultCollapsed: true
                             });
 
+                            // Extract command/query for header display
+                            let headerCommand = '';
+                            if (storedInput?.command) {
+                                headerCommand = `$ ${storedInput.command}`;
+                            } else if (storedInput?.searchQuery) {
+                                headerCommand = `Search: "${storedInput.searchQuery}"`;
+                            }
+
                             if (!toolName.startsWith('mcp_')) {
                                 toolName = `mcp_${toolName}`;
                             }
                             toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
 
-                            const toolResultDisplay = `\n\`\`\`tool:${toolName}\n${formatted.content}\n\`\`\`\n\n`;
-                            const toolStartPrefix = `\n\`\`\`tool:${toolName}\n⏳ Running:`;
+                            // Include command/query in the tool block for better visibility
+                            const toolResultDisplay = headerCommand 
+                                ? `\n${toolName}|${headerCommand}\n${formatted.content}\n\`\`\`\n\n`
+                                : `\n${formatted.content}\n\`\`\`\n\n`;
+                            
+                            const toolStartPrefix = headerCommand
+                                ? `\n\`\`\`tool:${toolName}|${headerCommand}\n⏳ Running:`
+                                : `\n\`\`\`tool:${toolName}\n⏳ Running:`;
                             const toolStartSuffix = `\n\`\`\`\n\n`;
                             const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
 
-                            if (lastStartIndex !== -1) {
                                 const blockEndIndex = currentContent.indexOf(toolStartSuffix, lastStartIndex);
                                 if (blockEndIndex !== -1) {
                                     currentContent = currentContent.substring(0, lastStartIndex) + toolResultDisplay + currentContent.substring(blockEndIndex + toolStartSuffix.length);
@@ -996,11 +1009,14 @@ export const sendPayload = async (
                             }
                             toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
 
+                            // Extract command/query for display
+                            const inputCommand = (jsonData.args?.command || jsonData.input?.command) ? `$ ${jsonData.args?.command || jsonData.input?.command}` : '';
+                            const inputQuery = (jsonData.args?.searchQuery || jsonData.input?.searchQuery) ? `Search: "${jsonData.args?.searchQuery || jsonData.input?.searchQuery}"` : '';
+                            const headerCommand = inputCommand || inputQuery;
+
                             let toolStartDisplay;
-                            if (toolName === 'mcp_run_shell_command' && jsonData.args && jsonData.args.command) {
-                                toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: $ ${jsonData.args.command}\n\`\`\`\n\n`;
-                            } else if (toolName === 'mcp_run_shell_command' && jsonData.input && jsonData.input.command) {
-                                toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: $ ${jsonData.input.command}\n\`\`\`\n\n`;
+                            if (headerCommand) {
+                                toolName}|${headerCommand}\n⏳ Running: ${headerCommand}\n\`\`\`\n\n`;
                             } else {
                                 const inputSummary = jsonData.input && Object.keys(jsonData.input).length > 0
                                     ? ` (${Object.keys(jsonData.input).slice(0, 3).join(', ')}${Object.keys(jsonData.input).length > 3 ? '...' : ''})`
