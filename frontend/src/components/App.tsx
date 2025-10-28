@@ -11,6 +11,7 @@ import {
     SwapOutlined,
     CodeOutlined,
     ApiOutlined,
+    CloudServerOutlined,
     SettingOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
@@ -18,9 +19,11 @@ import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
 import { SafariWarning } from './SafariWarning';
+import { loadInternalFormatters } from '../utils/mcpFormatterLoader';
 
 const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
 const MCPStatusModal = React.lazy(() => import("./MCPStatusModal"));
+const MCPRegistryModal = React.lazy(() => import("./MCPRegistryModal"));
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
 const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
@@ -120,10 +123,16 @@ export const App: React.FC = () => {
 
     const [showShellConfig, setShowShellConfig] = useState(false);
     const [showMCPStatus, setShowMCPStatus] = useState(false);
+    const [showMCPRegistry, setShowMCPRegistry] = useState(false);
     const [mcpEnabled, setMcpEnabled] = useState(false);
 
     // Check MCP status on mount
     useEffect(() => {
+        // Load internal MCP formatters
+        loadInternalFormatters().catch(error => {
+            console.debug('Internal formatters not available:', error);
+        });
+        
         // Set initial panel width to 33% of viewport width
         const initialWidth = Math.round(window.innerWidth * 0.33);
         document.documentElement.style.setProperty('--folder-panel-width', `${initialWidth}px`);
@@ -202,7 +211,6 @@ export const App: React.FC = () => {
 
                 // If user scrolls away from bottom significantly, mark as manual scroll
 
-                // If user scrolls away from bottom significantly, mark as manual scroll
                 if (!isNearBottom && Math.abs(scrollTop - lastScrollPositionRef.current) > 50) {
                     if (!userHasScrolled) {
                         console.log('📜 User scrolled away from bottom - pausing auto-scroll');
@@ -218,7 +226,6 @@ export const App: React.FC = () => {
                     (recordManualScroll as any).lastScrollTime = 0; // Reset timing
                 }
 
-                lastScrollPositionRef.current = scrollTop;
                 lastScrollPositionRef.current = scrollTop;
             }, 50); // Faster response to user scroll actions
         };
@@ -355,8 +362,6 @@ export const App: React.FC = () => {
             // Reset manual scroll timing for new user messages
             (recordManualScroll as any).lastScrollTime = 0;
             wasFollowingStreamRef.current = true;
-            // Reset manual scroll timing for new user messages
-            (recordManualScroll as any).lastScrollTime = 0;
             // Improved bottom scrolling that actually reaches the bottom
             const scrollToBottom = () => {
                 const { scrollHeight, clientHeight } = chatContainer;
@@ -677,6 +682,9 @@ export const App: React.FC = () => {
                                         <Tooltip title="MCP Servers">
                                             <Button icon={<ApiOutlined />} onClick={() => setShowMCPStatus(true)} />
                                         </Tooltip>
+                                        <Tooltip title="MCP Registry">
+                                            <Button icon={<CloudServerOutlined />} onClick={() => setShowMCPRegistry(true)} />
+                                        </Tooltip>
                                     </>
                                 )}
                                 <Tooltip title="New Chat">
@@ -725,6 +733,10 @@ export const App: React.FC = () => {
                                 <MCPStatusModal
                                     visible={showMCPStatus}
                                     onClose={() => setShowMCPStatus(false)}
+                                />
+                                <MCPRegistryModal
+                                    visible={showMCPRegistry}
+                                    onClose={() => setShowMCPRegistry(false)}
                                 />
                             </>
                         )}

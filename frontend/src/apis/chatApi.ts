@@ -1,14 +1,17 @@
 import { SetStateAction, Dispatch } from 'react';
 import { message } from 'antd';
 import { Message } from '../utils/types';
+import { formatMCPOutput } from '../utils/mcpFormatter';
+import { handleToolStart, handleToolDisplay, ToolEventContext } from '../utils/mcpToolHandlers';
 
 // WebSocket for real-time feedback
 class FeedbackWebSocket {
     private ws: WebSocket | null = null;
     private conversationId: string | null = null;
+    private connectionPromise: Promise<void> | null = null;
 
     connect(conversationId: string): Promise<void> {
-        return new Promise((resolve, reject) => {
+        this.connectionPromise = new Promise((resolve, reject) => {
             this.conversationId = conversationId;
             const wsUrl = `ws://${window.location.host}/ws/feedback/${conversationId}`;
             this.ws = new WebSocket(wsUrl);
@@ -27,6 +30,8 @@ class FeedbackWebSocket {
                 console.log('🔄 FEEDBACK: WebSocket closed');
             };
         });
+        
+        return this.connectionPromise;
     }
 
     sendFeedback(toolId: string, feedback: string) {
@@ -37,12 +42,15 @@ class FeedbackWebSocket {
                 message: feedback
             }));
             console.log('🔄 FEEDBACK: Sent feedback:', feedback);
+        } else {
+            console.error('🔄 FEEDBACK: Cannot send feedback - WebSocket not ready. State:', this.ws?.readyState);
         }
     }
 
     disconnect() {
         this.ws?.close();
         this.ws = null;
+        this.connectionPromise = null;
     }
 }
 
@@ -416,6 +424,7 @@ export const sendPayload = async (
     question: string,
     checkedItems: string[],
     conversationId: string,
+    streamedContentMap: Map<string, string>,
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>,
     setIsStreaming: Dispatch<SetStateAction<boolean>>,
     removeStreamingConversation: (id: string) => void,
@@ -429,9 +438,11 @@ export const sendPayload = async (
     let containsDiff = false;
     let currentThinkingContent = '';
     let errorOccurred = false;
+    let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
     let activeFeedbackToolId: string | null = null;
 
     // Connect feedback WebSocket
+    let feedbackConnected = false;
     try {
         console.log('🔄 FEEDBACK: Attempting to connect WebSocket for conversation:', conversationId);
         await feedbackWebSocket.connect(conversationId);
@@ -439,6 +450,7 @@ export const sendPayload = async (
 
         // Notify components that WebSocket is ready
         (window as any).feedbackWebSocketReady = true;
+        feedbackConnected = true;
     } catch (e) {
         console.error('🔄 FEEDBACK: Failed to connect WebSocket:', e);
         console.warn('Failed to connect feedback WebSocket:', e);
@@ -479,7 +491,10 @@ export const sendPayload = async (
             removeStreamingConversation(conversationId);
             setIsStreaming(false);
 
-            // Disconnect feedback WebSocket
+            // Disconnect feedback WebSocket only if we connected it
+            if (feedbackConnected) {
+                (window as any).feedbackWebSocketReady = false;
+            }
             feedbackWebSocket.disconnect();
         }
     };
@@ -724,14 +739,23 @@ export const sendPayload = async (
                         // Parse the JSON data
                         const jsonData = JSON.parse(data);
 
+                        // Unwrap tool_start and tool_result if they're wrapped
+                        let unwrappedData = jsonData;
+                        if (jsonData.tool_start) {
+                            unwrappedData = jsonData.tool_start;
+                        } else if (jsonData.tool_result) {
+                            unwrappedData = jsonData.tool_result;
+                            unwrappedData.type = 'tool_display'; // Normalize to tool_display
+                        }
+
                         // Process the JSON object
-                        if (jsonData.heartbeat) {
+                        if (unwrappedData.heartbeat) {
                             console.log("Received heartbeat, skipping");
                             continue;
                         }
 
                         // Handle done marker
-                        if (jsonData.done) {
+                        if (unwrappedData.done) {
                             console.log("Received done marker in JSON data");
                             // Don't return here - let the stream complete naturally
                             // The done marker just indicates no more content chunks
@@ -739,16 +763,16 @@ export const sendPayload = async (
                         }
 
                         // Handle throttling status messages
-                        if (jsonData.type === 'throttling_status') {
-                            console.log('Throttling status:', jsonData.message);
-                            showError(jsonData.message, conversationId, addMessageToConversation, 'warning');
+                        if (unwrappedData.type === 'throttling_status') {
+                            console.log('Throttling status:', unwrappedData.message);
+                            showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning');
                             continue;
                         }
 
                         // Handle throttling failure
-                        if (jsonData.type === 'throttling_failed') {
-                            console.log('Throttling failed:', jsonData.message);
-                            showError(jsonData.message + ' Please retry your request.', conversationId, addMessageToConversation, 'error');
+                        if (unwrappedData.type === 'throttling_failed') {
+                            console.log('Throttling failed:', unwrappedData.message);
+                            showError(unwrappedData.message + ' Please retry your request.', conversationId, addMessageToConversation, 'error');
                             errorOccurred = true;
                             return;
                         }
@@ -862,56 +886,70 @@ export const sendPayload = async (
                         }
 
                         // Handle feedback readiness
-                        if (jsonData.type === 'feedback_ready') {
-                            activeFeedbackToolId = jsonData.tool_id;
-                            console.log('🔄 FEEDBACK: Tool ready for feedback:', jsonData.tool_name);
+                        if (unwrappedData.type === 'feedback_ready') {
+                            activeFeedbackToolId = unwrappedData.tool_id;
+                            console.log('🔄 FEEDBACK: Tool ready for feedback:', unwrappedData.tool_name, 'ID:', unwrappedData.tool_id);
 
                             // Dispatch event to enable feedback UI
                             document.dispatchEvent(new CustomEvent('feedbackReady', {
                                 detail: {
-                                    toolId: jsonData.tool_id,
-                                    toolName: jsonData.tool_name,
+                                    toolId: unwrappedData.tool_id,
+                                    toolName: unwrappedData.tool_name,
                                     conversationId
                                 }
                             }));
+                            console.log('🔄 FEEDBACK: Dispatched feedbackReady event');
                         }
 
-                        // Handle tool events separately (simplified)
-                        if (jsonData.tool_result) {
-                            const toolData = jsonData.tool_result;
-                            console.log('🔧 TOOL_RESULT received:', toolData);
+                        // Handle MCP tool display events
+                        if (unwrappedData.type === 'tool_display') {
+                            console.log('🔧 TOOL_DISPLAY received:', unwrappedData);
 
-                            let toolName = toolData.tool_name;
+                            // Check for specialized tool handlers first
+                            const contentRef = { value: currentContent };
+                            const context: ToolEventContext = {
+                                conversationId,
+                                currentContent: contentRef,
+                                setStreamedContentMap,
+                                toolInputsMap
+                            };
+                            
+                            if (handleToolDisplay(unwrappedData.tool_name, unwrappedData, context)) {
+                                currentContent = contentRef.value;
+                                continue; // Handler processed the event, continue to next message
+                            }
+
+                            let toolName = unwrappedData.tool_name;
+                            const storedInput = toolInputsMap.get(unwrappedData.tool_id);
+
+                            // Use the new formatter
+                            const formatted = formatMCPOutput(toolName, unwrappedData.result, storedInput, {
+                                showInput: !!storedInput && (
+                                    typeof unwrappedData.result !== 'string' || 
+                                    unwrappedData.result.length < 200 ||
+                                    (unwrappedData.result.startsWith('{') && unwrappedData.result.length < 1000)
+                                ),
+                                maxLength: 10000,
+                                defaultCollapsed: true
+                            });
+
                             if (!toolName.startsWith('mcp_')) {
                                 toolName = `mcp_${toolName}`;
                             }
                             toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
 
-                            const result = toolData.result;
-                            const toolResultDisplay = `\n\`\`\`tool:${toolName}\n${result}\n\`\`\`\n\n`;
-
-                            // Improved replacement logic to handle tool_start -> tool_result transition
-                            // Look for the most recent tool_start block for this tool using string search
+                            const toolResultDisplay = `\n\`\`\`tool:${toolName}\n${formatted.content}\n\`\`\`\n\n`;
                             const toolStartPrefix = `\n\`\`\`tool:${toolName}\n⏳ Running:`;
                             const toolStartSuffix = `\n\`\`\`\n\n`;
-
-                            // Find the last occurrence of this tool's start block
                             const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
 
                             if (lastStartIndex !== -1) {
-                                // Find the end of this tool block
                                 const blockEndIndex = currentContent.indexOf(toolStartSuffix, lastStartIndex);
                                 if (blockEndIndex !== -1) {
-                                    // Replace the entire tool_start block with the result
-                                    const beforeBlock = currentContent.substring(0, lastStartIndex);
-                                    const afterBlock = currentContent.substring(blockEndIndex + toolStartSuffix.length);
-                                    currentContent = beforeBlock + toolResultDisplay + afterBlock;
-                                    console.log('🔧 Replaced tool_start with result for:', toolName);
+                                    currentContent = currentContent.substring(0, lastStartIndex) + toolResultDisplay + currentContent.substring(blockEndIndex + toolStartSuffix.length);
                                 }
                             } else {
-                                // No matching tool_start found, just append the result
                                 currentContent += toolResultDisplay;
-                                console.log('🔧 Added new tool result (no matching tool_start):', toolName);
                             }
 
                             setStreamedContentMap((prev: Map<string, string>) => {
@@ -919,132 +957,59 @@ export const sendPayload = async (
                                 next.set(conversationId, currentContent);
                                 return next;
                             });
-                        } else if (jsonData.type === 'tool_start') {
-                            // Handle tool start events - show that a tool is starting
-                            console.log('🔧 TOOL_START received:', jsonData);
+                        } else if (unwrappedData.type === 'tool_start') {
+                            console.log('🔧 TOOL_START received:', unwrappedData);
 
-                            // Normalize tool name - ensure single mcp_ prefix
-                            let toolName = jsonData.tool_name;
+                            // Check for specialized tool handlers first
+                            const contentRef = { value: currentContent };
+                            const context: ToolEventContext = {
+                                conversationId,
+                                currentContent: contentRef,
+                                setStreamedContentMap,
+                                toolInputsMap
+                            };
+                            
+                            if (handleToolStart(unwrappedData.tool_name, unwrappedData, context)) {
+                                currentContent = contentRef.value;
+                                
+                                // Store tool input for later use in tool_display
+                                if (unwrappedData.args && unwrappedData.tool_id) {
+                                    toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
+                                }
+                                if (unwrappedData.input && unwrappedData.tool_id) {
+                                    toolInputsMap.set(unwrappedData.tool_id, unwrappedData.input);
+                                }
+                                continue; // Handler processed the event, continue to next message
+                            }
+
+                            // Store tool input for later use in tool_display
+                            if (unwrappedData.args && unwrappedData.tool_id) {
+                                toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
+                            }
+                            if (unwrappedData.input && unwrappedData.tool_id) {
+                                toolInputsMap.set(unwrappedData.tool_id, unwrappedData.input);
+                            }
+
+                            let toolName = unwrappedData.tool_name;
                             if (!toolName.startsWith('mcp_')) {
                                 toolName = `mcp_${toolName}`;
                             }
-                            // Remove any double prefixes
                             toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
 
-                            // Format input for display
-                            let inputDisplay = '';
-                            if (jsonData.input && Object.keys(jsonData.input).length > 0) {
-                                if (jsonData.input.command) {
-                                    inputDisplay = jsonData.input.command;
-                                } else if (jsonData.input.tool_input) {
-                                    inputDisplay = jsonData.input.tool_input;
-                                } else {
-                                    inputDisplay = JSON.stringify(jsonData.input);
-                                }
-                            }
-
-                            // Format as tool block that shows the tool is starting
                             let toolStartDisplay;
                             if (toolName === 'mcp_run_shell_command' && jsonData.args && jsonData.args.command) {
-                                // For shell commands, show the actual command being executed
                                 toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: $ ${jsonData.args.command}\n\`\`\`\n\n`;
-                            } else if (toolName === 'mcp_run_shell_command' && jsonData.input && typeof jsonData.input === 'object' && jsonData.input.command) {
-                                // Handle alternative input format
+                            } else if (toolName === 'mcp_run_shell_command' && jsonData.input && jsonData.input.command) {
                                 toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: $ ${jsonData.input.command}\n\`\`\`\n\n`;
+                            } else {
+                                const inputSummary = jsonData.input && Object.keys(jsonData.input).length > 0
+                                    ? ` (${Object.keys(jsonData.input).slice(0, 3).join(', ')}${Object.keys(jsonData.input).length > 3 ? '...' : ''})`
+                                    : '';
+                                toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: ${toolName.replace('mcp_', '')}${inputSummary}\n\`\`\`\n\n`;
                             }
 
                             console.log('🔧 TOOL_START formatted:', toolStartDisplay);
                             currentContent += toolStartDisplay;
-                            console.log('🔧 CURRENT_CONTENT after tool_start:', currentContent.slice(-200));
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
-                        } else if (jsonData.type === 'tool_start') {
-                            // Handle tool start events
-                            console.log('🔧 TOOL_START received:', jsonData);
-
-                            // Log timestamp for debugging
-                            if (jsonData.timestamp) {
-                                console.log(`[${jsonData.timestamp}] TOOL_START: ${jsonData.tool_name}`);
-                            }
-
-                            const toolStartContent = `\n\n🔧 **Executing Tool**: \`${jsonData.tool_name}\`\n\n`;
-                            currentContent += toolStartContent;
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
-                        } else if (jsonData.type === 'tool_execution') {
-                            // Handle structured tool execution using existing ToolBlock syntax
-                            console.log('🔧 TOOL_EXECUTION received:', jsonData);
-                            const signedIndicator = jsonData.signed ? ' 🔒' : '';
-
-                            // Normalize tool name - ensure single mcp_ prefix
-
-                            // Log timestamp for debugging
-                            if (jsonData.timestamp) {
-                                console.log(`[${jsonData.timestamp}] TOOL_EXECUTION: ${jsonData.tool_name}`);
-                            }
-                            let toolName = jsonData.tool_name;
-                            if (!toolName.startsWith('mcp_')) {
-                                toolName = `mcp_${toolName}`;
-                            }
-                            // Remove any double prefixes
-                            toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
-
-                            // Extract result - handle both string and object formats
-                            let result = jsonData.result;
-                            if (typeof result === 'string' && result.startsWith('{')) {
-                                try {
-                                    const parsed = JSON.parse(result);
-                                    if (parsed.error && parsed.message) {
-                                        result = parsed.message;
-                                    }
-                                } catch (e) {
-                                    // Keep original result if parsing fails
-                                }
-                            }
-
-                            // Format as tool block that the MarkdownRenderer will recognize and style properly
-                            const toolDisplay = `\n\`\`\`tool:${toolName}${signedIndicator}\n${result}\n\`\`\`\n\n`;
-
-                            console.log('🔧 TOOL_DISPLAY formatted:', toolDisplay);
-
-                            // Replace the corresponding tool_start block if it exists
-                            const escapedToolName = toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                            const toolStartPattern = new RegExp(`\\n\`\`\`tool:${escapedToolName}\\n⏳ Running: \\$ ([^\\n]+)\\n\`\`\`\\n\\n`, 'g');
-                            const toolStartMatch = currentContent.match(toolStartPattern);
-
-                            if (toolStartMatch) {
-                                // Extract the command from the match
-                                const commandMatch = toolStartMatch[0].match(/⏳ Running: \$ ([^\n]+)/);
-                                const command = commandMatch ? commandMatch[1] : '';
-
-                                // Check if result contains an error
-                                const isError = result.toLowerCase().includes('error') ||
-                                    result.toLowerCase().includes('failed') ||
-                                    result.toLowerCase().includes('command not found') ||
-                                    result.toLowerCase().includes('permission denied');
-
-                                if (isError && command) {
-                                    // For errors, preserve the command and add the error result
-                                    const errorDisplay = `\n\`\`\`tool:${toolName}${signedIndicator}\n⏳ Attempted: $ ${command}\n\n${result}\n\`\`\`\n\n`;
-                                    currentContent = currentContent.replace(toolStartPattern, errorDisplay);
-                                    console.log('🔧 TOOL_EXECUTION: Replaced tool_start with error (preserved command)');
-                                } else {
-                                    // For success, replace with just the result
-                                    currentContent = currentContent.replace(toolStartPattern, toolDisplay);
-                                    console.log('🔧 TOOL_EXECUTION: Replaced tool_start block with result');
-                                }
-                            } else {
-                                currentContent += toolDisplay;
-                                console.log('🔧 TOOL_EXECUTION: Added new tool block (no matching tool_start found)');
-                            }
-
-                            console.log('🔧 CURRENT_CONTENT after tool:', currentContent.slice(-200));
                             setStreamedContentMap((prev: Map<string, string>) => {
                                 const next = new Map(prev);
                                 next.set(conversationId, currentContent);
@@ -1496,16 +1461,18 @@ export const sendPayload = async (
                     return currentContent;
                 }
 
-                // Create a message object for the AI response
+                // Add message to conversation history for context, but keep displaying via StreamedContent
                 const aiMessage: Message = {
                     role: 'assistant',
                     content: currentContent,
                     _timestamp: Date.now()
                 };
 
+                // Add to conversation history and remove from streaming
                 const isNonCurrentConversation = !isStreamingToCurrentConversation;
                 addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
                 removeStreamingConversation(conversationId);
+                
             }
             return result;
 
@@ -1523,8 +1490,6 @@ export const sendPayload = async (
             throw error;
         } finally {
             setIsStreaming(false);
-            return !errorOccurred && currentContent ? currentContent : '';
-
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
@@ -1551,9 +1516,101 @@ export const sendPayload = async (
         document.removeEventListener('abortStream', abortListener as EventListener);
         setIsStreaming(false);
         removeStreamingConversation(conversationId);
-        return '';
+        
+        // Only disconnect WebSocket if we're truly done and not just switching conversations
+        // The WebSocket should persist across multiple requests in the same conversation
     }
+
+    return !errorOccurred && currentContent ? currentContent : '';
 };
+
+// Helper functions for sequential thinking tool
+function handleSequentialThinkingStart(
+    jsonData: any, 
+    currentContent: string,
+    conversationId: string,
+    setStreamedContentMap: React.Dispatch<React.SetStateAction<Map<string, string>>>
+): void {
+    // Extract the actual thinking content from the args
+    const toolStart = jsonData.tool_start || jsonData;
+    const thinkingContent = toolStart.args?.thought || '';
+    const thoughtNumber = toolStart.args?.thoughtNumber || 1;
+    const totalThoughts = toolStart.args?.totalThoughts || 1;
+    
+    if (thinkingContent) {
+        // Create a thinking block display
+        const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${thinkingContent}\n\`\`\`\n\n`;
+        
+        currentContent += thinkingDisplay;
+        
+        // Update the streamed content map
+        setStreamedContentMap((prev: Map<string, string>) => {
+            const next = new Map(prev);
+            next.set(conversationId, currentContent);
+            return next;
+        });
+        
+        console.log('🤔 THINKING_START: Added thinking content for step', thoughtNumber);
+    }
+}
+
+function handleSequentialThinkingDisplay(
+    jsonData: any, 
+    currentContent: string, 
+    toolInputsMap: Map<string, any>,
+    conversationId: string,
+    setStreamedContentMap: React.Dispatch<React.SetStateAction<Map<string, string>>>
+): void {
+    try {
+        // Get the stored input from tool_start to access the actual thought content
+        const toolId = jsonData.tool_id;
+        const storedInput = toolInputsMap.get(toolId);
+        const thinkingContent = storedInput?.thought || '';
+        const thoughtNumber = storedInput?.thoughtNumber || 1;
+        const totalThoughts = storedInput?.totalThoughts || 1;
+        const nextThoughtNeeded = storedInput?.nextThoughtNeeded;
+        
+        // Parse the result to get completion status
+        const toolResult = jsonData.tool_result || jsonData;
+        const result = typeof toolResult.result === 'string' ? 
+            JSON.parse(toolResult.result) : toolResult.result;
+        const isComplete = result.nextThoughtNeeded === false;
+        
+        if (thinkingContent) {
+            // Replace the "Running" indicator with the actual thinking content
+            const toolStartPrefix = `\cp_sequentialthinking\n⏳ Running:`;
+            const toolStartSuffix = `\n\`\`\`\n\n`;
+            const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
+            
+            const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${thinkingContent}\n\n${nextThoughtNeeded ? '_Continuing to next thought..._' : '_Thinking complete._'}\n\`\`\`\n\n`;
+            
+            if (lastStartIndex !== -1) {
+                const blockEndIndex = currentContent.indexOf(toolStartSuffix, lastStartIndex);
+                if (blockEndIndex !== -1) {
+                    currentContent = currentContent.substring(0, lastStartIndex) + thinkingDisplay + currentContent.substring(blockEndIndex + toolStartSuffix.length);
+                } else {
+                    currentContent += thinkingDisplay;
+                }
+            } else {
+                currentContent += thinkingDisplay;
+            }
+            
+            // Update the streamed content map
+            setStreamedContentMap((prev: Map<string, string>) => {
+                const next = new Map(prev);
+                next.set(conversationId, currentContent);
+                return next;
+            });
+            
+            console.log('🤔 THINKING_DISPLAY: Updated thinking content for step', thoughtNumber, 'content length:', thinkingContent.length);
+        } else {
+            console.warn('🤔 THINKING_DISPLAY: No thinking content found for tool ID:', toolId);
+        }
+        
+    } catch (e) {
+        console.error('Error handling sequential thinking display:', e);
+    }
+}
 
 async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal) {
     const messageTuples: string[][] = [];
