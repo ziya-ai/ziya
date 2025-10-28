@@ -120,9 +120,45 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         };
     }, []);
 
+    // Clear error states when conversation changes
+    useEffect(() => {
+        setThrottlingError(null);
+    }, [currentConversationId]);
+
+    // Clear error states when successfully starting to send
+    useEffect(() => {
+        if (streamingConversations.has(currentConversationId)) {
+            setThrottlingError(null);
+        }
+    }, [streamingConversations, currentConversationId]);
+
     // Listen for throttling errors from chatApi
     useEffect(() => {
         const handleThrottlingError = (event: CustomEvent) => {
+            console.log('Throttling error received:', event.detail);
+            setThrottlingError(event.detail);
+        };
+    }, []);
+
+    // Clear error states when conversation changes
+    useEffect(() => {
+        setThrottlingError(null);
+    }, [currentConversationId]);
+
+    // Clear error states when successfully starting to send
+    useEffect(() => {
+        if (streamingConversations.has(currentConversationId)) {
+            setThrottlingError(null);
+        }
+    }, [streamingConversations, currentConversationId]);
+
+    // Listen for throttling errors from chatApi
+    useEffect(() => {
+        const handleThrottlingError = (event: CustomEvent) => {
+            // Only handle errors for the current conversation
+            if (event.detail.conversation_id && event.detail.conversation_id !== currentConversationId) {
+                return;
+            }
             console.log('Throttling error received:', event.detail);
             setThrottlingError(event.detail);
         };
@@ -131,7 +167,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         return () => {
             document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
         };
-    }, [currentConversationId]);
+    }, [currentConversationId]); // Keep dependency to recreate listener with current conversation ID
 
     const isDisabled = useMemo(() =>
         isQuestionEmpty(question) || streamingConversations.has(currentConversationId),
@@ -170,6 +206,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
         // Store the question before clearing it
         const currentQuestion = retryContent || question;
+
+        // Clear any existing error states when starting a new request
+        setThrottlingError(null);
 
         setQuestion('');
         setStreamedContentMap(new Map());
@@ -218,6 +257,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 currentQuestion,
                 selectedFiles,
                 targetConversationId,
+                streamedContentMap,
                 setStreamedContentMap,
                 setIsStreaming,
                 removeStreamingConversation,
@@ -245,24 +285,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             // Get the final streamed content
             const finalContent = streamedContentMap.get(currentConversationId) || result;
             if (finalContent) {
-                let isError = false;
                 // Check if result is an error response
                 try {
                     const errorData = JSON.parse(finalContent);
                     if (errorData.error === 'validation_error') {
                         message.error(errorData.detail || 'Selected content is too large. Please reduce the number of files.');
-                        isError = true;
                         return;
                     }
                 } catch (e) { } // Not JSON or not an error response
-                const aiMessage: Message = {
-                    content: finalContent,
-                    role: 'assistant'
-                };
-                // Only add the message if it has content and isn't an error
-                if (!isError && finalContent.trim() !== '') {
-                    addMessageToConversation(aiMessage, currentConversationId);
-                }
+                
+                // Message already added by sendPayload, just clean up streaming state
                 removeStreamingConversation(currentConversationId);
             }
         } catch (error) {
