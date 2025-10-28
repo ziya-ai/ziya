@@ -233,6 +233,14 @@ function formatShellCommand(result: string, options: any): FormattedOutput {
   const lineCount = result.split('\n').length;
   const shouldCollapse = lineCount > 10;
   
+  // Create a more descriptive summary that includes the command
+  let summaryText = undefined;
+  if (shouldCollapse && displayCommand) {
+    summaryText = `$ ${displayCommand} - Output (${lineCount} lines, ${result.length} chars)`;
+  } else if (shouldCollapse) {
+    summaryText = `Command output (${lineCount} lines)`;
+  }
+
   return {
     content: result,
     type: 'text',
@@ -296,11 +304,19 @@ function formatWorkspaceSearch(result: any, options: any): FormattedOutput {
   
   const shouldCollapse = results.length > 5;
   
+  // Create a more descriptive summary for workspace search
+  let summaryText = summary;
+  if (searchQuery && shouldCollapse) {
+    summaryText = `Search "${searchQuery}" - ${summary}`;
+  } else if (shouldCollapse) {
+    summaryText = summary;
+  }
+
   return {
     content: `${summary}\n\n${formattedResults}`,
     type: 'search_results',
     collapsed: shouldCollapse,
-    summary: summary
+    summary: summaryText
   };
 }
 

@@ -334,7 +334,6 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                     )}
                 </div>
             </div>
-            </div>
             
             {shouldShowCollapsed && !isExpanded ? (
                 <div 
