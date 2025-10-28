@@ -9,6 +9,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
+from h11._util import LocalProtocolError
 
 from app.utils.logging_utils import logger
 
@@ -26,6 +27,10 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
             # Call the next middleware or endpoint
             response = await call_next(request)
             return response
+        except LocalProtocolError as e:
+            # Connection is already in ERROR state, can't send more data
+            logger.error(f"h11 protocol error (connection already closed): {str(e)}")
+            return Response(status_code=500)
         except Exception as e:
             # Log the error
             logger.error(f"ErrorHandlingMiddleware caught: {str(e)}")

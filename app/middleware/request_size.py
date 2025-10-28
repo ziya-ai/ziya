@@ -59,8 +59,8 @@ class ModelSettingsMiddleware(BaseHTTPMiddleware):
                 # Get the request body
                 logger.info("Processing model settings update")
                     
-                    # Clear any existing model-specific settings from environment
                 body = await request.json()
+                # Clear any existing model-specific settings from environment
                 
                 # Log the settings being applied
                 logger.info(f"ModelSettingsMiddleware: Applying settings: {body}")
@@ -121,8 +121,8 @@ class ModelSettingsMiddleware(BaseHTTPMiddleware):
                         
                         # Force model reinitialization by clearing the model from ModelManager state
                         from app.agents.models import ModelManager
-                    ModelManager._reset_state()
-                    logger.info(f"ModelSettingsMiddleware: Reset model state to force reinitialization with settings: {json.dumps(body)}")
+                        ModelManager._reset_state()
+                        logger.info(f"ModelSettingsMiddleware: Reset model state to force reinitialization with settings: {json.dumps(body)}")
             except Exception as e:
                 logger.error(f"ModelSettingsMiddleware error: {str(e)}")
                 
