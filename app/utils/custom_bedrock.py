@@ -135,6 +135,21 @@ class CustomBedrockClient:
         
         return False
     
+    def should_use_extended_context_proactively(self, content_length: int, conversation_id: str) -> bool:
+        """Determine if we should use extended context proactively before hitting limits."""
+        if not self._supports_extended_context() or not conversation_id:
+            return False
+        
+        # Don't use extended context if already active
+        if self._should_use_extended_context(conversation_id):
+            return False
+            
+        # Estimate tokens (rough: 4 chars per token)
+        estimated_tokens = content_length // 4
+        standard_limit, _ = self._get_context_limits()
+        proactive_threshold = int(standard_limit * 0.85)  # 85% of standard limit
+        return estimated_tokens > proactive_threshold
+    
     def _add_extended_context_headers(self, kwargs: Dict, conversation_id: Optional[str] = None) -> Dict:
         """Add extended context headers to the request if needed."""
         if self._should_use_extended_context(conversation_id):
@@ -196,7 +211,18 @@ class CustomBedrockClient:
             return result
         except Exception as retry_error:
             retry_error_str = str(retry_error)
-            logger.error(f"🚀 EXTENDED_CONTEXT: Retry failed with error: {retry_error}")
+            logger.error(f"🚀 EXTENDED_CONTEXT: Retry failed with error: {retry_error_str}")
+            
+            # Enhanced error handling for extended context failures
+            if "timeout" in retry_error_str.lower():
+                logger.warning("🔄 EXTENDED_CONTEXT: Extended context request timed out - substantial content may have been generated")
+                enhanced_error = Exception(f"Extended context request timed out: {retry_error_str}")
+                enhanced_error.response_metadata = {
+                    'has_preserved_content': True,
+                    'preserved_content': 'Extended context generation was interrupted by timeout but likely produced substantial content before interruption.',
+                    'suggestion': 'Try reducing context size or breaking the request into smaller parts.'
+                }
+                raise enhanced_error
             
             # If it's still a validation error or connection error, convert to a user-friendly message
             if ("Input is too long" in retry_error_str or 
@@ -218,6 +244,12 @@ class CustomBedrockClient:
             
             # Add extended context headers if needed
             kwargs = self._add_extended_context_headers(kwargs, conversation_id)
+            
+            # PROACTIVE EXTENDED CONTEXT: Check if we should use extended context before attempting
+            if 'body' in kwargs and isinstance(kwargs['body'], str) and conversation_id:
+                if self.should_use_extended_context_proactively(len(kwargs['body']), conversation_id):
+                    logger.info(f"🚀 PROACTIVE_EXTENDED_CONTEXT: Large request detected, activating extended context")
+                    return self._retry_with_extended_context(kwargs, "Proactive extended context activation", conversation_id)
             
             # If body is in kwargs, modify it to include max_tokens
             if 'body' in kwargs and isinstance(kwargs['body'], str):
@@ -260,7 +292,12 @@ class CustomBedrockClient:
                             for retry_attempt in range(max_retries):
                                 delays = [1, 2]
                                 delay = delays[retry_attempt]
-                                logger.warning(f"🔄 TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
+                                # Use longer delays for extended context operations
+                                if self._should_use_extended_context(conversation_id):
+                                    delay = delay * 3  # 3s, 6s for extended context
+                                    logger.warning(f"🔄 EXTENDED_TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
+                                else:
+                                    logger.warning(f"🔄 TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
                                 
                                 import time
                                 time.sleep(delay)
@@ -268,10 +305,19 @@ class CustomBedrockClient:
                                 try:
                                     return self.original_invoke(**kwargs)
                                 except Exception as retry_error:
+                                    retry_error_str = str(retry_error)
                                     if retry_attempt == max_retries - 1:
-                                        logger.error(f"🔄 TIMEOUT_RETRY: All {max_retries} retry attempts failed")
+                                        logger.error(f"🔄 TIMEOUT_RETRY: All {max_retries} retry attempts failed: {retry_error_str}")
+                                        # For final timeout failures, enhance error with preservation context
+                                        if "timeout" in retry_error_str.lower():
+                                            enhanced_error = Exception(f"Request timed out after {max_retries} attempts: {retry_error_str}")
+                                            enhanced_error.response_metadata = {
+                                                'has_preserved_content': True,
+                                                'preserved_content': 'Generation was interrupted by timeout but may have produced substantial content.'
+                                            }
+                                            raise enhanced_error
                                         raise retry_error
-                                    elif "timeout" not in str(retry_error).lower():
+                                    elif "timeout" not in retry_error_str.lower():
                                         raise retry_error
                         
                         # Check if it's a context limit error
@@ -285,6 +331,20 @@ class CustomBedrockClient:
                                 not self._should_use_extended_context(conversation_id)):
                                 
                                 return self._retry_with_extended_context(kwargs, error_message, conversation_id)
+                        
+                        # Check if we should proactively use extended context
+                        elif (self._supports_extended_context() and 
+                              conversation_id and 
+                              not self._should_use_extended_context(conversation_id) and
+                              'body' in kwargs):
+                            # Proactively check if content size warrants extended context
+                            body_size = len(kwargs['body']) if isinstance(kwargs['body'], str) else 0
+                            estimated_tokens = body_size // 4
+                            standard_limit, _ = self._get_context_limits()
+                            proactive_threshold = int(standard_limit * 0.85)  # 85% of standard limit
+                            if estimated_tokens > proactive_threshold:
+                                logger.info(f"🚀 PROACTIVE_EXTENDED_CONTEXT: Large request ({estimated_tokens:,} tokens > {proactive_threshold:,} threshold), using extended context")
+                                return self._retry_with_extended_context(kwargs, "Proactive extended context", conversation_id)
                             
                             # Otherwise, try standard context reduction
                             limit_info = self._extract_context_limit_info(error_message)

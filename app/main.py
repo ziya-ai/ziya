@@ -270,11 +270,11 @@ def update_package(current_version: str, latest_version: Optional[str]) -> None:
         logger.info(f"Updating ziya from {current_version} to {latest_version}")
 
         if is_package_installed_with_pip('ziya'):
-            logger.info("Package installed via pip")
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'ziya'])
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'ziya'], 
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif is_package_installed_with_pipx('ziya'):
-            logger.info("Package installed via pipx")
-            subprocess.check_call(['pipx', 'upgrade', 'ziya'])
+            subprocess.check_call(['pipx', 'upgrade', 'ziya'],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             logger.info("ziya is not installed with pip or pipx.")
 
@@ -347,8 +347,6 @@ def start_server(args):
             from app.utils.custom_exceptions import KnownCredentialException
             
             # Only check AWS credentials if using Bedrock endpoint
-            from app.utils.custom_exceptions import KnownCredentialException
-            
             if args.endpoint == "bedrock":
                 # Check AWS credentials first - specify this is server startup
                 from app.utils.aws_utils import check_aws_credentials
@@ -357,12 +355,15 @@ def start_server(args):
                 valid, message = check_aws_credentials(is_server_startup=True, profile_name=args.profile)
                 
                 if not valid:
-                    # Store the error message for consistent reporting
-                    from app.agents.models import ModelManager
-                    ModelManager._state['last_auth_error'] = message
-                    # Raise KnownCredentialException which will handle printing the message only once
-                    # Pass is_server_startup=True to indicate this is during initial startup
-                    raise KnownCredentialException(message, is_server_startup=True)
+                    # Print clear error message and exit immediately
+                    print("\n" + "=" * 80)
+                    print(f"⚠️  AUTHENTICATION ERROR")
+                    print("=" * 80)
+                    print(f"\n{message}\n")
+                    print("Please fix your AWS credentials and try again.")
+                    print("=" * 80 + "\n")
+                    logger.error(f"AWS credentials check failed: {message}")
+                    sys.exit(1)
             
             # Set an environment variable to indicate we've already checked auth
             # This will be used by ModelManager to avoid duplicate initialization
@@ -396,10 +397,6 @@ def start_server(args):
             # Use uvicorn directly instead of langchain_cli.serve()
             uvicorn.run(app, host="0.0.0.0", port=args.port)
             
-        except KnownCredentialException as e:
-            # The exception will handle printing the message only once
-            logger.error("Server startup aborted due to authentication error.")
-            sys.exit(1)
         except ValueError as e:
             # Use a class variable to track if we've already displayed an error
             if not hasattr(start_server, "_error_displayed"):

@@ -23,6 +23,12 @@ export interface MermaidSpec {
 
 // Type guard to check if a spec is for Mermaid
 const isMermaidSpec = (spec: any): spec is MermaidSpec => {
+    // Handle JSON-wrapped mermaid specs
+    if (typeof spec === 'object' && spec !== null && spec.type === 'mermaid' && spec.definition) {
+        return typeof spec.definition === 'string' && spec.definition.trim().length > 0;
+    }
+
+    // Handle direct mermaid spec objects
     return (
         typeof spec === 'object' &&
         spec !== null &&
@@ -35,13 +41,14 @@ const isMermaidSpec = (spec: any): spec is MermaidSpec => {
 const SCALE_CONFIG = {
     TARGET_FONT_SIZE: 14,   // Target font size in pixels
     MIN_FONT_SIZE: 12,      // Minimum font size in pixels
-    MAX_SCALE: 1.0         // Maximum scale (natural size)
+    MAX_SCALE: 3.0         // Even higher max scale for Safari
 };
 
 // Global render queue to serialize Mermaid rendering and prevent conflicts
 class MermaidRenderQueue {
     private queue: Array<() => Promise<any>> = [];
     private isProcessing = false;
+    private pendingDiagrams = new Set<string>(); // Track diagrams being processed
 
     async enqueue<T>(renderFn: () => Promise<T>): Promise<T> {
         return new Promise((resolve, reject) => {
@@ -61,7 +68,17 @@ class MermaidRenderQueue {
     private async processQueue() {
         if (this.isProcessing || this.queue.length === 0) return;
 
+        // Minimal Safari throttling - only for very large queues
+        const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        if (isSafari && this.queue.length > 10) {
+            console.log('🍎 SAFARI-THROTTLE: Large queue detected, processing with delay');
+            await new Promise(resolve => setTimeout(resolve, 50)); // Reduced from 200ms to 50ms
+        }
+
         this.isProcessing = true;
+
+        console.log(`🎯 RENDER-QUEUE: Processing item ${this.queue.length} remaining`);
+
         const renderFn = this.queue.shift()!;
         await renderFn();
         this.isProcessing = false;
@@ -90,13 +107,29 @@ export const mermaidPlugin: D3RenderPlugin = {
         observeResize: true,
         containerStyles: {
             width: '100%',
+            maxWidth: '100%',
             height: 'auto',
-            overflow: 'visible'
+            minHeight: 'auto',
+            overflow: 'visible',
+            // Safari-specific: ensure container can grow to accommodate scaled content
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center'
         }
     },
 
     canHandle: (spec: any): boolean => {
-        return isMermaidSpec(spec);
+        // Handle JSON-wrapped mermaid specs like {"type": "mermaid", "definition": "..."}
+        if (typeof spec === 'object' && spec !== null && spec.type === 'mermaid' && spec.definition) {
+            return typeof spec.definition === 'string' && spec.definition.trim().length > 0;
+        }
+
+        // Handle direct mermaid spec objects
+        if (isMermaidSpec(spec)) {
+            return true;
+        }
+
+        return false;
     },
 
     // Helper to check if a mermaid definition is complete
@@ -124,10 +157,21 @@ export const mermaidPlugin: D3RenderPlugin = {
 
 
     render: async (container: HTMLElement, d3: any, spec: MermaidSpec, isDarkMode: boolean): Promise<void> => {
-        // Use render queue to serialize all Mermaid operations
-        return renderQueue.enqueue(async () => {
-            return await renderSingleDiagram(container, d3, spec, isDarkMode);
-        });
+        // Skip queue for Safari to avoid delays - Mermaid can handle concurrent renders
+        const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        if (isSafari) {
+            // Add Safari warning to Mermaid diagrams specifically
+            console.warn('🍎 SAFARI-MERMAID: Rendering Mermaid diagram on Safari - compatibility issues expected');
+            const result = await renderSingleDiagram(container, d3, spec, isDarkMode);
+            // Add a small notice that rendering may be degraded
+            console.warn('🍎 SAFARI-MERMAID: Mermaid diagram rendered on Safari. Visual artifacts or performance issues may occur.');
+            return result;
+        } else {
+            // Use render queue for other browsers to prevent conflicts
+            return renderQueue.enqueue(async () => {
+                return await renderSingleDiagram(container, d3, spec, isDarkMode);
+            });
+        }
     }
 };
 
@@ -173,7 +217,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         container.appendChild(loadingSpinner);
 
         // This allows the content to display as highlighted code during streaming
-        if (spec.isStreaming && !spec.isMarkdownBlockClosed && !spec.forceRender) {
+        if (!spec.isMarkdownBlockClosed && !spec.forceRender) {
             console.log('Mermaid: Markdown block still open, letting content display as code');
             // Don't show a waiting message - let the markdown renderer show the code
             // Just remove the loading spinner and return
@@ -194,7 +238,45 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
         // Extract actual content from YAML wrapper if present, but don't do other preprocessing
         // The enhanced render function will handle all preprocessing
-        let rawDefinition = extractDefinitionFromYAML(spec.definition, 'mermaid');
+        let rawDefinition: string;
+
+        // Handle JSON-wrapped specs vs direct definition strings
+        if (typeof spec === 'object' && spec.definition) {
+            let def = spec.definition;
+
+            // Handle double-wrapped JSON definitions
+            if (typeof def === 'string' && def.trim().startsWith('{')) {
+                try {
+                    const parsed = JSON.parse(def);
+                    if (parsed.type === 'mermaid' && parsed.definition) {
+                        rawDefinition = parsed.definition;
+                        console.log('Extracted definition from double-wrapped JSON');
+                    } else {
+                        rawDefinition = extractDefinitionFromYAML(def, 'mermaid');
+                        console.log('Used YAML extraction from string definition');
+                    }
+                } catch {
+                    rawDefinition = extractDefinitionFromYAML(def, 'mermaid');
+                    console.log('JSON parse failed, using YAML extraction');
+                }
+            } else {
+                rawDefinition = extractDefinitionFromYAML(def, 'mermaid');
+            }
+        } else if (typeof spec === 'string') {
+            rawDefinition = extractDefinitionFromYAML(spec, 'mermaid');
+        } else {
+            throw new Error('Invalid mermaid spec: no definition found');
+        }
+
+        // CRITICAL DEBUG: Log what we're about to send to Mermaid
+        console.log('🔧 MERMAID-DEBUG: About to render with rawDefinition:', {
+            type: typeof rawDefinition,
+            length: rawDefinition?.length || 0,
+            firstChar: rawDefinition?.charAt(0) || 'N/A',
+            first50: rawDefinition?.substring(0, 50) || 'N/A',
+            startsWithGantt: rawDefinition?.trim().startsWith('gantt') || false
+        });
+
         console.log('Raw definition (first 200 chars):', rawDefinition.substring(0, 200));
 
         // Detect diagram type
@@ -432,10 +514,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         // Helper function to detect light backgrounds
         const isLightBackground = (color: string): boolean => {
             if (!color || color === 'none' || color === 'transparent') return false;
-            
+
             // Parse color to RGB values
             let r = 0, g = 0, b = 0;
-            
+
             // Handle hex format (#ff9999)
             const hexMatch = color.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
             if (hexMatch) {
@@ -455,38 +537,38 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     return false;
                 }
             }
-            
+
             // Calculate relative luminance using proper sRGB formula
             const getLuminanceComponent = (colorValue: number) => {
                 const normalized = colorValue / 255;
-                return normalized <= 0.03928 
-                    ? normalized / 12.92 
+                return normalized <= 0.03928
+                    ? normalized / 12.92
                     : Math.pow((normalized + 0.055) / 1.055, 2.4);
             };
-            
+
             const rLum = getLuminanceComponent(r);
             const gLum = getLuminanceComponent(g);
             const bLum = getLuminanceComponent(b);
-            
+
             const luminance = 0.2126 * rLum + 0.7152 * gLum + 0.0722 * bLum;
-            
+
             console.log(`🔍 LUMINANCE-CALC: Color ${color} -> RGB(${r},${g},${b}) -> Luminance: ${luminance.toFixed(3)}`);
-            
+
             // Use a threshold where anything above 0.4 luminance is considered light
             return luminance > 0.4;
         };
-        
+
         // Enhanced function to improve text visibility in dark mode
         const fixTextVisibilityForClassDef = (svgElement: SVGElement) => {
             if (isDarkMode) {
                 console.log('🔍 DEBUG: fixTextVisibilityForClassDef starting in dark mode');
             }
             console.log('🔍 FIXING TEXT VISIBILITY: Starting classDef text visibility fix');
-            
+
             // Find all text elements
             const textElements = svgElement.querySelectorAll('text');
             console.log(`Found ${textElements.length} text elements to process`);
-            
+
             textElements.forEach(textEl => {
                 const textContent = textEl.textContent?.trim();
                 if (!textContent) return;
@@ -506,7 +588,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                         console.log(`Text "${textContent}" has background fill: ${fill}`);
                         const currentTextFill = textEl.getAttribute('fill');
                         console.log(`Text "${textContent}" current fill: ${currentTextFill}`);
-                        
+
                         if (fill && isLightBackground(fill)) {
                             console.log(`🔧 FIXING: Setting black text for "${textContent}" on light background ${fill}`);
                             textEl.setAttribute('fill', '#000000');
@@ -516,7 +598,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 }
             });
         };
-        
+
         // Enhanced function to improve text visibility in dark mode
         const enhanceDarkModeTextVisibility = (svgElement: SVGElement) => {
             if (isDarkMode) {
@@ -565,10 +647,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             // Special handling for Gantt charts - fix text visibility with proper contrast
             const fixGanttTextContrast = (textEl: Element) => {
                 const svgTextEl = textEl as SVGElement;
-                
+
                 // Find the background color by looking at parent elements or sibling shapes
                 let backgroundColor = '#ffffff'; // Default to white
-                
+
                 // Check parent group for background rectangles
                 const parentGroup = textEl.closest('g');
                 if (parentGroup) {
@@ -579,19 +661,19 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                         backgroundColor = fill || computedFill || backgroundColor;
                     }
                 }
-                
+
                 // Get optimal contrasting color
                 const textColor = getOptimalTextColor(backgroundColor);
                 console.log(`🔍 GANTT-CONTRAST: Setting text color ${textColor} for background ${backgroundColor}`);
-                
+
                 svgTextEl.setAttribute('fill', textColor);
                 svgTextEl.style.setProperty('fill', textColor, 'important');
             };
-            
+
             // Apply contrast fixes to Gantt-specific elements
             svgElement.querySelectorAll('.section0, .section1, .section2, .section3').forEach(fixGanttTextContrast);
             svgElement.querySelectorAll('g.tick text, .taskText, .sectionTitle, .grid .tick text').forEach(fixGanttTextContrast);
-            
+
             // Handle axis text and dates specifically
             svgElement.querySelectorAll('text').forEach(textEl => {
                 if (textEl.textContent?.match(/\d{4}-\d{2}-\d{2}/) || textEl.closest('.grid')) {
@@ -635,7 +717,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
                 // Apply enhanced text visibility improvements
                 enhanceDarkModeTextVisibility(svgElement);
-                
+
                 // Apply classDef text visibility fixes
                 fixTextVisibilityForClassDef(svgElement);
 
@@ -685,25 +767,25 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         // CRITICAL: Add a delayed fix to ensure text visibility is applied after all other processing
         setTimeout(() => {
             console.log('🔍 DELAYED TEXT FIX: Applying final text visibility fixes');
-            
+
             // SIMPLE APPROACH: Find all light-colored rectangles and fix text within them
             const allRects = svgElement.querySelectorAll('rect');
             console.log(`🔧 SIMPLE-FIX: Found ${allRects.length} rectangles to check`);
-            
+
             allRects.forEach((rect, index) => {
                 const fill = rect.getAttribute('fill');
                 const computedFill = window.getComputedStyle(rect).fill;
                 const actualColor = computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)' ? computedFill : fill;
-                
+
                 if (actualColor && isLightBackground(actualColor)) {
                     console.log(`🔧 SIMPLE-FIX: Found light background rect ${index}: ${actualColor}`);
-                    
+
                     // Find the parent group and fix all text within it
                     const parentGroup = rect.closest('g');
                     if (parentGroup) {
                         const textElements = parentGroup.querySelectorAll('div, span');
                         console.log(`🔧 SIMPLE-FIX: Found ${textElements.length} text elements in this group`);
-                        
+
                         textElements.forEach(textEl => {
                             console.log(`🔧 SIMPLE-FIX: Setting black text for "${textEl.textContent}" on light background ${actualColor}`);
                             (textEl as HTMLElement).style.setProperty('color', '#000000', 'important');
@@ -711,15 +793,15 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     }
                 }
             });
-            
+
             const allTextElements = svgElement.querySelectorAll('text');
             allTextElements.forEach(textEl => {
                 // Special handling for Gantt charts with proper contrast detection
-                const isGanttText = textEl.closest('.grid') || 
-                                  textEl.textContent?.match(/\d{4}-\d{2}-\d{2}/) ||
-                                  ['section0', 'section1', 'section2', 'section3'].some(cls => 
-                                      textEl.classList.contains(cls) || textEl.parentElement?.classList.contains(cls));
-                
+                const isGanttText = textEl.closest('.grid') ||
+                    textEl.textContent?.match(/\d{4}-\d{2}-\d{2}/) ||
+                    ['section0', 'section1', 'section2', 'section3'].some(cls =>
+                        textEl.classList.contains(cls) || textEl.parentElement?.classList.contains(cls));
+
                 if (isGanttText) {
                     // Find background and set appropriate contrast
                     let bgColor = '#ffffff';
@@ -733,7 +815,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     (textEl as SVGElement).style.setProperty('fill', contrastColor, 'important');
                     return; // Skip further processing for Gantt text
                 }
-                
+
                 const parentGroup = textEl.closest('g.node, g.cluster');
                 if (parentGroup) {
                     const backgroundShape = parentGroup.querySelector('rect, polygon, circle, path');
@@ -825,7 +907,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                             const shapeElements = parentGroup.querySelectorAll('rect, circle, polygon, path, ellipse');
                             console.log(`  Found ${shapeElements.length} shape elements in parent group`);
 
-                            for (const shape of shapeElements) {
+                            for (const shape of Array.from(shapeElements)) {
                                 const fill = shape.getAttribute('fill');
                                 const computedFill = window.getComputedStyle(shape).fill;
                                 console.log(`    Shape ${shape.tagName}: fill="${fill}" computed="${computedFill}"`);
@@ -899,35 +981,8 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             console.log(`🔍 SUMMARY: Processed ${totalTextElements} text elements, ${elementsWithBackground} had backgrounds, fixed ${fixCount}`);
         }, 1000);
 
-        // Wait for next frame to ensure SVG is rendered
-        requestAnimationFrame(() => {
-            // Find all text elements
-            const textElements = svgElement.querySelectorAll('text');
-            if (textElements.length === 0) return;
-            // Get the computed font size of the first text element
-            const computedStyle = window.getComputedStyle(textElements[0]);
-            const currentFontSize = parseFloat(computedStyle.fontSize);
-
-            // Calculate scale based on target font size
-            const scale = SCALE_CONFIG.TARGET_FONT_SIZE / currentFontSize;
-
-            // Apply transform scale to the SVG
-            const finalScale = Math.min(scale, SCALE_CONFIG.MAX_SCALE);
-            svgElement.style.transform = `scale(${finalScale})`;
-            svgElement.style.transformOrigin = 'center center';
-            svgElement.style.width = '100%';
-            svgElement.style.height = 'auto';
-
-            // Override any existing transform scale in the SVG's style attribute
-            const svgStyleAttr = svgElement.getAttribute('style') || '';
-            if (svgStyleAttr.includes('transform: scale')) {
-                // Remove any transform scale from the style attribute
-                const newStyleAttr = svgStyleAttr.replace(/transform:\s*scale\([^)]+\);?/g, '');
-                svgElement.setAttribute('style', newStyleAttr);
-                // Re-apply our controlled scale
-                svgElement.style.transform = `scale(${finalScale})`;
-            }
-        });
+        // Apply unified responsive scaling for all browsers
+        applyUnifiedResponsiveScaling(container, svgElement, isDarkMode);
 
         // Add action buttons
         const actionsContainer = document.createElement('div');
@@ -1346,7 +1401,7 @@ ${svgData}`;
                 const { detectSupportedDiagramTypes, normalizeDiagramType } = await import('./mermaidEnhancer');
                 const supportedTypes = detectSupportedDiagramTypes(mermaid);
                 const normalizedType = normalizeDiagramType(diagramType, mermaid);
-                
+
                 console.log('Type detection debug:', {
                     diagramType,
                     normalizedType,
@@ -1355,7 +1410,7 @@ ${svgData}`;
                     hasOriginal: supportedTypes.has(diagramType),
                     hasNormalized: supportedTypes.has(normalizedType)
                 });
-                
+
                 // If detection failed (empty set), fall back to parsing error
                 if (supportedTypes.size === 0) {
                     console.warn('Type detection returned empty set, falling back to parsing error');
@@ -1376,8 +1431,8 @@ ${svgData}`;
         }
 
         if (!spec.isStreaming || spec.forceRender) {
-                // First clear the container and add the error message
-                container.innerHTML = `
+            // First clear the container and add the error message
+            container.innerHTML = `
                 <div class="mermaid-error">
                     <strong>${errorTitle}:</strong>
                     <p>${errorMessage}</p>
@@ -1389,11 +1444,11 @@ ${svgData}`;
                 </div>
                 `;
 
-                // Create buttons
-                const viewSourceButton = document.createElement('button');
-                viewSourceButton.innerHTML = '📝 View Source';
-                viewSourceButton.className = 'diagram-action-button mermaid-source-button';
-                viewSourceButton.style.cssText = `
+            // Create buttons
+            const viewSourceButton = document.createElement('button');
+            viewSourceButton.innerHTML = '📝 View Source';
+            viewSourceButton.className = 'diagram-action-button mermaid-source-button';
+            viewSourceButton.style.cssText = `
                     background-color: #4361ee;
                     color: white;
                     border: none;
@@ -1404,11 +1459,11 @@ ${svgData}`;
                     display: inline-block;
                 `;
 
-                // Add retry button
-                const retryButton = document.createElement('button');
-                retryButton.innerHTML = '🔄 Retry Rendering';
-                retryButton.className = 'diagram-action-button mermaid-retry-button';
-                retryButton.style.cssText = `
+            // Add retry button
+            const retryButton = document.createElement('button');
+            retryButton.innerHTML = '🔄 Retry Rendering';
+            retryButton.className = 'diagram-action-button mermaid-retry-button';
+            retryButton.style.cssText = `
                     background-color: #4361ee;
                     color: white;
                     border: none;
@@ -1419,21 +1474,21 @@ ${svgData}`;
                     display: block;
                 `;
 
-                // Create button container
-                const buttonContainer = document.createElement('div');
-                buttonContainer.style.textAlign = 'center';
-                buttonContainer.appendChild(viewSourceButton);
-                buttonContainer.appendChild(retryButton);
-                container.appendChild(buttonContainer);
+            // Create button container
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.textAlign = 'center';
+            buttonContainer.appendChild(viewSourceButton);
+            buttonContainer.appendChild(retryButton);
+            container.appendChild(buttonContainer);
 
-                // Add event listeners
-                retryButton.onclick = () => mermaidPlugin.render(container, d3, spec, isDarkMode);
-                viewSourceButton.onclick = () => {
-                    // Toggle between error view and source view
-                    const errorView = container.querySelector('.mermaid-error');
-                    if (errorView) {
-                        // Create source view
-                        container.innerHTML = `<pre style="
+            // Add event listeners
+            retryButton.onclick = () => mermaidPlugin.render(container, d3, spec, isDarkMode);
+            viewSourceButton.onclick = () => {
+                // Toggle between error view and source view
+                const errorView = container.querySelector('.mermaid-error');
+                if (errorView) {
+                    // Create source view
+                    container.innerHTML = `<pre style="
                             background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
                             padding: 16px;
                             border-radius: 4px;
@@ -1441,11 +1496,11 @@ ${svgData}`;
                             color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
                         "><code>${spec.definition}</code></pre>`;
 
-                        // Add back button
-                        const backButton = document.createElement('button');
-                        backButton.innerHTML = '⬅️ Back to Error';
-                        backButton.className = 'diagram-action-button';
-                        backButton.style.cssText = `
+                    // Add back button
+                    const backButton = document.createElement('button');
+                    backButton.innerHTML = '⬅️ Back to Error';
+                    backButton.className = 'diagram-action-button';
+                    backButton.style.cssText = `
                             background-color: #4361ee;
                             color: white;
                             border: none;
@@ -1455,12 +1510,12 @@ ${svgData}`;
                             cursor: pointer;
                             display: block;
                         `;
-                        backButton.onclick = () => mermaidPlugin.render(container, d3, spec, isDarkMode);
-                        container.appendChild(backButton);
-                    }
-                };
-            }
-    }   
+                    backButton.onclick = () => mermaidPlugin.render(container, d3, spec, isDarkMode);
+                    container.appendChild(backButton);
+                }
+            };
+        }
+    }
 };
 
 /** 
@@ -1523,11 +1578,11 @@ function getOptimalTextColor(backgroundColor: string): string {
     const lightBlue = /^#e[0-9a-f]f[0-9a-f]fd$/i;  // Matches #e3f2fd and similar
     const lightGreen = /^#e[0-9a-f]f[0-9a-f]e[0-9a-f]$/i; // Matches #e8f5e8 and similar  
     const lightOrange = /^#fff[0-9a-f]e[0-9a-f]$/i; // Matches #fff3e0 and similar
-    
+
     if (lightBlue.test(backgroundColor) || lightGreen.test(backgroundColor) || lightOrange.test(backgroundColor)) {
         return '#000000'; // Always use black on these very light backgrounds
     }
-    
+
     // Handle yellow and yellow-ish colors
     if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
         return '#000000'; // Always use black on yellow/yellow-ish
@@ -1547,7 +1602,6 @@ function isProblematicBackground(color: string): boolean {
     if (!color || color === 'none' || color === 'transparent') return false;
 
     // Normalize the color to uppercase and remove # if present
-    console.log(`  Checking if background is problematic: ${color}`);
 
     let normalizedColor: string;
 
@@ -1559,7 +1613,6 @@ function isProblematicBackground(color: string): boolean {
             normalizedColor = [r, g, b]
                 .map(x => parseInt(x).toString(16).padStart(2, '0'))
                 .join('').toUpperCase();
-            console.log(`  Converted RGB ${color} to hex: ${normalizedColor}`);
         } else {
             return false;
         }
@@ -1574,13 +1627,78 @@ function isProblematicBackground(color: string): boolean {
     // The exact list of problematic background colors you identified
     const problematicColors = [
         'FFEA2E', 'FFB50D', 'FFF58C', 'FFF59D', 'FFF0D9', 'E2F4E2', 'F0DDF3',
-        'DBF2FE', 'FFF7DA', 'DDEFFD', 'FDC0C8', 'F5A9D1', 'D4EA8C', 
+        'DBF2FE', 'FFF7DA', 'DDEFFD', 'FDC0C8', 'F5A9D1', 'D4EA8C',
         'E3F2FD', 'E8F5E8', 'FFF3E0', // Add the specific colors from user's example
         'FFEB3B'
     ];
 
     const result = problematicColors.includes(normalizedColor);
-    console.log(`  ${normalizedColor} in problematic list: ${result}`);
     // Check if this color matches any of the problematic ones
     return result;
+}
+
+// Unified responsive scaling that works across all browsers including Safari
+function applyUnifiedResponsiveScaling(container: HTMLElement, svgElement: SVGElement, isDarkMode: boolean) {
+    console.log('🎯 UNIFIED-SCALING: Applying responsive scaling for all browsers');
+
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    const mermaidWrapper = container.querySelector('.mermaid-wrapper') as HTMLElement;
+
+    if (!mermaidWrapper) {
+        console.warn('No mermaid wrapper found, cannot apply responsive scaling');
+        return;
+    }
+
+    // MINIMAL approach: Just ensure proper viewBox and preserve Mermaid's layout
+    const viewBox = svgElement.getAttribute('viewBox');
+    if (viewBox) {
+        console.log('🎯 UNIFIED-SCALING: SVG has viewBox:', viewBox);
+        // Ensure proper responsive attributes without breaking positioning
+        svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    } else {
+        console.warn('🎯 UNIFIED-SCALING: No viewBox found, this may cause positioning issues');
+        // Don't add a viewBox if Mermaid didn't create one - this can break positioning
+    }
+
+    // For Safari, apply minimal scaling if the diagram is too small
+    if (isSafari) {
+        setTimeout(() => {
+            const svgRect = svgElement.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+
+            console.log('🎯 SAFARI-SIZE-CHECK:', {
+                svgWidth: svgRect.width,
+                svgHeight: svgRect.height,
+                containerWidth: containerRect.width,
+                currentTransform: svgElement.style.transform
+            });
+
+            // Only scale if the diagram is significantly smaller than the container
+            if (svgRect.width > 0 && containerRect.width > 0 && 
+                svgRect.width < containerRect.width * 0.6) {
+                const targetScale = Math.min(containerRect.width * 0.9 / svgRect.width, 4.0);
+                svgElement.style.transform = `scale(${targetScale})`;
+                svgElement.style.transformOrigin = 'center center';
+                console.log(`🎯 SAFARI-SCALE: Applied scaling ${targetScale}x (${svgRect.width}px → ${svgRect.width * targetScale}px)`);
+                
+                // Adjust wrapper to accommodate scaled content
+                mermaidWrapper.style.minHeight = `${svgRect.height * targetScale + 40}px`;
+                mermaidWrapper.style.minWidth = `${svgRect.width * targetScale}px`;
+                mermaidWrapper.style.width = 'auto'; // Let it expand to fit scaled content
+            } else {
+                console.log('🎯 SAFARI-SCALE: No scaling needed, diagram size looks good');
+            }
+        }, 200); // Give Mermaid time to finish positioning
+    }
+    
+    // Configure wrapper for responsive behavior without breaking Mermaid's positioning
+    mermaidWrapper.style.width = '100%';
+    mermaidWrapper.style.maxWidth = '100%';
+    mermaidWrapper.style.overflow = 'auto'; // Changed from 'visible' to 'auto' to handle large scaled content
+    mermaidWrapper.style.display = 'flex';
+    mermaidWrapper.style.justifyContent = 'center';
+    mermaidWrapper.style.alignItems = 'flex-start'; // Changed from 'center' to preserve top alignment
+    mermaidWrapper.style.padding = '1em';
+
+    console.log('🎯 UNIFIED-SCALING: Responsive configuration applied', isSafari ? '(Safari)' : '(Other)');
 }

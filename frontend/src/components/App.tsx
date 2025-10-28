@@ -11,18 +11,23 @@ import {
     SwapOutlined,
     CodeOutlined,
     ApiOutlined,
+    CloudServerOutlined,
     SettingOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
 import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
+import { SafariWarning } from './SafariWarning';
+import { loadInternalFormatters } from '../utils/mcpFormatterLoader';
 
 const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
 const MCPStatusModal = React.lazy(() => import("./MCPStatusModal"));
+const MCPRegistryModal = React.lazy(() => import("./MCPRegistryModal"));
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
 const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
+const FeedbackInput = React.lazy(() => import("./FeedbackInput"));
 
 // Error boundary component to catch extension context errors
 class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
@@ -118,10 +123,16 @@ export const App: React.FC = () => {
 
     const [showShellConfig, setShowShellConfig] = useState(false);
     const [showMCPStatus, setShowMCPStatus] = useState(false);
+    const [showMCPRegistry, setShowMCPRegistry] = useState(false);
     const [mcpEnabled, setMcpEnabled] = useState(false);
 
     // Check MCP status on mount
     useEffect(() => {
+        // Load internal MCP formatters
+        loadInternalFormatters().catch(error => {
+            console.debug('Internal formatters not available:', error);
+        });
+        
         // Set initial panel width to 33% of viewport width
         const initialWidth = Math.round(window.innerWidth * 0.33);
         document.documentElement.style.setProperty('--folder-panel-width', `${initialWidth}px`);
@@ -188,7 +199,7 @@ export const App: React.FC = () => {
                 // But only if there's actual streaming content, not just loading indicators
                 const currentStreamedContent = streamedContentMap.get(currentConversationId);
                 const hasActualContent = currentStreamedContent && currentStreamedContent.trim().length > 0;
-                
+
                 if (isAtBottom && userHasScrolled && hasActualContent) {
                     console.log('📜 User scrolled back to bottom with actual content - resuming auto-scroll');
                     setUserHasScrolled(false);
@@ -200,7 +211,6 @@ export const App: React.FC = () => {
 
                 // If user scrolls away from bottom significantly, mark as manual scroll
 
-                // If user scrolls away from bottom significantly, mark as manual scroll
                 if (!isNearBottom && Math.abs(scrollTop - lastScrollPositionRef.current) > 50) {
                     if (!userHasScrolled) {
                         console.log('📜 User scrolled away from bottom - pausing auto-scroll');
@@ -217,12 +227,11 @@ export const App: React.FC = () => {
                 }
 
                 lastScrollPositionRef.current = scrollTop;
-                lastScrollPositionRef.current = scrollTop;
             }, 50); // Faster response to user scroll actions
         };
 
         chatContainer.addEventListener('scroll', handleScroll, { passive: true });
-        
+
         return () => {
             chatContainer.removeEventListener('scroll', handleScroll);
             clearTimeout(scrollTimeout);
@@ -233,11 +242,11 @@ export const App: React.FC = () => {
     useLayoutEffect(() => {
         const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
         if (!chatContainer) return;
-        
+
         // Check if the last message is a new user message
         const lastMessage = currentMessages[currentMessages.length - 1];
         const isNewUserMessage = lastMessage?.role === 'human';
-        
+
         const wasStreamingBefore = streamingConversations.has(currentConversationId);
         const isStreamingNow = streamingConversations.has(currentConversationId);
         const streamingJustEnded = wasStreamingBefore && !isStreamingNow;
@@ -245,24 +254,24 @@ export const App: React.FC = () => {
         // Before render: capture current position
         const { scrollTop, scrollHeight, clientHeight } = chatContainer;
         const wasAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
-        
+
         scrollPreservationRef.current = {
             position: scrollTop,
             wasAtBottom
         };
-        
+
         isRenderingRef.current = true;
-        
+
         // Track if user was following the stream
         wasFollowingStreamRef.current = wasAtBottom && !userHasScrolled;
-        
+
         // After render: restore appropriate position
         return () => {
             if (!isRenderingRef.current) return;
-            
+
             requestAnimationFrame(() => {
                 const { wasAtBottom, position } = scrollPreservationRef.current;
-                
+
                 // For new user messages, always scroll to bottom regardless of other conditions
                 if (isNewUserMessage && isTopToBottom) {
                     console.log('📜 New user message detected in layout effect - scrolling to bottom');
@@ -272,22 +281,23 @@ export const App: React.FC = () => {
                     wasFollowingStreamRef.current = true;
                     return;
                 }
-                
+
                 // Skip position preservation for new user messages to avoid interference
                 if (isNewUserMessage) return;
-                
+
                 // If streaming just ended and user was following, force scroll to bottom
                 if (streamingJustEnded && wasFollowingStreamRef.current && isTopToBottom) {
                     console.log('📜 Stream ended while user was following - maintaining bottom position');
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                     return;
                 }
-                
+
                 // If streaming just ended, handle position based on user behavior
                 if (streamingJustEnded) {
                     if (userHasScrolled) {
                         console.log('📜 Stream ended but user had scrolled away - preserving current position');
-                        return; // Don't restore old position
+                        // Don't restore old position - let it stay where user currently is
+                        return;
                     } else {
                         // User was following - stay at bottom
                         console.log('📜 Stream ended and user was following - staying at bottom');
@@ -295,7 +305,7 @@ export const App: React.FC = () => {
                         return;
                     }
                 }
-                
+
                 if (isTopToBottom) {
                     if (wasAtBottom && !userHasScrolled) {
                         // If we were at bottom and not manually scrolled, stay at bottom
@@ -303,20 +313,24 @@ export const App: React.FC = () => {
                         chatContainer.scrollTop = chatContainer.scrollHeight;
                     } else if (!isStreamingNow) {
                         // If not streaming, preserve exact position to prevent jumps
-                        console.log('📜 Preserving scroll position after render:', position);
-                        chatContainer.scrollTop = position;
+                        // Only restore position if it's significantly different from current position
+                        const currentPosition = chatContainer.scrollTop;
+                        if (Math.abs(currentPosition - position) > 5) {
+                            console.log('📜 Preserving scroll position after render:', position);
+                            chatContainer.scrollTop = position;
+                        }
                     }
                 } else {
                     // In bottom-up mode, preserve position
                     chatContainer.scrollTop = position;
                 }
-                
+
                 isRenderingRef.current = false;
             });
         };
     }, [
         // Only run scroll preservation for UI state changes, not content changes
-        isTopToBottom, 
+        isTopToBottom,
         currentConversationId,  // Only when switching conversations, not when messages change
         streamingConversations, // Add this to detect streaming state changes
         userHasScrolled        // Add this to detect user scroll state changes
@@ -326,18 +340,18 @@ export const App: React.FC = () => {
     useEffect(() => {
         const lastMessage = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
         const isNewUserMessage = lastMessage?.role === 'human';
-        
+
         // CRITICAL: Only scroll if there's actually new content or a new user message
         const currentStreamedContent = streamedContentMap.get(currentConversationId);
         const hasNewStreamedContent = currentStreamedContent && currentStreamedContent.trim().length > 0;
-        
+
         if (!isNewUserMessage && !hasNewStreamedContent) return; // No new content = no scroll
-        
+
         // Check manual scroll cooldown, but allow new user messages to override
         const now = Date.now();
         const timeSinceManualScroll = now - (recordManualScroll as any).lastScrollTime || 0;
         const SCROLL_COOLDOWN = 5000;
-        
+
         const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
         if (!chatContainer) return;
 
@@ -348,21 +362,19 @@ export const App: React.FC = () => {
             // Reset manual scroll timing for new user messages
             (recordManualScroll as any).lastScrollTime = 0;
             wasFollowingStreamRef.current = true;
-            // Reset manual scroll timing for new user messages
-            (recordManualScroll as any).lastScrollTime = 0;
-            // Use multiple approaches to ensure we get to the bottom
+            // Improved bottom scrolling that actually reaches the bottom
             const scrollToBottom = () => {
-                // Force immediate scroll for new messages
+                const { scrollHeight, clientHeight } = chatContainer;
+                const targetScrollTop = scrollHeight - clientHeight;
+
                 chatContainer.scrollTo({
-                    top: chatContainer.scrollHeight,
+                    top: Math.max(0, targetScrollTop), // Ensure non-negative
                     behavior: 'auto'
                 });
-                // Double-ensure we're at bottom with direct assignment
-                const newScrollHeight = chatContainer.scrollHeight;
-                chatContainer.scrollTop = newScrollHeight;
-                console.log('📜 Set scrollTop to:', newScrollHeight, 'actual:', chatContainer.scrollTop);
+
+                chatContainer.scrollTop = Math.max(0, targetScrollTop);
             };
-            
+
             // Ensure we get to bottom immediately
             scrollToBottom();
             // Also ensure after DOM updates
@@ -373,59 +385,62 @@ export const App: React.FC = () => {
             });
             return;
         }
-        
-        // For streaming content, be much more conservative about auto-scrolling
-        if (streamingConversations.has(currentConversationId)) {
-            // If user has manually scrolled away, respect that completely during streaming
-            if (userHasScrolled) {
-                return; // Don't auto-scroll at all during streaming if user scrolled away
-            }
-            
-            // Only auto-scroll if user hasn't scrolled and we're still following the stream
+
+
+        // For streaming content updates, be more conservative about auto-scrolling
+        const isStreamingContent = streamingConversations.has(currentConversationId);
+        const hasActualStreamedContent = currentStreamedContent && currentStreamedContent.trim().length > 0;
+
+        // Only auto-scroll during streaming if we have actual content AND user hasn't scrolled away
+        if (isStreamingContent && hasActualStreamedContent && wasFollowingStreamRef.current) {
             const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
             if (chatContainer) {
                 const { scrollTop, scrollHeight, clientHeight } = chatContainer;
-                const isNearBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 50;
-                if (!isNearBottom) return; // User has scrolled away, don't force scroll back
+                const isNearBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 100;
+
+                // If user scrolled away, stop following
+                if (!isNearBottom) {
+                    wasFollowingStreamRef.current = false;
+                    return;
+                }
             }
         }
 
-        // Scroll to bottom smoothly
         const scrollToBottom = () => {
-            const { scrollTop, scrollHeight, clientHeight } = chatContainer as HTMLElement;
+            const { scrollTop, scrollHeight, clientHeight } = chatContainer;
             const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
-            
+
             if (!isAtBottom) {
                 // Only auto-scroll for actual content, not loading states
                 const currentStreamedContent = streamedContentMap.get(currentConversationId);
-                const hasActualContent = !streamingConversations.has(currentConversationId) || 
+                const hasActualContent = !streamingConversations.has(currentConversationId) ||
                     (currentStreamedContent && currentStreamedContent.trim().length > 0);
-                
+
                 if (hasActualContent) {
+                    const targetScrollTop = Math.max(0, scrollHeight - clientHeight);
                     chatContainer.scrollTo({
-                    top: chatContainer.scrollHeight,
-                    behavior: 'smooth' // Smooth scroll is less jarring when user is trying to scroll away
-                });
+                        top: targetScrollTop,
+                        behavior: 'smooth' // Smooth scroll is less jarring
+                    });
                 }
             }
         };
-        
+
         // Use requestAnimationFrame to ensure DOM has updated
         requestAnimationFrame(scrollToBottom);
     }, [
-        isTopToBottom, 
+        isTopToBottom,
         currentMessages.length, // Only when messages actually change
         // Remove streamedContentMap dependency to prevent continuous scrolling during streaming
         // streamedContentMap.get(currentConversationId), 
         currentConversationId
     ]);
 
-    // Reset userHasScrolled when switching conversations
     useEffect(() => {
         // Reset scroll state when switching to a new conversation
         // This ensures auto-scroll works immediately in new conversations
         setUserHasScrolled(false);
-        
+
         // Also scroll to bottom when switching conversations in top-down mode
         if (isTopToBottom) {
             setTimeout(() => {
@@ -601,6 +616,7 @@ export const App: React.FC = () => {
     return (
         <ExtensionErrorBoundary>
             <ProfilerWrapper id="App">
+                <SafariWarning />
                 <ConfigProvider
                     theme={{
                         algorithm: themeAlgorithm,
@@ -666,6 +682,9 @@ export const App: React.FC = () => {
                                         <Tooltip title="MCP Servers">
                                             <Button icon={<ApiOutlined />} onClick={() => setShowMCPStatus(true)} />
                                         </Tooltip>
+                                        <Tooltip title="MCP Registry">
+                                            <Button icon={<CloudServerOutlined />} onClick={() => setShowMCPRegistry(true)} />
+                                        </Tooltip>
                                     </>
                                 )}
                                 <Tooltip title="New Chat">
@@ -715,8 +734,20 @@ export const App: React.FC = () => {
                                     visible={showMCPStatus}
                                     onClose={() => setShowMCPStatus(false)}
                                 />
+                                <MCPRegistryModal
+                                    visible={showMCPRegistry}
+                                    onClose={() => setShowMCPRegistry(false)}
+                                />
                             </>
                         )}
+                    </Suspense>
+
+                    {/* Real-time feedback input */}
+                    <Suspense fallback={null}>
+                        <FeedbackInput 
+                            conversationId={currentConversationId}
+                            isStreaming={isStreaming}
+                        />
                     </Suspense>
 
                 </ConfigProvider>

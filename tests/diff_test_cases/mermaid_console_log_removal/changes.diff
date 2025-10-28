@@ -1,0 +1,216 @@
+--- original.ts	2025-10-18 00:56:50
++++ expected.ts	2025-10-18 00:57:18
+@@ -503,13 +503,10 @@
+         // Enhanced function to improve text visibility in dark mode
+         const fixTextVisibilityForClassDef = (svgElement: SVGElement) => {
+             if (isDarkMode) {
+-                console.log('🔍 DEBUG: fixTextVisibilityForClassDef starting in dark mode');
+             }
+-            console.log('🔍 FIXING TEXT VISIBILITY: Starting classDef text visibility fix');
+             
+             // Find all text elements
+             const textElements = svgElement.querySelectorAll('text');
+-            console.log(`Found ${textElements.length} text elements to process`);
+             
+             textElements.forEach(textEl => {
+                 const textContent = textEl.textContent?.trim();
+@@ -527,9 +524,6 @@
+                     const backgroundShape = parentGroup.querySelector('rect, polygon, circle, path');
+                     if (backgroundShape) {
+                         const fill = backgroundShape.getAttribute('fill');
+-                        console.log(`Text "${textContent}" has background fill: ${fill}`);
+-                        const currentTextFill = textEl.getAttribute('fill');
+-                        console.log(`Text "${textContent}" current fill: ${currentTextFill}`);
+                         
+                         if (fill && isLightBackground(fill)) {
+                             textEl.setAttribute('fill', '#000000');
+@@ -562,14 +556,11 @@
+ 
+                         // If we have a stroke color, use it for text (it's usually darker/more saturated)
+                         if (stroke && stroke !== 'none' && stroke !== '#333' && stroke !== '#333333') {
+-                            console.log(`🔧 DEBUG: Using stroke color ${stroke} for text: "${textEl.textContent}"`);
+                             textEl.setAttribute('fill', stroke);
+                         } else if (fill && fill !== 'none') {
+-                            const currentFill = textEl.getAttribute('fill');
+                             console.log(`🔧 DEBUG: Text "${textEl.textContent}" - current: ${currentFill}, background: ${fill}`);
+                             // If no good stroke, derive optimal contrasting color from fill
+                             const contrastColor = getTextContrastColor(fill);
+-                            console.log(`🔧 DEBUG: Calculated contrast color: ${contrastColor} for background: ${fill}`);
+                             textEl.setAttribute('fill', contrastColor);
+                         } else {
+                             // Fallback to high contrast color
+@@ -581,7 +572,6 @@
+ 
+             // Special handling for edge labels and other floating text
+             svgElement.querySelectorAll('.edgeLabel text').forEach(textEl => {
+-                const currentFill = textEl.getAttribute('fill');
+             });
+ 
+             // Special handling for Gantt charts - fix text visibility with proper contrast
+@@ -705,11 +695,9 @@
+         }
+         // CRITICAL: Add a delayed fix to ensure text visibility is applied after all other processing
+         setTimeout(() => {
+-            console.log('🔍 DELAYED TEXT FIX: Applying final text visibility fixes');
+             
+             // SIMPLE APPROACH: Find all light-colored rectangles and fix text within them
+             const allRects = svgElement.querySelectorAll('rect');
+-            console.log(`🔧 SIMPLE-FIX: Found ${allRects.length} rectangles to check`);
+             
+             allRects.forEach((rect, index) => {
+                 const fill = rect.getAttribute('fill');
+@@ -717,16 +705,13 @@
+                 const actualColor = computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)' ? computedFill : fill;
+                 
+                 if (actualColor && isLightBackground(actualColor)) {
+-                    console.log(`🔧 SIMPLE-FIX: Found light background rect ${index}: ${actualColor}`);
+                     
+                     // Find the parent group and fix all text within it
+                     const parentGroup = rect.closest('g');
+                     if (parentGroup) {
+                         const textElements = parentGroup.querySelectorAll('div, span');
+-                        console.log(`🔧 SIMPLE-FIX: Found ${textElements.length} text elements in this group`);
+                         
+                         textElements.forEach(textEl => {
+-                            console.log(`🔧 SIMPLE-FIX: Setting black text for "${textEl.textContent}" on light background ${actualColor}`);
+                             (textEl as HTMLElement).style.setProperty('color', '#000000', 'important');
+                         });
+                     }
+@@ -761,9 +746,7 @@
+                     if (backgroundShape) {
+                         const fill = backgroundShape.getAttribute('fill');
+                         if (fill && isLightBackground(fill)) {
+-                            console.log(`🔧 DELAYED FIX: Setting black text for light background ${fill}`);
+                             textEl.setAttribute('fill', '#000000');
+-                            console.log(`🔧 DEBUG: Final text color set to black for "${textEl.textContent}" on ${fill}`);
+                             (textEl as SVGElement).style.setProperty('fill', '#000000', 'important');
+                         }
+                     }
+@@ -792,73 +775,54 @@
+ 
+         // TEXT VISIBILITY FIX - Focus on foreignObject children only
+         setTimeout(() => {
+-            console.log('🔍 TEXT VISIBILITY FIX: Starting analysis');
+             const foreignObjects = container.querySelectorAll('foreignObject');
+-            console.log(`Found ${foreignObjects.length} foreignObject elements`);
+-            let fixCount = 0;
+-            let totalTextElements = 0;
+-            let elementsWithBackground = 0;
+ 
+             foreignObjects.forEach((foreignObj, foreignIndex) => {
+                 const textElements = foreignObj.querySelectorAll('div, span');
+-                console.log(`ForeignObject ${foreignIndex}: contains ${textElements.length} text elements`);
+ 
+                 textElements.forEach((textEl) => {
+                     const content = textEl.textContent?.trim();
+                     if (!content) return;
+ 
+-                    totalTextElements++;
+-                    console.log(`Text element ${totalTextElements}: "${content}"`);
+ 
+                     const computedStyle = window.getComputedStyle(textEl);
+                     const textColor = computedStyle.color;
+-                    console.log(`  Text color: ${textColor}`);
+ 
+                     // Find background color by walking up the DOM within this foreignObject
+                     let backgroundColor: string | null = null;
+                     let currentElement: Element | null = textEl;
+-                    let depth = 0;
+ 
+                     while (currentElement && currentElement !== foreignObj) {
+                         const elementStyle = window.getComputedStyle(currentElement);
+                         const bgColor = elementStyle.backgroundColor;
+-                        console.log(`  Level ${depth}: element ${currentElement.tagName}, bg: ${bgColor}`);
+ 
+                         if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') {
+                             backgroundColor = bgColor;
+-                            console.log(`  Found background: ${backgroundColor}`);
+                             break;
+                         }
+                         currentElement = currentElement.parentElement;
+-                        depth++;
+                     }
+ 
+                     // Strategy 2: If no background found in DOM hierarchy, look for sibling SVG elements
+                     if (!backgroundColor) {
+-                        console.log(`  No background in DOM hierarchy, checking SVG siblings`);
+ 
+                         // Look at the parent group of this foreignObject
+                         const parentGroup = foreignObj.parentElement;
+                         if (parentGroup) {
+-                            console.log(`  Parent group: ${parentGroup.tagName}`);
+ 
+                             // Look for rect, circle, polygon, path elements in the same group
+                             const shapeElements = parentGroup.querySelectorAll('rect, circle, polygon, path, ellipse');
+-                            console.log(`  Found ${shapeElements.length} shape elements in parent group`);
+ 
+                             for (const shape of shapeElements) {
+                                 const fill = shape.getAttribute('fill');
+                                 const computedFill = window.getComputedStyle(shape).fill;
+-                                console.log(`    Shape ${shape.tagName}: fill="${fill}" computed="${computedFill}"`);
+ 
+                                 // CRITICAL FIX: Use computed style instead of fill attribute for custom colors
+                                 if (computedFill && computedFill !== 'none' && computedFill !== 'transparent' && computedFill !== 'rgb(0, 0, 0)') {
+                                     backgroundColor = computedFill;
+-                                    console.log(`  Found SVG background: ${backgroundColor}`);
+                                     break;
+                                 } else if (fill && fill !== 'none' && fill !== 'transparent') {
+                                     backgroundColor = fill;
+-                                    console.log(`  Found fallback SVG background: ${backgroundColor}`);
+                                     break;
+                                 }
+                             }
+@@ -867,9 +831,7 @@
+ 
+                     // Strategy 3: If still no background, search the entire SVG for ALL shapes
+                     if (!backgroundColor) {
+-                        console.log(`  Still no background, searching entire SVG`);
+                         const allShapes = container.querySelectorAll('rect, circle, polygon, path, ellipse');
+-                        console.log(`  Found ${allShapes.length} total shapes in SVG`);
+ 
+                         // Log all shapes and their colors to see what we're missing
+                         const allColors = new Set<string>();
+@@ -881,43 +843,32 @@
+ 
+                             // Log first 10 shapes for debugging
+                             if (i < 10) {
+-                                console.log(`    All shapes ${i}: ${shape.tagName} fill="${fill}" computed="${computedFill}"`);
+                             }
+                         });
+ 
+-                        console.log(`  All unique colors found:`, Array.from(allColors));
+ 
+                         // For now, don't assign a background from this broad search
+                         // We just want to see what colors are available
+                     }
+ 
+                     if (backgroundColor) {
+-                        elementsWithBackground++;
+-                        console.log(`  Background found: ${backgroundColor}`);
+                         const isLight = isLightBackground(backgroundColor);
+-                        console.log(`  Is light background: ${isLight}`);
+ 
+                         if (isLight) {
+                             const contrastRatio = calculateContrastRatio(textColor, backgroundColor);
+-                            console.log(`  Contrast ratio: ${contrastRatio.toFixed(2)}`);
+ 
+                             if (contrastRatio < 3.0) {
+-                                console.log(`  🔧 FIXING: "${content}" - poor contrast (${contrastRatio.toFixed(2)})`);
+                                 (textEl as HTMLElement).style.color = '#000000';
+                                 (textEl as HTMLElement).style.setProperty('color', '#000000', 'important');
+-                                fixCount++;
+                             } else {
+-                                console.log(`  ✓ SKIPPING: "${content}" - good contrast (${contrastRatio.toFixed(2)})`);
+                             }
+                         }
+                     } else {
+-                        console.log(`  No background found for: "${content}"`);
+                     }
+ 
+                     // Check if we need to fix this text
+                 });
+             });
+-            console.log(`🔍 SUMMARY: Processed ${totalTextElements} text elements, ${elementsWithBackground} had backgrounds, fixed ${fixCount}`);
+         }, 1000);
+ 
+         // Wait for next frame to ensure SVG is rendered
