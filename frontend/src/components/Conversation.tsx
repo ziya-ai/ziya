@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, Suspense, memo, useCallback, useMemo } from "react";
-import { FixedSizeList as List } from 'react-window';
+import { List } from 'react-window';
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip } from 'antd';
