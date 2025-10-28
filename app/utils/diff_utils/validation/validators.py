@@ -239,11 +239,31 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
         old_content_exists_normalized = removed_content_normalized in file_content_normalized
         new_content_exists_normalized = added_content_normalized in file_content_normalized
         
-        # Malformed pattern 1: both old and new content exist exactly (clear duplication)
+        # CRITICAL FIX: Only flag as malformed if both old and new content exist IN PROXIMITY
+        # If they exist far apart in the file, this is likely a case of incorrect line numbers
+        # in the diff, not actual duplication/corruption
+        if (old_content_exists_exact and new_content_exists_exact) or \
+           (old_content_exists_normalized and new_content_exists_normalized):
+            # Find positions of both contents
+            old_pos = file_content_normalized.find(removed_content_normalized)
+            new_pos = file_content_normalized.find(added_content_normalized)
+            
+            if old_pos >= 0 and new_pos >= 0:
+                # Calculate distance in characters
+                distance = abs(old_pos - new_pos)
+                # Calculate expected proximity based on content size
+                max_proximity = max(len(removed_content_normalized), len(added_content_normalized)) * 3
+                
+                # Only flag as malformed if they're close together (within 3x the content size)
+                if distance > max_proximity:
+                    logger.debug(f"Old and new content exist but are far apart (distance: {distance}, max: {max_proximity}) - likely incorrect line numbers, not malformed")
+                    return False
+        
+        # Malformed pattern 1: both old and new content exist exactly in proximity (clear duplication)
         if old_content_exists_exact and new_content_exists_exact:
             return True
         
-        # Malformed pattern 2: both old and new content exist in normalized form (duplication with variations)
+        # Malformed pattern 2: both old and new content exist in normalized form in proximity (duplication with variations)
         if old_content_exists_normalized and new_content_exists_normalized:
             # Exception: if this is a whitespace-only change, don't flag as malformed
             if removed_content_exact.replace('\t', '    ').replace(' ', '') == added_content_exact.replace('\t', '    ').replace(' ', ''):
