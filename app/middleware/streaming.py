@@ -147,46 +147,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         yield "data: [DONE]\n\n"
                         return
                     
-                    # Handle string chunks first (most common case)
-                    if isinstance(chunk, str):
-                        logger.info("Processing string chunk")
-                        # Check if it's already an SSE message
-                        if chunk.startswith('data:'):
-                            yield chunk
-                        else:
-                            # Check if it might be JSON
-                            try:
-                                # Try to parse as JSON to validate
-                                json_obj = json.loads(chunk)
-                                # If it's valid JSON, pass it through without double-encoding
-                                yield f"data: {json.dumps(json_obj)}\n\n"
-                            except json.JSONDecodeError:
-                                # If it's not valid JSON, just pass it as a string
-                                content = str(chunk)
-                                
-                                # Immediately pass through tool_start messages without buffering
-                                if '"type": "tool_start"' in content:
-                                    # First flush any buffered content
-                                    if content_buffer:
-                                        yield f"data: {json.dumps({'content': content_buffer})}\n\n"
-                                        content_buffer = ""
-                                    # Then send the tool_start message
-                                    yield content
-                                    continue
-                                
-                                # Send content immediately for real-time streaming
-                                yield f"data: {json.dumps({'content': content})}\\n\\n"
-                        
-                        # Log chunk content preview
-                        if len(chunk) > 200:
-                            logger.info(f"String chunk preview:\n{chunk[:200]}...")
-                            logger.info(f"...and ends with:\n{chunk[-200:]}")
-                        else:
-                            logger.info(f"Full string chunk:\n{chunk}")
-                        
-                        if not content_buffer:  # Only continue if we're not buffering
-                            continue
-                    
                     # Handle AIMessageChunk objects
                     if isinstance(chunk, AIMessageChunk):
                         logger.info("Processing AIMessageChunk")
@@ -231,8 +191,8 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         if isinstance(raw_content, dict):
                             # For structured content like thinking mode, preserve the structure
                             logger.debug(f"Preserving structured content: {list(raw_content.keys())}")
-                            yield f"data: {json.dumps(raw_content)}\n\n"
-                            chunk_content = json.dumps(raw_content)
+                            yield f"data: {json.dumps(raw_content, ensure_ascii=False)}\n\n"
+                            chunk_content = json.dumps(raw_content, ensure_ascii=False)
                         else:
                             # For simple string content
                             content = str(raw_content)
@@ -375,14 +335,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 # If it's not valid JSON, just pass it as a string
                                 yield f"data: {chunk}\n\n"
                         
-                        # Log chunk content preview
-                        if len(chunk) > 200:
-                            logger.info(f"String chunk preview:\n{chunk[:200]}...")
-                            logger.info(f"...and ends with:\n{chunk[-200:]}")
-                        else:
-                            logger.info(f"Full string chunk:\n{chunk}")
-                        continue
-                    
                     # If we get here, try to extract content from the chunk
                     if hasattr(chunk, 'content'):
                         logger.info("Extracting content from chunk")
@@ -521,51 +473,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         event_data = {
                             "type": "preservedContent",
                             "data": warning_msg
-                        }
-                        yield f"event: preservedContent\n"
-                        yield f"data: {json.dumps(event_data)}\n\n"
-                    
-                    yield "data: [DONE]\n\n"
-                    return
-                    
-            # Ensure we end the stream properly
-            try:
-                # Send the [DONE] marker
-                yield "data: [DONE]\n\n"
-            except Exception as e:
-                logger.error(f"Error sending DONE marker: {str(e)}")
-            
-        except Exception as e:
-            logger.error(f"Error in safe_stream: {str(e)}")
-            
-            # Preserve accumulated content before final error
-            if accumulated_content and not partial_response_preserved:
-                logger.info(f"Preserving {len(accumulated_content)} characters of partial response before final stream error")
-                
-                # Log to console for debugging
-                print(f"PARTIAL RESPONSE PRESERVED (FINAL ERROR):\n{accumulated_content}")
-                
-                # Also log chunk count for debugging
-                logger.info(f"Total chunks processed before error: {len(accumulated_chunks)}")
-                
-                # Send warning about partial response
-                warning_msg = {
-                    "warning": "partial_response_preserved", 
-                    "detail": f"Server encountered an error after generating {len(accumulated_content)} characters. The partial response has been preserved.",
-                    "partial_content": accumulated_content,
-                    "successful_tool_outputs": successful_tool_outputs,
-                    "execution_summary": {
-                        "total_tool_sequences": tool_sequence_count,
-                        "successful_sequences": len(successful_tool_outputs),
-                        "has_successful_tools": len(successful_tool_outputs) > 0
-                    }
-                }
-                yield f"data: {json.dumps(warning_msg)}\n\n"
-                
-                # Also send as a custom event for the frontend to handle
-                event_data = {
-                    "type": "preservedContent", 
-                    "data": warning_msg
                 }
                 yield f"event: preservedContent\n"
                 yield f"data: {json.dumps(event_data)}\n\n"
@@ -582,6 +489,14 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 logger.error(f"Error sending final DONE marker: {str(done_error)}")
                 # Don't re-raise here as it would cause more protocol errors
                 pass
+            
+        except Exception as e:
+            logger.error(f"Stream processing error: {str(e)}")
+            # Try to send the [DONE] marker
+            try:
+                yield "data: [DONE]\n\n"
+            except Exception as done_error:
+                logger.error(f"Error sending DONE marker: {str(done_error)}")
     
     def _contains_partial(self, content: str) -> bool:
         """Check if content contains the start of a tool call but not the end."""
