@@ -80,6 +80,8 @@ class MCPClient:
         try:
             # Start the MCP server process
             command = self.server_config.get("command", [])
+            if isinstance(command, str):
+                command = [command]
             if not command:
                 logger.error(f"No command specified for MCP server: {self.server_config.get('name', 'unknown')}")
                 return False
@@ -144,15 +146,14 @@ class MCPClient:
             full_env = os.environ.copy()
             full_env.update(process_env)
 
-            self.process = subprocess.Popen(
-                final_popen_command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,  # Keep stderr separate for debugging
-                cwd=working_dir,  # Set working directory to project root
-                text=True,
-                env=full_env,
-                bufsize=0
+            self.process = await asyncio.create_subprocess_exec(
+                *final_popen_command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=working_dir,
+                 env=full_env,
+                 limit=1024 * 1024  # 1MB buffer limit for large tool lists
             )
             
             # Initialize the connection
@@ -190,14 +191,28 @@ class MCPClient:
                 # Log any available output for debugging
                 if self.process:
                     try:
-                        stdout_output = self.process.stdout.read() if self.process.stdout else ""
-                        stderr_output = self.process.stderr.read() if self.process.stderr else ""
+                        # Terminate the process to ensure that reading from stdout/stderr does not block indefinitely.
+                        self.process.terminate()
+                        try:
+                            await asyncio.wait_for(self.process.wait(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            self.process.kill()
+                            await self.process.wait()
+
+                        stdout_output_bytes = await self.process.stdout.read() if self.process.stdout else b""
+                        stderr_output_bytes = await self.process.stderr.read() if self.process.stderr else b""
+                        stdout_output = stdout_output_bytes.decode('utf-8', errors='ignore')
+                        stderr_output = stderr_output_bytes.decode('utf-8', errors='ignore')
                         if stdout_output:
                             logger.error(f"MCP server stdout: {stdout_output}")
                         if stderr_output:
                             logger.error(f"MCP server stderr: {stderr_output}")
                     except Exception as e:
                         logger.error(f"Error reading MCP server output: {e}")
+                    finally:
+                        # Ensure we clean up the process and connection state
+                        self.process = None
+                        self.is_connected = False
                 return False
                 
         except Exception as e:
@@ -210,10 +225,10 @@ class MCPClient:
         if self.process:
             try:
                 self.process.terminate()
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+                await asyncio.wait_for(self.process.wait(), timeout=5)
+            except asyncio.TimeoutError:
                 self.process.kill()
-                self.process.wait()
+                await self.process.wait()
             except Exception as e:
                 logger.error(f"Error disconnecting from MCP server: {str(e)}")
             finally:
@@ -226,7 +241,7 @@ class MCPClient:
             return False
         
         # Check if process is still running
-        if self.process.poll() is not None:
+        if self.process.returncode is not None:
             logger.warning(f"MCP server process has terminated with code: {self.process.returncode}")
             self.is_connected = False
             return False
@@ -274,38 +289,50 @@ class MCPClient:
         try:
             request_json = json.dumps(request) + "\n"
             write_start = time.time()
-            self.process.stdin.write(request_json)
-            self.process.stdin.flush()
+            self.process.stdin.write(request_json.encode('utf-8'))
+            await self.process.stdin.drain()
             write_time = time.time() - write_start
             logger.debug(f"🔍 MCP_TIMING: Write took {write_time*1000:.1f}ms")
             
-            # Read response
+            # Read response with a timeout
             try:
                 read_start = time.time()
-                response_line = self.process.stdout.readline()
+                response_line_bytes = await asyncio.wait_for(
+                    self.process.stdout.readline(),
+                    timeout=30.0
+                )
                 read_time = time.time() - read_start
                 logger.debug(f"🔍 MCP_TIMING: Read took {read_time*1000:.1f}ms")
-                timeout_occurred = False
+                
+                if not response_line_bytes:
+                    # EOF, process likely terminated
+                    logger.error("No response from MCP server (EOF)")
+                    if self.process.returncode is not None:
+                        logger.error(f"MCP server process has terminated with code: {self.process.returncode}")
+                        # Try to read any remaining output
+                        try:
+                            remaining_output_bytes = await self.process.stdout.read()
+                            if remaining_output_bytes:
+                                logger.error(f"Remaining output: {remaining_output_bytes.decode('utf-8', errors='ignore')}")
+                        except:
+                            pass
+                    return None
+                
+                response_line = response_line_bytes.decode('utf-8')
+
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout waiting for response from MCP server for method '{method}'")
+                return {
+                    "error": True,
+                    "message": f"Request timed out after 30 seconds for method '{method}'",
+                    "code": -32000 # Custom timeout error code
+                }
             except Exception as e:
                 logger.error(f"Error reading from MCP server: {e}")
                 return None
-                
-            if not response_line:
-                logger.error("No response from MCP server")
-                # Check if process is still running
-                if self.process.poll() is not None:
-                    logger.error(f"MCP server process has terminated with code: {self.process.returncode}")
-                    # Try to read any remaining output
-                    try:
-                        remaining_output = self.process.stdout.read()
-                        if remaining_output:
-                            logger.error(f"Remaining output: {remaining_output}")
-                    except:
-                        pass
-                return None
-                
+
             response = json.loads(response_line.strip())
-            
+
             if "error" in response:
                 error_info = response['error']
                 error_code = error_info.get("code", -1)
@@ -357,8 +384,8 @@ class MCPClient:
             
         try:
             notification_json = json.dumps(notification) + "\n"
-            self.process.stdin.write(notification_json)
-            self.process.stdin.flush()
+            self.process.stdin.write(notification_json.encode('utf-8'))
+            await self.process.stdin.drain()
         except Exception as e:
             logger.error(f"Error sending MCP notification: {str(e)}")
     
@@ -372,11 +399,9 @@ class MCPClient:
             server_name_for_log = self.server_config.get('name', 'unknown')
 
             # Load resources
-            if self.capabilities.get("resources"):
+            if "resources" in self.capabilities:
                 resources_result = await self._send_request("resources/list")
                 if resources_result and "resources" in resources_result:
-                    if server_name_for_log == 'everything' or 'everything' in str(server_name_for_log).lower():
-                        logger.info(f"DEBUG_MCP_CLIENT ({server_name_for_log}): Raw resources data: {json.dumps(resources_result['resources'], indent=2)}")
                     valid_resources = []
                     for res_data in resources_result["resources"]:
                         if not isinstance(res_data, dict):
@@ -388,14 +413,19 @@ class MCPClient:
                         except TypeError as e:
                             logger.error(f"Failed to create MCPResource for server {server_name_for_log}, FILTERED data {filtered_data} (original: {res_data}): {e}")
                     self.resources = valid_resources
+                elif resources_result is None:
+                    logger.warning(f"Failed to get a valid response for resources/list from {server_name_for_log}")
+                else:
+                    logger.warning(f"No 'resources' key in response from {server_name_for_log}: {resources_result}")
             
             # Load tools
-            if self.capabilities.get("tools"):
+            logger.info(f"Server {server_name_for_log} capabilities: {self.capabilities}")
+            logger.info(f"Checking tools capability: {self.capabilities.get('tools')}")
+            if "tools" in self.capabilities:
+                logger.info(f"Calling tools/list for {server_name_for_log}")
                 tools_result = await self._send_request("tools/list")
                 logger.info(f"Tools list response from {server_name_for_log}: {tools_result}")
                 if tools_result and "tools" in tools_result:
-                    if server_name_for_log == 'everything' or 'everything' in str(server_name_for_log).lower():
-                         logger.info(f"DEBUG_MCP_CLIENT ({server_name_for_log}): Raw tools data: {json.dumps(tools_result['tools'], indent=2)}")
                     valid_tools = []
                     for tool_data in tools_result["tools"]:
                         if not isinstance(tool_data, dict):
@@ -408,12 +438,14 @@ class MCPClient:
                             logger.error(f"Failed to create MCPTool for server {server_name_for_log}, FILTERED data {filtered_data} (original: {tool_data}): {e}")
                     self.tools = valid_tools
                     logger.info(f"Successfully loaded {len(valid_tools)} tools for server {server_name_for_log}")
+                elif tools_result is None:
+                    logger.warning(f"Failed to get a valid response for tools/list from {server_name_for_log}")
                 else:
-                    logger.warning(f"No tools found in response from {server_name_for_log}: {tools_result}")
+                    logger.warning(f"No 'tools' key in response from {server_name_for_log}: {tools_result}")
             
             # Load prompts
             logger.info(f"Loading prompts for server: {server_name_for_log}")
-            if self.capabilities.get("prompts"):
+            if "prompts" in self.capabilities:
                 prompts_result = await self._send_request("prompts/list")
                 if prompts_result and "prompts" in prompts_result:
                     valid_prompts = []
@@ -427,6 +459,10 @@ class MCPClient:
                         except TypeError as e:
                             logger.error(f"Failed to create MCPPrompt for server {server_name_for_log}, FILTERED data {filtered_data} (original: {prompt_data}): {e}")
                     self.prompts = valid_prompts
+                elif prompts_result is None:
+                    logger.warning(f"Failed to get a valid response for prompts/list from {server_name_for_log}")
+                else:
+                    logger.warning(f"No 'prompts' key in response from {server_name_for_log}: {prompts_result}")
 
             logger.info(f"Loaded MCP capabilities for {server_name_for_log}: {len(self.resources)} resources, {len(self.tools)} tools, {len(self.prompts)} prompts")
             logger.info(f"Tool names for {server_name_for_log}: {[tool.name for tool in self.tools]}")
