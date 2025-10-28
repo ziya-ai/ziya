@@ -117,11 +117,17 @@ interface ToolBlockProps {
     toolName: string;
     content: string;
     isDarkMode: boolean;
+    toolInput?: any;
 }
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
     const [isExpanded, setIsExpanded] = useState(false);
     
+    // Extract command/query from toolName if it contains encoded information
+    const [actualToolName, encodedCommand] = toolName.includes('|') 
+        ? toolName.split('|', 2)
+        : [toolName, ''];
+
     // Try to format the content intelligently
     const formattedOutput = useMemo(() => {
         try {
@@ -146,6 +152,60 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
             summary: shouldCollapse ? `Output (${content.length} chars, ${content.split('\n').length} lines)` : undefined
         };
     }, [toolName, content]);
+    
+    // Extract command/query information for display in header
+    const getToolSummary = () => {
+        const isShellCommand = actualToolName === 'mcp_run_shell_command';
+        
+        // If we have encoded command from the lang attribute, use it
+        if (encodedCommand) {
+            if (isShellCommand && encodedCommand.startsWith('$ ')) {
+                return `🔧 ${encodedCommand}`;
+            } else if (encodedCommand.startsWith('Search: ')) {
+                return `🔍 ${encodedCommand}`;
+            } else if (encodedCommand.startsWith('$ ')) {
+                return `🔧 ${encodedCommand}`;
+            } else {
+                // Generic command display
+                return `🔧 ${encodedCommand}`;
+            }
+        }
+    
+    // Extract command/query information for display in header
+    const getToolSummary = () => {
+        const isShellCommand = actualToolName === 'mcp_run_shell_command';
+        
+        // If we have encoded command from the lang attribute, use it
+        if (encodedCommand) {
+            if (isShellCommand && encodedCommand.startsWith('$ ')) {
+                return `🔧 ${encodedCommand}`;
+            } else if (encodedCommand.startsWith('Search: ')) {
+                return `🔍 ${encodedCommand}`;
+            } else if (encodedCommand.startsWith('$ ')) {
+                return `🔧 ${encodedCommand}`;
+            } else {
+                // Generic command display
+                return `🔧 ${encodedCommand}`;
+            }
+        }
+        
+        // Try to extract command from content for shell commands
+        if (isShellCommand && content.startsWith('$ ')) {
+            const firstLine = content.split('\n')[0];
+            return firstLine; // This already includes the $ prefix
+        }
+        
+        // For workspace search, try to extract query from content
+        if (actualToolName === 'mcp_WorkspaceSearch') {
+            const queryMatch = content.match(/Query: "([^"]+)"/);
+            if (queryMatch) {
+                return `Search: "${queryMatch[1]}"`;
+        // For other tools, return generic name
+        const cleanToolName = actualToolName.replace('mcp_', '');
+        return isShellCommand ? '🔧 Shell Command' : `🛠️ ${cleanToolName}`;
+    };
+    
+    const toolSummary = getToolSummary();
     
     // Check if this is a security error from shell command blocking
     let isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
@@ -197,7 +257,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
         );
     }
 
-    const isShellCommand = toolName === 'mcp_run_shell_command';
+    const isShellCommand = actualToolName === 'mcp_run_shell_command';
 
     const { content: formattedContent, collapsed, summary } = formattedOutput;
     const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
@@ -256,21 +316,24 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                 textTransform: 'uppercase',
                 letterSpacing: '0.5px'
             }}>
-                {isShellCommand ? '🔧 Shell Command' : `🛠️ ${toolName.replace('mcp_', '')}`}
-                {shouldShowCollapsed && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>{getToolSummary()}</span>
+                    {shouldShowCollapsed && (
                     <div style={{
-                        float: 'right',
+                        marginLeft: 'auto',
                         fontSize: '11px',
                         opacity: 0.7,
                         cursor: 'pointer',
                         fontWeight: 'normal'
                     }} onClick={(e) => {
                         e.stopPropagation();
-                        setIsExpanded(!isExpanded);
-                    }}>
-                        {isExpanded ? '▼ Collapse' : '▶ Expand'} {summary && `(${summary})`}
-                    </div>
-                )}
+                            setIsExpanded(!isExpanded);
+                        }}>
+                            {isExpanded ? '▼ Collapse' : '▶ Expand'} {summary && `(${summary})`}
+                        </div>
+                    )}
+                </div>
+            </div>
             </div>
             
             {shouldShowCollapsed && !isExpanded ? (
