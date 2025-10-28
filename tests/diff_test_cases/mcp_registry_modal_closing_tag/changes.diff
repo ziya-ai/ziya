@@ -1,0 +1,22 @@
+diff --git a/frontend/src/components/MCPRegistryModal.tsx b/frontend/src/components/MCPRegistryModal.tsx
+index 1234567..8901234 100644
+--- a/frontend/src/components/MCPRegistryModal.tsx
++++ b/frontend/src/components/MCPRegistryModal.tsx
+@@ -248,16 +248,15 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose }
+                 }
+                 description={
+                     <div>
+                         <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 8 }}>
+                             {service.serviceDescription}
+                         </Paragraph>
+                         <div style={{ marginBottom: 8 }}>
+                             {service.tags?.map(tag => (
+                                 <Tag key={tag} size="small">{tag}</Tag>
+                             ))}
+-                        </Paragraph>
++                        </div>
+                         <Text type="secondary" style={{ fontSize: '12px' }}>
+                             ID: {service.serviceId} | Provider: {service.provider.name}
+                         </Text>
+                     </div>
+                 }
