@@ -1,0 +1,7 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "Test handling of ternary operators that split template literals with escaped backticks across multiple lines - validates pipeline robustness",
+    "date_added": "2025-10-28",
+    "issue_reference": "split_template_literal_corruption",
+    "expected_to_fail": false
+}
