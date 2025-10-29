@@ -191,9 +191,13 @@ def apply_diff_with_difflib_hybrid_forced_hunks(
         
         # Get hunk data
         old_start = hunk['old_start']
-        old_count = hunk['old_count']
+        old_count = hunk['old_count']  # From hunk header - may include context not in old_block
         new_lines = hunk.get('new_lines', [])
         old_block = hunk.get('old_block', [])
+        
+        # CRITICAL: Use actual old_block length, not old_count from header
+        # old_count includes all lines in the range, but old_block only has the lines in the diff
+        actual_old_count = len(old_block)
         
         # Calculate the position in the current file (accounting for offset)
         target_start = old_start - 1 + offset  # Convert to 0-based indexing
@@ -201,8 +205,8 @@ def apply_diff_with_difflib_hybrid_forced_hunks(
         logger.debug(f"Hunk #{hunk_number}: original position {old_start}, offset {offset}, target position {target_start}")
         
         # Verify that the old content matches what we expect
-        if target_start + old_count <= len(final_lines_with_endings):
-            current_slice = final_lines_with_endings[target_start:target_start + old_count]
+        if target_start + actual_old_count <= len(final_lines_with_endings):
+            current_slice = final_lines_with_endings[target_start:target_start + actual_old_count]
             
             logger.debug(f"Hunk #{hunk_number}: comparing {len(current_slice)} current lines with {len(old_block)} expected lines")
             if len(current_slice) > 0 and len(old_block) > 0:
@@ -238,10 +242,10 @@ def apply_diff_with_difflib_hybrid_forced_hunks(
                                 new_lines_with_endings.append(line)
                     
                     # Replace the old content with new content
-                    final_lines_with_endings[target_start:target_start + old_count] = new_lines_with_endings
+                    final_lines_with_endings[target_start:target_start + actual_old_count] = new_lines_with_endings
                     
                     # Update offset for subsequent hunks
-                    offset += len(new_lines_with_endings) - old_count
+                    offset += len(new_lines_with_endings) - actual_old_count
                     
                     logger.info(f"Hunk #{hunk_number}: Successfully applied")
                     continue
@@ -261,8 +265,8 @@ def apply_diff_with_difflib_hybrid_forced_hunks(
         search_end = min(len(final_lines_with_endings), target_start + 10)
         
         for search_pos in range(search_start, search_end):
-            if search_pos + old_count <= len(final_lines_with_endings):
-                search_slice = final_lines_with_endings[search_pos:search_pos + old_count]
+            if search_pos + actual_old_count <= len(final_lines_with_endings):
+                search_slice = final_lines_with_endings[search_pos:search_pos + actual_old_count]
                 
                 if len(search_slice) == len(old_block):
                     search_match = True
@@ -291,11 +295,11 @@ def apply_diff_with_difflib_hybrid_forced_hunks(
                         new_lines_with_endings.append(line)
             
             # Replace the old content with new content
-            final_lines_with_endings[found_position:found_position + old_count] = new_lines_with_endings
+            final_lines_with_endings[found_position:found_position + actual_old_count] = new_lines_with_endings
             
             # Update offset for subsequent hunks (adjust based on actual position used)
             position_adjustment = found_position - target_start
-            offset += len(new_lines_with_endings) - old_count + position_adjustment
+            offset += len(new_lines_with_endings) - actual_old_count + position_adjustment
             
             logger.info(f"Hunk #{hunk_number}: Successfully applied at position {found_position}")
             continue
@@ -537,38 +541,71 @@ def apply_diff_with_difflib_hybrid_forced(
             
             logger.debug(f"Hunk #{hunk_idx}: fuzzy_best_pos={fuzzy_best_pos}, fuzzy_initial_pos_search={fuzzy_initial_pos_search}, ratio={fuzzy_best_ratio:.3f}")
             
-            # Simple fix for identical adjacent blocks: if fuzzy match is far from expected, be very conservative
-            # But only if there are actually identical patterns that could cause confusion
+            # CRITICAL FIX: Validate fuzzy match doesn't delete wrong context
+            # Check for duplicate blocks that could cause ambiguous matching
             should_be_conservative = False
-            if (fuzzy_best_pos is not None and 
-                abs(fuzzy_best_pos - fuzzy_initial_pos_search) >= 3 and
-                fuzzy_best_ratio < 0.95):
+            if fuzzy_best_pos is not None and abs(fuzzy_best_pos - fuzzy_initial_pos_search) >= 3:
+                # Check if the old_block appears multiple times in the file
+                block_occurrences = []
+                for search_pos in range(len(normalized_final_lines_fuzzy) - len(normalized_old_block_fuzzy) + 1):
+                    file_slice = normalized_final_lines_fuzzy[search_pos:search_pos + len(normalized_old_block_fuzzy)]
+                    if file_slice == normalized_old_block_fuzzy:
+                        block_occurrences.append(search_pos)
                 
-                # Check if there are actually identical patterns that could cause confusion
-                # Look for common problematic patterns in the chunk
-                chunk_has_problematic_patterns = any(
-                    line.strip() in ['if value is None:', 'return None', 'if len(value) == 0:', 'if not isinstance(value, str):']
-                    for line in normalized_old_block_fuzzy
-                )
-                
-                if chunk_has_problematic_patterns:
-                    # Count how many times these patterns appear in the file
-                    pattern_counts = {}
-                    for line in normalized_old_block_fuzzy:
-                        stripped = line.strip()
-                        if stripped in ['if value is None:', 'return None', 'if len(value) == 0:', 'if not isinstance(value, str):']:
-                            pattern_counts[stripped] = sum(1 for file_line in normalized_final_lines_fuzzy 
-                                                         if file_line.strip() == stripped)
+                # If block appears multiple times, validate we're targeting the right one
+                if len(block_occurrences) > 1:
+                    logger.warning(f"Hunk #{hunk_idx}: Found {len(block_occurrences)} identical blocks at positions {block_occurrences}")
                     
-                    # Only be conservative if we have multiple occurrences of problematic patterns
-                    if any(count > 2 for count in pattern_counts.values()):
+                    # Verify the fuzzy match position is actually one of the occurrences
+                    if fuzzy_best_pos not in block_occurrences:
+                        logger.error(f"Hunk #{hunk_idx}: Fuzzy match at {fuzzy_best_pos} doesn't match any exact occurrence. Rejecting to prevent corruption.")
+                        msg = f"Hunk #{hunk_idx} => fuzzy match would delete wrong context (ambiguous blocks)"
+                        hunk_failures.append((msg, {"hunk": hunk_idx, "position": fuzzy_best_pos, "occurrences": block_occurrences}))
+                        continue
+                    
+                    # CRITICAL: Check if multiple occurrences are equally close to expected position
+                    # This indicates truly ambiguous context where we can't reliably choose
+                    closest_occurrence = min(block_occurrences, key=lambda p: abs(p - fuzzy_initial_pos_search))
+                    closest_distance = abs(closest_occurrence - fuzzy_initial_pos_search)
+                    
+                    # Find all occurrences within the same distance (equally good matches)
+                    equally_close = [pos for pos in block_occurrences 
+                                    if abs(pos - fuzzy_initial_pos_search) == closest_distance]
+                    
+                    # Reject if offset is very large (>100 lines) - too ambiguous
+                    if closest_distance > 100:
+                        logger.error(f"Hunk #{hunk_idx}: Closest match is {closest_distance} lines away (>100). "
+                                   f"Too ambiguous to safely apply.")
+                        msg = f"Hunk #{hunk_idx} => closest match >100 lines away (too ambiguous)"
+                        hunk_failures.append((msg, {
+                            "hunk": hunk_idx,
+                            "expected_position": fuzzy_initial_pos_search,
+                            "closest_distance": closest_distance,
+                            "reason": "Closest match is >100 lines away - too ambiguous"
+                        }))
+                        continue
+                    
+                    if len(equally_close) > 1:
+                        logger.error(f"Hunk #{hunk_idx}: Found {len(equally_close)} equally close matches at positions {equally_close}. "
+                                   f"Context is too ambiguous to safely apply. Expected position was {fuzzy_initial_pos_search}.")
+                        msg = f"Hunk #{hunk_idx} => context matches multiple locations equally (ambiguous context)"
+                        hunk_failures.append((msg, {
+                            "hunk": hunk_idx, 
+                            "expected_position": fuzzy_initial_pos_search,
+                            "equally_close_matches": equally_close,
+                            "reason": "Cannot reliably disambiguate between multiple identical matches"
+                        }))
+                        continue
+                    
+                    # Use the occurrence closest to expected position
+                    if fuzzy_best_pos != closest_occurrence:
+                        logger.warning(f"Hunk #{hunk_idx}: Adjusting fuzzy match from {fuzzy_best_pos} to closest occurrence {closest_occurrence}")
+                        fuzzy_best_pos = closest_occurrence
                         should_be_conservative = True
-                        logger.warning(f"Hunk #{hunk_idx}: Fuzzy match at {fuzzy_best_pos} is far from expected {fuzzy_initial_pos_search} "
-                                     f"with ratio {fuzzy_best_ratio:.3f} and problematic patterns detected. Using expected position to prevent confusion.")
             
             if should_be_conservative:
                 fuzzy_best_pos = fuzzy_initial_pos_search
-                fuzzy_best_ratio = 0.8  # Higher confidence to ensure it passes the threshold
+                fuzzy_best_ratio = 0.8
             
 
             # Store fuzzy match results for later use in indentation adaptation
