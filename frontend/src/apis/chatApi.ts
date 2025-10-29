@@ -30,7 +30,7 @@ class FeedbackWebSocket {
                 console.log('🔄 FEEDBACK: WebSocket closed');
             };
         });
-        
+
         return this.connectionPromise;
     }
 
@@ -292,8 +292,9 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
             try {
                 const data = JSON.parse(jsonStr);
 
-                // Check for direct error properties
-                if (data.error || data.detail) {
+                // Only treat as error if it has error AND status_code (actual error response structure)
+                // This prevents false positives when model discusses errors in tool output
+                if ((data.error || data.detail) && data.status_code) {
                     return {
                         error: data.error || 'unknown_error',
                         detail: data.detail || data.error || 'An unknown error occurred',
@@ -305,8 +306,8 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                 if (data.ops && Array.isArray(data.ops)) {
                     for (const op of data.ops) {
                         if (op.value && typeof op.value === 'object') {
-                            // Check for error in value
-                            if (op.value.error || op.value.detail) {
+                            // Only treat as error if it has error AND status_code
+                            if ((op.value.error || op.value.detail) && op.value.status_code) {
                                 return {
                                     error: op.value.error || 'unknown_error',
                                     detail: op.value.detail || op.value.error || 'An unknown error occurred',
@@ -346,11 +347,12 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
             }
         }
 
-        // Catch-all for any Exception patterns that weren't handled above
-        if (chunk.includes('Exception') &&
+        // Catch-all for actual Exception patterns (not discussions about exceptions)
+        // Only trigger if it looks like an actual error traceback or exception message
+        if (chunk.includes('Exception:') &&
             !chunk.includes('tool_execution') &&
             !chunk.includes('```') &&
-            chunk.includes('error')) {
+            (chunk.includes('Traceback') || chunk.includes('at line') || chunk.match(/Exception:\s*[A-Z]/))) {
             return {
                 error: 'unknown_error',
                 detail: chunk.replace(/^data:\s*/, '').trim(),
@@ -570,8 +572,52 @@ export const sendPayload = async (
 
                 // Check if it's an SSE data line
                 if (sseMessage.startsWith('data:')) {
-                    const data = sseMessage.slice(5).trim();
-                    console.log('📊 SSE data extracted, length:', data.length, 'content:', data.substring(0, 100));
+                    let dataContent = sseMessage.slice(5).trim();
+                    console.log('📊 SSE data extracted, length:', dataContent.length, 'content:', dataContent.substring(0, 100));
+                    
+                    // CRITICAL FIX: Handle multiple data: messages concatenated in the extracted content
+                    // This happens when heartbeat messages get bundled with content messages
+                    if (dataContent.includes('\n\ndata:') || dataContent.includes('\ndata:')) {
+                        console.log('🔧 MULTI-DATA-FIX: Found concatenated data messages, splitting them');
+                        
+                        // Split by data: boundaries and process each individually
+                        const dataParts = dataContent.split(/\n\n?data:\s*/);
+                        console.log('🔧 MULTI-DATA-FIX: Split into', dataParts.length, 'data parts');
+                        
+                        // Process each part separately
+                        for (let i = 0; i < dataParts.length; i++) {
+                            const part = dataParts[i].trim();
+                            if (!part) continue;
+                            
+                            console.log(`🔧 MULTI-DATA-FIX: Processing data part ${i + 1}:`, part.substring(0, 100));
+                            
+                            // Skip heartbeat messages entirely to prevent buffer pollution
+                            if (part.includes('"heartbeat": true') || part.includes('"type": "heartbeat"')) {
+                                console.log('🔧 MULTI-DATA-FIX: Skipping heartbeat message');
+                                continue;
+                            }
+                            
+                            // Process the individual data part using the same logic below
+                            processSingleDataMessage(part);
+                        }
+                        
+                        // Skip the original processing since we handled all parts above
+                        continue;
+                    }
+                    
+                    // Process single data message (original logic)
+                    processSingleDataMessage(dataContent);
+                }
+            }
+        };
+        
+        // Extract the single data message processing logic into a separate function
+        const processSingleDataMessage = (data: string) => {
+            // Skip heartbeat messages entirely
+            if (data.includes('"heartbeat": true') || data.includes('"type": "heartbeat"')) {
+                console.log('📊 SSE: Skipping heartbeat message');
+                return;
+            }
 
                     // Check if this chunk contains diff syntax and set the flag
                     if (!containsDiff && (
@@ -732,7 +778,7 @@ export const sendPayload = async (
 
                     // Skip [DONE] marker
                     if (data.trim() === '[DONE]') {
-                        continue;
+                        return;
                     }
 
                     try {
@@ -751,7 +797,7 @@ export const sendPayload = async (
                         // Process the JSON object
                         if (unwrappedData.heartbeat) {
                             console.log("Received heartbeat, skipping");
-                            continue;
+                            return;
                         }
 
                         // Handle done marker
@@ -759,14 +805,14 @@ export const sendPayload = async (
                             console.log("Received done marker in JSON data");
                             // Don't return here - let the stream complete naturally
                             // The done marker just indicates no more content chunks
-                            continue;
+                            return;
                         }
 
                         // Handle throttling status messages
                         if (unwrappedData.type === 'throttling_status') {
                             console.log('Throttling status:', unwrappedData.message);
                             showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning');
-                            continue;
+                            return;
                         }
 
                         // Handle throttling failure
@@ -822,12 +868,12 @@ export const sendPayload = async (
                                     const next = new Map(prev);
                                     next.set(conversationId, currentContent);
                                     return next;
-                                });
+                            });
 
-                                // Skip this chunk - continuation will come in separate chunks
-                                continue;
-                            }
+                            // Skip this chunk - continuation will come in separate chunks
+                            return;
                         }
+                    }
 
                         // Handle continuation rewind markers
                         if (jsonData.type === 'continuation_rewind') {
@@ -842,12 +888,12 @@ export const sendPayload = async (
                                     const next = new Map(prev);
                                     next.set(conversationId, currentContent);
                                     return next;
-                                });
-                            }
-                            continue;
+                            });
                         }
+                        return;
+                    }
 
-                        // Handle continuation failure
+                    // Handle continuation failure
                         if (jsonData.type === 'continuation_failed') {
                             console.log('🔄 CONTINUATION_FAILED:', jsonData);
                             const failureMessage = jsonData.can_retry
@@ -857,13 +903,13 @@ export const sendPayload = async (
                             showError(failureMessage, conversationId, addMessageToConversation, 'warning');
 
                             // Add retry button or indicator if applicable
-                            if (jsonData.can_retry) {
-                                // Could add a retry mechanism here
-                            }
-                            continue;
+                        if (jsonData.can_retry) {
+                            // Could add a retry mechanism here
                         }
+                        return;
+                    }
 
-                        if (jsonData.content) {
+                    if (jsonData.content) {
                             // Handle any content field - this covers most cases
                             contentToAdd = jsonData.content;
                         } else if (jsonData.text) {
@@ -913,19 +959,19 @@ export const sendPayload = async (
                                 setStreamedContentMap,
                                 toolInputsMap
                             };
-                            
-                            if (handleToolDisplay(unwrappedData.tool_name, unwrappedData, context)) {
-                                currentContent = contentRef.value;
-                                continue; // Handler processed the event, continue to next message
-                            }
 
-                            let toolName = unwrappedData.tool_name;
+                    if (handleToolDisplay(unwrappedData.tool_name, unwrappedData, context)) {
+                        currentContent = contentRef.value;
+                        return; // Handler processed the event, return from function
+                    }
+
+                    let toolName = unwrappedData.tool_name;
                             const storedInput = toolInputsMap.get(unwrappedData.tool_id);
 
                             // Use the new formatter
                             const formatted = formatMCPOutput(toolName, unwrappedData.result, storedInput, {
                                 showInput: !!storedInput && (
-                                    typeof unwrappedData.result !== 'string' || 
+                                    typeof unwrappedData.result !== 'string' ||
                                     unwrappedData.result.length < 200 ||
                                     (unwrappedData.result.startsWith('{') && unwrappedData.result.length < 1000)
                                 ),
@@ -935,10 +981,14 @@ export const sendPayload = async (
 
                             // Extract command/query for header display
                             let headerCommand = '';
+                            const cleanToolName = toolName.replace('mcp_', '').replace(/_/g, ' ');
+                            
                             if (storedInput?.command) {
-                                headerCommand = `$ ${storedInput.command}`;
+                                headerCommand = `${cleanToolName}: $ ${storedInput.command}`;
                             } else if (storedInput?.searchQuery) {
-                                headerCommand = `Search: "${storedInput.searchQuery}"`;
+                                headerCommand = `${cleanToolName}: "${storedInput.searchQuery}"`;
+                            } else if (storedInput && Object.keys(storedInput).length > 1) {
+                                headerCommand = `${cleanToolName}: multiple`;
                             }
 
                             if (!toolName.startsWith('mcp_')) {
@@ -946,21 +996,26 @@ export const sendPayload = async (
                             }
                             toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
 
-                            // Include command/query in the tool block for better visibility
-                            const toolResultDisplay = headerCommand 
-                                ? `\n${toolName}|${headerCommand}\n${formatted.content}\n\`\`\`\n\n`
-                                : `\n${formatted.content}\n\`\`\`\n\n`;
-                            
-                            const toolStartPrefix = headerCommand
-                                ? `\n\`\`\`tool:${toolName}|${headerCommand}\n⏳ Running:`
-                                : `\n\`\`\`tool:${toolName}\n⏳ Running:`;
-                            const toolStartSuffix = `\n\`\`\`\n\n`;
-                            const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
 
+                            // Include command/query in the tool block for better visibility
+                            let toolResultDisplay;
+                            let toolStartPrefix;
+                            
+                            if (headerCommand) {
+                                toolResultDisplay = `\n\`\`\`tool:${toolName}|${headerCommand}\n${formatted.content}\n\`\`\`\n\n`;
+                                toolStartPrefix = `\n\`\`\`tool:${toolName}|${headerCommand}\n`;
+                            } else {
+                                toolResultDisplay = `\n\`\`\`tool:${toolName}\n${formatted.content}\n\`\`\`\n\n`;
+                                toolStartPrefix = `\n\`\`\`tool:${toolName}\n`;
+                            }
+                            
+                            const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
                             if (lastStartIndex !== -1) {
-                                const blockEndIndex = currentContent.indexOf(toolStartSuffix, lastStartIndex);
+                                const blockEndIndex = currentContent.indexOf('\n```\n\n', lastStartIndex);
                                 if (blockEndIndex !== -1) {
-                                    currentContent = currentContent.substring(0, lastStartIndex) + toolResultDisplay + currentContent.substring(blockEndIndex + toolStartSuffix.length);
+                                    currentContent = currentContent.substring(0, lastStartIndex) + toolResultDisplay + currentContent.substring(blockEndIndex + 6);
+                                } else {
+                                    currentContent += toolResultDisplay;
                                 }
                             } else {
                                 currentContent += toolResultDisplay;
@@ -982,21 +1037,21 @@ export const sendPayload = async (
                                 setStreamedContentMap,
                                 toolInputsMap
                             };
-                            
+
                             if (handleToolStart(unwrappedData.tool_name, unwrappedData, context)) {
                                 currentContent = contentRef.value;
-                                
+
                                 // Store tool input for later use in tool_display
                                 if (unwrappedData.args && unwrappedData.tool_id) {
                                     toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
                                 }
                                 if (unwrappedData.input && unwrappedData.tool_id) {
-                                    toolInputsMap.set(unwrappedData.tool_id, unwrappedData.input);
-                                }
-                                continue; // Handler processed the event, continue to next message
-                            }
+                            toolInputsMap.set(unwrappedData.tool_id, unwrappedData.input);
+                        }
+                        return; // Handler processed the event, return from function
+                    }
 
-                            // Store tool input for later use in tool_display
+                    // Store tool input for later use in tool_display
                             if (unwrappedData.args && unwrappedData.tool_id) {
                                 toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
                             }
@@ -1011,9 +1066,17 @@ export const sendPayload = async (
                             toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
 
                             // Extract command/query for display
-                            const inputCommand = (jsonData.args?.command || jsonData.input?.command) ? `$ ${jsonData.args?.command || jsonData.input?.command}` : '';
-                            const inputQuery = (jsonData.args?.searchQuery || jsonData.input?.searchQuery) ? `Search: "${jsonData.args?.searchQuery || jsonData.input?.searchQuery}"` : '';
-                            const headerCommand = inputCommand || inputQuery;
+                            const cleanToolName = toolName.replace('mcp_', '').replace(/_/g, ' ');
+                            const inputArgs = unwrappedData.args || unwrappedData.input || {};
+                            
+                            let headerCommand = '';
+                            if (inputArgs.command) {
+                                headerCommand = `${cleanToolName}: $ ${inputArgs.command}`;
+                            } else if (inputArgs.searchQuery) {
+                                headerCommand = `${cleanToolName}: "${inputArgs.searchQuery}"`;
+                            } else if (Object.keys(inputArgs).length > 1) {
+                                headerCommand = `${cleanToolName}: multiple`;
+                            }
 
                             let toolStartDisplay;
                             if (headerCommand) {
@@ -1044,7 +1107,7 @@ export const sendPayload = async (
                                     setProcessingState('processing_tools');
                                 }
                                 // Note: State will auto-reset to 'idle' when removeStreamingConversation is called
-                                continue;
+                                // No return needed here, continue to next op
                             }
                             if (op.op === 'add' && op.path.endsWith('/reasoning_content/-')) {
                                 // Handle reasoning content separately
@@ -1058,11 +1121,11 @@ export const sendPayload = async (
                                         return next;
                                     });
                                 }
-                                continue;
+                                // No return needed here, continue to next op
                             }
                             if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
                                 let newContent = op.value || '';
-                                if (!newContent) continue;
+                                if (!newContent) return;
 
                                 // Handle new Bedrock format with content= wrapper
                                 if (typeof newContent === 'string' && newContent.includes('content=')) {
@@ -1183,9 +1246,7 @@ export const sendPayload = async (
                             console.warn('Lost content chunk:', data);
                         }
                     }
-                }
-            }
-        }
+        };
 
         const readStream = async () => {
             // Metrics collection for debugging
@@ -1489,7 +1550,7 @@ export const sendPayload = async (
                 const isNonCurrentConversation = !isStreamingToCurrentConversation;
                 addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
                 removeStreamingConversation(conversationId);
-                
+
             }
             return result;
 
@@ -1533,7 +1594,7 @@ export const sendPayload = async (
         document.removeEventListener('abortStream', abortListener as EventListener);
         setIsStreaming(false);
         removeStreamingConversation(conversationId);
-        
+
         // Only disconnect WebSocket if we're truly done and not just switching conversations
         // The WebSocket should persist across multiple requests in the same conversation
     }
@@ -1543,7 +1604,7 @@ export const sendPayload = async (
 
 // Helper functions for sequential thinking tool
 function handleSequentialThinkingStart(
-    jsonData: any, 
+    jsonData: any,
     currentContent: string,
     conversationId: string,
     setStreamedContentMap: React.Dispatch<React.SetStateAction<Map<string, string>>>
@@ -1553,27 +1614,27 @@ function handleSequentialThinkingStart(
     const thinkingContent = toolStart.args?.thought || '';
     const thoughtNumber = toolStart.args?.thoughtNumber || 1;
     const totalThoughts = toolStart.args?.totalThoughts || 1;
-    
+
     if (thinkingContent) {
         // Create a thinking block display
         const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${thinkingContent}\n\`\`\`\n\n`;
-        
+
         currentContent += thinkingDisplay;
-        
+
         // Update the streamed content map
         setStreamedContentMap((prev: Map<string, string>) => {
             const next = new Map(prev);
             next.set(conversationId, currentContent);
             return next;
         });
-        
+
         console.log('🤔 THINKING_START: Added thinking content for step', thoughtNumber);
     }
 }
 
 function handleSequentialThinkingDisplay(
-    jsonData: any, 
-    currentContent: string, 
+    jsonData: any,
+    currentContent: string,
     toolInputsMap: Map<string, any>,
     conversationId: string,
     setStreamedContentMap: React.Dispatch<React.SetStateAction<Map<string, string>>>
@@ -1586,21 +1647,21 @@ function handleSequentialThinkingDisplay(
         const thoughtNumber = storedInput?.thoughtNumber || 1;
         const totalThoughts = storedInput?.totalThoughts || 1;
         const nextThoughtNeeded = storedInput?.nextThoughtNeeded;
-        
+
         // Parse the result to get completion status
         const toolResult = jsonData.tool_result || jsonData;
-        const result = typeof toolResult.result === 'string' ? 
+        const result = typeof toolResult.result === 'string' ?
             JSON.parse(toolResult.result) : toolResult.result;
         const isComplete = result.nextThoughtNeeded === false;
-        
+
         if (thinkingContent) {
             // Replace the "Running" indicator with the actual thinking content
             const toolStartPrefix = `\cp_sequentialthinking\n⏳ Running:`;
             const toolStartSuffix = `\n\`\`\`\n\n`;
             const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
-            
+
             const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${thinkingContent}\n\n${nextThoughtNeeded ? '_Continuing to next thought..._' : '_Thinking complete._'}\n\`\`\`\n\n`;
-            
+
             if (lastStartIndex !== -1) {
                 const blockEndIndex = currentContent.indexOf(toolStartSuffix, lastStartIndex);
                 if (blockEndIndex !== -1) {
@@ -1611,19 +1672,19 @@ function handleSequentialThinkingDisplay(
             } else {
                 currentContent += thinkingDisplay;
             }
-            
+
             // Update the streamed content map
             setStreamedContentMap((prev: Map<string, string>) => {
                 const next = new Map(prev);
                 next.set(conversationId, currentContent);
                 return next;
             });
-            
+
             console.log('🤔 THINKING_DISPLAY: Updated thinking content for step', thoughtNumber, 'content length:', thinkingContent.length);
         } else {
             console.warn('🤔 THINKING_DISPLAY: No thinking content found for tool ID:', toolId);
         }
-        
+
     } catch (e) {
         console.error('Error handling sequential thinking display:', e);
     }
