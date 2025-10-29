@@ -606,6 +606,15 @@ def parse_patch_output(patch_output: str, stderr: str = "") -> Dict[int, Dict[st
     # Check for malformed patch errors in stderr
     malformed_hunks = set()
     if stderr:
+        # Check for general malformed patch errors (without hunk number)
+        if "malformed patch" in stderr.lower():
+            logger.warning(f"Malformed patch detected in stderr: {stderr}")
+            # If no specific hunk number, mark all hunks as failed
+            if "Hunk #" not in stderr:
+                # Return empty dict to indicate general failure
+                # The caller should check return code
+                return {}
+        
         # Extract hunk numbers from malformed patch errors
         malformed_pattern = re.compile(r'malformed patch at line \d+:.*?Hunk #(\d+)')
         for match in malformed_pattern.finditer(stderr):
