@@ -1,0 +1,26 @@
+--- a/chatApi.ts
++++ b/chatApi.ts
+@@ -16,12 +16,17 @@ function processToolResult(toolName: string, headerCommand: string, content: st
+ 
+ 
+     // Include command/query in the tool block for better visibility
+-    const toolResultDisplay = headerCommand 
+-        ? `\n\`\`\`tool:${toolName}|${headerCommand}\n${formatted.content}\n\`\`\`\n\n`
+-        : `\n\`\`\`tool:${toolName}\n${formatted.content}\n\`\`\`\n\n`;
+-    
+-    const toolStartPrefix = headerCommand
+-        ? `\n\`\`\`tool:${toolName}|${headerCommand}\n`
+-        : `\n\`\`\`tool:${toolName}\n`;
++    let toolResultDisplay;
++    let toolStartPrefix;
++    
++    if (headerCommand) {
++        toolResultDisplay = `\n\`\`\`tool:${toolName}|${headerCommand}\n${formatted.content}\n\`\`\`\n\n`;
++        toolStartPrefix = `\n\`\`\`tool:${toolName}|${headerCommand}\n`;
++    } else {
++        toolResultDisplay = `\n\`\`\`tool:${toolName}\n${formatted.content}\n\`\`\`\n\n`;
++        toolStartPrefix = `\n\`\`\`tool:${toolName}\n`;
++    }
+     
+     const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
+     if (lastStartIndex !== -1) {

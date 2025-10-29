@@ -1,0 +1,7 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "EXTREME: Context lines appear in ALL 5 identical sections. Line number 500 is way off (file has 54 lines). Ambiguity check finds 5 occurrences but Section 5 (position 46) is clearly closest to expected 499, so it's NOT ambiguous. Demonstrates that ambiguity detection only rejects when multiple occurrences are EQUALLY close.",
+    "date_added": "2025-10-28",
+    "issue_reference": "ambiguous_context_closest_match_wins",
+    "note": "This test validates that with a clear closest match, the pipeline applies correctly even when context appears multiple times. Ambiguity detection only fails when 2+ occurrences are equally close."
+}
