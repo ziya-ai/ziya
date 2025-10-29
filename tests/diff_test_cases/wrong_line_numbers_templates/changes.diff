@@ -1,0 +1,17 @@
+--- a/chatApi.ts
++++ b/chatApi.ts
+@@ -50,9 +50,13 @@ function handleToolStart(toolName: string, data: any) {
+ 
+ // Handler 3
+ function handleToolError(toolName: string, data: any) {
+-    const display = data.command 
+-        ? `\n\`\`\`tool:${toolName}|$ ${data.command}\n❌ Error\n\`\`\`\n\n`
+-        : `\n\`\`\`tool:${toolName}\n❌ Error\n\`\`\`\n\n`;
++    let display;
++    if (data.command) {
++        display = `\n\`\`\`tool:${toolName}|$ ${data.command}\n❌ Error\n\`\`\`\n\n`;
++    } else {
++        display = `\n\`\`\`tool:${toolName}\n❌ Error\n\`\`\`\n\n`;
++    }
+     return display;
+ }

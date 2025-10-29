@@ -1,0 +1,20 @@
+--- a/chatApi.ts
++++ b/chatApi.ts
+@@ -18,9 +18,13 @@ function handleToolDisplay(toolName: string, data: any, context: any) {
+ function handleToolStart(toolName: string, data: any, context: any) {
+     const inputArgs = data.args || data.input || {};
+     
+-    // Build start block
+-    const toolStartDisplay = inputArgs.command
+-        ? `\n\`\`\`tool:${toolName}|$ ${inputArgs.command}\n⏳ Running: $ ${inputArgs.command}\n\`\`\`\n\n`
+-        : `\n\`\`\`tool:${toolName}\n⏳ Running: ${toolName}\n\`\`\`\n\n`;
++    // Build start block - refactored to avoid ternary
++    let toolStartDisplay;
++    if (inputArgs.command) {
++        toolStartDisplay = `\n\`\`\`tool:${toolName}|$ ${inputArgs.command}\n⏳ Running: $ ${inputArgs.command}\n\`\`\`\n\n`;
++    } else {
++        toolStartDisplay = `\n\`\`\`tool:${toolName}\n⏳ Running: ${toolName}\n\`\`\`\n\n`;
++    }
+     
+     return toolStartDisplay;
+ }
