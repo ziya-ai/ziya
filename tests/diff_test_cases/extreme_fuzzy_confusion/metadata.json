@@ -1,0 +1,6 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "EXTREME TEST: 7 identical blocks, line number 999 (file has 35 lines), fake context, targets Block D (4th of 7) - maximum fuzzy confusion",
+    "date_added": "2025-10-28",
+    "issue_reference": "extreme_fuzzy_confusion"
+}

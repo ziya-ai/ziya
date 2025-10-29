@@ -1,0 +1,6 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "Test fuzzy matching in long file with multiple similar template literal patterns - targets middle function to test context confusion",
+    "date_added": "2025-10-28",
+    "issue_reference": "fuzzy_match_template_confusion"
+}

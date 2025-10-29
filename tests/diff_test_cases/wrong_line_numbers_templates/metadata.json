@@ -1,0 +1,6 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "Test fuzzy matching with WRONG line numbers (says line 50, file only has 38 lines) and 5 nearly identical template literal blocks - forces pure fuzzy matching",
+    "date_added": "2025-10-28",
+    "issue_reference": "wrong_line_numbers_fuzzy_match"
+}
