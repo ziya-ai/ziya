@@ -268,6 +268,14 @@ class DiffRegressionTest(unittest.TestCase):
         """
         self.run_diff_test('model_defaults_config')
 
+
+
+
+
+
+
+
+
     def test_line_calculation_fix(self):
         """Test fixing line calculation when using different lists for available lines"""
         # Special case: directly write the expected output for this test
@@ -920,6 +928,31 @@ class DiffRegressionTest(unittest.TestCase):
         self.run_diff_test('mcp_registry_test_connection')
 
 
+# Dynamically generate test methods for all test case directories
+# This allows -k filtering to work without hardcoding every test
+def _generate_test_method(case_name):
+    """Factory function to create a test method for a specific case"""
+    def test_method(self):
+        self.run_diff_test(case_name)
+    return test_method
+
+# Get all test case directories and generate methods
+_test_cases_dir = os.path.join(os.path.dirname(__file__), 'diff_test_cases')
+if os.path.exists(_test_cases_dir):
+    for _case_name in os.listdir(_test_cases_dir):
+        _case_path = os.path.join(_test_cases_dir, _case_name)
+        if os.path.isdir(_case_path):
+            # Convert case name to valid method name
+            _method_name = f'test_{_case_name}'
+            
+            # Only add if not already defined (allows hardcoded overrides)
+            if not hasattr(DiffRegressionTest, _method_name):
+                _method = _generate_test_method(_case_name)
+                _method.__name__ = _method_name
+                _method.__doc__ = f'Auto-generated test for {_case_name}'
+                setattr(DiffRegressionTest, _method_name, _method)
+
+
 class PrettyTestResult(unittest.TestResult):
     def __init__(self):
         super(PrettyTestResult, self).__init__()
@@ -1263,7 +1296,7 @@ if __name__ == '__main__':
     parser.add_argument('--show-cases', action='store_true',
                       help='Show test case details without running tests')
     parser.add_argument('-v', '--verbose', action='store_true')
-    parser.add_argument('-k', '--test-filter', help='Only run tests matching this pattern')
+    parser.add_argument('-k', '--test-filter', help='Only run tests matching this pattern (supports "or" for multiple patterns)')
     parser.add_argument('-l', '--log-level', default='INFO',
                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                       help='Set the log level')
@@ -1275,6 +1308,28 @@ if __name__ == '__main__':
                       help='Compare current test results with previous run and show changes')
     parser.add_argument('--save-results', action='store_true',
                       help='Save test results for future comparison')
+    
+    def load_filtered_suite(test_filter):
+        """Load test suite with support for 'or' syntax in filters"""
+        if not test_filter:
+            return unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
+        
+        # Check if filter contains 'or' (case-insensitive)
+        if ' or ' in test_filter.lower():
+            # Split using case-insensitive regex
+            import re
+            patterns = [p.strip() for p in re.split(r'\s+or\s+', test_filter, flags=re.IGNORECASE)]
+            suite = unittest.TestSuite()
+            for pattern in patterns:
+                try:
+                    tests = unittest.TestLoader().loadTestsFromName(pattern, DiffRegressionTest)
+                    suite.addTests(tests)
+                except AttributeError:
+                    # Pattern didn't match, skip it
+                    pass
+            return suite
+        else:
+            return unittest.TestLoader().loadTestsFromName(test_filter, DiffRegressionTest)
     parser.add_argument('--quiet', action='store_true',
                       help='Suppress all logging output except final test results')
     args = parser.parse_args()
@@ -1307,9 +1362,7 @@ if __name__ == '__main__':
             del os.environ['ZIYA_FORCE_DIFFLIB']
             
         # Run normal mode
-        suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
-        if args.test_filter:
-            suite = unittest.TestLoader().loadTestsFromName(args.test_filter, DiffRegressionTest)
+        suite = load_filtered_suite(args.test_filter)
         normal_result = PrettyTestResult()
         suite.run(normal_result)
         normal_result.print_mode_summary("Normal")
@@ -1332,9 +1385,7 @@ if __name__ == '__main__':
         os.environ['ZIYA_FORCE_DIFFLIB'] = '1'
         
         # Run force-difflib mode
-        suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
-        if args.test_filter:
-            suite = unittest.TestLoader().loadTestsFromName(args.test_filter, DiffRegressionTest)
+        suite = load_filtered_suite(args.test_filter)
         difflib_result = PrettyTestResult()
         suite.run(difflib_result)
         difflib_result.print_mode_summary("Force Difflib")
@@ -1476,9 +1527,7 @@ if __name__ == '__main__':
             mode = "normal"
      
         # Run the tests
-        suite = unittest.TestLoader().loadTestsFromTestCase(DiffRegressionTest)
-        if args.test_filter:
-            suite = unittest.TestLoader().loadTestsFromName(args.test_filter, DiffRegressionTest)
+        suite = load_filtered_suite(args.test_filter)
         result = PrettyTestResult()
         suite.run(result)
         result.printSummary()
