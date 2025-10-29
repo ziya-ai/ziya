@@ -364,7 +364,7 @@ class ModelManager:
             return cls._state['filtered_kwargs_cache'][cache_key]
         
         # Only log first time, then use debug level
-        logger.info(f"Computing model kwargs for {model_config.get('name', 'unknown')}: {model_kwargs}")
+        logger.debug(f"Computing model kwargs for {model_config.get('name', 'unknown')}: {model_kwargs}")
         
         # Get supported parameters from the model config
         supported_params = []
@@ -746,7 +746,7 @@ class ModelManager:
         if "region" in model_config:
             cls._state['aws_region'] = model_config["region"]
             
-        logger.info(f"Model initialization complete. New state: {cls._state}")
+        logger.debug(f"Model initialization complete. New state: {cls._state}")
         
         return model
     
@@ -770,18 +770,18 @@ class ModelManager:
         # If model_id is a dict with region-specific IDs
         if isinstance(model_id, dict):
             # Determine region prefix (eu or us)
-            logger.info(f"Processing region-specific model_id: {model_id}")
-            logger.info(f"Current region: {region}")
-            logger.info(f"Available regions in model_id: {list(model_id.keys())}")
+            logger.debug(f"Processing region-specific model_id: {model_id}")
+            logger.debug(f"Current region: {region}")
+            logger.debug(f"Available regions in model_id: {list(model_id.keys())}")
             
             region_prefix = "eu" if region.startswith("eu-") else "us"
             
             # Log the region and prefix for debugging
-            logger.info(f"Selecting model ID for region {region} (prefix: {region_prefix})")
+            logger.debug(f"Selecting model ID for region {region} (prefix: {region_prefix})")
             
             # Return the region-specific ID if available
             if region_prefix in model_id and model_id[region_prefix]:
-                logger.info(f"Using {region_prefix} specific model ID for region {region}")
+                logger.debug(f"Using {region_prefix} specific model ID for region {region}")
                 return model_id[region_prefix], region
             else:
                 # Model not available in current region
@@ -951,8 +951,8 @@ class ModelManager:
                 base_max_tokens = default_max_tokens
         
         if settings_override and isinstance(settings_override, dict):
-            logger.info("Using settings_override for initialization parameters.")
-            logger.info(f"  settings_override received: {settings_override}") # DEBUG LOG
+            logger.debug("Using settings_override for initialization parameters.")
+            logger.debug(f"  settings_override received: {settings_override}")
 
             # Directly use settings_override, falling back to base config only if key is missing in override
             effective_temperature = float(settings_override.get("temperature", base_temperature))
@@ -960,9 +960,9 @@ class ModelManager:
             effective_max_tokens = int(settings_override.get("max_output_tokens", base_max_tokens))
             effective_top_p = settings_override.get("top_p", base_top_p)
             effective_thinking_mode = bool(settings_override.get("thinking_mode", base_thinking_mode))
-            logger.info(f"  >>> DEBUG: effective_max_tokens assigned value: {effective_max_tokens}")
+            logger.debug(f"effective_max_tokens assigned value: {effective_max_tokens}")
         else:
-            logger.info("Using environment variables (or defaults) for initialization parameters.")
+            logger.debug("Using environment variables (or defaults) for initialization parameters.")
             # Fall back to base config values if environment variable is not set
             effective_temperature = float(os.environ.get("ZIYA_TEMPERATURE", base_temperature))
             effective_top_k = int(os.environ.get("ZIYA_TOP_K", base_top_k))
@@ -1068,7 +1068,7 @@ class ModelManager:
             logger.info(f"OpenAIBedrock created with: model_id={model_id}, max_tokens={effective_max_tokens}")
         else:
             # Use ZiyaBedrock instead of standard ChatBedrock
-            logger.info(f"Initializing ZiyaBedrock for model: {model_id}")
+            logger.debug(f"Initializing ZiyaBedrock for model: {model_id}")
             
             # Create a model_kwargs dictionary with all parameters
             model_kwargs = {
@@ -1082,7 +1082,7 @@ class ModelManager:
                 if 'top_k' not in model_config['supported_parameters']:
                     # Remove top_k if not supported
                     if 'top_k' in model_kwargs:
-                        logger.info(f"Removing unsupported parameter 'top_k' for model {model_id}")
+                        logger.debug(f"Removing unsupported parameter 'top_k' for model {model_id}")
                         del model_kwargs['top_k']
                         # Also remove from environment
                         if 'ZIYA_TOP_K' in os.environ:
@@ -1103,9 +1103,9 @@ class ModelManager:
             )
             
             # Add a debug log to check the model's parameters
-            logger.info(f"ZiyaBedrock created with: model_id={model_id}, temperature={effective_temperature}, max_tokens={effective_max_tokens}")
+            logger.debug(f"ZiyaBedrock created with: model_id={model_id}, temperature={effective_temperature}, max_tokens={effective_max_tokens}")
             if hasattr(model, 'get_parameters'):
-                logger.info(f"ZiyaBedrock parameters: {model.get_parameters()}")
+                logger.debug(f"ZiyaBedrock parameters: {model.get_parameters()}")
         
         return model
 

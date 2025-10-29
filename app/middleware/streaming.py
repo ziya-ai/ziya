@@ -315,7 +315,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             
                             # Check if this is a tool result chunk
                             if "tool_execution" in chunk or "tool_display" in chunk or "tool_result" in chunk:
-                                logger.info(f"🔍 TOOL_RESULT_CHUNK: size={chunk_size}, content preview: {chunk[:100]}...")
+                                logger.debug(f"🔍 TOOL_RESULT_CHUNK: size={chunk_size}, content preview: {chunk[:100]}...")
                             
                             # Check if it might be JSON
                             try:

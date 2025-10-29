@@ -237,8 +237,7 @@ class MCPManager:
             for server_name, client in self.clients.items():
                     if client.is_connected:
                         logger.info(f"✅ {server_name}: {len(client.tools)} tools, {len(client.resources)} resources")
-                        for tool in client.tools:
-                            logger.info(f"   - Tool: {tool.name}")
+                        logger.debug(f"   Tools: {', '.join(tool.name for tool in client.tools)}")
                     else:
                         logger.warning(f"❌ {server_name}: Connection failed")
                 
@@ -402,11 +401,11 @@ class MCPManager:
             server_config = self.server_configs.get(server_name, {})
             is_enabled = server_config.get("enabled", True)
             
-            logger.info(f"MCP_MANAGER.get_all_tools: Server '{server_name}' - connected: {client.is_connected}, enabled: {is_enabled}")
+            logger.debug(f"MCP_MANAGER.get_all_tools: Server '{server_name}' - connected: {client.is_connected}, enabled: {is_enabled}")
             
             if client.is_connected and is_enabled:
                 client_tools = client.tools
-                logger.info(f"MCP_MANAGER.get_all_tools: Server '{server_name}' has {len(client_tools)} tools: {[t.name for t in client_tools]}")
+                logger.debug(f"MCP_MANAGER.get_all_tools: Server '{server_name}' has {len(client_tools)} tools: {[t.name for t in client_tools]}")
                 for tool_data in client_tools:
                     mcp_tool = MCPTool(
                         name=tool_data.name,
@@ -415,19 +414,19 @@ class MCPManager:
                     )
                     # Store server name as an attribute for reference
                     mcp_tool._server_name = server_name # type: ignore
-                    logger.info(f"MCP_MANAGER.get_all_tools: Adding tool '{tool_data.name}' from server '{server_name}' to collection.")
+                    logger.debug(f"MCP_MANAGER.get_all_tools: Adding tool '{tool_data.name}' from server '{server_name}' to collection.")
                     tools.append(mcp_tool) 
             elif not is_enabled:
-                logger.info(f"MCP_MANAGER.get_all_tools: Server '{server_name}' is disabled, skipping tools")
+                logger.debug(f"MCP_MANAGER.get_all_tools: Server '{server_name}' is disabled, skipping tools")
             else:
                 logger.warning(f"MCP_MANAGER.get_all_tools: Server '{server_name}' is not connected. Skipping its tools.")
         
-        logger.info(f"MCP_MANAGER.get_all_tools: Total tools collected: {len(tools)} from {len([c for c in self.clients.values() if c.is_connected])} connected servers. Tool names: {[t.name for t in tools]}")
+        logger.debug(f"MCP_MANAGER.get_all_tools: Total tools collected: {len(tools)} from {len([c for c in self.clients.values() if c.is_connected])} connected servers. Tool names: {[t.name for t in tools]}")
         
         # Update cache
         self._tools_cache = tools
         self._tools_cache_timestamp = current_time
-        logger.info(f"MCP_MANAGER.get_all_tools: Cached {len(tools)} tools for {self._tools_cache_ttl}s")
+        logger.debug(f"MCP_MANAGER.get_all_tools: Cached {len(tools)} tools for {self._tools_cache_ttl}s")
         
         return tools
     
@@ -543,11 +542,11 @@ class MCPManager:
                                 logger.warning(f"Client unhealthy, skipping tool execution")
                                 continue
                                 
-                            logger.info(f"🔍 MCP_MANAGER: Found tool '{name_to_try}' in server, executing...")
-                            logger.info(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
+                            logger.debug(f"🔍 MCP_MANAGER: Found tool '{name_to_try}' in server, executing...")
+                            logger.debug(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
                             print(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
                             result = await client.call_tool(name_to_try, arguments)
-                            logger.info(f"🔍 MCP_MANAGER: Tool execution result: {result}")
+                            logger.debug(f"🔍 MCP_MANAGER: Tool execution result: {result}")
                             return result
             
             logger.warning(f"🔍 MCP_MANAGER: Tool '{internal_tool_name}' not found in any connected server")

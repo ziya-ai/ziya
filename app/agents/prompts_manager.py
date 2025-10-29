@@ -37,11 +37,6 @@ def get_extended_prompt(model_name: Optional[str] = None,
         context = {}
     logger.debug(f"Getting extended prompt for model: {model_name}")
     
-    logger.info("PROMPT_DEBUG: get_extended_prompt called with:")
-    logger.info(f"PROMPT_DEBUG:   model_name='{model_name}'")
-    logger.info(f"PROMPT_DEBUG:   model_family='{model_family}'")
-    logger.info(f"PROMPT_DEBUG:   endpoint='{endpoint}'")
-    logger.info(f"PROMPT_DEBUG:   context keys='{list(context.keys()) if context else 'None'}'")
     # Create cache key from parameters
     cache_data = {
         'model_name': model_name,
@@ -73,10 +68,10 @@ def get_extended_prompt(model_name: Optional[str] = None,
     )
     
     logger.debug(f"Extended template length: {len(extended_template)}")
-    logger.info(f"PROMPT_MANAGER: Final extended template length: {len(extended_template)}")
-    logger.info(f"PROMPT_MANAGER: Original template length: {len(original_template)}")
-    logger.info(f"PROMPT_MANAGER: Extended template length: {len(extended_template)}")
-    logger.info(f"PROMPT_MANAGER: Template was modified: {len(extended_template) != len(original_template)}")
+    logger.debug(f"PROMPT_MANAGER: Final extended template length: {len(extended_template)}")
+    logger.debug(f"PROMPT_MANAGER: Original template length: {len(original_template)}")
+    logger.debug(f"PROMPT_MANAGER: Extended template length: {len(extended_template)}")
+    logger.debug(f"PROMPT_MANAGER: Template was modified: {len(extended_template) != len(original_template)}")
     
     # Create a new prompt template with the extended template
     # Build messages list dynamically
