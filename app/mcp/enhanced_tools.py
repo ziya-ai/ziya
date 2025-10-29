@@ -136,12 +136,8 @@ class ToolExecutionRegistry:
             if execution_id in self._results:
                 del self._results[execution_id]
 
-# Use the existing connection pool from connection_pool.py
-from app.mcp.connection_pool import get_connection_pool
-
 # Global instances
 _registry = None
-_connection_pool = None
 
 def get_execution_registry() -> ToolExecutionRegistry:
     """Get the global execution registry."""
@@ -204,7 +200,9 @@ class SecureMCPTool(BaseTool):
         
         # Get registry and connection pool
         registry = get_execution_registry()
-        pool = get_connection_pool()  # This now uses the existing connection pool
+        # Import here to avoid circular import
+        from app.mcp.connection_pool import get_connection_pool
+        pool = get_connection_pool()
         
         # Create secure token
         token = ToolExecutionToken(
@@ -609,6 +607,8 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         mcp_tools = mcp_manager.get_all_tools()
         
         # Configure connection pool
+        # Import here to avoid circular import
+        from app.mcp.connection_pool import get_connection_pool  
         pool = get_connection_pool()
         pool.set_server_configs(mcp_manager.server_configs)
         

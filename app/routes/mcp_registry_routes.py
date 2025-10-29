@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/mcp/registry", tags=["mcp-registry"])
 
 class ServiceInstallRequest(BaseModel):
     service_id: str = Field(..., description="The service ID to install")
+    provider_id: Optional[str] = Field(None, description="Optional provider ID")
     
 
 class ServiceUninstallRequest(BaseModel):
