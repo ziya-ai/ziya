@@ -1,0 +1,6 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "Test fuzzy matching with nearly identical functions differing only in template literal content - high risk of applying to wrong location",
+    "date_added": "2025-10-28",
+    "issue_reference": "duplicate_context_wrong_match"
+}

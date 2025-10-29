@@ -1,0 +1,7 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "Test fuzzy matching with three identical blocks - targets middle block. NOW FIXED: Pipeline correctly preserves all blocks and applies changes to the right location",
+    "date_added": "2025-10-28",
+    "issue_reference": "ambiguous_match_deletes_wrong_block",
+    "expected_to_fail": false
+}

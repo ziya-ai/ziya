@@ -1,0 +1,29 @@
+--- a/chatApi.ts
++++ b/chatApi.ts
+@@ -10,12 +10,22 @@ const toolStartPrefix = headerCommand
+     : `\n\`\`\`tool:${toolName}\n`;
+ 
+ // Block 2
+-const toolResultDisplay = headerCommand 
+-    ? `\n\`\`\`tool:${toolName}|${headerCommand}\n${formatted.content}\n\`\`\`\n\n`
+-    : `\n\`\`\`tool:${toolName}\n${formatted.content}\n\`\`\`\n\n`;
+-
+-const toolStartPrefix = headerCommand
+-    ? `\n\`\`\`tool:${toolName}|${headerCommand}\n`
+-    : `\n\`\`\`tool:${toolName}\n`;
++let toolResultDisplay;
++if (headerCommand) {
++    toolResultDisplay = `\n\`\`\`tool:${toolName}|${headerCommand}\n${formatted.content}\n\`\`\`\n\n`;
++} else {
++    toolResultDisplay = `\n\`\`\`tool:${toolName}\n${formatted.content}\n\`\`\`\n\n`;
++}
++
++let toolStartPrefix;
++if (headerCommand) {
++    toolStartPrefix = `\n\`\`\`tool:${toolName}|${headerCommand}\n`;
++} else {
++    toolStartPrefix = `\n\`\`\`tool:${toolName}\n`;
++}
+ 
+ // Block 3
+ const toolResultDisplay = headerCommand

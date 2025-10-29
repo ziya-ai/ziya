@@ -1,0 +1,10 @@
+--- a/chatApi.ts
++++ b/chatApi.ts
+@@ -500,7 +500,7 @@ function processData(input: string) {
+     // Validate input
+     if (!input) {
+-        return null;
++        throw new Error('Invalid input');
+     }
+     
+     const result = input.trim();
