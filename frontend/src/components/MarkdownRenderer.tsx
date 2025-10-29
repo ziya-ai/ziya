@@ -155,39 +155,27 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
     
     // Extract command/query information for display in header
     const getToolSummary = () => {
-        const isShellCommand = actualToolName === 'mcp_run_shell_command';
-        
         // If we have encoded command from the lang attribute, use it
         if (encodedCommand) {
-            if (isShellCommand && encodedCommand.startsWith('$ ')) {
+            // Check if it's a shell command
+            if (encodedCommand.includes(': $ ')) {
                 return `🔧 ${encodedCommand}`;
-            } else if (encodedCommand.startsWith('Search: ')) {
+            }
+            // Check if it's a search query
+            if (encodedCommand.includes(': "')) {
                 return `🔍 ${encodedCommand}`;
-            } else if (encodedCommand.startsWith('$ ')) {
-                return `🔧 ${encodedCommand}`;
-            } else {
-                // Generic command display
-                return `🔧 ${encodedCommand}`;
             }
-        }
-        
-        // Try to extract command from content for shell commands
-        if (isShellCommand && content.startsWith('$ ')) {
-            const firstLine = content.split('\n')[0];
-            return firstLine; // This already includes the $ prefix
-        }
-        
-        // For workspace search, try to extract query from content
-        if (actualToolName === 'mcp_WorkspaceSearch') {
-            const queryMatch = content.match(/Query: "([^"]+)"/);
-            if (queryMatch) {
-                return `Search: "${queryMatch[1]}"`;
+            // Check if it's multiple parameters
+            if (encodedCommand.endsWith(': multiple')) {
+                return `🛠️ ${encodedCommand}`;
             }
+            // Generic display
+            return `🛠️ ${encodedCommand}`;
         }
         
-        // For other tools, return generic name
-        const cleanToolName = actualToolName.replace('mcp_', '');
-        return isShellCommand ? '🔧 Shell Command' : `🛠️ ${cleanToolName}`;
+        // Fallback: extract from content or show generic tool name
+        const cleanToolName = actualToolName.replace('mcp_', '').replace(/_/g, ' ');
+        return `🛠️ ${cleanToolName}`;
     };
     
     const toolSummary = getToolSummary();
@@ -298,7 +286,6 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                 color: colors.headerText,
                 fontWeight: 'bold',
                 fontSize: '12px',
-                textTransform: 'uppercase',
                 letterSpacing: '0.5px'
             }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
