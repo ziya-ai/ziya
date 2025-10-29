@@ -341,7 +341,6 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
         # Return with empty arguments if no valid JSON found
         logger.debug(f"🔍 PARSE: Parsed tool name only from <name> - tool: {tool_name}")
         return {"tool_name": tool_name, "arguments": {}}
-        return {"tool_name": tool_name, "arguments": {}}
 
     # If we get here, no valid tool call was found
     if TOOL_SENTINEL_OPEN in content:
@@ -447,7 +446,6 @@ async def _reset_timeout_counter(tool_name: str):
     """Reset timeout counter for a tool after successful execution."""
     async with _timeout_lock:
         _consecutive_timeouts.pop(tool_name, None)
-        _consecutive_timeouts.pop(tool_name, None)
 
 class MCPTool(BaseTool):
     """
@@ -515,7 +513,21 @@ class MCPTool(BaseTool):
         
         # Build status message that will be included in the result
         status_parts = []
-        status_parts.append(f"🔧 **Executing Tool**: {self.mcp_tool_name}")
+        
+        # For shell commands, show the actual command being executed
+        if self.mcp_tool_name == "run_shell_command" and "command" in arguments:
+            actual_command = arguments["command"]
+            status_parts.append(f"🔧 **Shell Command**")
+            status_parts.append(f"⏳ **Running**: {actual_command}")
+        # For workspace search, show the actual search query and type
+        elif self.mcp_tool_name == "WorkspaceSearch" and "searchQuery" in arguments:
+            search_query = arguments["searchQuery"]
+            search_type = arguments.get("searchType", "contentLiteral")
+            status_parts.append(f"🔍 **Workspace Search**")
+            status_parts.append(f"⏳ **Searching**: \"{search_query}\" ({search_type})")
+        else:
+            status_parts.append(f"🔧 **Executing Tool**: {self.mcp_tool_name}")
+            
         if delay_seconds > 0:
             status_parts.append(f"⏳ **Throttling Delay**: Waited {delay_seconds} seconds to prevent rate limiting")
         

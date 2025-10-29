@@ -30,7 +30,7 @@ async def execute_mcp_tools_with_status(full_response: str) -> str:
     logger.info(f"🔧 MCP: Processing response ({len(full_response)} chars)")
     
     # Import improved functions
-    from app.mcp_fixes import clean_sentinels
+    from app.mcp.utils import clean_sentinels
     from app.mcp.enhanced_tools import process_enhanced_triggers
     from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
     
@@ -245,7 +245,7 @@ async def find_and_execute_all_tools(response: str) -> Tuple[str, List[Dict[str,
     """
     # Import here to avoid circular imports
     from app.mcp.manager import get_mcp_manager
-    from app.mcp_fixes import improved_parse_tool_call, improved_extract_tool_output, clean_sentinels
+    from app.mcp.utils import improved_parse_tool_call, improved_extract_tool_output, clean_sentinels
     
     # Find all tool calls
     tool_calls = []
