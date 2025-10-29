@@ -1,0 +1,17 @@
+--- a/chatApi.ts
++++ b/chatApi.ts
+@@ -999,9 +999,13 @@ some random context that doesn't exist
+ 
+ // Block D - TARGET
+-const toolDisplay = headerCmd 
+-    ? `\n\`\`\`tool:${name}|${headerCmd}\n${content}\n\`\`\`\n\n`
+-    : `\n\`\`\`tool:${name}\n${content}\n\`\`\`\n\n`;
++let toolDisplay;
++if (headerCmd) {
++    toolDisplay = `\n\`\`\`tool:${name}|${headerCmd}\n${content}\n\`\`\`\n\n`;
++} else {
++    toolDisplay = `\n\`\`\`tool:${name}\n${content}\n\`\`\`\n\n`;
++}
+ 
+ // Block E
+ const toolDisplay = headerCmd
