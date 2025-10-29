@@ -104,12 +104,12 @@ class OpenAIBedrock(BaseChatModel):
     
     def _prepare_request_body(self, messages: List[BaseMessage]) -> str:
         """Prepare the request body for OpenAI models on Bedrock."""
-        logger.info(f"🔍 OPENAI_WRAPPER: Received {len(messages)} messages")
+        logger.debug(f"🔍 OPENAI_WRAPPER: Received {len(messages)} messages")
         for i, msg in enumerate(messages):
-            logger.info(f"🔍 OPENAI_WRAPPER: Message {i}: {type(msg).__name__} - {str(msg.content)[:100]}...")
+            logger.debug(f"🔍 OPENAI_WRAPPER: Message {i}: {type(msg).__name__} - {str(msg.content)[:100]}...")
         
         openai_messages = self._convert_messages_to_openai_format(messages)
-        logger.info(f"🔍 OPENAI_WRAPPER: Converted to {len(openai_messages)} OpenAI messages")
+        logger.debug(f"🔍 OPENAI_WRAPPER: Converted to {len(openai_messages)} OpenAI messages")
         
         # Build the request body
         # Get default max_tokens from environment

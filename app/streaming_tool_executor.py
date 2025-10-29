@@ -30,7 +30,7 @@ class StreamingToolExecutor:
                     model_id=self.model_id,
                     model_config=self.model_config
                 )
-                logger.info(f"🔍 Using ModelManager's wrapped bedrock client with extended context support")
+                logger.debug(f"🔍 Using ModelManager's wrapped bedrock client with extended context support")
             except Exception as e:
                 logger.warning(f"🔍 Could not get wrapped client, falling back to direct client: {e}")
                 # Fallback to direct client creation
@@ -39,7 +39,7 @@ class StreamingToolExecutor:
         else:
             # Non-Bedrock endpoints don't need a bedrock client
             self.bedrock = None
-            logger.info(f"🔍 Skipping Bedrock client initialization for endpoint: {endpoint}")
+            logger.debug(f"🔍 Skipping Bedrock client initialization for endpoint: {endpoint}")
 
     def _convert_tool_schema(self, tool):
         """Convert tool schema to JSON-serializable format"""
@@ -193,12 +193,12 @@ class StreamingToolExecutor:
         
         # Extended context handling for sonnet4.5
         if conversation_id:
-            logger.info(f"🔍 EXTENDED_CONTEXT: Processing conversation_id = {conversation_id}")
+            logger.debug(f"🔍 EXTENDED_CONTEXT: Processing conversation_id = {conversation_id}")
             # Set conversation_id in custom_bedrock module global so CustomBedrockClient can use it
             try:
                 import app.utils.custom_bedrock as custom_bedrock_module
                 custom_bedrock_module._current_conversation_id = conversation_id
-                logger.info(f"🔍 EXTENDED_CONTEXT: Set module global conversation_id")
+                logger.debug(f"🔍 EXTENDED_CONTEXT: Set module global conversation_id")
             except Exception as e:
                 logger.warning(f"🔍 EXTENDED_CONTEXT: Could not set conversation_id: {e}")
         
@@ -227,7 +227,7 @@ class StreamingToolExecutor:
         conversation = []
         system_content = None
 
-        logger.info(f"🔍 STREAMING_TOOL_EXECUTOR: Received {len(messages)} messages")
+        logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Received {len(messages)} messages")
         for i, msg in enumerate(messages):
             # Handle both dict format and LangChain message objects
             if hasattr(msg, 'type') and hasattr(msg, 'content'):
@@ -243,10 +243,10 @@ class StreamingToolExecutor:
                 role = msg.get('role', '')
                 content = msg.get('content', '')
             
-            logger.info(f"🔍 STREAMING_TOOL_EXECUTOR: Message {i}: role={role}, content_length={len(content)}")
+            logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Message {i}: role={role}, content_length={len(content)}")
             if role == 'system':
                 system_content = content
-                logger.info(f"🔍 STREAMING_TOOL_EXECUTOR: Found system message with {len(content)} characters")
+                logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Found system message with {len(content)} characters")
             elif role in ['user', 'assistant', 'ai']:
                 # Normalize ai role to assistant for Bedrock
                 bedrock_role = 'assistant' if role == 'ai' else role
@@ -258,7 +258,7 @@ class StreamingToolExecutor:
         consecutive_empty_tool_calls = 0  # Track empty tool calls to break loops
         
         for iteration in range(50):  # Increased from 20 to support more complex tasks
-            logger.info(f"🔍 ITERATION_START: Beginning iteration {iteration}")
+            logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             
             # Log last 2 messages to debug conversation state
             if len(conversation) >= 2:
@@ -266,7 +266,7 @@ class StreamingToolExecutor:
                     role = msg.get('role', msg.get('type', 'unknown'))
                     content = msg.get('content', '')
                     content_preview = str(content)[:150] if content else 'empty'
-                    logger.info(f"🔍 CONV_DEBUG: Message -{2-i}: role={role}, content_preview={content_preview}")
+                    logger.debug(f"🔍 CONV_DEBUG: Message -{2-i}: role={role}, content_preview={content_preview}")
             
             tools_executed_this_iteration = False  # Track if tools were executed in this iteration
             blocked_tools_this_iteration = 0  # Track blocked tools to prevent runaway loops
@@ -309,7 +309,7 @@ class StreamingToolExecutor:
                 header_value = self.model_config.get('extended_context_header')
                 if header_value:
                     body['anthropic_beta'] = [header_value]
-                    logger.info(f"🔍 EXTENDED_CONTEXT: Continuing with extended context header")
+                    logger.debug(f"🔍 EXTENDED_CONTEXT: Continuing with extended context header")
 
             if bedrock_tools:
                 # Don't send tools if we've had too many consecutive empty calls
@@ -320,7 +320,7 @@ class StreamingToolExecutor:
                     body["tools"] = bedrock_tools
                     # Use "auto" to allow model to decide when to stop
                     body["tool_choice"] = {"type": "auto"}
-                    logger.info(f"🔍 TOOL_DEBUG: Sending {len(bedrock_tools)} tools to model: {[t['name'] for t in bedrock_tools]}")
+                    logger.debug(f"🔍 TOOL_DEBUG: Sending {len(bedrock_tools)} tools to model: {[t['name'] for t in bedrock_tools]}")
 
             try:
                 # Exponential backoff for rate limiting
@@ -349,7 +349,7 @@ class StreamingToolExecutor:
                             if self.model_config.get('supports_extended_context'):
                                 header_value = self.model_config.get('extended_context_header')
                                 if header_value:
-                                    logger.info(f"🔍 EXTENDED_CONTEXT: Context limit hit, enabling extended context with header {header_value}")
+                                    logger.debug(f"🔍 EXTENDED_CONTEXT: Context limit hit, enabling extended context with header {header_value}")
                                     body['anthropic_beta'] = [header_value]
                                     api_params['body'] = json.dumps(body)
                                     using_extended_context = True  # Set flag to keep using it
@@ -415,7 +415,7 @@ class StreamingToolExecutor:
 
                     if chunk['type'] == 'content_block_start':
                         content_block = chunk.get('content_block', {})
-                        logger.info(f"🔍 CHUNK_DEBUG: content_block_start - type: {content_block.get('type')}, id: {content_block.get('id')}")
+                        logger.debug(f"🔍 CHUNK_DEBUG: content_block_start - type: {content_block.get('type')}, id: {content_block.get('id')}")
                         if content_block.get('type') == 'tool_use':
                             # FLUSH any buffered content before tool starts
                             if hasattr(self, '_content_optimizer'):
@@ -440,7 +440,7 @@ class StreamingToolExecutor:
                                 # Check for duplicates FIRST
                                 tool_signature = f"{tool_name}_{tool_id}"
                                 if tool_signature in executed_tool_signatures:
-                                    logger.info(f"🔍 DUPLICATE_SKIP: Tool {tool_signature} already executed")
+                                    logger.debug(f"🔍 DUPLICATE_SKIP: Tool {tool_signature} already executed")
                                     skipped_tools.add(chunk.get('index'))
                                     continue
                                 
@@ -456,7 +456,7 @@ class StreamingToolExecutor:
                                     'name': tool_name,
                                     'args': {}
                                 })
-                                logger.info(f"🔍 COLLECTED_TOOL: {tool_name} (id: {tool_id})")
+                                logger.debug(f"🔍 COLLECTED_TOOL: {tool_name} (id: {tool_id})")
                                 
                                 active_tools[tool_id] = {
                                     'name': tool_name,
@@ -617,7 +617,7 @@ class StreamingToolExecutor:
                             tool_name = tool_data['name']
                             args_json = tool_data['partial_json']
                             
-                            logger.info(f"🔍 TOOL_ARGS: Tool '{tool_name}' (id: {tool_id}) has args_json: '{args_json}'")
+                            logger.debug(f"🔍 TOOL_ARGS: Tool '{tool_name}' (id: {tool_id}) has args_json: '{args_json}'")
 
                             try:
                                 args = json.loads(args_json) if args_json.strip() else {}
@@ -641,7 +641,7 @@ class StreamingToolExecutor:
                                     
                                     completed_tools.add(tool_id)
                                     tools_executed_this_iteration = True
-                                    logger.info(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
+                                    logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
                                     continue
                                 
                                 # Update the corresponding entry in all_tool_calls with parsed arguments
@@ -660,7 +660,7 @@ class StreamingToolExecutor:
                                 tool_signature = f"{actual_tool_name}:{json.dumps(args, sort_keys=True)}"
                                 
                                 # Execute the tool (already checked for duplicates at collection)
-                                logger.info(f"🔍 EXECUTING_TOOL: {actual_tool_name} with args {args}")
+                                logger.debug(f"🔍 EXECUTING_TOOL: {actual_tool_name} with args {args}")
                                 
                                 # Send tool_start event with complete arguments
                                 yield {
@@ -713,7 +713,7 @@ class StreamingToolExecutor:
                                     await asyncio.sleep(0)
                                     
                                     tools_executed_this_iteration = True
-                                    logger.info(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
+                                    logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
                                     
                                 except Exception as e:
                                     error_msg = f"Tool error: {str(e)}"
@@ -783,7 +783,7 @@ class StreamingToolExecutor:
                         final_assistant_text = assistant_text.strip()
                         
                         # Check for unclosed code blocks using tracker
-                        logger.info(f"🔍 COMPLETION_CHECK: tracker_in_block={code_block_tracker.get('in_block', False)}")
+                        logger.debug(f"🔍 COMPLETION_CHECK: tracker_in_block={code_block_tracker.get('in_block', False)}")
                         
                         continuation_count = 0
                         max_continuations = 10
@@ -886,9 +886,9 @@ class StreamingToolExecutor:
                     conversation.append({"role": "assistant", "content": content_blocks})
             
                 # Add tool results to conversation BEFORE filtering
-                logger.info(f"🔍 ITERATION_END_CHECK: tools_executed_this_iteration = {tools_executed_this_iteration}, tool_results count = {len(tool_results)}")
+                logger.debug(f"🔍 ITERATION_END_CHECK: tools_executed_this_iteration = {tools_executed_this_iteration}, tool_results count = {len(tool_results)}")
                 if tools_executed_this_iteration:
-                    logger.info(f"🔍 TOOL_RESULTS_PROCESSING: Adding {len(tool_results)} tool results to conversation")
+                    logger.debug(f"🔍 TOOL_RESULTS_PROCESSING: Adding {len(tool_results)} tool results to conversation")
                     for tool_result in tool_results:
                         raw_result = tool_result['result']
                         if isinstance(raw_result, str) and '$ ' in raw_result:
@@ -931,7 +931,7 @@ class StreamingToolExecutor:
                     if empty_tool_calls_this_iteration == 0:
                         consecutive_empty_tool_calls = 0
                     
-                    logger.info(f"🔍 CONTINUING_ROUND: Tool results added, model will continue in same stream (round {iteration + 1})")
+                    logger.debug(f"🔍 CONTINUING_ROUND: Tool results added, model will continue in same stream (round {iteration + 1})")
                     # Yield heartbeat to flush stream before next iteration
                     yield {'type': 'iteration_continue', 'iteration': iteration + 1}
                     await asyncio.sleep(0)
@@ -947,7 +947,7 @@ class StreamingToolExecutor:
                     if assistant_text.strip():
                         # FIRST: Check if code block is still incomplete - if so, continue
                         if code_block_tracker.get('in_block'):
-                            logger.info(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still open, continuing to next iteration")
+                            logger.debug(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still open, continuing to next iteration")
                             continue
                         
                         # Check if there's already substantial commentary after the last tool/diff/code block
@@ -957,7 +957,7 @@ class StreamingToolExecutor:
                         # If we have 20+ words after the last block and it ends properly, consider it complete
                         if (word_count_after_block >= 20 and 
                             text_after_last_block.rstrip().endswith(('.', '!', '?'))):
-                            logger.info(f"🔍 COMPLETE_RESPONSE: Found {word_count_after_block} words after last block, ending stream: '{text_after_last_block[-50:]}'")
+                            logger.debug(f"🔍 COMPLETE_RESPONSE: Found {word_count_after_block} words after last block, ending stream: '{text_after_last_block[-50:]}'")
                             yield {'type': 'stream_end'}
                             break
                         
@@ -970,10 +970,10 @@ class StreamingToolExecutor:
                         )
                         
                         if suggests_continuation and iteration < 5:
-                            logger.info(f"🔍 CONTINUE_RESPONSE: Only {word_count_after_block} words after last block, continuing: '{text_after_last_block[-30:] if text_after_last_block else text_end}'")
+                            logger.debug(f"🔍 CONTINUE_RESPONSE: Only {word_count_after_block} words after last block, continuing: '{text_after_last_block[-30:] if text_after_last_block else text_end}'")
                             continue
                         else:
-                            logger.info(f"🔍 STREAM_END: Model produced text without tools, ending stream")
+                            logger.debug(f"🔍 STREAM_END: Model produced text without tools, ending stream")
                             # Log final metrics
                             logger.info(f"📊 Final stream metrics: events={stream_metrics['events_sent']}, "
                                        f"bytes={stream_metrics['bytes_sent']}, "
@@ -984,7 +984,7 @@ class StreamingToolExecutor:
                             yield {'type': 'stream_end'}
                             break
                     elif iteration >= 5:  # Safety: end after 5 iterations total
-                        logger.info(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
+                        logger.debug(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
                         yield {'type': 'stream_end'}
                         break
                     else:
@@ -1028,8 +1028,8 @@ class StreamingToolExecutor:
         
         # Log state changes for debugging
         if was_in_block != tracker.get('in_block') or was_block_type != tracker.get('block_type'):
-            logger.info(f"🔍 TRACKER_STATE_CHANGE: {was_block_type or 'none'}[{was_in_block}] → {tracker.get('block_type') or 'none'}[{tracker.get('in_block')}]")
-            logger.info(f"🔍 TRACKER_TEXT: Processing text: {repr(text[:100])}")
+            logger.debug(f"🔍 TRACKER_STATE_CHANGE: {was_block_type or 'none'}[{was_in_block}] → {tracker.get('block_type') or 'none'}[{tracker.get('in_block')}]")
+            logger.debug(f"🔍 TRACKER_TEXT: Processing text: {repr(text[:100])}")
 
     async def _continue_incomplete_code_block(
         self,

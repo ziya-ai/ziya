@@ -45,7 +45,7 @@ def is_binary_file(file_path: str) -> bool:
         return False
     except Exception as e:
         # Only log at debug level for unusual errors
-        logger.warning(f"Could not determine file type for {file_path}, assuming binary: {e}")
+        logger.debug(f"Could not determine file type for {file_path}, assuming binary: {e}")
         return True
 
 def is_processable_file(file_path: str) -> bool:

@@ -34,13 +34,10 @@ class PrecisionPromptSystem:
             from app.agents.prompts_manager import get_extended_prompt
             from app.agents.agent import extract_codebase
             
-            print(f"🎯 PRECISION_DEBUG: Calling extract_codebase with {len(files)} files")
             file_context = extract_codebase({
                 "config": {"files": files},
                 "conversation_id": f"precision_{hash(str(files))}"
             })
-            
-            print(f"🎯 PRECISION_DEBUG: Got file_context length: {len(file_context) if file_context else 0}")
             
             # Build context with native_tools_available for Bedrock
             context = {
@@ -110,8 +107,6 @@ class PrecisionPromptSystem:
                             messages.append(msg)
                 if question_msg:
                     messages.append(question_msg)
-            
-            print(f"🎯 PRECISION_DEBUG: Generated {len(messages)} messages")
             
             return messages
             

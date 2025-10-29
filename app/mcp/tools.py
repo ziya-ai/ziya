@@ -91,11 +91,11 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
         tool_name = match.group(1).strip()
         try:
             arguments = json.loads(match.group(2))
-            logger.info(f"🔍 PARSE_DEBUG: Raw arguments string: '{match.group(2)}'")
-            logger.info(f"🔍 PARSE_DEBUG: Parsed arguments: {arguments}")
+            logger.debug(f"🔍 PARSE_DEBUG: Raw arguments string: '{match.group(2)}'")
+            logger.debug(f"🔍 PARSE_DEBUG: Parsed arguments: {arguments}")
             print(f"🔍 PARSE_DEBUG: Raw arguments string: '{match.group(2)}', Parsed: {arguments}")
             logger.debug(f"🔍 PARSE: Successfully parsed tool format - tool: {tool_name}, args: {arguments}")
-            logger.info(f"🔍 PARSE SUCCESS: tool_name='{tool_name}', arguments={arguments}")
+            logger.debug(f"🔍 PARSE SUCCESS: tool_name='{tool_name}', arguments={arguments}")
             print(f"🔍 PARSE SUCCESS: tool_name='{tool_name}', arguments={arguments}")
             return {"tool_name": tool_name, "arguments": arguments}
         except json.JSONDecodeError as e:
@@ -103,12 +103,12 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             try:
                 # Extract the raw arguments string and attempt to repair it
                 args_str = match.group(2)
-                logger.info(f"🔍 PARSE_DEBUG: JSON parsing failed, attempting repair on: '{args_str}'")
+                logger.debug(f"🔍 PARSE_DEBUG: JSON parsing failed, attempting repair on: '{args_str}'")
                 print(f"🔍 PARSE_DEBUG: JSON parsing failed, attempting repair on: '{args_str}'")
                 repaired_args = _repair_json_arguments(args_str)
-                logger.info(f"🔍 PARSE_DEBUG: Repaired arguments: '{repaired_args}'")
+                logger.debug(f"🔍 PARSE_DEBUG: Repaired arguments: '{repaired_args}'")
                 arguments = json.loads(repaired_args)
-                logger.info(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
+                logger.debug(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
                 print(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
                 logger.debug(f"🔍 PARSE: Successfully parsed repaired JSON - tool: {tool_name}, args: {arguments}")
                 return {"tool_name": tool_name, "arguments": arguments}
@@ -200,11 +200,11 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
             try:
                 # Extract the raw arguments string and attempt to repair it
                 args_str = match.group(2)
-                logger.info(f"🔍 PARSE_DEBUG: JSON parsing failed for <name> format, attempting repair on: '{args_str}'")
+                logger.debug(f"🔍 PARSE_DEBUG: JSON parsing failed for <name> format, attempting repair on: '{args_str}'")
                 repaired_args = _repair_json_arguments(args_str)
-                logger.info(f"🔍 PARSE_DEBUG: Repaired arguments for <name> format: '{repaired_args}'")
+                logger.debug(f"🔍 PARSE_DEBUG: Repaired arguments for <name> format: '{repaired_args}'")
                 arguments = json.loads(repaired_args)
-                logger.info(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
+                logger.debug(f"🔍 PARSE REPAIRED: tool_name='{tool_name}', arguments={arguments}")
                 logger.debug(f"🔍 PARSE: Successfully parsed repaired <name> format - tool: {tool_name}, args: {arguments}")
                 return {"tool_name": tool_name, "arguments": arguments}
             except Exception as e:
@@ -482,8 +482,8 @@ class MCPTool(BaseTool):
         """Run the MCP tool asynchronously."""
         arguments = kwargs
         logger.info(f"MCPTool._arun called for {self.mcp_tool_name} with args: {arguments}")
-        logger.info(f"🔍 MCPTool._arun: About to execute MCP tool {self.mcp_tool_name}")
-        logger.info(f"🔍 MCPTool._arun: MCP manager initialized: {mcp_manager.is_initialized if 'mcp_manager' in globals() else 'No manager'}")
+        logger.debug(f"🔍 MCPTool._arun: About to execute MCP tool {self.mcp_tool_name}")
+        logger.debug(f"🔍 MCPTool._arun: MCP manager initialized: {mcp_manager.is_initialized if 'mcp_manager' in globals() else 'No manager'}")
         
         # Implement progressive delay to prevent Bedrock throttling
         global _tool_execution_counter
@@ -577,7 +577,7 @@ class MCPTool(BaseTool):
                 timeout_result += f"\n\n**Arguments:** {arguments}"
                 return timeout_result
             
-            logger.info(f"🔍 MCPTool._arun: Got result from MCP manager: {result}")
+            logger.debug(f"🔍 MCPTool._arun: Got result from MCP manager: {result}")
             
             # Reset timeout counter on successful execution
             await _reset_timeout_counter(self.mcp_tool_name)

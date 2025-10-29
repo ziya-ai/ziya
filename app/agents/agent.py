@@ -236,8 +236,8 @@ class MCPToolOutputParser(BaseOutputParser):
     def parse(self, llm_output: str) -> Union[AgentAction, AgentFinish]:
         text_to_log = llm_output  # Log the raw output
 
-        logger.info(f"🔍 MCPToolOutputParser.parse() called with output length: {len(llm_output)}")
-        logger.info(f"🔍 MCPToolOutputParser raw output preview: {llm_output[:500]}...")
+        logger.debug(f"🔍 MCPToolOutputParser.parse() called with output length: {len(llm_output)}")
+        logger.debug(f"🔍 MCPToolOutputParser raw output preview: {llm_output[:500]}...")
         logger.info(f"MCPToolOutputParser parsing output: {llm_output[:200]}...")
         
         # Use the dual-format parser from app.mcp.tools
@@ -245,7 +245,7 @@ class MCPToolOutputParser(BaseOutputParser):
 
         if parsed_call:
             tool_name = parsed_call["tool_name"] # This should be the name registered with AgentExecutor (e.g., "mcp_run_shell_command")
-            logger.info(f"🔍 MCPToolOutputParser detected tool call: {tool_name}")
+            logger.debug(f"🔍 MCPToolOutputParser detected tool call: {tool_name}")
             tool_input_dict = parsed_call["arguments"]
             
             # Log the actual tool call for debugging
@@ -260,7 +260,7 @@ class MCPToolOutputParser(BaseOutputParser):
             logger.info(f"MCPToolOutputParser: Detected tool call: {tool_name} with args: {tool_input_dict}")
             return AgentAction(tool=tool_name, tool_input=tool_input_dict, log=text_to_log)
         else:
-            logger.info(f"🔍 MCPToolOutputParser: No tool call detected, treating as final answer")
+            logger.debug(f"🔍 MCPToolOutputParser: No tool call detected, treating as final answer")
             # If no tool call is found, assume it's a final answer.
             # The llm_output here is the raw string from the model, which might be complex.
             # It needs to be processed by _extract_content.
@@ -615,7 +615,7 @@ class RetryingChatBedrock(Runnable):
         
         # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
         # But store it for CustomBedrockClient to access via module global
-        logger.info(f"🔍 CONVERSATION_ID: filtered_kwargs keys = {list(filtered_kwargs.keys())}")
+        logger.debug(f"🔍 CONVERSATION_ID: filtered_kwargs keys = {list(filtered_kwargs.keys())}")
         if "conversation_id" in filtered_kwargs:
             conversation_id = filtered_kwargs["conversation_id"]
             # Store in a global variable that CustomBedrockClient can access
@@ -625,7 +625,7 @@ class RetryingChatBedrock(Runnable):
             del filtered_kwargs["conversation_id"]
             logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
         else:
-            logger.info("🔍 CONVERSATION_ID: No conversation_id found in filtered_kwargs")
+            logger.debug("🔍 CONVERSATION_ID: No conversation_id found in filtered_kwargs")
         
         # Use filtered kwargs for the model call
         kwargs = filtered_kwargs
@@ -742,7 +742,7 @@ class RetryingChatBedrock(Runnable):
 
                 # Filter out empty messages
                 if isinstance(messages, list):
-                    logger.info(f"🔍 FILTERING: Before filtering - {len(messages)} messages")
+                    logger.debug(f"🔍 FILTERING: Before filtering - {len(messages)} messages")
                     for i, msg in enumerate(messages):
                         # Handle both BaseMessage objects and dictionaries safely
                         try:
@@ -755,7 +755,7 @@ class RetryingChatBedrock(Runnable):
                             else:
                                 content = str(msg)[:100]
                                 empty = True
-                            logger.info(f"🔍 FILTERING: Message {i}: {type(msg).__name__} - content: '{content}...' - empty: {empty}")
+                            logger.debug(f"🔍 FILTERING: Message {i}: {type(msg).__name__} - content: '{content}...' - empty: {empty}")
                         except Exception as e:
                             logger.warning(f"🔍 FILTERING: Error accessing message {i} content: {e} - type: {type(msg)}")
                     
@@ -769,7 +769,7 @@ class RetryingChatBedrock(Runnable):
                     
                     messages = filtered_messages
                     
-                    logger.info(f"🔍 FILTERING: After filtering - {len(messages)} messages")
+                    logger.debug(f"🔍 FILTERING: After filtering - {len(messages)} messages")
                     for i, msg in enumerate(messages):
                         try:
                             if hasattr(msg, 'content'):
@@ -778,7 +778,7 @@ class RetryingChatBedrock(Runnable):
                                 content = str(msg['content'])[:100]
                             else:
                                 content = str(msg)[:100]
-                            logger.info(f"🔍 FILTERING: Kept Message {i}: {type(msg).__name__} - content: '{content}...'")
+                            logger.debug(f"🔍 FILTERING: Kept Message {i}: {type(msg).__name__} - content: '{content}...'")
                         except Exception as e:
                             logger.warning(f"🔍 FILTERING: Error accessing kept message {i} content: {e}")
                     
@@ -1499,7 +1499,7 @@ file_state_manager = FileStateManager()
 
 def get_combined_docs_from_files(files, conversation_id: str = "default") -> str:
     logger.info("=== get_combined_docs_from_files called ===")
-    logger.info(f"🔍 FILES_DEBUG: Called with {len(files)} files: {files[:5]}..." if len(files) > 5 else f"🔍 FILES_DEBUG: Called with files: {files}")
+    logger.debug(f"🔍 FILES_DEBUG: Called with {len(files)} files: {files[:5]}..." if len(files) > 5 else f"🔍 FILES_DEBUG: Called with files: {files}")
     logger.info(f"Called with files: {files}")
     print(f"🔍 FILE_CONTENT_DEBUG: get_combined_docs_from_files called with {len(files)} files")
     combined_contents: str = ""
@@ -1667,8 +1667,8 @@ def extract_codebase(x):
         logger.info("No files selected, returning placeholder codebase message")
         return "No files have been selected for context analysis."
     
-    logger.info(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
-    logger.info(f"🔍 EXTRACT_CODEBASE_DEBUG: First 5 files: {files[:5]}")
+    logger.debug(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
+    logger.debug(f"🔍 EXTRACT_CODEBASE_DEBUG: First 5 files: {files[:5]}")
     print(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
     conversation_id = (
         x.get("conversation_id") or 
@@ -1708,7 +1708,7 @@ def extract_codebase(x):
             continue
  
     # Initialize conversation state immediately after loading files
-    logger.info(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
+    logger.debug(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
     file_state_manager.initialize_conversation(conversation_id, file_contents)
     logger.info(f"Initialized conversation {conversation_id} with {len(file_contents)} files")
     # Set initial context submission baseline
@@ -2169,9 +2169,9 @@ def create_agent_executor(agent_chain: Runnable):
             self.executor = wrapped_executor
             
         async def astream(self, input_data, config=None, **kwargs):
-            logger.info(f"🔍 DebuggingAgentExecutor.astream called with question: {input_data.get('question', 'N/A')}")
+            logger.debug(f"🔍 DebuggingAgentExecutor.astream called with question: {input_data.get('question', 'N/A')}")
             async for chunk in self.executor.astream(input_data, config, **kwargs):
-                logger.info(f"🔍 DebuggingAgentExecutor yielding chunk type: {type(chunk)}")
+                logger.debug(f"🔍 DebuggingAgentExecutor yielding chunk type: {type(chunk)}")
                 yield chunk
                 
         def __getattr__(self, name):
