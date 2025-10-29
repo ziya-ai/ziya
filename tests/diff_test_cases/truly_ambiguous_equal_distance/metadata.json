@@ -1,0 +1,7 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "TRUE AMBIGUITY: Line 8 is equidistant between Section 1 (line 2) and Section 2 (line 7). Both sections are distance 6 and 1 from line 8. Should REJECT as ambiguous.",
+    "date_added": "2025-10-28",
+    "issue_reference": "truly_ambiguous_equal_distance",
+    "expected_to_fail": true
+}

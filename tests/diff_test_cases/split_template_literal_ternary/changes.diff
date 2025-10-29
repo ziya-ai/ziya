@@ -1,0 +1,19 @@
+--- a/chatApi.ts
++++ b/chatApi.ts
+@@ -1,7 +1,13 @@
+ function processToolResult(toolName: string, headerCommand: string, content: string) {
+-    // Original implementation with simple concatenation
+-    const toolResultDisplay = headerCommand 
+-        ? `\n\`\`\`tool:${toolName}|${headerCommand}\n${content}\n\`\`\`\n\n`
+-        : `\n\`\`\`tool:${toolName}\n${content}\n\`\`\`\n\n`;
++    // Refactored to avoid split template literals
++    let toolResultDisplay;
++    
++    if (headerCommand) {
++        toolResultDisplay = `\n\`\`\`tool:${toolName}|${headerCommand}\n${content}\n\`\`\`\n\n`;
++    } else {
++        toolResultDisplay = `\n\`\`\`tool:${toolName}\n${content}\n\`\`\`\n\n`;
++    }
+     
+     return toolResultDisplay;
+ }

@@ -1,0 +1,17 @@
+--- a/chatApi.ts
++++ b/chatApi.ts
+@@ -8,9 +8,13 @@ some context
+ 
+ // Section 2
+-const result = value 
+-    ? `\n\`\`\`data:${name}\n${content}\n\`\`\`\n\n`
+-    : `\n\`\`\`data:${name}\n\`\`\`\n\n`;
++let result;
++if (value) {
++    result = `\n\`\`\`data:${name}\n${content}\n\`\`\`\n\n`;
++} else {
++    result = `\n\`\`\`data:${name}\n\`\`\`\n\n`;
++}
+ 
+ // Section 3
+ const result = value

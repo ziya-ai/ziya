@@ -1,0 +1,7 @@
+{
+    "target_file": "chatApi.ts",
+    "description": "Test handling of template literals with regex patterns and nested backticks that can confuse fuzzy matching - validates pipeline robustness",
+    "date_added": "2025-10-28",
+    "issue_reference": "nested_template_regex_corruption",
+    "expected_to_fail": false
+}
