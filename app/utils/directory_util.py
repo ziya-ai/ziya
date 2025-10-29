@@ -232,7 +232,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             f.write(line)
         f.write(f"=== END CALL STACK ===\n\n")
     
-    logger.info(f"🔍 PERF: Starting ULTRA-FAST folder scan for directory: {directory}")
+    logger.debug(f"🔍 PERF: Starting ULTRA-FAST folder scan for directory: {directory}")
     
     # Check if we have cached results first
     cached_result = get_cached_folder_structure_with_tokens(directory, ignored_patterns, max_depth)
@@ -275,8 +275,6 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
     def process_dir(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory recursively."""
-        print(f"DEBUG process_dir: path={path}, depth={depth}, max_depth={max_depth}")
-        
         # Resolve symlinks to detect loops
         real_path = os.path.realpath(path)
         
@@ -323,7 +321,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         
         try:
             entries = os.listdir(path)
-            logger.info(f"📁 Directory {path} has {len(entries)} entries: {entries}")
+            logger.debug(f"📁 Directory {path} has {len(entries)} entries: {entries}")
         except PermissionError:
             logger.debug(f"Permission denied for {path}")
             dir_time = time.time() - dir_start_time
@@ -386,13 +384,13 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                         pass
             elif os.path.isfile(entry_path):
                 tokens = estimate_tokens_fast(entry_path)
-                logger.info(f"📄 File {entry}: tokens={tokens}")
+                logger.debug(f"📄 File {entry}: tokens={tokens}")
                 if tokens > 0:
                     scan_stats['files_processed'] += 1  # Fix: increment counter for processed files
                     result['children'][entry] = {'token_count': tokens}
                     total_tokens += tokens
                 else:
-                    logger.info(f"⏭️  Skipping file {entry} - zero tokens")
+                    logger.debug(f"⏭️  Skipping file {entry} - zero tokens")
         
         result['token_count'] = total_tokens
         
@@ -411,11 +409,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     global _visited_directories
     _visited_directories.clear()
     
-    print(f"DEBUG: About to call process_dir for {directory}")
     # Process the root directory
     root_result = process_dir(directory, 1)
-    print(f"DEBUG: After process_dir, root_result keys: {list(root_result.keys())}")
-    print(f"DEBUG: root_result['children'] has {len(root_result.get('children', {}))} entries")
     
     # Check if we need to include external paths
     include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")
@@ -484,8 +479,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             logger.warning(f"  {path}: {duration:.2f}s ({reason})")
             
     result = root_result.get('children', {})
-    logger.info(f"DEBUG: root_result keys: {list(root_result.keys())}")
-    logger.info(f"DEBUG: root_result has {len(root_result.get('children', {}))} children")
+    logger.debug(f"root_result keys: {list(root_result.keys())}")
+    logger.debug(f"root_result has {len(root_result.get('children', {}))} children")
     if total_time >= max_scan_time:
         logger.warning(f"Folder scan timed out after {max_scan_time}s, returning partial results with {len(result)} entries")
         result['_timeout'] = True
@@ -553,7 +548,7 @@ def ensure_background_token_calculation(directory: str, ignored_patterns: List[T
     This is the single entry point for starting background calculation.
     """
     if not is_background_calculation_running():
-        logger.info(f"🔍 PERF: Ensuring background token calculation for {directory}")
+        logger.debug(f"🔍 PERF: Ensuring background token calculation for {directory}")
         start_background_token_calculation(directory, ignored_patterns, max_depth)
     else:
         logger.debug("🔍 PERF: Background token calculation already running")
@@ -567,7 +562,7 @@ def get_cached_folder_structure_with_tokens(directory: str, ignored_patterns: Li
     
     with _cache_lock:
         if cache_key in _token_cache and (current_time - _cache_timestamp) < 300:  # 5 minute cache
-            logger.info("🔍 PERF: Returning cached folder structure with tokens")
+            logger.debug("🔍 PERF: Returning cached folder structure with tokens")
             # Even with cached results, ensure background calculation is running for freshness
             ensure_background_token_calculation(directory, ignored_patterns, max_depth)
             return _token_cache[cache_key]
@@ -583,7 +578,7 @@ def cache_folder_structure_with_tokens(directory: str, ignored_patterns: List[Tu
     with _cache_lock:
         _token_cache[cache_key] = result
         _cache_timestamp = time.time()
-        logger.info(f"🔍 PERF: Cached folder structure with {len(result)} entries")
+        logger.debug(f"🔍 PERF: Cached folder structure with {len(result)} entries")
 
 def start_background_token_calculation(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
     """Start background thread to calculate accurate token counts (with deduplication)."""
@@ -592,17 +587,17 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
     with _background_thread_lock:
         # Check if a background thread is already running
         if _background_thread is not None and _background_thread.is_alive():
-            logger.info("🔍 PERF: Background token calculation already in progress, skipping duplicate request")
+            logger.debug("🔍 PERF: Background token calculation already in progress, skipping duplicate request")
             return
         
-        logger.info(f"🔍 PERF: Starting new background token calculation thread for {directory}")
+        logger.debug(f"🔍 PERF: Starting new background token calculation thread for {directory}")
     
     def calculate_accurate_tokens():
         try:
-            logger.info(f"🔍 PERF: Starting background accurate token calculation for {directory}")
+            logger.debug(f"🔍 PERF: Starting background accurate token calculation for {directory}")
             
             # Early return is still in place - remove it when ready to re-enable
-            logger.info("🔍 PERF: Background token calculation temporarily disabled")
+            logger.debug("🔍 PERF: Background token calculation temporarily disabled")
             return
             
             # The rest of the function remains the same but won't execute due to return above
@@ -644,15 +639,15 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
                                 files_processed += 1
                                 
                                 if files_processed % 1000 == 0:
-                                    logger.info(f"🔍 PERF: Background processed {files_processed} files so far")
+                                    logger.debug(f"🔍 PERF: Background processed {files_processed} files so far")
                     except Exception as e:
                         logger.debug(f"Error processing {file_path}: {e}")
                         continue
             
             # Update cache with accurate counts
-            logger.info(f"🔍 PERF: Background calculation complete: {files_processed} files processed")
+            logger.debug(f"🔍 PERF: Background calculation complete: {files_processed} files processed")
             # Store accurate counts in a separate cache for API access
-            logger.info(f"🔍 PERF: Storing {len(accurate_counts)} accurate token counts in cache")
+            logger.debug(f"🔍 PERF: Storing {len(accurate_counts)} accurate token counts in cache")
             global _accurate_token_cache
             _accurate_token_cache = accurate_counts
             
@@ -661,7 +656,7 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
             with _cache_lock:
                 if cache_key in _token_cache:
                     _token_cache[cache_key]["_accurate_tokens"] = accurate_counts
-                    logger.info(f"🔍 PERF: Updated folder cache with {len(accurate_counts)} accurate token counts")
+                    logger.debug(f"🔍 PERF: Updated folder cache with {len(accurate_counts)} accurate token counts")
             
         except Exception as e:
             logger.error(f"Background token calculation failed: {e}")
@@ -670,12 +665,12 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
             global _background_thread
             with _background_thread_lock:
                 _background_thread = None
-            logger.info("🔍 PERF: Background token calculation thread completed")
+            logger.debug("🔍 PERF: Background token calculation thread completed")
     
     with _background_thread_lock:
         _background_thread = threading.Thread(target=calculate_accurate_tokens, daemon=True, name="TokenCalculation")
         _background_thread.start()
-        logger.info(f"🔍 PERF: Background thread started: {_background_thread.name}")
+        logger.debug(f"🔍 PERF: Background thread started: {_background_thread.name}")
 
 def is_background_calculation_running() -> bool:
     """Check if background token calculation is currently running."""

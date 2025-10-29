@@ -424,7 +424,7 @@ class MCPClient:
             if "tools" in self.capabilities:
                 logger.info(f"Calling tools/list for {server_name_for_log}")
                 tools_result = await self._send_request("tools/list")
-                logger.info(f"Tools list response from {server_name_for_log}: {tools_result}")
+                logger.debug(f"Tools list response from {server_name_for_log}: {tools_result}")
                 if tools_result and "tools" in tools_result:
                     valid_tools = []
                     for tool_data in tools_result["tools"]:
@@ -465,7 +465,7 @@ class MCPClient:
                     logger.warning(f"No 'prompts' key in response from {server_name_for_log}: {prompts_result}")
 
             logger.info(f"Loaded MCP capabilities for {server_name_for_log}: {len(self.resources)} resources, {len(self.tools)} tools, {len(self.prompts)} prompts")
-            logger.info(f"Tool names for {server_name_for_log}: {[tool.name for tool in self.tools]}")
+            logger.debug(f"Tool names for {server_name_for_log}: {[tool.name for tool in self.tools]}")
 
         except Exception as e:
             logger.error(f"Error loading MCP server capabilities for {self.server_config.get('name', 'unknown')}: {str(e)}", exc_info=True)

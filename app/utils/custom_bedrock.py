@@ -65,7 +65,7 @@ class CustomBedrockClient:
         
         # Get the region from the client
         self.region = self.client.meta.region_name if hasattr(self.client, 'meta') else None
-        logger.info(f"Initialized CustomBedrockClient with user_max_tokens={max_tokens}, region={self.region}")
+        logger.debug(f"Initialized CustomBedrockClient with user_max_tokens={max_tokens}, region={self.region}")
 
         # Store region in environment variable to ensure consistency
         if self.region:
@@ -88,8 +88,8 @@ class CustomBedrockClient:
         # Cache the result to avoid repeated logging
         if not hasattr(self, '_cached_supports_extended_context'):
             supports = self.model_config.get("supports_extended_context", False)
-            logger.info(f"🔍 EXTENDED_CONTEXT: Model config supports_extended_context = {supports}")
-            logger.info(f"🔍 EXTENDED_CONTEXT: Model config keys = {list(self.model_config.keys())}")
+            logger.debug(f"🔍 EXTENDED_CONTEXT: Model config supports_extended_context = {supports}")
+            logger.debug(f"🔍 EXTENDED_CONTEXT: Model config keys = {list(self.model_config.keys())}")
             self._cached_supports_extended_context = supports
         return self._cached_supports_extended_context
     
@@ -108,16 +108,16 @@ class CustomBedrockClient:
         # First try to get from module global (workaround for thread boundary issues)
         global _current_conversation_id
         if _current_conversation_id:
-            logger.info(f"🔍 EXTENDED_CONTEXT: Found conversation_id in module global: {_current_conversation_id}")
+            logger.debug(f"🔍 EXTENDED_CONTEXT: Found conversation_id in module global: {_current_conversation_id}")
             return _current_conversation_id
         
         # Try to get from thread-local context
         conversation_id = get_conversation_id()
         if conversation_id:
-            logger.info(f"🔍 EXTENDED_CONTEXT: Found conversation_id in thread-local: {conversation_id}")
+            logger.debug(f"🔍 EXTENDED_CONTEXT: Found conversation_id in thread-local: {conversation_id}")
             return conversation_id
         
-        logger.info("🔍 EXTENDED_CONTEXT: No conversation_id found")
+        logger.debug("🔍 EXTENDED_CONTEXT: No conversation_id found")
         return None
     
     def _should_use_extended_context(self, conversation_id: Optional[str] = None) -> bool:
@@ -203,11 +203,11 @@ class CustomBedrockClient:
         )
         
         # Retry the request with extended context headers
-        logger.info(f"🚀 EXTENDED_CONTEXT: About to retry streaming call with extended context")
+        logger.debug(f"🚀 EXTENDED_CONTEXT: About to retry streaming call with extended context")
         
         try:
             result = self.original_invoke(**kwargs)
-            logger.info(f"🚀 EXTENDED_CONTEXT: Streaming retry completed successfully")
+            logger.debug(f"🚀 EXTENDED_CONTEXT: Streaming retry completed successfully")
             return result
         except Exception as retry_error:
             retry_error_str = str(retry_error)
@@ -240,7 +240,7 @@ class CustomBedrockClient:
             
             # Extract conversation_id from request context
             conversation_id = self._extract_conversation_id_from_request(kwargs)
-            logger.info(f"🔍 EXTENDED_CONTEXT: Extracted conversation_id = {conversation_id}")
+            logger.debug(f"🔍 EXTENDED_CONTEXT: Extracted conversation_id = {conversation_id}")
             
             # Add extended context headers if needed
             kwargs = self._add_extended_context_headers(kwargs, conversation_id)
@@ -248,7 +248,7 @@ class CustomBedrockClient:
             # PROACTIVE EXTENDED CONTEXT: Check if we should use extended context before attempting
             if 'body' in kwargs and isinstance(kwargs['body'], str) and conversation_id:
                 if self.should_use_extended_context_proactively(len(kwargs['body']), conversation_id):
-                    logger.info(f"🚀 PROACTIVE_EXTENDED_CONTEXT: Large request detected, activating extended context")
+                    logger.debug(f"🚀 PROACTIVE_EXTENDED_CONTEXT: Large request detected, activating extended context")
                     return self._retry_with_extended_context(kwargs, "Proactive extended context activation", conversation_id)
             
             # If body is in kwargs, modify it to include max_tokens
@@ -343,7 +343,7 @@ class CustomBedrockClient:
                             standard_limit, _ = self._get_context_limits()
                             proactive_threshold = int(standard_limit * 0.85)  # 85% of standard limit
                             if estimated_tokens > proactive_threshold:
-                                logger.info(f"🚀 PROACTIVE_EXTENDED_CONTEXT: Large request ({estimated_tokens:,} tokens > {proactive_threshold:,} threshold), using extended context")
+                                logger.debug(f"🚀 PROACTIVE_EXTENDED_CONTEXT: Large request ({estimated_tokens:,} tokens > {proactive_threshold:,} threshold), using extended context")
                                 return self._retry_with_extended_context(kwargs, "Proactive extended context", conversation_id)
                             
                             # Otherwise, try standard context reduction
@@ -380,13 +380,13 @@ class CustomBedrockClient:
                     
                     # For streaming calls, let StreamingToolExecutor handle extended context
                     # to avoid breaking async context
-                    logger.info("🔍 EXTENDED_CONTEXT: Skipping CustomBedrockClient retry for streaming - letting StreamingToolExecutor handle it")
+                    logger.debug("🔍 EXTENDED_CONTEXT: Skipping CustomBedrockClient retry for streaming - letting StreamingToolExecutor handle it")
                     raise
                     error_message = str(e)
-                    logger.info(f"🔍 EXTENDED_CONTEXT: Checking error for extended context retry: {error_message[:100]}...")
-                    logger.info(f"🔍 EXTENDED_CONTEXT: conversation_id = {conversation_id}")
-                    logger.info(f"🔍 EXTENDED_CONTEXT: supports_extended_context = {self._supports_extended_context()}")
-                    logger.info(f"🔍 EXTENDED_CONTEXT: should_use_extended_context = {self._should_use_extended_context(conversation_id) if conversation_id else 'N/A'}")
+                    logger.debug(f"🔍 EXTENDED_CONTEXT: Checking error for extended context retry: {error_message[:100]}...")
+                    logger.debug(f"🔍 EXTENDED_CONTEXT: conversation_id = {conversation_id}")
+                    logger.debug(f"🔍 EXTENDED_CONTEXT: supports_extended_context = {self._supports_extended_context()}")
+                    logger.debug(f"🔍 EXTENDED_CONTEXT: should_use_extended_context = {self._should_use_extended_context(conversation_id) if conversation_id else 'N/A'}")
                     
                     if (("Input is too long" in error_message or 
                          "input length and `max_tokens` exceed context limit" in error_message) and
@@ -400,7 +400,7 @@ class CustomBedrockClient:
                         except Exception as retry_error:
                             logger.error(f"Extended context retry failed: {retry_error}")
                     else:
-                        logger.info("🔍 EXTENDED_CONTEXT: Extended context retry conditions not met")
+                        logger.debug("🔍 EXTENDED_CONTEXT: Extended context retry conditions not met")
                     
                     # Fall back to original method if our customization fails
                     return self.original_invoke(**kwargs)

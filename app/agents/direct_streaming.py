@@ -127,10 +127,10 @@ class DirectStreamingAgent:
                 if conversation_id:
                     import app.utils.custom_bedrock as custom_bedrock_module
                     custom_bedrock_module._current_conversation_id = conversation_id
-                    logger.info(f"🔍 DIRECT_STREAMING: Set conversation_id in module global: {conversation_id}")
+                    logger.debug(f"🔍 DIRECT_STREAMING: Set conversation_id in module global: {conversation_id}")
                     
                     self.executor.conversation_id = conversation_id
-                    logger.info(f"🔍 DIRECT_STREAMING: Set conversation_id on executor: {conversation_id}")
+                    logger.debug(f"🔍 DIRECT_STREAMING: Set conversation_id on executor: {conversation_id}")
                 
                 # Convert messages to OpenAI format for Bedrock
                 openai_messages = self.convert_langchain_to_openai(messages)
@@ -148,14 +148,14 @@ class DirectStreamingAgent:
                     
                     if chunk.get('type') == 'tool_execution':
                         tool_results_sent += 1
-                        logger.info(f"🔍 STREAMING_TOOL_RESULT: #{tool_results_sent}, tool={chunk.get('tool_name')}, size={chunk_size}")
+                        logger.debug(f"🔍 STREAMING_TOOL_RESULT: #{tool_results_sent}, tool={chunk.get('tool_name')}, size={chunk_size}")
                     
                     if chunk_count <= 3:
                         logger.debug(f"DIRECT_STREAMING: Got Bedrock chunk {chunk_count}: {chunk.get('type', 'unknown')}")
                     yield chunk
             
                 logger.debug(f"DIRECT_STREAMING: Finished Bedrock streaming, total chunks: {chunk_count}")
-                logger.info(f"🔍 STREAMING_SUMMARY: total_chunks={chunk_count}, tool_results_sent={tool_results_sent}, largest_chunk={largest_chunk}")
+                logger.debug(f"🔍 STREAMING_SUMMARY: total_chunks={chunk_count}, tool_results_sent={tool_results_sent}, largest_chunk={largest_chunk}")
 
             else:
                 # Use the new DirectGoogleModel for Google models, which handles native tool calling

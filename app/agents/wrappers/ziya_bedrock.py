@@ -194,7 +194,7 @@ class ZiyaBedrock(Runnable):
         prepared_messages = []
         for message in messages:
             if isinstance(message, SystemMessage) and len(message.content) > 10000:
-                logger.info(f"🔍 CACHE: Analyzing system message with {len(message.content):,} characters")
+                logger.debug(f"🔍 CACHE: Analyzing system message with {len(message.content):,} characters")
                 
                 # Split context into stable and dynamic parts
                 context_split = self._split_system_message_context(
