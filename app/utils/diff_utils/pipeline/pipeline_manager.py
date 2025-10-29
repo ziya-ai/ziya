@@ -396,6 +396,79 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
     """
     logger.debug("Applying patch directly without dry-run")
     
+    # CRITICAL: Check for ambiguous context before applying
+    print("DEBUG: Starting ambiguity check")  # DEBUG
+    from ..parsing.diff_parser import parse_unified_diff_exact_plus
+    from ..validation.validators import normalize_line_for_comparison
+    
+    file_path = pipeline.file_path
+    logger.debug(f"Checking for ambiguous context in {file_path}")
+    if os.path.exists(file_path):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            file_lines = f.read().splitlines(True)
+        
+        normalized_file = [normalize_line_for_comparison(line) for line in file_lines]
+        hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
+        logger.debug(f"Parsed {len(hunks)} hunks for ambiguity check")
+        
+        for hunk in hunks:
+            old_block = hunk.get('old_block', [])
+            if not old_block:
+                continue
+                
+            normalized_old_block = [normalize_line_for_comparison(line) for line in old_block]
+            
+            # Find all occurrences of this block
+            occurrences = []
+            for pos in range(len(normalized_file) - len(normalized_old_block) + 1):
+                file_slice = normalized_file[pos:pos + len(normalized_old_block)]
+                if file_slice == normalized_old_block:
+                    occurrences.append(pos)
+            
+            logger.debug(f"Hunk #{hunk.get('number')}: Found {len(occurrences)} occurrences at positions {occurrences}")
+            
+            if len(occurrences) > 1:
+                # Check if multiple occurrences are equally close to expected position
+                expected_pos = hunk.get('old_start', 1) - 1
+                closest_distance = min(abs(pos - expected_pos) for pos in occurrences)
+                equally_close = [pos for pos in occurrences if abs(pos - expected_pos) == closest_distance]
+                
+                logger.debug(f"Expected position: {expected_pos}, closest distance: {closest_distance}, equally close: {equally_close}")
+                
+                # Reject if offset is very large (>100 lines) - too ambiguous
+                if closest_distance > 100:
+                    logger.error(f"Hunk #{hunk.get('number')}: Closest match is {closest_distance} lines away (>100). "
+                               f"Too ambiguous to safely apply.")
+                    for hunk_id in pipeline.result.hunks:
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.SYSTEM_PATCH,
+                            status=HunkStatus.FAILED,
+                            error_details={
+                                "error": "ambiguous_context",
+                                "closest_distance": closest_distance,
+                                "reason": "Closest match is >100 lines away - too ambiguous"
+                            }
+                        )
+                    return False
+                
+                if len(equally_close) > 1:
+                    logger.error(f"Hunk #{hunk.get('number')}: Context matches {len(equally_close)} locations equally "
+                               f"at positions {equally_close}. Too ambiguous for system patch to safely apply.")
+                    # Mark all hunks as failed due to ambiguity
+                    for hunk_id in pipeline.result.hunks:
+                        pipeline.update_hunk_status(
+                            hunk_id=hunk_id,
+                            stage=PipelineStage.SYSTEM_PATCH,
+                            status=HunkStatus.FAILED,
+                            error_details={
+                                "error": "ambiguous_context",
+                                "equally_close_matches": equally_close,
+                                "reason": "Context matches multiple locations equally - cannot safely determine target"
+                            }
+                        )
+                    return False
+    
     # Calculate adaptive timeout based on diff size
     diff_lines = len(git_diff.splitlines())
     timeout = min(10, max(2, diff_lines / 100))  # 2-10 seconds
@@ -417,6 +490,11 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         logger.debug(f"Patch stderr: {patch_result.stderr}")
         logger.debug(f"Patch return code: {patch_result.returncode}")
         
+        # Check return code first
+        if patch_result.returncode != 0:
+            logger.warning(f"Patch command failed with return code {patch_result.returncode}")
+            # Don't immediately fail - parse output to see if any hunks succeeded
+        
         # Handle misordered hunks
         if "misordered hunks" in patch_result.stderr:
             logger.warning("Patch reported misordered hunks - marking all hunks as failed")
@@ -431,6 +509,18 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         
         # Parse the patch output
         patch_status = parse_patch_output(patch_result.stdout, patch_result.stderr)
+        
+        # If parse_patch_output returns empty dict, it means general failure (malformed patch)
+        if not patch_status and patch_result.returncode != 0:
+            logger.error("Patch failed with no specific hunk status - marking all hunks as failed")
+            for hunk_id in pipeline.result.hunks:
+                pipeline.update_hunk_status(
+                    hunk_id=hunk_id,
+                    stage=PipelineStage.SYSTEM_PATCH,
+                    status=HunkStatus.FAILED,
+                    error_details={"error": "patch_failed", "stderr": patch_result.stderr}
+                )
+            return False
         
         # Update hunk statuses
         any_hunk_succeeded = False
