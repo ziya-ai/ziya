@@ -189,6 +189,8 @@ class RegistryIntegrationManager:
     def _add_to_config(self, server_name: str, config_entries: Dict[str, Any]) -> None:
         """Add configuration entries to mcp_config.json."""
         config = self._load_current_config()
+        if "mcpServers" not in config:
+            config["mcpServers"] = {}
         config["mcpServers"][server_name] = config_entries
         self._save_config(config)
     
@@ -209,69 +211,6 @@ class RegistryIntegrationManager:
                     'enabled': server_config.get('enabled', True),
                     'provider': server_config.get('registry_provider'),
                     'installation_path': server_config.get('installation_path')
-                })
-        
-        return installed
-    
-    async def uninstall_service(self, server_name: str) -> Dict[str, Any]:
-        """Uninstall a registry service."""
-        try:
-            config = self._load_current_config()
-            
-            if server_name not in config["mcpServers"]:
-                return {'status': 'error', 'error': f'Server {server_name} not found'}
-            
-            server_config = config["mcpServers"][server_name]
-            
-            # Only allow uninstalling registry services
-            if not server_config.get('registry_provider'):
-                return {'status': 'error', 'error': 'Cannot uninstall non-registry services'}
-            
-            # Remove installation directory if it exists
-            install_path = server_config.get('installation_path')
-            if install_path and os.path.exists(install_path):
-                import shutil
-                shutil.rmtree(install_path)
-                logger.info(f"Removed installation directory: {install_path}")
-            
-            # Remove from configuration
-            del config["mcpServers"][server_name]
-            self._save_config(config)
-            
-            # Restart MCP manager
-            if self.mcp_manager.is_initialized:
-                await self.mcp_manager.shutdown()
-                await self.mcp_manager.initialize()
-            
-            return {
-                'status': 'success',
-                'server_name': server_name,
-                'uninstalled': True
-            }
-            
-        except Exception as e:
-            logger.error(f"Error uninstalling service {server_name}: {e}")
-            return {
-                'status': 'error',
-                'server_name': server_name,
-                'error': str(e)
-            }
-    
-    def get_installed_services(self) -> List[Dict[str, Any]]:
-        """Get list of currently installed registry services."""
-        config = self._load_current_config()
-        installed = []
-        
-        for server_name, server_config in config["mcpServers"].items():
-            if server_config.get('registry_service'):
-                installed.append({
-                    'server_name': server_name,
-                    'service_id': server_config.get('service_id'),
-                    'service_name': server_config.get('description', server_name),
-                    'version': server_config.get('version'),
-                    'support_level': server_config.get('support_level'),
-                    'installed_at': server_config.get('installed_at'),
-                    'enabled': server_config.get('enabled', True)
                 })
         
         return installed
@@ -319,6 +258,31 @@ class RegistryIntegrationManager:
                 'server_name': server_name,
                 'error': str(e)
             }
+    
+    def get_installed_services(self) -> List[Dict[str, Any]]:
+        """Get list of currently installed registry services."""
+        config = self._load_current_config()
+        return self._get_installed_from_config(config)
+
+    def _get_installed_from_config(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract installed services from configuration."""
+        installed = []
+        
+        for server_name, server_config in config.get("mcpServers", {}).items():
+            if server_config.get('registry_provider'):
+                installed.append({
+                    'server_name': server_name,
+                    'service_id': server_config.get('service_id'),
+                    'service_name': server_config.get('description', server_name),
+                    'version': server_config.get('version'),
+                    'support_level': server_config.get('support_level'),
+                    'installed_at': server_config.get('installed_at'),
+                    'enabled': server_config.get('enabled', True),
+                    'provider': server_config.get('registry_provider'),
+                    'installation_path': server_config.get('installation_path')
+                })
+        
+        return installed
 
 
 # Global registry integration manager
