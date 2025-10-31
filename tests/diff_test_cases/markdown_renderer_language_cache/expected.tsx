@@ -60,12 +60,3 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         if (effectiveLang !== 'plaintext') {
             loadLanguage();
         }
-        else {
-            setIsLanguageLoaded(true);
-        }
-
-        return () => {
-            mounted = false;
-        };
-    }, [normalizedLang]); // Only re-run if language changes
-}
