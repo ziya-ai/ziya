@@ -668,6 +668,7 @@ def apply_diff_with_difflib_hybrid_forced(
                                 logger.info(f"Hunk #{hunk_idx}: Found better match at position {test_pos} with ratio {match_ratio:.2f}")
                                 remove_pos = test_pos
                                 found_match = True
+                                fuzzy_match_applied = True
                                 break
                         
                         if not found_match:
@@ -1217,12 +1218,53 @@ def apply_diff_with_difflib_hybrid_forced(
                     final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
             else:
                 # Standard application
-                if not boundary_corrected:
+                if fuzzy_match_applied and len(h.get('removed_lines', [])) > 0 and len(h.get('added_lines', [])) > 0:
+                    # Fuzzy match: preserve file's context, only apply changes
+                    from ..validation.validators import normalize_line_for_comparison
+                    
+                    old_block = h.get('old_block', [])
+                    removed_lines = h.get('removed_lines', [])
+                    added_lines = h.get('added_lines', [])
+                    
+                    # Build map: which old_block indices are removed lines
+                    removed_norm = [normalize_line_for_comparison(l) for l in removed_lines]
+                    old_block_norm = [normalize_line_for_comparison(l) for l in old_block]
+                    
+                    # Find positions of removed lines in old_block
+                    removed_positions = []
+                    removed_idx = 0
+                    for i, old_norm in enumerate(old_block_norm):
+                        if removed_idx < len(removed_norm) and old_norm == removed_norm[removed_idx]:
+                            removed_positions.append(i)
+                            removed_idx += 1
+                    
+                    # Build new section: use file's lines for context, added lines for changes
+                    new_section = []
+                    added_idx = 0
+                    for i in range(len(old_block)):
+                        file_idx = insert_pos + i
+                        if file_idx >= len(final_lines_with_endings):
+                            break
+                        
+                        if i in removed_positions:
+                            # This position has a removed line - replace with added
+                            if added_idx < len(added_lines):
+                                new_section.append(added_lines[added_idx] + dominant_ending)
+                                added_idx += 1
+                        else:
+                            # Context line - use file's version
+                            new_section.append(final_lines_with_endings[file_idx])
+                    
+                    # Replace the section
+                    final_lines_with_endings[insert_pos:insert_pos + len(old_block)] = new_section
+                elif not boundary_corrected:
                     # Only reconstruct if boundary verification didn't already correct it
                     new_lines_with_endings = []
                     for line in new_lines_content:
                         new_lines_with_endings.append(line + dominant_ending)
-                final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                    final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                else:
+                    final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
 
         # --- Update Offset ---
         # The actual number of lines removed might be different from actual_remove_count
