@@ -1451,6 +1451,52 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos}")
                     break
             
+            # Fallback: If not found in local search AND local search was very limited, try full file search
+            # Only do this if we had very few search positions (< 100), indicating line numbers are way off
+            if not found_applied_at_any_pos and len(search_positions) < 100 and 'new_lines' in hunk:
+                logger.info(f"Local already-applied search failed for hunk #{i} with limited search space, trying full file search")
+                new_lines = hunk.get('new_lines', [])
+                old_block = hunk.get('old_block', [])
+                normalized_new_lines = [normalize_line_for_comparison(line) for line in new_lines]
+                normalized_old_block = [normalize_line_for_comparison(line) for line in old_block]
+                
+                for pos in range(len(original_lines) - len(new_lines) + 1):
+                    file_slice = original_lines[pos:pos+len(new_lines)]
+                    normalized_file_slice = [normalize_line_for_comparison(line) for line in file_slice]
+                    
+                    # Check if new_lines matches
+                    if normalized_file_slice == normalized_new_lines:
+                        # For deletions/modifications, also verify old_block doesn't exist
+                        # If old_block still exists, the change hasn't been applied yet
+                        if old_block and old_block != new_lines:
+                            # Check if old_block exists anywhere in the file
+                            old_block_exists = False
+                            for check_pos in range(len(original_lines) - len(old_block) + 1):
+                                check_slice = original_lines[check_pos:check_pos+len(old_block)]
+                                normalized_check = [normalize_line_for_comparison(line) for line in check_slice]
+                                if normalized_check == normalized_old_block:
+                                    old_block_exists = True
+                                    break
+                            
+                            # If old content still exists, change is NOT applied
+                            if old_block_exists:
+                                logger.debug(f"Position {pos} has new content but old content still exists - not applied")
+                                continue
+                        
+                        found_applied_at_any_pos = True
+                        pipeline_hunk_id = hunk_id_mapping.get(i, hunk.get('number', i))
+                        
+                        if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
+                            update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.ALREADY_APPLIED, PipelineStage.DIFFLIB)
+                        else:
+                            pipeline.update_hunk_status(
+                                hunk_id=pipeline_hunk_id,
+                                stage=PipelineStage.DIFFLIB,
+                                status=HunkStatus.ALREADY_APPLIED
+                            )
+                        logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos} (found via full file search)")
+                        break
+            
             if not found_applied_at_any_pos:
                 logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) is not already applied")
                 all_hunks_found_applied = False
@@ -1561,6 +1607,11 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         skip_hunks=hunks_to_skip
                     )
                 modified_content = ''.join(modified_lines)
+                logger.info(f"Modified content has {len(modified_lines)} lines")
+                if len(modified_lines) > 55:
+                    logger.info(f"Line 54: {repr(modified_lines[53].rstrip())}")
+                    logger.info(f"Line 55: {repr(modified_lines[54].rstrip())}")
+                    logger.info(f"Line 56: {repr(modified_lines[55].rstrip())}")
                 
                 # CRITICAL VERIFICATION: Check if the content actually changed
                 if modified_content == original_content:
@@ -1628,6 +1679,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 logger.info("Successfully applied diff with hybrid forced mode - verified content changes")
 
                 # Write the modified content back to the file
+                logger.info(f"About to write {len(modified_content)} chars to file")
+                logger.info(f"First 200 chars of modified_content: {repr(modified_content[:200])}")
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(modified_content)
                     logger.info(f"Successfully wrote changes to {file_path}")
