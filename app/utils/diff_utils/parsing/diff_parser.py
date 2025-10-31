@@ -356,6 +356,27 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
     # Sort hunks by old_start to ensure they're processed in the correct order
     hunks.sort(key=lambda h: h['old_start'])
     
+    # CRITICAL FIX: Trim trailing empty lines that are parser artifacts
+    # Only trim when:
+    # 1. old_count == new_count (no net change in line count)
+    # 2. Both have exactly 1 excess line
+    # 3. Both end with empty string
+    # This indicates a shared context line artifact, not a legitimate diff
+    for hunk in hunks:
+        old_count = hunk.get('old_count', 0)
+        new_count = hunk.get('new_count', 0)
+        old_block = hunk.get('old_block', [])
+        new_lines = hunk.get('new_lines', [])
+        
+        old_excess = len(old_block) - old_count
+        new_excess = len(new_lines) - new_count
+        
+        # Only trim if counts are equal AND both have exactly 1 excess AND both end with empty
+        if (old_count == new_count and old_excess == 1 and new_excess == 1 and
+            old_block and old_block[-1] == '' and new_lines and new_lines[-1] == ''):
+            hunk['old_block'] = old_block[:-1]
+            hunk['new_lines'] = new_lines[:-1]
+    
     # Check if the diff has a "No newline at end of file" marker
     has_no_newline_marker = "No newline at end of file" in diff_content
     

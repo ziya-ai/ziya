@@ -38,7 +38,8 @@ def calculate_fast_similarity(chunk_lines: List[str], file_slice: List[str]) -> 
 def find_best_chunk_position(
     file_lines: List[str], 
     chunk_lines: List[str], 
-    expected_pos: int
+    expected_pos: int,
+    new_lines: List[str] = None
 ) -> Tuple[Optional[int], float]:
     """
     Find the best position in file_lines to apply chunk_lines.
@@ -258,9 +259,16 @@ def find_best_chunk_position(
         effective_threshold = confidence_threshold * 0.8
         logger.debug(f"Using lenient threshold {effective_threshold:.3f} for near-threshold match")
     
-    # Return None if confidence is too low, but first try full file search as fallback
-    if best_ratio < effective_threshold and should_try_full_file_search:
-        logger.warning(f"Local search failed (ratio={best_ratio:.3f}, threshold={effective_threshold:.3f}). Trying optimized full file search as fallback.")
+    # Check if line numbers are significantly off (>50 lines from expected)
+    line_offset = abs(best_pos - expected_pos) if best_pos is not None and expected_pos is not None else 0
+    significantly_off = line_offset > 50
+    
+    # Return None if confidence is too low OR line numbers are way off, but first try full file search
+    if (best_ratio < effective_threshold or significantly_off) and should_try_full_file_search:
+        if significantly_off:
+            logger.warning(f"Line numbers significantly off (offset={line_offset}). Trying full file search.")
+        else:
+            logger.warning(f"Local search failed (ratio={best_ratio:.3f}, threshold={effective_threshold:.3f}). Trying optimized full file search as fallback.")
         
         # OPTIMIZATION: Use a much more efficient full file search
         # Instead of checking every position, use a smarter approach
@@ -282,7 +290,11 @@ def find_best_chunk_position(
                 candidate_positions = []
                 for i, file_line in enumerate(file_lines):
                     if file_line.strip() == first_content_line:
-                        candidate_positions.append(i)
+                        # Add nearby positions (±5 lines) around each match
+                        for offset in range(-5, 6):
+                            check_pos = i + offset
+                            if 0 <= check_pos < len(file_lines) and check_pos not in candidate_positions:
+                                candidate_positions.append(check_pos)
                 
                 # Only check these candidate positions instead of the entire file
                 logger.debug(f"Found {len(candidate_positions)} candidate positions based on first content line")
@@ -298,6 +310,14 @@ def find_best_chunk_position(
                     
                     # Get the slice of file_lines to compare
                     file_slice = file_lines[pos:pos + len(chunk_lines)]
+                    
+                    # Check if already applied (file has new content)
+                    if new_lines and len(new_lines) == len(file_slice):
+                        new_content = ''.join(''.join(line.split()) for line in new_lines)
+                        file_content = ''.join(''.join(line.split()) for line in file_slice)
+                        if new_content == file_content:
+                            logger.debug(f"Position {pos} already has new content, skipping")
+                            continue
                     
                     # Use only the fastest similarity strategy for full file search
                     similarity_ratio = calculate_fast_similarity(chunk_lines, file_slice)
