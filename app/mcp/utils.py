@@ -185,6 +185,15 @@ def improved_parse_tool_call(response: str) -> Optional[Dict[str, Any]]:
             logger.error("🔧 MCP: Could not find TOOL_SENTINEL markers")
             return None
         
+        # Validate indices are within bounds
+        if start_idx < 0 or end_idx < 0 or start_idx >= len(response) or end_idx > len(response):
+            logger.error(f"🔧 MCP: Invalid sentinel indices: start={start_idx}, end={end_idx}, response_len={len(response)}")
+            return None
+            
+        if end_idx <= start_idx + len(sentinel_open):
+            logger.error("🔧 MCP: Invalid sentinel positions - end before or at start")
+            return None
+        
         # Extract content between sentinels
         tool_section = response[start_idx + len(sentinel_open):end_idx].strip()
         

@@ -465,14 +465,21 @@ class MCPTool(BaseTool):
     ) -> str:
         """Run the MCP tool synchronously."""
         logger.info(f"MCPTool._run called for {self.mcp_tool_name} with args: {kwargs}")
-        # Run the async version in a new event loop
+        
+        # Check if we're already in an event loop
         try:
             loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # We're in an async context, we need to create a task
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, self._arun(run_manager=run_manager, **kwargs))
+                    return future.result()
+            else:
+                return loop.run_until_complete(self._arun(run_manager=run_manager, **kwargs))
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(self._arun(run_manager=run_manager, **kwargs))
+            # No event loop, safe to create one
+            return asyncio.run(self._arun(run_manager=run_manager, **kwargs))
     
     async def _arun(
         self,
