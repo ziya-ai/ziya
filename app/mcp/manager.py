@@ -334,12 +334,17 @@ class MCPManager:
             if new_config:
                 server_config = new_config
             else:
-                # Reload all configs to get the specific server's config
-                await self._load_server_configs() 
+                # Get the specific server's config from current configs
                 server_config = self.server_configs.get(server_name)
                 if not server_config:
-                    logger.error(f"No configuration found for server '{server_name}' during restart.")
-                    return False
+                    # If not found, try to get from builtin definitions
+                    server_config = self.builtin_server_definitions.get(server_name)
+                    if not server_config:
+                        logger.error(f"No configuration found for server '{server_name}' during restart.")
+                        return False
+                    else:
+                        # Add the builtin config to server_configs
+                        self.server_configs[server_name] = server_config.copy()
             
             # Create and connect new client
             client = MCPClient(server_config)

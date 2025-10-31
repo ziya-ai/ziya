@@ -150,6 +150,87 @@ def create_secure_result_marker(tool_name: str, execution_time: float) -> str:
     """Create a secure result marker for tool output."""
     return f"🔐 **Secure Tool Execution**: {tool_name}\n⏱️ **Execution Time**: {execution_time:.2f}s\n\n"
 
+class DirectMCPTool(BaseTool):
+    """Wrapper for direct MCP tools that don't go through external servers."""
+    
+    def __init__(self, tool_instance):
+        """Initialize the direct MCP tool wrapper."""
+        self.tool_instance = tool_instance
+        
+        # Initialize BaseTool with the tool's metadata
+        super().__init__(
+            name=f"mcp_{tool_instance.name}",
+            description=f"[DIRECT] {tool_instance.description}",
+            args_schema=None  # Will be set from tool's input schema
+        )
+        
+        # Set the args schema if available
+        if hasattr(tool_instance, 'InputSchema'):
+            try:
+                # Convert Pydantic model to args schema
+                self.args_schema = tool_instance.InputSchema
+            except Exception as e:
+                logger.warning(f"Could not set args schema for {tool_instance.name}: {e}")
+    
+    def _run(self, **kwargs) -> str:
+        """Run the tool synchronously."""
+        import asyncio
+        
+        # Run the async execute method
+        try:
+            loop = asyncio.get_event_loop()
+            result = loop.run_until_complete(self.tool_instance.execute(**kwargs))
+        except RuntimeError:
+            # No event loop, create one
+            result = asyncio.run(self.tool_instance.execute(**kwargs))
+        
+        # Format the result
+        if isinstance(result, dict):
+            if result.get("error"):
+                return f"❌ Error: {result.get('message', 'Unknown error')}"
+            elif result.get("success"):
+                return result.get("message", "Operation completed successfully")
+            else:
+                return str(result)
+        else:
+            return str(result)
+    
+    async def _arun(self, **kwargs) -> str:
+        """Run the tool asynchronously."""
+        try:
+            result = await self.tool_instance.execute(**kwargs)
+            
+            # Format the result
+            if isinstance(result, dict):
+                if result.get("error"):
+                    return f"❌ Error: {result.get('message', 'Unknown error')}"
+                elif result.get("success"):
+                    # For successful operations, provide detailed response
+                    message = result.get("message", "Operation completed successfully")
+                    
+                    # Add additional details for folder creation
+                    if "folder" in result:
+                        folder = result["folder"]
+                        message += f"\n\nFolder Details:\n- ID: {folder['id']}\n- Name: {folder['name']}"
+                        if folder.get('parent_id'):
+                            message += f"\n- Parent: {folder['parent_id']}"
+                    
+                    # Add additional details for conversation creation  
+                    elif "conversation" in result:
+                        conv = result["conversation"]
+                        message += f"\n\nConversation Details:\n- ID: {conv['id']}\n- Title: {conv['title']}\n- URL: {conv.get('url', 'N/A')}"
+                        if conv.get('folder_id'):
+                            message += f"\n- Folder: {conv['folder_id']}"
+                    
+                    return message
+                else:
+                    return str(result)
+            else:
+                return str(result)
+        except Exception as e:
+            logger.error(f"Error executing direct MCP tool {self.name}: {e}")
+            return f"❌ Error executing {self.name}: {str(e)}"
+
 class SecureMCPTool(BaseTool):
     """Secure wrapper around MCP tools."""
     
@@ -628,6 +709,17 @@ def create_secure_mcp_tools() -> List[BaseTool]:
             )
             
             secure_tools.append(secure_tool)
+            
+        # Add conversation management tools if available
+        try:
+            # Check if conversation tools are available (placeholder for future implementation)
+            conversation_tools_available = False  # TODO: Implement conversation tools detection
+            if conversation_tools_available:
+                logger.info("Adding conversation management tools to secure MCP tools")
+                # TODO: Add conversation management tool integration
+        except Exception as e:
+            logger.error(f"Error adding conversation management tools: {e}")
+            
     except Exception as e:
         logger.warning(f"Failed to create secure MCP tools: {str(e)}")
         return []
@@ -637,6 +729,4 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     _tool_cache_timestamp = time.time()
     
     logger.info(f"🔐 Created {len(secure_tools)} secure MCP tools")
-    return secure_tools
-    
     return secure_tools
