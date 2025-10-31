@@ -170,6 +170,7 @@ app = FastAPI(
 @app.websocket("/ws/feedback/{conversation_id}")
 async def feedback_websocket(websocket: WebSocket, conversation_id: str):
     """WebSocket endpoint for real-time streaming feedback."""
+    logger.info(f"🔄 FEEDBACK: WebSocket connection attempt for conversation {conversation_id}")
     await websocket.accept()
     logger.info(f"🔄 FEEDBACK: WebSocket connected for conversation {conversation_id}")
     
@@ -429,6 +430,10 @@ async def connection_state_middleware(request: Request, call_next):
 # Import and include MCP routes
 from app.routes.mcp_routes import router as mcp_router
 app.include_router(mcp_router)
+
+# Import and include conversation management routes
+from app.routes.conversation_routes import router as conversation_router
+app.include_router(conversation_router)
 
 # Import and include MCP registry routes
 from app.routes.mcp_registry_routes import router as mcp_registry_router
@@ -3387,6 +3392,7 @@ def get_model_id():
 def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     """Get folder structure with caching and background scanning."""
     from app.utils.directory_util import get_folder_structure, get_scan_progress
+    from app.utils.directory_util import is_scan_healthy, get_basic_folder_structure
     import threading
     
     current_time = time.time()
@@ -3395,14 +3401,50 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     # Check if scan is already in progress
     scan_status = get_scan_progress()
     is_scanning = scan_status.get("active", False)
+    scan_start_time = scan_status.get("start_time", 0)
     
-    # If scan is active, return scanning indicator immediately
+    # Check for stuck or unhealthy scans
+    if is_scanning:
+        scan_duration = current_time - scan_start_time if scan_start_time > 0 else 0
+        if scan_duration > 300:  # 5 minutes timeout
+            logger.warning(f"Folder scan has been running for {scan_duration:.1f}s, considering it stuck")
+            from app.utils.directory_util import cancel_scan
+            cancel_scan()
+            is_scanning = False
+        elif not is_scan_healthy():
+            logger.warning("Folder scan appears unhealthy, cancelling")
+            from app.utils.directory_util import cancel_scan  
+            cancel_scan()
+            is_scanning = False
+    # Check if scan is already in progress
+    scan_status = get_scan_progress()
+    is_scanning = scan_status.get("active", False)
+    scan_start_time = scan_status.get("start_time", 0)
+    
+    # Check for stuck or unhealthy scans
+    if is_scanning:
+        scan_duration = time.time() - scan_start_time if scan_start_time > 0 else 0
+        if scan_duration > 300:  # 5 minutes timeout
+            logger.warning(f"Folder scan has been running for {scan_duration:.1f}s, considering it stuck")
+            from app.utils.directory_util import cancel_scan
+            cancel_scan()
+            is_scanning = False
+        elif not is_scan_healthy():
+            logger.warning("Folder scan appears unhealthy, cancelling")
+            from app.utils.directory_util import cancel_scan  
+            cancel_scan()
+            is_scanning = False
+    
+    # If scan is active and healthy, return scanning indicator
     if is_scanning:
         logger.info("Scan in progress, returning scanning indicator")
         return {"_scanning": True, "children": {}}
     
     # Return cached results if available (even if old - cache is persistent)
     if _folder_cache['data'] is not None:
+        # Add staleness indicator if cache is very old (> 1 hour)
+        if cache_age > 3600:
+            return {**_folder_cache['data'], "_stale": True}
         logger.info(f"Returning cached folder structure (age: {cache_age:.1f}s)")
         return _folder_cache['data']
     
@@ -3410,6 +3452,15 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     global _background_scan_thread
     if _background_scan_thread is None or not _background_scan_thread.is_alive():
         def background_scan():
+            scan_start = time.time()
+            logger.info(f"Background scan starting for {directory}")
+            
+            # Update scan progress to indicate start
+            from app.utils.directory_util import _scan_progress
+            with _scan_progress_lock if '_scan_progress_lock' in globals() else threading.Lock():
+                _scan_progress["active"] = True
+                _scan_progress["start_time"] = scan_start
+                _scan_progress["last_update"] = scan_start
             try:
                 from app.utils.directory_util import _scan_progress
                 _scan_progress["active"] = True
@@ -3417,6 +3468,7 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
                 
                 logger.debug(f"🔥 Background scan starting for {directory}")
                 result = get_folder_structure(directory, ignored_patterns, max_depth)
+                _scan_progress["last_update"] = time.time()  # Mark progress update
                 logger.debug(f"🔥 Scan complete: {len(result)} entries")
                 _folder_cache['data'] = result
                 _folder_cache['timestamp'] = time.time()
@@ -3424,6 +3476,14 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
                 logger.error(f"🔥 Scan error: {e}")
             finally:
                 _scan_progress["active"] = False
+                scan_end = time.time()
+                logger.info(f"Background scan completed in {scan_end - scan_start:.1f}s")
+        
+        # Clean up any stuck previous thread
+        if _background_scan_thread and _background_scan_thread.is_alive():
+            logger.warning("Abandoning stuck background scan thread")
+            # Don't join() stuck threads - just abandon them
+            _background_scan_thread = None
         
         _background_scan_thread = threading.Thread(target=background_scan, daemon=True)
         _background_scan_thread.start()
@@ -3431,7 +3491,27 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
         time.sleep(0.05)  # Let thread start
     
     # Return scanning indicator
-    return {"_scanning": True, "children": {}}
+    # Last resort: if we get here and there's still no data, try basic structure
+    try:
+        logger.warning("No cache available and no scan running, attempting basic folder read")
+        return get_basic_folder_structure(directory)
+    except Exception as e:
+        logger.error(f"Basic folder structure also failed: {e}")
+        return {
+            "children": {},
+            "_error": f"Unable to read directory: {str(e)}",
+            "_scanning": False
+        }
+    try:
+        logger.warning("No cache available and no scan running, attempting basic folder read")
+        return get_basic_folder_structure(directory)
+    except Exception as e:
+        logger.error(f"Basic folder structure also failed: {e}")
+        return {
+            "children": {},
+            "_error": f"Unable to read directory: {str(e)}",
+            "_scanning": False
+        }
 
 @app.get('/api/folders')
 async def api_get_folders():

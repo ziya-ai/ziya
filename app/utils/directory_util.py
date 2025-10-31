@@ -19,7 +19,7 @@ _folder_cache = {
 }
 
 # Global progress tracking
-_scan_progress = {"active": False, "progress": {}, "cancelled": False}
+_scan_progress = {"active": False, "progress": {}, "cancelled": False, "start_time": 0, "last_update": 0}
 
 # Add new globals for background scanning
 _scan_thread: Optional[threading.Thread] = None
@@ -260,6 +260,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     global _scan_progress
     _scan_progress["active"] = True
     _scan_progress["cancelled"] = False
+    _scan_progress["start_time"] = time.time()
+    _scan_progress["last_update"] = time.time()
     _scan_progress["progress"] = {
         "directories": 0,
         "files": 0,
@@ -309,6 +311,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             "files": scan_stats['files_processed'],
             "elapsed": int(elapsed)
         }
+        _scan_progress["last_update"] = time.time()
         
         if depth > max_depth:
             return {'token_count': 0}
@@ -728,6 +731,48 @@ def cancel_scan():
     _scan_progress["cancelled"] = True
     return _scan_progress["active"]
 
+def is_scan_healthy() -> bool:
+    """Check if the current scan is healthy (making progress and not stuck)."""
+    global _scan_progress, _scan_thread
+    
+    if not _scan_thread or not _scan_thread.is_alive():
+        return False
+        
+    current_time = time.time()
+    start_time = _scan_progress.get("start_time", 0)
+    last_update = _scan_progress.get("last_update", 0)
+    
+    # Consider scan unhealthy if:
+    # 1. Running for more than 5 minutes (300 seconds)
+    # 2. No progress update in the last 2 minutes (120 seconds)
+    if start_time == 0:
+        return True  # No start time recorded, assume healthy
+        
+    return (current_time - start_time < 300) and (current_time - last_update < 120)
+
+def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
+    """
+    Get a basic folder structure as fallback when full scanning fails.
+    This provides minimal functionality instead of perpetual scanning state.
+    """
+    try:
+        basic_structure = {"children": {}}
+        
+        # Try to list immediate directory contents only
+        for item in os.listdir(directory):
+            if item.startswith('.'):
+                continue  # Skip hidden files/folders
+            item_path = os.path.join(directory, item)
+            if os.path.isdir(item_path):
+                basic_structure["children"][item] = {"children": {}, "token_count": 0}
+            elif os.path.isfile(item_path):
+                basic_structure["children"][item] = {"token_count": 0}
+                
+        return basic_structure
+    except Exception as e:
+        logger.error(f"Even basic folder structure failed: {e}")
+        return {"children": {}, "_error": f"Directory access failed: {str(e)}"}
+
     def start_background_scan(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
         """Starts the folder scan in a background thread if not already running."""
         global _scan_thread, _folder_cache
@@ -779,20 +824,32 @@ def cancel_scan():
                 logger.info(f"Returning fresh folder structure cache (age: {cache_age:.1f}s)")
             return _folder_cache['data']
         
-            # If cache is stale or doesn't exist, manage background scan
-            with _scan_lock:
-                is_scanning = _scan_thread and _scan_thread.is_alive()
-                
-                if not is_scanning:
-                    logger.info("Cache is stale or missing. Starting new background scan.")
-                    start_background_scan(directory, ignored_patterns, max_depth)
-                else:
-                    logger.info("Folder scan is already in progress.")
+    # If cache is stale or doesn't exist, manage background scan
+    with _scan_lock:
+        is_scanning = _scan_thread and _scan_thread.is_alive()
         
+        # Check if scan is healthy if it appears to be running
+        if is_scanning and not is_scan_healthy():
+            logger.warning("Scan appears stuck, cleaning up and restarting")
+            _scan_progress["active"] = False
+            _scan_progress["error"] = "Scan timed out or stalled"  
+            # Abandon stuck thread (don't join)
+            _scan_thread = None
+            is_scanning = False
+        
+        if not is_scanning:
+            logger.info("Cache is stale or missing. Starting new background scan.")
+            start_background_scan(directory, ignored_patterns, max_depth)
+            # Give scan a moment to start
+            time.sleep(0.1)
+            return {"_scanning": True, "children": {}}
+        else:
+            logger.info("Folder scan is already in progress.")
             # Return current state (stale cache or empty dict) and indicate scanning
             if _folder_cache['data']:
                 logger.info("Returning stale cache while scan runs in background.")
                 return {**_folder_cache['data'], "_stale_and_scanning": True}
             else:
                 logger.info("No cache available. Indicating scan is in progress.")
+                return {"_scanning": True, "children": {}}
                 return {"_scanning": True}
