@@ -260,6 +260,44 @@ class StreamingToolExecutor:
         for iteration in range(50):  # Increased from 20 to support more complex tasks
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             
+            # Check for user feedback at the start of each iteration
+            if conversation_id and iteration > 0:  # Skip check on first iteration
+                try:
+                    from app.server import active_feedback_connections
+                    if conversation_id in active_feedback_connections:
+                        feedback_queue = active_feedback_connections[conversation_id]['feedback_queue']
+                        try:
+                            feedback_data = feedback_queue.get_nowait()
+                            if feedback_data.get('type') == 'tool_feedback':
+                                feedback_message = feedback_data.get('message', '')
+                                logger.info(f"🔄 FEEDBACK_INTEGRATION: Iteration-level feedback: {feedback_message}")
+                                if any(stop_word in feedback_message.lower() for stop_word in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                                    yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {feedback_message}\n**Stopping execution as requested.**\n\n"})
+                                    yield track_yield({'type': 'stream_end'})
+                                    return
+                                else:
+                                    # Handle directive feedback at iteration level
+                                    logger.info(f"🔄 FEEDBACK_INTEGRATION: Iteration-level directive: {feedback_message}")
+                                    
+                                    # Add feedback to conversation so model can respond
+                                    conversation.append({
+                                        "role": "user",
+                                        "content": f"[User feedback]: {feedback_message}"
+                                    })
+                                    
+                                    # Let user know feedback was received
+                                    yield track_yield({
+                                        'type': 'text',
+                                        'content': f"\n\n**Feedback received:** {feedback_message}\n**Adjusting approach...**\n\n"
+                                    })
+                                    
+                                    # Continue with the iteration, but now the conversation includes user feedback
+                                    logger.info(f"🔄 FEEDBACK_INTEGRATION: Added feedback to conversation, continuing iteration")
+                        except asyncio.QueueEmpty:
+                            pass
+                except Exception as e:
+                    logger.debug(f"Error checking iteration feedback: {e}")
+            
             # Log last 2 messages to debug conversation state
             if len(conversation) >= 2:
                 for i, msg in enumerate(conversation[-2:]):
@@ -670,6 +708,52 @@ class StreamingToolExecutor:
                                     'args': args,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                 }
+                                
+                                # Check for user feedback before executing tool
+                                if conversation_id:
+                                    try:
+                                        from app.server import active_feedback_connections
+                                        if conversation_id in active_feedback_connections:
+                                            feedback_queue = active_feedback_connections[conversation_id]['feedback_queue']
+                                            # Check for feedback without blocking
+                                            try:
+                                                feedback_data = feedback_queue.get_nowait()
+                                                if feedback_data.get('type') == 'tool_feedback':
+                                                    feedback_message = feedback_data.get('message', '')
+                                                    logger.info(f"🔄 FEEDBACK_INTEGRATION: Received feedback: {feedback_message}")
+                                                    # If feedback suggests stopping, break out of tool execution
+                                                    if any(stop_word in feedback_message.lower() for stop_word in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                                                        logger.info(f"🔄 FEEDBACK_INTEGRATION: Feedback indicates stop - ending tool execution")
+                                                        yield track_yield({'type': 'text', 'content': f"\n\n**User feedback received:** {feedback_message}\n**Stopping tool execution as requested.**\n\n"})
+                                                        # Flush any remaining content
+                                                        await asyncio.sleep(0.1)  # Give frontend time to process
+                                                        yield track_yield({'type': 'stream_end'})
+                                                        return
+                                                    else:
+                                                        # Handle directive feedback - add to conversation for model to see
+                                                        logger.info(f"🔄 FEEDBACK_INTEGRATION: Adding directive feedback to conversation: {feedback_message}")
+                                                        
+                                                        # Add user feedback as a message to the conversation
+                                                        conversation.append({
+                                                            "role": "user", 
+                                                            "content": f"[Real-time feedback]: {feedback_message}"
+                                                        })
+                                                        
+                                                        # Acknowledge the feedback to user
+                                                        yield track_yield({
+                                                            'type': 'text', 
+                                                            'content': f"\n\n**Feedback received:** {feedback_message}\n\n"
+                                                        })
+                                                        
+                                                        # Skip the current planned tool and let the model respond to feedback
+                                                        logger.info(f"🔄 FEEDBACK_INTEGRATION: Skipping planned tool to respond to feedback")
+                                                        completed_tools.add(tool_id)
+                                                        tools_executed_this_iteration = True
+                                                        continue
+                                            except asyncio.QueueEmpty:
+                                                pass  # No feedback available, continue normally
+                                    except Exception as e:
+                                        logger.debug(f"Error checking feedback: {e}")
                                 
                                 # Execute the tool immediately
                                 try:
