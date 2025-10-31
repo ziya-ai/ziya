@@ -79,38 +79,6 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
     logger.debug("No new file indicators found")
     return False
 
-def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
-    """
-    Detect if the file is in a malformed state where both old content (to be removed)
-    and new content (to be added) exist simultaneously in the file.
-    
-    This indicates clear content duplication/corruption.
-    
-    Args:
-        file_lines: The current file content as a list of lines
-        hunk: The hunk to check
-        
-    Returns:
-        True if malformed state is detected, False otherwise
-    """
-    removed_lines, added_lines = extract_diff_changes(hunk)
-    
-    # Only check replacement operations (hunks with both removals and additions)
-    if not removed_lines or not added_lines:
-        return False
-    
-    # Convert to normalized strings for searching
-    file_content_normalized = "\n".join([normalize_line_for_comparison(line) for line in file_lines])
-    removed_content = "\n".join([normalize_line_for_comparison(line) for line in removed_lines])
-    added_content = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
-    
-    # Only flag as malformed if BOTH old and new content exist in the file
-    # This indicates clear duplication/corruption
-    old_content_exists = removed_content in file_content_normalized
-    new_content_exists = added_content in file_content_normalized
-    
-    return old_content_exists and new_content_exists
-
 from functools import lru_cache
 
 @lru_cache(maxsize=8192)
@@ -135,7 +103,7 @@ def normalize_line_for_comparison(line: str) -> str:
     from ..core.escape_handling import normalize_escape_sequences
     normalized = normalize_escape_sequences(normalized, preserve_literals=True)
     
-    # Finally normalize whitespace - only trim leading/trailing
+    # Strip all whitespace for fuzzy matching
     normalized = normalized.strip()
     
     return normalized
@@ -177,8 +145,12 @@ def extract_diff_changes(hunk: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     removed_lines = []
     added_lines = []
     
-    # First try to extract from old_block and new_block (preferred format)
-    if 'old_block' in hunk and 'new_block' in hunk:
+    # First try direct fields (preferred format from parse_unified_diff_exact_plus)
+    if 'removed_lines' in hunk and 'added_lines' in hunk:
+        removed_lines = hunk.get('removed_lines', [])
+        added_lines = hunk.get('added_lines', [])
+    # Try to extract from old_block and new_block
+    elif 'old_block' in hunk and 'new_block' in hunk:
         for line in hunk.get('old_block', []):
             if line.startswith('-') and not line.startswith('--- '):
                 removed_lines.append(line[1:])
@@ -232,6 +204,12 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
         added_content_exact = "\n".join(added_lines)
         removed_content_normalized = "\n".join([normalize_line_for_comparison(line) for line in removed_lines])
         added_content_normalized = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
+        
+        # CRITICAL: If one content is a substring of the other, this is a legitimate edit (e.g., removing trailing comma)
+        # Check if the new content is contained within the old content or vice versa
+        if removed_content_normalized in added_content_normalized or added_content_normalized in removed_content_normalized:
+            logger.debug("One content is substring of the other - this is a legitimate edit, not malformed")
+            return False
         
         # Check both exact and normalized content
         old_content_exists_exact = removed_content_exact in file_content_exact
