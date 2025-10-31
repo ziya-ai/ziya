@@ -217,6 +217,7 @@ class MCPClient:
                 
         except Exception as e:
             logger.error(f"Error connecting to MCP server: {str(e)}")
+            self.is_connected = False
             await self.disconnect()
             return False
     
@@ -249,16 +250,24 @@ class MCPClient:
         # Only check if process is actually running, not based on call timeouts
         # A server shouldn't be marked unhealthy just because it hasn't been used recently
         return True
-    
+        
     async def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None, _retry_count: int = 0) -> Optional[Dict[str, Any]]:
         """Send a JSON-RPC request to the MCP server."""
+        # Standardized error response structure
+        def create_error_response(message: str, code: int = -32000) -> Dict[str, Any]:
+            return {
+                "error": True,
+                "message": message,
+                "code": code
+            }
+        
         import time
         start_time = time.time()
         
         max_retries = 3
         
         if not self.process or not self.process.stdin:
-            return None
+            return create_error_response("No active process or stdin not available")
             
         # Check process health before sending request
         if not self._is_process_healthy():
@@ -266,7 +275,7 @@ class MCPClient:
             now = time.time()
             if now - self._last_reconnect_attempt < 30:  # Wait 30 seconds between attempts
                 logger.warning("Process unhealthy, but reconnection rate limited")
-                return None
+                return create_error_response("Process unhealthy and reconnection rate limited")
                 
             logger.warning("Process unhealthy, attempting reconnection")
             self._last_reconnect_attempt = now
@@ -274,7 +283,7 @@ class MCPClient:
                 logger.info("Reconnection successful, retrying request")
             else:
                 logger.error("Reconnection failed")
-                return None
+                return create_error_response("Reconnection failed")
             
         self.request_id += 1
         request = {
@@ -316,7 +325,7 @@ class MCPClient:
                                 logger.error(f"Remaining output: {remaining_output_bytes.decode('utf-8', errors='ignore')}")
                         except:
                             pass
-                    return None
+                    return create_error_response("No response from MCP server (EOF)")
                 
                 response_line = response_line_bytes.decode('utf-8')
 
@@ -329,7 +338,7 @@ class MCPClient:
                 }
             except Exception as e:
                 logger.error(f"Error reading from MCP server: {e}")
-                return None
+                return create_error_response(f"Error reading from MCP server: {str(e)}")
 
             response = json.loads(response_line.strip())
 
@@ -367,7 +376,7 @@ class MCPClient:
             
         except Exception as e:
             logger.error(f"Error sending MCP request: {str(e)}")
-            return None
+            return create_error_response(f"Error sending MCP request: {str(e)}")
     
     async def _send_notification(self, method: str, params: Optional[Dict[str, Any]] = None):
         """Send a JSON-RPC notification to the MCP server."""
