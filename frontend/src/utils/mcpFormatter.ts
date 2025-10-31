@@ -53,7 +53,7 @@ export function formatMCPOutput(
   
   // Handle shell command outputs specially
   if (toolName === 'mcp_run_shell_command' && typeof result === 'string') {
-    return formatShellCommand(result, { ...options, input, toolSummary });
+    return formatShellCommand(result, { ...options, input, toolSummary, showInput: false });
   }
   
   // Handle workspace search outputs specially
@@ -119,7 +119,7 @@ export function formatMCPOutput(
   // Handle string results
   if (typeof result === 'string') {
     // Check if it's a large text output that should be collapsed
-    const shouldCollapse = result.length > 500 || result.split('\n').length > 20;
+    const shouldCollapse = result.length > 500 || result.split('\n').length > 10;
     
     // Check if it's JSON-like
     if ((result.startsWith('{') || result.startsWith('[')) && result.length > 2) {
@@ -129,36 +129,36 @@ export function formatMCPOutput(
       } catch (e) {
         // Not JSON, treat as plain text
         return {
-          content: showInput ? `Input: ${formatInput(input)}\n\nResult:\n${result}` : result,
+          content: result,
           type: 'text',
-          showInput,
+          showInput: false,
           collapsed: shouldCollapse && defaultCollapsed,
-          summary: shouldCollapse ? `${toolSummary || 'Text output'} (${result.length} chars, ${result.split('\n').length} lines)` : toolSummary
+          summary: shouldCollapse ? `Output (${result.length} chars, ${result.split('\n').length} lines)` : undefined
         };
       }
     }
     return {
       content: showInput ? `Input: ${formatInput(input)}\n\nResult:\n${result}` : result,
       type: 'text',
-      showInput,
+      showInput: false,
       collapsed: shouldCollapse && defaultCollapsed,
-      summary: shouldCollapse ? `${toolSummary || 'Text output'} (${result.length} chars, ${result.split('\n').length} lines)` : toolSummary
+      summary: shouldCollapse ? `Output (${result.length} chars, ${result.split('\n').length} lines)` : undefined
     };
   }
   
   // Handle object/array results
   if (typeof result === 'object' && result !== null) {
-    return formatObject(result, { maxLength, showInput, input, compact, defaultCollapsed, toolSummary });
+    return formatObject(result, { maxLength, showInput: false, input, compact, defaultCollapsed, toolSummary });
   }
   
   // Handle primitive types
   const stringResult = String(result);
   return {
-    content: showInput ? `Input: ${formatInput(input)}\n\nResult: ${stringResult}` : stringResult,
+    content: stringResult,
     type: 'text',
-    showInput,
+    showInput: false,
     collapsed: false,
-    summary: toolSummary
+    summary: undefined
   };
 }
 

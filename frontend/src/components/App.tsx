@@ -27,7 +27,6 @@ const MCPRegistryModal = React.lazy(() => import("./MCPRegistryModal"));
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
 const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
-const FeedbackInput = React.lazy(() => import("./FeedbackInput"));
 
 // Error boundary component to catch extension context errors
 class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
@@ -740,14 +739,6 @@ export const App: React.FC = () => {
                                 />
                             </>
                         )}
-                    </Suspense>
-
-                    {/* Real-time feedback input */}
-                    <Suspense fallback={null}>
-                        <FeedbackInput 
-                            conversationId={currentConversationId}
-                            isStreaming={isStreaming}
-                        />
                     </Suspense>
 
                 </ConfigProvider>

@@ -413,7 +413,8 @@ export const MUIFileExplorer = () => {
       // Cast folders to any to avoid TypeScript error
       const sortedData = sortTreeData(convertToTreeData(folders as any));
       
-      // Set tree data in a stable way
+      // Set tree data first, then mark as loaded
+      setTreeData(sortedData);
       setHasLoadedData(true);
       setIsInitialLoad(false);
       

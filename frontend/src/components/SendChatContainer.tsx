@@ -20,6 +20,12 @@ interface SendChatContainerProps {
     empty?: boolean;
 }
 
+interface FeedbackReadyEvent {
+    toolId: string;
+    toolName: string;
+    conversationId: string;
+}
+
 export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed = false, empty = false }) => {
     const [showContinueButton, setShowContinueButton] = useState(false);
     // Remove heavy performance monitoring during input
@@ -45,6 +51,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     const textareaRef = useRef<any>(null);
     const inputChangeTimeoutRef = useRef<NodeJS.Timeout>();
     const [isProcessing, setIsProcessing] = useState(false);
+    const [currentToolId, setCurrentToolId] = useState<string | null>(null);
+    const [currentToolName, setCurrentToolName] = useState<string | null>(null);
+    const [isSendingFeedback, setIsSendingFeedback] = useState(false);
     const [throttlingError, setThrottlingError] = useState<any>(null);
 
     const { question, setQuestion } = useQuestionContext();
@@ -77,6 +86,38 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             setShowContinueButton(isIncomplete && !streamingConversations.has(currentConversationId));
         }
     }, [currentMessages, streamingConversations, currentConversationId]);
+
+    // Listen for tool feedback ready events
+    useEffect(() => {
+        const handleFeedbackReady = (event: CustomEvent<FeedbackReadyEvent>) => {
+            const { toolId, toolName, conversationId: eventConversationId } = event.detail;
+
+            // Only handle feedback events for the current conversation
+            if (eventConversationId === currentConversationId) {
+                setCurrentToolId(toolId);
+                setCurrentToolName(toolName);
+                
+                // Focus the text area when a new tool becomes active
+                setTimeout(() => {
+                    textareaRef.current?.focus();
+                }, 100);
+            }
+        };
+
+        document.addEventListener('feedbackReady', handleFeedbackReady as EventListener);
+
+        return () => {
+            document.removeEventListener('feedbackReady', handleFeedbackReady as EventListener);
+        };
+    }, [currentConversationId]);
+
+    // Clear tool state when streaming ends
+    useEffect(() => {
+        if (!isCurrentlyStreaming) {
+            setCurrentToolId(null);
+            setCurrentToolName(null);
+        }
+    }, [isCurrentlyStreaming]);
 
     // Focus management
     useLayoutEffect(() => {
@@ -121,18 +162,6 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     }, []);
 
     // Clear error states when conversation changes
-    useEffect(() => {
-        setThrottlingError(null);
-    }, [currentConversationId]);
-
-    // Clear error states when successfully starting to send
-    useEffect(() => {
-        if (streamingConversations.has(currentConversationId)) {
-            setThrottlingError(null);
-        }
-    }, [streamingConversations, currentConversationId]);
-
-    // Listen for throttling errors from chatApi
     useEffect(() => {
         const handleThrottlingError = (event: CustomEvent) => {
             console.log('Throttling error received:', event.detail);
@@ -180,6 +209,51 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         [question, streamingConversations, currentConversationId]
     );
 
+    // Allow feedback anytime during streaming (tools are running)
+    const shouldSendAsFeedback = isCurrentlyStreaming && question.trim().length > 0;
+
+    const sendToolFeedback = async () => {
+        if (!question.trim() || isSendingFeedback) return;
+
+        const feedbackText = question.trim();
+        
+        setIsSendingFeedback(true);
+
+        try {
+            // Use the global WebSocket if available
+            const feedbackWebSocket = (window as any).feedbackWebSocket;
+            if (feedbackWebSocket && (window as any).feedbackWebSocketReady) {
+                // Use currentToolId if available, otherwise use a generic identifier
+                const toolId = currentToolId || 'streaming_tool';
+                feedbackWebSocket.sendFeedback(toolId, feedbackText);
+                console.log('🔄 FEEDBACK:', feedbackText);
+                
+                // Clear the input after sending feedback
+                setQuestion('');
+                
+                // Show confirmation that feedback was sent
+                message.success({
+                    content: 'Feedback sent to running tools',
+                    duration: 2,
+                    key: 'feedback-sent'
+                });
+            } else {
+                console.error('🔄 FEEDBACK: WebSocket not ready or not available');
+                // Show warning that feedback couldn't be sent
+                message.warning({
+                    content: 'Feedback system unavailable - tools will continue without feedback',
+                    duration: 3,
+                    key: 'feedback-unavailable'
+                });
+            }
+        } catch (error) {
+            console.error('🔄 FEEDBACK: Error sending feedback:', error);
+            message.error('Failed to send feedback');
+        } finally {
+            setIsSendingFeedback(false);
+        }
+    };
+
     const buttonTitle = useMemo(() =>
         isCurrentlyStreaming
             ? "Waiting for AI response..."
@@ -190,6 +264,15 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     );
 
     const handleSendPayload = async (isRetry: boolean = false, retryContent?: string) => {
+
+        // If we have a tool waiting for feedback and we're streaming, send as feedback instead
+        if (shouldSendAsFeedback && !isRetry && !retryContent) {
+            await sendToolFeedback();
+            return;
+        }
+
+        // Don't allow sending regular messages while streaming (tools are running)
+        if (isCurrentlyStreaming && !isRetry && !retryContent) return;
 
         // Don't allow sending if we're already streaming in this conversation
         if (streamingConversations.has(currentConversationId)) {
@@ -365,24 +448,60 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 id="chat-question-textarea"
                 placeholder={
                     isCurrentlyStreaming 
-                        ? "AI is responding... (you can type feedback for tools)" 
+                        ? "Provide feedback for running tools... (Enter to send)"
                         : "Enter your question.."
                 }
                 autoComplete="off"
                 autoSize={{ minRows: 1 }}
                 className={`input-textarea ${
                     isCurrentlyStreaming ? 'streaming-input' : ''
-                }`}
+                } ${isCurrentlyStreaming ? 'feedback-mode' : ''}`}
+                style={{
+                    borderColor: isCurrentlyStreaming ? '#52c41a' : undefined
+                }}
                 disabled={isTextAreaDisabled}
                 onPressEnter={(event) => {
                     if (!event.shiftKey && !isQuestionEmpty(question)) {
                         event.preventDefault();
-                        handleSendPayload();
+                        if (shouldSendAsFeedback) {
+                            sendToolFeedback();
+                        } else {
+                            handleSendPayload();
+                        }
                     }
                 }}
             />
             <div style={{ marginLeft: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-                {!isCurrentlyStreaming ? (
+                {/* Always show stop button when streaming */}
+                {isCurrentlyStreaming && (
+                    <StopStreamButton
+                        conversationId={currentConversationId}
+                        size="middle"
+                        style={{
+                            height: '32px',
+                            display: 'flex',
+                            alignItems: 'center'
+                        }}
+                    />
+                )}
+                
+                {/* Show feedback button when streaming AND there's input */}
+                {shouldSendAsFeedback ? (
+                    <Button
+                        type="default"
+                        onClick={sendToolFeedback}
+                        disabled={isQuestionEmpty(question) || isSendingFeedback}
+                        icon={<SendOutlined />}
+                        title="Send feedback to running tools"
+                        loading={isSendingFeedback}
+                        style={{ backgroundColor: '#f6ffed', borderColor: '#52c41a' }}
+                    >
+                        Send Feedback
+                    </Button>
+                ) : null}
+                
+                {/* Show regular send button when not streaming */}
+                {!isCurrentlyStreaming && (
                     <Button
                         type="primary"
                         onClick={() => handleSendPayload()}
@@ -392,26 +511,6 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                     >
                         Send
                     </Button>
-                ) : (
-                    <>
-                        <Button
-                            type="default"
-                            disabled
-                            icon={<SendOutlined />}
-                            title="Response in progress..."
-                        >
-                            {!hasReceivedContent ? 'Sending...' : 'Processing...'}
-                        </Button>
-                        <StopStreamButton
-                            conversationId={currentConversationId}
-                            size="middle"
-                            style={{
-                                height: '32px', // Match the disabled send button height
-                                display: 'flex',
-                                alignItems: 'center'
-                            }}
-                        />
-                    </>
                 )}
             </div>
         </div>
