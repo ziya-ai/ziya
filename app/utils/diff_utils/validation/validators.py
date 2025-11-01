@@ -337,7 +337,7 @@ def _is_valid_hunk_header(hunk: Dict[str, Any]) -> bool:
 def _check_pure_addition_already_applied(file_lines: List[str], added_lines: List[str], hunk: Dict[str, Any], pos: int) -> bool:
     """Check if a pure addition (no removals) is already applied with context validation."""
     
-    logger.debug(f"Checking pure addition - added_lines: {added_lines}")
+    logger.debug(f"Checking pure addition at pos {pos} - added_lines: {added_lines}")
     
     if not added_lines:
         return True
@@ -352,30 +352,36 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     
     added_block = [normalize_line_for_comparison(line) for line in added_lines]
     context_normalized = [normalize_line_for_comparison(line) for line in context_lines]
-    first_context_line = context_normalized[0]
     
-    # Search for context lines in the file, then check if added lines follow
-    for context_pos in range(len(file_lines) - len(context_lines) + 1):
-        # Quick check: skip if first context line doesn't match
-        if normalize_line_for_comparison(file_lines[context_pos]) != first_context_line:
-            continue
-            
-        file_context = [normalize_line_for_comparison(file_lines[context_pos + i]) 
-                       for i in range(len(context_lines))]
-        
-        if file_context == context_normalized:
-            # Found matching context, check if added lines are right after
-            check_pos = context_pos + len(context_lines)
-            
-            if check_pos + len(added_lines) <= len(file_lines):
-                file_block = [normalize_line_for_comparison(file_lines[check_pos + i]) 
-                             for i in range(len(added_lines))]
-                
-                if file_block == added_block:
-                    logger.debug(f"Found added lines at position {check_pos} with matching context at {context_pos}")
-                    return True
+    # CRITICAL: For pure additions, only check at the EXACT expected position
+    # Don't search the entire file to avoid false positives from other hunks
+    if pos + len(context_lines) > len(file_lines):
+        logger.debug(f"Position {pos} + context length {len(context_lines)} exceeds file length")
+        return False
     
-    logger.debug("Added lines not found at expected position after context")
+    # Check if context matches at expected position
+    file_context = [normalize_line_for_comparison(file_lines[pos + i]) 
+                   for i in range(len(context_lines))]
+    
+    if file_context != context_normalized:
+        logger.debug(f"Context doesn't match at position {pos}")
+        return False
+    
+    # Context matches, check if added lines are right after
+    check_pos = pos + len(context_lines)
+    
+    if check_pos + len(added_lines) > len(file_lines):
+        logger.debug(f"Not enough lines after context to check added content")
+        return False
+    
+    file_block = [normalize_line_for_comparison(file_lines[check_pos + i]) 
+                 for i in range(len(added_lines))]
+    
+    if file_block == added_block:
+        logger.debug(f"Found added lines at exact position {check_pos}")
+        return True
+    
+    logger.debug(f"Added lines not found at exact expected position {check_pos}")
     return False
 
 

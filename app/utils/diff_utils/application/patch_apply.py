@@ -20,92 +20,66 @@ def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], posi
     """
     Apply only the actual changes from a hunk while preserving context lines.
     This prevents fuzzy matching from modifying context lines.
-    
-    Args:
-        original_lines: The original file lines
-        hunk: The hunk to apply
-        position: The position where to apply the hunk
-        
-    Returns:
-        The modified lines with only target changes applied
     """
-    logger.debug(f"Applying surgical changes for hunk at position {position}")
-    logger.debug(f"Hunk structure: {hunk.keys()}")
+    removed_lines = hunk.get('removed_lines', [])
+    added_lines = hunk.get('added_lines', [])
+    old_block = hunk.get('old_block', [])
     
-    # Extract removed and added lines from the hunk
-    removed_lines = []
-    added_lines = []
-    
-    # Parse the hunk to get the actual changes
-    if 'removed_lines' in hunk and 'added_lines' in hunk:
-        removed_lines = hunk['removed_lines']
-        added_lines = hunk['added_lines']
-    elif 'old_block' in hunk and 'new_block' in hunk:
-        # Parse from old_block and new_block
-        for line in hunk['old_block']:
-            if line.startswith('-'):
-                removed_lines.append(line[1:])
-        for line in hunk['new_block']:
-            if line.startswith('+'):
-                added_lines.append(line[1:])
-    
-    logger.debug(f"Removed lines: {removed_lines}")
-    logger.debug(f"Added lines: {added_lines}")
-    
-    # If we can't parse the changes, return original lines unchanged
-    if not removed_lines and not added_lines:
-        logger.debug("No changes found in hunk, returning original lines")
+    if not removed_lines or not added_lines or not old_block:
         return original_lines
     
+    # Only apply surgical changes when removed/added counts match (1:1 replacement)
+    if len(removed_lines) != len(added_lines):
+        return original_lines
+    
+    # Find which positions in old_block are removed lines and map to removed_lines index
+    removed_norm = [normalize_line_for_comparison(l) for l in removed_lines]
+    old_block_norm = [normalize_line_for_comparison(l) for l in old_block]
+    
+    removed_map = {}  # old_block index -> removed_lines index
+    removed_idx = 0
+    for i, old_norm in enumerate(old_block_norm):
+        if removed_idx < len(removed_norm) and old_norm == removed_norm[removed_idx]:
+            removed_map[i] = removed_idx
+            removed_idx += 1
+    
+    # Build new section: file's context + diff's changes
     result_lines = original_lines.copy()
+    new_section = []
+    added_idx = 0
     
-    # For simple single-line replacements, find and replace the content
-    if len(removed_lines) == 1 and len(added_lines) == 1:
-        removed_content = removed_lines[0].strip()
-        added_content = added_lines[0].strip()
+    for i in range(len(old_block)):
+        file_idx = position + i
+        if file_idx >= len(original_lines):
+            break
         
-        logger.debug(f"Looking for content to replace: {repr(removed_content)}")
-        
-        # Search in a reasonable range around the position
-        search_start = max(0, position - 10)
-        search_end = min(len(result_lines), position + 20)
-        
-        found = False
-        for i in range(search_start, search_end):
-            line = result_lines[i]
-            line_content = line.strip()
-            
-            # Check if this line contains the content to be removed
-            if removed_content in line_content:
-                # Perform a more precise replacement - replace only the specific part
-                # while preserving comments and other content
-                new_line_content = line.replace(removed_content, added_content)
-                result_lines[i] = new_line_content
+        if i in removed_map:
+            # Replace with added line, preserving file's trailing comment/content
+            if added_idx < len(added_lines):
+                file_line = original_lines[file_idx]
+                removed_line = removed_lines[removed_map[i]]
+                added_line = added_lines[added_idx]
                 
-                logger.debug(f"Surgically changed line {i}: {repr(line)} -> {repr(result_lines[i])}")
-                found = True
-                break
-        
-        if not found:
-            logger.debug(f"Could not find content '{removed_content}' in lines {search_start}-{search_end}")
-            # Try a broader search with partial matching
-            for i in range(len(result_lines)):
-                line = result_lines[i]
-                # Look for key parts of the content (e.g., "padding-bottom" in "padding-bottom: 4px !important;")
-                key_parts = removed_content.split()
-                if len(key_parts) > 0 and key_parts[0] in line:
-                    logger.debug(f"Found potential match at line {i} with key part '{key_parts[0]}': {repr(line)}")
-                    # Try the replacement
-                    new_line_content = line.replace(removed_content, added_content)
-                    if new_line_content != line:  # Only if something actually changed
-                        result_lines[i] = new_line_content
-                        logger.debug(f"Surgically changed line {i}: {repr(line)} -> {repr(result_lines[i])}")
-                        found = True
-                        break
-        
-        if not found:
-            logger.warning(f"Surgical application failed to find content to replace: {repr(removed_content)}")
+                # Check if file has trailing content after the removed part
+                removed_stripped = removed_line.rstrip()
+                file_stripped = file_line.rstrip()
+                
+                # If file has extra content after the removed line content, preserve it
+                if file_stripped.startswith(removed_stripped) and len(file_stripped) > len(removed_stripped):
+                    trailing = file_stripped[len(removed_stripped):]
+                    new_line = added_line.rstrip() + trailing
+                else:
+                    new_line = added_line.rstrip()
+                
+                line_ending = file_line[len(file_line.rstrip()):]
+                new_section.append(new_line + line_ending)
+                added_idx += 1
+        else:
+            # Context - use file's version
+            new_section.append(original_lines[file_idx])
     
+    # Replace the section
+    result_lines[position:position + len(new_section)] = new_section
     return result_lines
 
 
@@ -806,7 +780,17 @@ def apply_diff_with_difflib_hybrid_forced(
                   hunk_failures.append(("Position undetermined", {"hunk": hunk_idx}))
              continue
 
-        new_lines_content = h['new_lines']
+        # For pure deletions, we need special handling to preserve context lines
+        is_pure_deletion = len(h.get('removed_lines', [])) > 0 and len(h.get('added_lines', [])) == 0
+        
+        if is_pure_deletion:
+            # For pure deletions, we'll surgically remove only the deleted lines
+            # Don't use new_lines which contains context with potentially wrong indentation
+            new_lines_content = []  # No lines to add
+            logger.debug(f"Hunk #{hunk_idx}: Pure deletion detected - will surgically remove {len(h['removed_lines'])} lines")
+        else:
+            new_lines_content = h['new_lines']
+        
         # Preserve original line endings from the file
         new_lines_with_endings = []
         for line in new_lines_content:
@@ -878,7 +862,56 @@ def apply_diff_with_difflib_hybrid_forced(
             logger.debug(f"Hunk #{hunk_idx}: Pure addition - inserting {len(added_lines_only)} lines after context at pos={insert_pos}")
         else:
             # For all other hunks (with removals), use the standard logic
-            actual_remove_count = len(h['old_block']) # Use actual block length
+            # Special handling for pure deletions to preserve context
+            if is_pure_deletion:
+                # For pure deletions, identify which positions in old_block are removed lines
+                # Then remove only those positions from the file
+                removed_lines = h.get('removed_lines', [])
+                old_block = h.get('old_block', [])
+                
+                # Build a map of which old_block indices should be removed
+                removed_indices = set()
+                removed_idx = 0
+                for i, old_line in enumerate(old_block):
+                    if removed_idx < len(removed_lines) and old_line == removed_lines[removed_idx]:
+                        removed_indices.add(i)
+                        removed_idx += 1
+                
+                # Now remove only those positions from the file
+                old_block_region_start = remove_pos
+                result_lines = []
+                for i in range(len(final_lines_with_endings)):
+                    if i < old_block_region_start or i >= old_block_region_start + len(old_block):
+                        # Outside the old_block region, keep the line
+                        result_lines.append(final_lines_with_endings[i])
+                    else:
+                        # Inside old_block region, check if this position should be removed
+                        old_block_idx = i - old_block_region_start
+                        if old_block_idx not in removed_indices:
+                            result_lines.append(final_lines_with_endings[i])
+                
+                final_lines_with_endings = result_lines
+                logger.info(f"Hunk #{hunk_idx}: Pure deletion - surgically removed {len(removed_indices)} lines at positions {removed_indices}")
+                
+                # Skip the standard application since we already applied it
+                continue
+            
+            # When old_count from header is larger than old_block AND would extend to EOF,
+            # the diff is truncated - use old_count to remove to EOF
+            old_count_from_header = h.get('old_count', len(h['old_block']))
+            old_block_len = len(h['old_block'])
+            
+            if old_count_from_header > old_block_len:
+                # Check if using old_count would extend to or past EOF
+                would_reach_eof = (remove_pos + old_count_from_header >= len(final_lines_with_endings))
+                if would_reach_eof:
+                    actual_remove_count = old_count_from_header
+                    logger.info(f"Hunk #{hunk_idx}: Using old_count {old_count_from_header} to remove to EOF (old_block: {old_block_len})")
+                else:
+                    actual_remove_count = old_block_len
+            else:
+                actual_remove_count = old_block_len
+            
             end_remove_pos = min(remove_pos + actual_remove_count, len(final_lines_with_endings))
             insert_pos = remove_pos
             
@@ -951,7 +984,10 @@ def apply_diff_with_difflib_hybrid_forced(
         needs_indentation_adaptation = False
         adaptation_type = None
         
-        if len(new_lines_content) >= 1 and len(original_lines_to_replace) >= 1:
+        # Skip indentation adaptation if there are removed lines - context lines exist
+        has_removals = len(h.get('removed_lines', [])) > 0
+        
+        if not has_removals and len(new_lines_content) >= 1 and len(original_lines_to_replace) >= 1:
             # Analyze indentation patterns
             context_matches = 0
             total_content_lines = 0
@@ -1218,53 +1254,12 @@ def apply_diff_with_difflib_hybrid_forced(
                     final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
             else:
                 # Standard application
-                if fuzzy_match_applied and len(h.get('removed_lines', [])) > 0 and len(h.get('added_lines', [])) > 0:
-                    # Fuzzy match: preserve file's context, only apply changes
-                    from ..validation.validators import normalize_line_for_comparison
-                    
-                    old_block = h.get('old_block', [])
-                    removed_lines = h.get('removed_lines', [])
-                    added_lines = h.get('added_lines', [])
-                    
-                    # Build map: which old_block indices are removed lines
-                    removed_norm = [normalize_line_for_comparison(l) for l in removed_lines]
-                    old_block_norm = [normalize_line_for_comparison(l) for l in old_block]
-                    
-                    # Find positions of removed lines in old_block
-                    removed_positions = []
-                    removed_idx = 0
-                    for i, old_norm in enumerate(old_block_norm):
-                        if removed_idx < len(removed_norm) and old_norm == removed_norm[removed_idx]:
-                            removed_positions.append(i)
-                            removed_idx += 1
-                    
-                    # Build new section: use file's lines for context, added lines for changes
-                    new_section = []
-                    added_idx = 0
-                    for i in range(len(old_block)):
-                        file_idx = insert_pos + i
-                        if file_idx >= len(final_lines_with_endings):
-                            break
-                        
-                        if i in removed_positions:
-                            # This position has a removed line - replace with added
-                            if added_idx < len(added_lines):
-                                new_section.append(added_lines[added_idx] + dominant_ending)
-                                added_idx += 1
-                        else:
-                            # Context line - use file's version
-                            new_section.append(final_lines_with_endings[file_idx])
-                    
-                    # Replace the section
-                    final_lines_with_endings[insert_pos:insert_pos + len(old_block)] = new_section
-                elif not boundary_corrected:
+                if not boundary_corrected:
                     # Only reconstruct if boundary verification didn't already correct it
                     new_lines_with_endings = []
                     for line in new_lines_content:
                         new_lines_with_endings.append(line + dominant_ending)
-                    final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
-                else:
-                    final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
 
         # --- Update Offset ---
         # The actual number of lines removed might be different from actual_remove_count

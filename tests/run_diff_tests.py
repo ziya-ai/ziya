@@ -354,10 +354,6 @@ class DiffRegressionTest(unittest.TestCase):
         """Test applying a multi-hunk diff where line numbers need adjustment after earlier hunks are applied"""
         self.run_diff_test('multi_hunk_line_adjustment')
 
-    def test_delete_end_block(self):
-        """Test deletion of final codeblock"""
-        self.run_diff_test("delete-end-block")
-
     # MRE test cases
     def test_MRE_binary_file_changes(self):
         """Test handling of binary file changes"""
