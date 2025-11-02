@@ -263,6 +263,41 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     else:
         git_apply_result = run_git_apply_stage(pipeline, user_codebase_dir, remaining_diff)
     
+    # After git_apply, check which hunks are now in the file and mark as SUCCEEDED
+    if git_apply_result:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                post_git_apply_content = f.read()
+            
+            # If content changed, git_apply applied some hunks
+            if post_git_apply_content != original_content:
+                post_git_apply_lines = post_git_apply_content.splitlines(True)
+                logger.info(f"Git apply modified file, checking which hunks were applied")
+                
+                # Check each pending hunk to see if it's now in the file
+                from ..validation.validators import is_hunk_already_applied
+                for hunk_id, tracker in pipeline.result.hunks.items():
+                    logger.info(f"Checking hunk #{hunk_id}: status={tracker.status.value}")
+                    if tracker.status == HunkStatus.PENDING:
+                        # Get the hunk data
+                        hunk_data = next((h for h in pipeline.hunks if h.get('number') == hunk_id), None)
+                        if hunk_data:
+                            # Check if this hunk is now in the file
+                            # Use old_start as the position hint
+                            pos = hunk_data.get('old_start', 1) - 1  # Convert to 0-indexed
+                            is_applied = is_hunk_already_applied(post_git_apply_lines, hunk_data, pos)
+                            logger.info(f"Hunk #{hunk_id} at pos {pos}: is_applied={is_applied}")
+                            if is_applied:
+                                # Mark as succeeded by git_apply
+                                pipeline.update_hunk_status(
+                                    hunk_id=hunk_id,
+                                    stage=PipelineStage.GIT_APPLY,
+                                    status=HunkStatus.SUCCEEDED
+                                )
+                                logger.info(f"Hunk #{hunk_id} was successfully applied by git_apply")
+        except Exception as e:
+            logger.warning(f"Failed to verify git_apply results: {e}")
+    
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
@@ -305,10 +340,12 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     
     # Check if content has changed from original
     content_changed = current_content != original_content
+    logger.info(f"DEBUG: content_changed={content_changed}, original_len={len(original_content)}, current_len={len(current_content)}")
     if content_changed:
         pipeline.result.changes_written = True
+        logger.info("File was modified by previous stages - hunks found in file will be marked as SUCCEEDED")
     
-    difflib_result = run_difflib_stage(pipeline, file_path, remaining_diff, current_lines)
+    difflib_result = run_difflib_stage(pipeline, file_path, remaining_diff, current_lines, content_changed)
     
     # Stage 4: LLM Resolver (stub for now)
     # This would be implemented in the future to handle complex cases
@@ -1062,7 +1099,7 @@ def update_merged_hunk_status(pipeline, merged_hunk_mapping, new_hunk_index, sta
                 logger.info(f"Updated original hunk #{hunk_id} (index {orig_idx}) to {status}")
 
 
-def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, original_lines: List[str]) -> bool:
+def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, original_lines: List[str], file_was_modified: bool = False) -> bool:
     """
     Run the difflib stage of the pipeline.
     
@@ -1071,6 +1108,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         file_path: Path to the file to modify
         git_diff: The git diff to apply
         original_lines: The original file content as a list of lines
+        file_was_modified: If True, previous stages modified the file, so hunks found should be marked as SUCCEEDED not ALREADY_APPLIED
         
     Returns:
         True if any changes were written, False otherwise
@@ -1087,6 +1125,17 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         os.environ['ZIYA_DIFF_SEARCH_RADIUS'] = str(get_search_radius() * 2)
     
     logger.info("Starting difflib stage...")
+    logger.info(f"File has {len(original_lines)} lines, file_was_modified={file_was_modified}")
+    
+    # Debug: check if QuestionProvider is in the file
+    has_question_provider = any('QuestionProvider' in line for line in original_lines)
+    logger.info(f"DEBUG: File contains QuestionProvider: {has_question_provider}")
+    if has_question_provider:
+        for i, line in enumerate(original_lines):
+            if 'QuestionProvider' in line:
+                logger.info(f"DEBUG: Found at line {i}: {repr(line[:70])}")
+                if i < 5:  # Only show first few
+                    break
     
     if not git_diff.strip():
         logger.warning("Empty diff, skipping difflib stage")
@@ -1402,18 +1451,32 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         found_applied_at_any_pos = True
                         # Use the correct hunk ID from the mapping
                         pipeline_hunk_id = hunk_id_mapping.get(i, original_hunk_id)
-                        already_applied_hunks.append(pipeline_hunk_id)
                         
-                        # Update the hunk status in the pipeline
-                        # Check if this is a merged hunk and update all original hunks
-                        if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
-                            update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.ALREADY_APPLIED, PipelineStage.DIFFLIB)
+                        # CRITICAL: If file was modified by previous stages, mark as SUCCEEDED not ALREADY_APPLIED
+                        if file_was_modified:
+                            # Hunk was applied by a previous stage (system_patch or git_apply)
+                            if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
+                                update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.SUCCEEDED, PipelineStage.DIFFLIB)
+                            else:
+                                pipeline.update_hunk_status(
+                                    hunk_id=pipeline_hunk_id,
+                                    stage=PipelineStage.DIFFLIB,
+                                    status=HunkStatus.SUCCEEDED
+                                )
+                            logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) was applied by previous stage")
                         else:
-                            pipeline.update_hunk_status(
-                                hunk_id=pipeline_hunk_id,
-                                stage=PipelineStage.DIFFLIB,
-                                status=HunkStatus.ALREADY_APPLIED
-                            )
+                            # Hunk was already in the file before we started
+                            already_applied_hunks.append(pipeline_hunk_id)
+                            if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
+                                update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.ALREADY_APPLIED, PipelineStage.DIFFLIB)
+                            else:
+                                pipeline.update_hunk_status(
+                                    hunk_id=pipeline_hunk_id,
+                                    stage=PipelineStage.DIFFLIB,
+                                    status=HunkStatus.ALREADY_APPLIED
+                                )
+                            logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) was already in file")
+                        
                         logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos}")
                         break
                 
