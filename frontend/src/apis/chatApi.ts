@@ -1047,8 +1047,7 @@ export const sendPayload = async (
                     const formatted = formatMCPOutput(toolName, displayContent, storedInput, {
                         showInput: false,
                         maxLength: 10000,
-                        defaultCollapsed: true,
-                        fadeLastLine: true
+                        defaultCollapsed: true
                     });
 
                     // Create tool display with header

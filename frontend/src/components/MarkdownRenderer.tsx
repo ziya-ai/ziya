@@ -309,13 +309,35 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                         padding: '16px',
                         color: colors.contentText,
                         fontSize: '14px',
-                        fontStyle: 'italic',
-                        textAlign: 'center',
                         cursor: 'pointer'
                     }}
                     onClick={() => setIsExpanded(true)}
                 >
-                    {summary} - Click to expand
+                    {cleanContent ? (
+                        <div>
+                            <pre style={{
+                                margin: 0,
+                                padding: 0,
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                                fontFamily: 'monospace'
+                            }}>
+                                {cleanContent.split('\n')[0]}
+                            </pre>
+                            <div style={{
+                                marginTop: '8px',
+                                fontStyle: 'italic',
+                                textAlign: 'center',
+                                opacity: 0.7
+                            }}>
+                                {summary} - Click to expand
+                            </div>
+                        </div>
+                    ) : (
+                        <div style={{ fontStyle: 'italic', textAlign: 'center' }}>
+                            {summary} - Click to expand
+                        </div>
+                    )}
                 </div>
             ) : (
                 <pre style={{
