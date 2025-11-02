@@ -697,6 +697,32 @@ class StreamingToolExecutor:
                                 # Create signature to detect duplicates
                                 tool_signature = f"{actual_tool_name}:{json.dumps(args, sort_keys=True)}"
                                 
+                                # Check for recently executed similar commands to prevent duplicates across iterations
+                                if actual_tool_name == 'run_shell_command' and args.get('command'):
+                                    current_command = args['command']
+                                    
+                                    # Check if this command is similar to recent commands
+                                    skip_execution = False
+                                    for recent_cmd in recent_commands[-10:]:  # Check last 10 commands
+                                        if self._commands_similar(current_command, recent_cmd):
+                                            logger.debug(f"🔍 DUPLICATE_COMMAND_SKIP: Skipping duplicate command '{current_command}' (similar to recent '{recent_cmd}')")
+                                            
+                                            # Add a helpful message instead of executing
+                                            duplicate_result = f"Command '{current_command}' was already executed recently. Result should be available above."
+                                            tool_results.append({
+                                                'tool_id': tool_id,
+                                                'tool_name': tool_name,
+                                                'result': duplicate_result
+                                            })
+                                            
+                                            completed_tools.add(tool_id)
+                                            tools_executed_this_iteration = True
+                                            skip_execution = True
+                                            break
+                                    
+                                    if skip_execution:
+                                        continue  # Skip to next tool in the content_block_stop processing
+                                
                                 # Execute the tool (already checked for duplicates at collection)
                                 logger.debug(f"🔍 EXECUTING_TOOL: {actual_tool_name} with args {args}")
                                 
@@ -705,6 +731,7 @@ class StreamingToolExecutor:
                                     'type': 'tool_start',
                                     'tool_id': tool_id,
                                     'tool_name': tool_name,
+                                    'display_header': self._get_tool_header(tool_name, args),
                                     'args': args,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                 }
@@ -759,6 +786,12 @@ class StreamingToolExecutor:
                                 try:
                                     result = await mcp_manager.call_tool(actual_tool_name, args)
                                     
+                                    # Add successfully executed command to recent commands for deduplication
+                                    if actual_tool_name == 'run_shell_command' and args.get('command'):
+                                        recent_commands.append(args['command'])
+                                        # Keep only last 20 commands to prevent memory bloat
+                                        recent_commands = recent_commands[-20:]
+                                    
                                     # Process result
                                     if isinstance(result, dict) and result.get('error') and result.get('error') != False:
                                         error_msg = result.get('message', 'Unknown error')
@@ -782,9 +815,43 @@ class StreamingToolExecutor:
                                         'type': 'tool_display',
                                         'tool_id': tool_id,
                                         'tool_name': tool_name,
-                                        'result': result_text,
+                                        'result': self._format_tool_result(tool_name, result_text, args),
                                         'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                     }
+
+    def _format_tool_result(self, tool_name: str, result_text: str, args: dict) -> str:
+        """Format tool result based on tool type."""
+        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+        
+        if actual_tool_name == 'run_shell_command':
+            # For shell commands, include the command as first line
+            command = args.get('command', 'unknown command')
+            return f"$ {command}\n{result_text}"
+        elif actual_tool_name == 'get_current_time':
+            # For time tool, clean up the result format
+            clean_result = result_text
+            # Remove "Input: {}" prefix if present
+            clean_result = clean_result.replace('Input: {}\n\nResult:\n', '').strip()
+            clean_result = clean_result.replace('Input: {}\n\n', '').strip()
+            clean_result = clean_result.replace('Result:\n', '').strip()
+            # Remove any remaining "Result:" prefix
+            if clean_result.startswith('Result:'):
+                clean_result = clean_result[7:].strip()
+            return clean_result
+        else:
+            # For other tools, return result as-is
+            return result_text
+    
+    def _get_tool_header(self, tool_name: str, args: dict) -> str:
+        """Get appropriate header for tool display."""
+        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+        
+        if actual_tool_name == 'run_shell_command':
+            return 'Shell Command'
+        elif actual_tool_name == 'get_current_time':
+            return 'Current Time'
+        else:
+            return actual_tool_name.replace('_', ' ').title()
 
                                     # Add clean tool result for model conversation
                                     yield {
