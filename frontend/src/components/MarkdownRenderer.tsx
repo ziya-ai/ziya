@@ -235,13 +235,9 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
     const { content: formattedContent, collapsed, summary } = formattedOutput;
     const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
     
-    // Clean up content by removing any literal tool markers
-    const cleanContent = formattedContent
-        .replace(/^```tool:mcp_\w+\s*\n?/gm, '')
-        .replace(/\n?```\s*$/gm, '')
-        .replace(/^```tool:mcp_\w+\s*/gm, '')
-        .replace(/```$/gm, '')
-        .trim();
+    // Don't clean tool markers - they're already properly formatted by the backend
+    // Aggressive cleaning corrupts diffs, code blocks, and template literals
+    const cleanContent = formattedContent.trim();
 
     // Color scheme based on tool type
     const getToolColors = () => {

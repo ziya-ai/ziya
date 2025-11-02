@@ -1272,6 +1272,12 @@ def apply_diff_with_difflib_hybrid_forced(
         # Store the hunk, position where it was applied, lines removed, and lines added
         applied_hunks.append((h, insert_pos, actual_lines_removed, len(new_lines_with_endings)))
         
+        if hunk_idx == 2:
+            logger.info(f"Hunk #2 DEBUG: After application, file has {len(final_lines_with_endings)} lines")
+            logger.info(f"Hunk #2 DEBUG: Line 23 (pos 22): {repr(final_lines_with_endings[22]) if len(final_lines_with_endings) > 22 else 'N/A'}")
+            logger.info(f"Hunk #2 DEBUG: Line 24 (pos 23): {repr(final_lines_with_endings[23]) if len(final_lines_with_endings) > 23 else 'N/A'}")
+            logger.info(f"Hunk #2 DEBUG: Line 25 (pos 24): {repr(final_lines_with_endings[24]) if len(final_lines_with_endings) > 24 else 'N/A'}")
+        
         logger.debug(f"Hunk #{hunk_idx}: Applied. Lines removed: {actual_lines_removed}, lines added: {len(new_lines_with_endings)}, net change: {net_change}, new offset: {offset}")
         
         # Important: We don't need to modify the original hunks, as we're using the offset

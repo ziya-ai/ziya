@@ -102,19 +102,9 @@ async def execute_mcp_tools_with_status(full_response: str) -> str:
     except Exception as error:
         logger.error(f"🔧 MCP: Tool execution failed: {error}")
         
-        # Try the improved execution as last resort
-        try:
-            logger.info("🔧 MCP: Trying improved tool execution as last resort")
-            cleaned_response, tool_results = await find_and_execute_all_tools(full_response)
-            
-            if tool_results:
-                logger.info(f"🔧 MCP: Improved execution found and executed {len(tool_results)} tools")
-                # Double clean for better sentinel removal
-                return clean_sentinels(clean_sentinels(cleaned_response))
-            else:
-                logger.warning("🔧 MCP: Improved execution found no valid tools")
-        except Exception as improved_error:
-            logger.error(f"🔧 MCP: All execution methods failed: {improved_error}")
+        # Don't retry with find_and_execute_all_tools again as it was already tried above
+        # This prevents duplicate tool execution
+        logger.error(f"🔧 MCP: Both batch and direct execution failed: {error}")
         
         # Return double-cleaned response without status badge
         return clean_sentinels(clean_sentinels(full_response))
@@ -202,6 +192,14 @@ async def _execute_direct_mcp_tools(full_response: str) -> str:
             # Execute the tool
             result = await mcp_manager.call_tool(internal_tool_name, arguments)
             
+            # Handle validation errors immediately without processing
+            if isinstance(result, dict) and result.get("error"):
+                error_msg = result.get("message", "Unknown error")
+                if "validation" in error_msg.lower():
+                    error_replacement = f"\n\n❌ **Tool Validation Error**: {error_msg}\n\n"
+                    modified_response = modified_response.replace(tool_call_block, error_replacement)
+                    continue
+                    
             if result is None:
                 logger.error(f"🔧 MCP: Tool {internal_tool_name} returned None")
                 continue

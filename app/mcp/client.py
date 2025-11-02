@@ -70,6 +70,10 @@ class MCPClient:
         self._last_successful_call = time.time()
         self._last_reconnect_attempt = 0  # Rate limit reconnections
         
+        # External server health monitoring
+        self._consecutive_failures = 0
+        self._last_health_check = 0
+        
     async def connect(self) -> bool:
         """
         Connect to the MCP server.
@@ -236,6 +240,27 @@ class MCPClient:
                 self.process = None
                 self.is_connected = False
     
+    def _is_external_server_healthy(self) -> bool:
+        """Check if external server is responding consistently."""
+        server_name = self.server_config.get('name', 'unknown')
+        
+        # Allow higher failure tolerance for external servers
+        if self._consecutive_failures >= 5:
+            logger.warning(f"External server {server_name} has {self._consecutive_failures} consecutive failures")
+            return False
+        
+        return True
+    
+    def _record_call_result(self, success: bool):
+        """Record the result of a tool call for health monitoring."""
+        if success:
+            self._consecutive_failures = 0
+            self._last_successful_call = time.time()
+        else:
+            self._consecutive_failures += 1
+            
+        logger.debug(f"MCP server health: {self._consecutive_failures} consecutive failures")
+    
     def _is_process_healthy(self) -> bool:
         """Check if the MCP server process is still healthy."""
         if not self.process:
@@ -247,12 +272,42 @@ class MCPClient:
             self.is_connected = False
             return False
         
+        # Additional health check for external servers
+        server_name = self.server_config.get('name', 'unknown')
+        if 'fetch' in server_name.lower() or 'external' in server_name.lower():
+            return self._is_external_server_healthy()
+        
         # Only check if process is actually running, not based on call timeouts
         # A server shouldn't be marked unhealthy just because it hasn't been used recently
         return True
         
     async def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None, _retry_count: int = 0) -> Optional[Dict[str, Any]]:
-        """Send a JSON-RPC request to the MCP server."""
+        """Send a JSON-RPC request to the MCP server with enhanced retry logic."""
+        
+        def get_smart_retry_params(original_params: Dict[str, Any], error_message: str, tool_method: str) -> Optional[Dict[str, Any]]:
+            """Generate modified parameters for smart retry based on error patterns."""
+            if not original_params:
+                return None
+                
+            # Tool-specific fallback strategies
+            tool_name = original_params.get('name', '')
+            tool_args = original_params.get('arguments', {})
+            
+            # Fetch ExtractArticle.js failures -> add raw: true
+            if (tool_name == 'fetch' and 
+                'ExtractArticle.js' in error_message and 
+                'non-zero exit status' in error_message and
+                not tool_args.get('raw')):
+                modified_args = tool_args.copy()
+                modified_args['raw'] = True
+                return {**original_params, 'arguments': modified_args}
+            
+            # Add more tool-specific fallback strategies here as needed
+            # Example: shell command timeout -> reduce timeout
+            # Example: search tool too many results -> add limit
+            
+            return None
+        
         # Standardized error response structure
         def create_error_response(message: str, code: int = -32000) -> Dict[str, Any]:
             return {
@@ -264,7 +319,8 @@ class MCPClient:
         import time
         start_time = time.time()
         
-        max_retries = 3
+        max_retries = 5  # Increased for external servers
+        base_delay = 1.0  # Base delay for exponential backoff
         
         if not self.process or not self.process.stdin:
             return create_error_response("No active process or stdin not available")
@@ -306,10 +362,27 @@ class MCPClient:
             # Read response with a timeout
             try:
                 read_start = time.time()
-                response_line_bytes = await asyncio.wait_for(
-                    self.process.stdout.readline(),
-                    timeout=30.0
-                )
+                
+                # Use longer timeout for external servers that may do complex processing
+                server_name = self.server_config.get('name', 'unknown')
+                is_external_server = any(keyword in server_name.lower() 
+                                       for keyword in ['fetch', 'web', 'http', 'api', 'external'])
+                timeout_duration = 60.0 if is_external_server else 30.0
+                
+                logger.debug(f"Using {timeout_duration}s timeout for server: {server_name}")
+                
+                try:
+                    response_line_bytes = await asyncio.wait_for(
+                        self.process.stdout.readline(),
+                        timeout=timeout_duration
+                    )
+                except asyncio.TimeoutError:
+                    # For external servers, try one immediate retry before giving up
+                    if is_external_server and _retry_count == 0:
+                        logger.warning(f"External server {server_name} timed out, trying immediate retry")
+                        await asyncio.sleep(1.0)
+                        return await self._send_request(method, params, _retry_count + 1)
+                    raise  # Re-raise timeout for normal handling
                 read_time = time.time() - read_start
                 logger.debug(f"🔍 MCP_TIMING: Read took {read_time*1000:.1f}ms")
                 
@@ -340,19 +413,84 @@ class MCPClient:
                 logger.error(f"Error reading from MCP server: {e}")
                 return create_error_response(f"Error reading from MCP server: {str(e)}")
 
-            response = json.loads(response_line.strip())
+            # Enhanced JSON parsing with validation
+            try:
+                response_text = response_line.strip()
+                logger.debug(f"Raw MCP response: {response_text[:200]}...")
+                
+                if not response_text:
+                    logger.error("Empty response from MCP server")
+                    return create_error_response("Empty response from MCP server")
+                
+                # Validate JSON structure before parsing
+                if not (response_text.startswith('{') and response_text.endswith('}')):
+                    logger.error(f"Invalid JSON format from MCP server: {response_text[:100]}...")
+                    return create_error_response(f"Invalid response format: expected JSON-RPC, got: {response_text[:100]}...")
+                
+                response = json.loads(response_text)
+                
+            except json.JSONDecodeError as je:
+                logger.error(f"JSON decode error from MCP server: {je}")
+                logger.error(f"Raw response: {response_line.strip()[:500]}...")
+                return create_error_response(f"Invalid JSON response from MCP server: {str(je)}")
+            
+            except Exception as parse_error:
+                logger.error(f"Unexpected error parsing MCP response: {parse_error}")
+                return create_error_response(f"Response parsing error: {str(parse_error)}")
 
             if "error" in response:
                 error_info = response['error']
                 error_code = error_info.get("code", -1)
                 error_message = str(error_info.get("message", "Unknown error"))
                 
+                # Don't retry security blocks - they're intentional rejections
+                if "SECURITY BLOCK" in error_message:
+                    logger.error(f"MCP server error: {error_info}")
+                    return response
+                
+                # Check for external server specific errors that should trigger retries
+                external_server_errors = [
+                    "ExtractArticle.js", "non-zero exit status", "Command", "returned",
+                    "cache", "processing", "temporary", "busy"
+                ]
+                
+                # Add more specific error patterns
+                content_processing_errors = [
+                    "Content type", "cannot be simplified", "truncated"
+                ]
+                
+                should_retry_external = any(err_pattern in error_message for err_pattern in external_server_errors)
+                
+                # Retry logic for external server errors
+                if should_retry_external and _retry_count < max_retries:
+                    # Try smart retry with modified parameters first
+                    if _retry_count == 0:  # Only try smart retry on first failure
+                        smart_params = get_smart_retry_params(params, error_message, method)
+                        if smart_params:
+                            logger.warning(f"Smart retry with modified parameters for {smart_params.get('name', 'unknown')} tool")
+                            # Don't increment retry count for parameter modification attempts
+                            return await self._send_request(method, smart_params, _retry_count)
+                    
+                    # Fall back to regular retry with exponential backoff
+                    delay = base_delay * (2 ** _retry_count)  # Exponential backoff
+                    logger.warning(f"External MCP server error detected, retrying in {delay}s (attempt {_retry_count + 1}/{max_retries + 1}): {error_message}")
+                    
+                    await asyncio.sleep(delay)
+                    return await self._send_request(method, params, _retry_count + 1)
+                
+                # Check for cache consistency issues
+                cache_indicators = ["cached", "previous", "mixed", "wrong url"]
+                if any(indicator in error_message.lower() for indicator in cache_indicators) and _retry_count < 2:
+                    logger.warning(f"Cache consistency issue detected, immediate retry: {error_message}")
+                    await asyncio.sleep(0.5)  # Short delay for cache issues
+                    return await self._send_request(method, params, _retry_count + 1)
+                
                 # Check if this is a timeout error and we haven't exhausted retries
                 is_timeout = (error_code == -32603 and 
                              ("timed out" in error_message.lower() or "timeout" in error_message.lower()))
                 
                 # Timeouts should fail immediately to let the model choose a lighter alternative
-                if not is_timeout and _retry_count < max_retries:
+                if not is_timeout and not should_retry_external and _retry_count < max_retries:
                     logger.error(f"MCP server error: {error_info}")
                     # Only retry non-timeout errors
                     await asyncio.sleep(0.5)
@@ -479,6 +617,45 @@ class MCPClient:
         except Exception as e:
             logger.error(f"Error loading MCP server capabilities for {self.server_config.get('name', 'unknown')}: {str(e)}", exc_info=True)
     
+    def _validate_and_clean_response(self, result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Validate and clean MCP tool response, handling external server quirks."""
+        if not result:
+            return result
+        
+        # Handle content field responses (common in external servers)
+        if "content" in result and isinstance(result["content"], list):
+            content_list = result["content"]
+            
+            # Clean up mixed/cached content responses
+            if len(content_list) > 0:
+                first_content = content_list[0]
+                if isinstance(first_content, dict) and "text" in first_content:
+                    text_content = first_content["text"]
+                    
+                    # Detect cache contamination patterns
+                    cache_indicators = [
+                        "Contents of https://wttr.in/", 
+                        "Contents of https://api.",
+                        "Failed to fetch https://"
+                    ]
+                    
+                    has_cache_contamination = any(indicator in text_content for indicator in cache_indicators)
+                    
+                    if has_cache_contamination:
+                        logger.warning(f"Cache contamination detected in response: {text_content[:100]}...")
+                        
+                        # Try to extract the actual content after the contamination
+                        for indicator in cache_indicators:
+                            if indicator in text_content:
+                                # Find the end of the cache indicator line and extract what follows
+                                lines = text_content.split('\n')
+                                clean_lines = [line for line in lines if not any(ci in line for ci in cache_indicators)]
+                                if clean_lines:
+                                    first_content["text"] = '\n'.join(clean_lines).strip()
+                                    logger.info(f"Cleaned cache contamination, extracted: {first_content['text'][:100]}...")
+        
+        return result
+    
     async def get_resource(self, uri: str) -> Optional[str]:
         """Get the content of a resource by URI."""
         try:
@@ -490,19 +667,112 @@ class MCPClient:
             return None
         except Exception as e:
             logger.error(f"Error getting MCP resource {uri} from {self.server_config.get('name', 'unknown')}: {str(e)}")
-            return None
+            raw_result = await self._send_request("tools/call", {
+                "name": name,
+                "arguments": arguments
+            })
+            
+            # Validate and clean the response
+            result = self._validate_and_clean_response(raw_result)
+            
+            return result
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Call a tool on the MCP server."""
         try:
+            # Validate arguments against tool schema before sending
+            tool_schema = None
+            for tool in self.tools:
+                if tool.name == name:
+                    tool_schema = tool.inputSchema
+                    break
+            
+            if tool_schema:
+                validated_args = self._validate_and_convert_arguments(arguments, tool_schema)
+                if validated_args is None:
+                    return {
+                        "error": True,
+                        "message": f"Invalid arguments for tool {name}. Check parameter types and required fields.",
+                        "code": -32602
+                    }
+                arguments = validated_args
+            
             result = await self._send_request("tools/call", {
                 "name": name,
                 "arguments": arguments
             })
+            
+            # Don't retry on validation errors - fail fast
+            if isinstance(result, dict) and result.get("error") and "validation" in str(result.get("message", "")).lower():
+                return result
+                
             return result
         except Exception as e:
             logger.error(f"Error calling MCP tool {name} on {self.server_config.get('name', 'unknown')}: {str(e)}")
             return None
+    
+            # Validate and clean the response
+            result = self._validate_and_clean_response(raw_result)
+            
+            # Record success/failure for health monitoring
+            if result and not result.get("error"):
+                self._record_call_result(True)
+            else:
+                self._record_call_result(False)
+                
+                # For external servers with consistent failures, provide helpful error
+                if self._consecutive_failures >= 3:
+                    server_name = self.server_config.get('name', 'unknown')
+                    logger.warning(f"External MCP server {server_name} has {self._consecutive_failures} consecutive failures")
+                    
+                    return {
+                        "error": True,
+                        "message": f"External MCP server '{server_name}' is experiencing issues. Consider using alternative tools or restarting the server.",
+                        "code": -32001,
+                        "consecutive_failures": self._consecutive_failures
+                    }
+            
+            return result
+            
+    def _validate_and_convert_arguments(self, arguments: Dict[str, Any], schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Validate and convert argument types based on tool schema."""
+        if not schema or "properties" not in schema:
+            return arguments
+            
+        validated = {}
+        properties = schema["properties"]
+        required = schema.get("required", [])
+        
+        # Check required fields
+        for field in required:
+            if field not in arguments:
+                logger.error(f"Missing required field: {field}")
+                return None
+                
+        # Validate and convert each argument
+        for key, value in arguments.items():
+            if key not in properties:
+                # Allow extra fields but warn
+                logger.warning(f"Unknown parameter: {key}")
+                validated[key] = value
+                continue
+                
+            field_schema = properties[key]
+            expected_type = field_schema.get("type")
+            
+            # Type conversion
+            if expected_type == "integer" and isinstance(value, str):
+                try:
+                    validated[key] = int(value)
+                except ValueError:
+                    logger.error(f"Cannot convert {key}='{value}' to integer")
+                    return None
+            elif expected_type == "boolean" and isinstance(value, str):
+                validated[key] = value.lower() in ("true", "1", "yes")
+            else:
+                validated[key] = value
+                
+        return validated
     
     async def get_prompt(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Get a prompt template from the MCP server."""

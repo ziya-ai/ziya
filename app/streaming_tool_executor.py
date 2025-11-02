@@ -13,13 +13,24 @@ logger = logging.getLogger(__name__)
 
 class StreamingToolExecutor:
     def __init__(self, profile_name: str = 'ziya', region: str = 'us-west-2', model_id: str = None):
-        self.model_id = model_id or os.environ.get('DEFAULT_MODEL_ID', 'us.anthropic.claude-sonnet-4-20250514-v1:0')
-        
         # Only initialize Bedrock client for Bedrock endpoints
         from app.agents.models import ModelManager
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         model_name = os.environ.get("ZIYA_MODEL")
         self.model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        # Use provided model_id or get from ModelManager (which handles region-specific IDs)
+        if model_id:
+            self.model_id = model_id
+        else:
+            config_model_id = self.model_config.get('model_id') if self.model_config else None
+            if config_model_id:
+                # Use ModelManager's region-aware resolution
+                self.model_id, _ = ModelManager._get_region_specific_model_id_with_region_update(
+                    config_model_id, region, self.model_config, model_name
+                )
+            else:
+                raise ValueError("No model_id configured. Set ZIYA_MODEL or provide model_id parameter.")
         
         if endpoint == "bedrock":
             # Use ModelManager's wrapped bedrock client for proper extended context handling
@@ -108,6 +119,39 @@ class StreamingToolExecutor:
         
         # Only consider exact matches as similar to avoid blocking legitimate exploration
         return norm1 == norm2
+
+    def _format_tool_result(self, tool_name: str, result_text: str, args: dict) -> str:
+        """Format tool result based on tool type."""
+        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+        
+        if actual_tool_name == 'run_shell_command':
+            # For shell commands, return result as-is - frontend will add command to header
+            return result_text
+        elif actual_tool_name == 'get_current_time':
+            # For time tool, clean up the result format
+            clean_result = result_text
+            # Remove "Input: {}" prefix if present
+            clean_result = clean_result.replace('Input: {}\n\nResult:\n', '').strip()
+            clean_result = clean_result.replace('Input: {}\n\n', '').strip()
+            clean_result = clean_result.replace('Result:\n', '').strip()
+            # Remove any remaining "Result:" prefix
+            if clean_result.startswith('Result:'):
+                clean_result = clean_result[7:].strip()
+            return clean_result
+        else:
+            # For other tools, return result as-is
+            return result_text
+    
+    def _get_tool_header(self, tool_name: str, args: dict) -> str:
+        """Get appropriate header for tool display."""
+        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+        
+        if actual_tool_name == 'run_shell_command':
+            return 'Shell Command'
+        elif actual_tool_name == 'get_current_time':
+            return 'Current Time'
+        else:
+            return actual_tool_name.replace('_', ' ').title()
 
     def _get_text_after_last_structured_content(self, text: str) -> str:
         """Get text that appears after the last tool result, diff block, or code block."""
@@ -660,6 +704,15 @@ class StreamingToolExecutor:
                             try:
                                 args = json.loads(args_json) if args_json.strip() else {}
                                 
+                                # Fix parameter type conversion issues
+                                if 'raw' in args and isinstance(args['raw'], str):
+                                    args['raw'] = args['raw'].lower() in ('true', '1', 'yes')
+                                if 'max_length' in args and isinstance(args['max_length'], str):
+                                    try:
+                                        args['max_length'] = int(args['max_length'])
+                                    except ValueError:
+                                        pass
+                                
                                 # Detect empty tool calls for tools that require arguments
                                 actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
                                 if actual_tool_name == 'run_shell_command' and not args.get('command'):
@@ -795,7 +848,16 @@ class StreamingToolExecutor:
                                     # Process result
                                     if isinstance(result, dict) and result.get('error') and result.get('error') != False:
                                         error_msg = result.get('message', 'Unknown error')
-                                        result_text = f"ERROR: {error_msg}. Please try a different approach or fix the command."
+                                        if 'repetitive execution' in error_msg:
+                                            result_text = f"BLOCKED: {error_msg} Previous attempts may have succeeded - check the results above before retrying."
+                                        elif 'non-zero exit status' in error_msg:
+                                            result_text = f"COMMAND FAILED: {error_msg}. The external tool encountered an error."
+                                        elif 'Content truncated' in error_msg:
+                                            result_text = f"PARTIAL RESULT: {error_msg}. Use start_index parameter to get more content."
+                                        elif 'validation error' in error_msg.lower():
+                                            result_text = f"PARAMETER ERROR: {error_msg}. Check the tool's parameter requirements."
+                                        else:
+                                            result_text = f"ERROR: {error_msg}. Please try a different approach or fix the command."
                                     elif isinstance(result, dict) and 'content' in result:
                                         content = result['content']
                                         if isinstance(content, list) and len(content) > 0:
@@ -816,42 +878,9 @@ class StreamingToolExecutor:
                                         'tool_id': tool_id,
                                         'tool_name': tool_name,
                                         'result': self._format_tool_result(tool_name, result_text, args),
+                                        'args': args,  # Pass args so frontend can access command
                                         'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                     }
-
-    def _format_tool_result(self, tool_name: str, result_text: str, args: dict) -> str:
-        """Format tool result based on tool type."""
-        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
-        
-        if actual_tool_name == 'run_shell_command':
-            # For shell commands, include the command as first line
-            command = args.get('command', 'unknown command')
-            return f"$ {command}\n{result_text}"
-        elif actual_tool_name == 'get_current_time':
-            # For time tool, clean up the result format
-            clean_result = result_text
-            # Remove "Input: {}" prefix if present
-            clean_result = clean_result.replace('Input: {}\n\nResult:\n', '').strip()
-            clean_result = clean_result.replace('Input: {}\n\n', '').strip()
-            clean_result = clean_result.replace('Result:\n', '').strip()
-            # Remove any remaining "Result:" prefix
-            if clean_result.startswith('Result:'):
-                clean_result = clean_result[7:].strip()
-            return clean_result
-        else:
-            # For other tools, return result as-is
-            return result_text
-    
-    def _get_tool_header(self, tool_name: str, args: dict) -> str:
-        """Get appropriate header for tool display."""
-        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
-        
-        if actual_tool_name == 'run_shell_command':
-            return 'Shell Command'
-        elif actual_tool_name == 'get_current_time':
-            return 'Current Time'
-        else:
-            return actual_tool_name.replace('_', ' ').title()
 
                                     # Add clean tool result for model conversation
                                     yield {
@@ -1027,10 +1056,15 @@ class StreamingToolExecutor:
                                 tool_args = tool_call.get('args', {})
                                 break
                         
+                        # Ensure tool_use block has the correct name format
+                        tool_name = tool_result['tool_name']
+                        if tool_name.startswith('mcp_'):
+                            tool_name = tool_name[4:]  # Remove mcp_ prefix for Bedrock
+                        
                         content_blocks.append({
                             "type": "tool_use",
                             "id": tool_result['tool_id'],
-                            "name": tool_result['tool_name'],
+                            "name": tool_name,
                             "input": tool_args
                         })
                     
@@ -1049,16 +1083,20 @@ class StreamingToolExecutor:
                         
                         # Add in tool_result_for_model format so filter can convert to proper Bedrock format
                         conversation.append({
-                            'type': 'tool_result_for_model',
-                            'tool_use_id': tool_result['tool_id'],
-                            'content': raw_result
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_result['tool_id'],
+                                    "content": raw_result
+                                }
+                            ]
                         })
                 
-                # Filter conversation to convert tool results to proper format
-                original_length = len(conversation)
-                conversation = filter_conversation_for_model(conversation)
+                # The conversation should now be in proper Bedrock format
+                # Remove the filter call since we're constructing messages correctly
                 logger.info(f"🤖 MODEL_RESPONSE: {assistant_text}")
-                logger.info(f"Filtered conversation: {original_length} -> {len(conversation)} messages")
+                logger.info(f"Conversation length: {len(conversation)} messages")
 
                 # Skip duplicate execution - tools are already executed in content_block_stop
                 # This section was causing duplicate tool execution
