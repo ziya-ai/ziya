@@ -597,6 +597,11 @@ class MCPTool(BaseTool):
                 error_msg = result.get("message", "Unknown MCP error")
                 error_code = result.get("code", -1)
                 
+                # For validation errors, provide clearer context and don't retry
+                if "validation" in error_msg.lower() or error_code == -32602:
+                    return f"❌ **Parameter Validation Error**: {error_msg}\n\nPlease check the tool's parameter requirements and try again with correct parameter types."
+                
+                
                 # Check for timeout-related errors from the MCP server itself
                 is_timeout_error = (
                     "timeout" in error_msg.lower() or 

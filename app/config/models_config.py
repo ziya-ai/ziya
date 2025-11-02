@@ -194,8 +194,8 @@ MODEL_CONFIGS = {
         },
         "sonnet4.5": {
             "model_id": {
-                "us": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-                "eu": "anthropic.claude-sonnet-4-5-20250929-v1:0"
+                "us": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "eu": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
             },
             "available_regions": [
                 "us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"

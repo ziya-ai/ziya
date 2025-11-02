@@ -1748,6 +1748,12 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 # Write the modified content back to the file
                 logger.info(f"About to write {len(modified_content)} chars to file")
                 logger.info(f"First 200 chars of modified_content: {repr(modified_content[:200])}")
+                
+                # DEBUG: Check line 23
+                lines = modified_content.splitlines(True)
+                if len(lines) > 22:
+                    logger.info(f"DEBUG: Line 23 before write: {repr(lines[22])}")
+                
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(modified_content)
                     logger.info(f"Successfully wrote changes to {file_path}")

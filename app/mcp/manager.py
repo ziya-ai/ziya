@@ -217,6 +217,15 @@ class MCPManager:
                 enhanced_config = server_config.copy()
                 enhanced_config["env"] = server_env
                 enhanced_config["name"] = server_name  # Add server name to config
+                
+                # Add external server specific configuration
+                if any(keyword in ' '.join(command).lower() for keyword in ['fetch', 'uvx', 'npx']):
+                    enhanced_config["external_server"] = True
+                    enhanced_config["max_retries"] = 5
+                    enhanced_config["timeout"] = 60
+                    enhanced_config["enable_response_cleaning"] = True
+                    logger.info(f"Configured {server_name} as external server with enhanced settings")
+                
                 client = MCPClient(enhanced_config)
                 self.clients[server_name] = client
                 connection_tasks.append(self._connect_server(server_name, client))
@@ -249,6 +258,33 @@ class MCPManager:
         except Exception as e:
             logger.error(f"Error initializing MCP manager: {str(e)}")
             return False
+    
+    async def _cleanup_stuck_external_servers(self):
+        """Cleanup external servers that may be stuck or unresponsive."""
+        for server_name, client in self.clients.items():
+            server_config = self.server_configs.get(server_name, {})
+            
+            # Identify external servers by command patterns
+            command = server_config.get("command", [])
+            is_external = any(keyword in ' '.join(command).lower() 
+                            for keyword in ['fetch', 'uvx', 'npx', 'node'])
+            
+            if is_external and hasattr(client, '_consecutive_failures'):
+                if client._consecutive_failures >= 5:
+                    logger.warning(f"Restarting stuck external server: {server_name}")
+                    
+                    try:
+                        await client.disconnect()
+                        # Give external process time to cleanup
+                        await asyncio.sleep(2.0)
+                        
+                        success = await client.connect()
+                        if success:
+                            logger.info(f"Successfully restarted external server: {server_name}")
+                            client._consecutive_failures = 0
+                    except Exception as e:
+                        logger.error(f"Failed to restart external server {server_name}: {e}")
+                        self._failed_servers.add(server_name)
     
     async def _ensure_client_healthy(self, client: 'MCPClient') -> bool:
         """Ensure client is healthy, reconnect if necessary."""
@@ -481,7 +517,7 @@ class MCPManager:
     def _is_repetitive_call(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
         """Check if this tool call is repetitive within the detection window."""
         current_time = time.time()
-        call_signature = (tool_name, str(arguments))
+        call_signature = (tool_name, json.dumps(arguments, sort_keys=True))
         
         # Clean old calls outside the window
         self._recent_tool_calls = [
@@ -490,17 +526,24 @@ class MCPManager:
         ]
         
         # Count identical calls in the window
-        identical_calls = sum(1 for name, args, _ in self._recent_tool_calls 
+        identical_calls = sum(1 for name, args, timestamp in self._recent_tool_calls 
                              if (name, args) == call_signature)
         
+        # Allow retries with different parameters or after reasonable delay
+        if identical_calls > 0:
+            last_call_time = max(timestamp for name, args, timestamp in self._recent_tool_calls 
+                                if (name, args) == call_signature)
+            if current_time - last_call_time > 10:  # Allow retry after 10 seconds
+                identical_calls = 0
+        
         # Add current call
-        self._recent_tool_calls.append((tool_name, str(arguments), current_time))
+        self._recent_tool_calls.append((tool_name, json.dumps(arguments, sort_keys=True), current_time))
         
         # Keep only recent calls
         if len(self._recent_tool_calls) > self._max_recent_calls:
             self._recent_tool_calls = self._recent_tool_calls[-self._max_recent_calls:]
         
-        return identical_calls >= 3  # Allow max 3 identical calls
+        return identical_calls >= 5  # Allow max 5 identical calls before blocking
 
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -517,6 +560,23 @@ class MCPManager:
         # Check for repetitive calls
         if self._is_repetitive_call(tool_name, arguments):
             logger.warning(f"🔍 MCP_MANAGER: Blocking repetitive tool call: {tool_name} with {arguments}")
+            return {
+                "error": True, 
+                "message": f"Tool call blocked: {tool_name} has been called repeatedly with similar arguments. Please try a different approach or check if the previous results contain what you need.",
+                "code": -32001
+            }
+            
+        # Fail fast on validation errors instead of retrying
+        if any(keyword in str(arguments).lower() for keyword in ["validation", "invalid", "required"]):
+            return {
+                "error": True,
+                "message": f"Tool call blocked: {tool_name} has been called repeatedly with similar arguments. Please try a different approach or check if the previous results contain what you need.",
+                "code": -32001,
+                "content": [{"type": "text", "text": f"Tool call blocked due to repetitive execution pattern. Consider using different parameters or checking previous results."}]
+            }        
+        # Periodic cleanup of stuck external servers
+        if time.time() % 300 < 1:  # Every 5 minutes
+            asyncio.create_task(self._cleanup_stuck_external_servers())
             return {"content": [{"type": "text", "text": "Tool call blocked due to repetitive execution pattern"}]}
         
         # Remove mcp_ prefix if present for internal tool lookup
@@ -534,6 +594,11 @@ class MCPManager:
                     return None
                     
                 return await client.call_tool(tool_name, arguments)
+                
+            # If tool call fails with validation error, don't try other servers
+            result = await client.call_tool(tool_name, arguments)
+            if isinstance(result, dict) and result.get("error") and "validation" in str(result.get("message", "")).lower():
+                return result
         else:
             # Try all connected servers
             for client in self.clients.values():
