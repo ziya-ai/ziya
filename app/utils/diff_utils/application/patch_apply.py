@@ -1338,6 +1338,25 @@ def apply_diff_with_difflib_hybrid_forced(
         )
 
     logger.info(f"Successfully applied {len(hunks)} hunks using difflib for {file_path}")
+    
+    # CRITICAL FIX: Remove duplicate consecutive lines that may have been created by fuzzy matching
+    # This handles cases where context lines get duplicated during application
+    deduplicated_lines = []
+    i = 0
+    while i < len(final_lines_with_endings):
+        deduplicated_lines.append(final_lines_with_endings[i])
+        # Check if next line is identical (skip duplicates)
+        while (i + 1 < len(final_lines_with_endings) and 
+               final_lines_with_endings[i] == final_lines_with_endings[i + 1] and
+               final_lines_with_endings[i].strip() != ''):  # Don't deduplicate blank lines
+            logger.debug(f"Removing duplicate line at position {i + 1}: {repr(final_lines_with_endings[i])}")
+            i += 1
+        i += 1
+    
+    if len(deduplicated_lines) != len(final_lines_with_endings):
+        logger.info(f"Removed {len(final_lines_with_endings) - len(deduplicated_lines)} duplicate lines")
+        final_lines_with_endings = deduplicated_lines
+    
     return final_lines_with_endings
 
 def apply_diff_with_difflib(file_path: str, diff_content: str, skip_hunks: List[int] = None) -> str:

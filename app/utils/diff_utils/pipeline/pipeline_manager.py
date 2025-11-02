@@ -1604,20 +1604,24 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             
             return False
         
-        # Filter out hunks that are already marked as applied
+        # Filter out hunks that are already marked as applied or succeeded
         hunks_to_apply = []
         hunks_to_skip = []
         
         for i, hunk in enumerate(hunks, 1):
             hunk_id = hunk_id_mapping.get(i, hunk.get('number', i))
-            if hunk_id in pipeline.result.hunks and pipeline.result.hunks[hunk_id].status == HunkStatus.ALREADY_APPLIED:
-                logger.info(f"Skipping hunk #{i} (ID #{hunk_id}) as it's already marked as applied")
-                hunks_to_skip.append(hunk_id)
+            if hunk_id in pipeline.result.hunks:
+                tracker = pipeline.result.hunks[hunk_id]
+                if tracker.status in (HunkStatus.ALREADY_APPLIED, HunkStatus.SUCCEEDED):
+                    logger.info(f"Skipping hunk #{i} (ID #{hunk_id}) - status is {tracker.status.value}")
+                    hunks_to_skip.append(hunk_id)
+                else:
+                    hunks_to_apply.append(hunk)
             else:
                 hunks_to_apply.append(hunk)
         
         if not hunks_to_apply:
-            logger.info("All hunks are already marked as applied, no need to apply diff")
+            logger.info("All hunks are already applied or succeeded, no need to apply diff")
             return False
         
         # Apply the diff with difflib
