@@ -325,6 +325,50 @@ def improved_parse_tool_call(response: str) -> Optional[Dict[str, Any]]:
         logger.error(f"🔧 MCP: Tool parsing failed: {e}", exc_info=True)
         return None
 
+def clean_external_server_response(result: Any) -> str:
+    """Clean and normalize responses from external MCP servers."""
+    try:
+        # Handle None result
+        if result is None:
+            return "No response from external server"
+            
+        # Handle string result directly
+        if isinstance(result, str):
+            # Clean up cache contamination patterns
+            cache_patterns = [
+                r"Contents of https://[^:]+:\s*",
+                r"Failed to fetch https://[^-]+-\s*",
+                r"Command.*returned non-zero exit status \d+"
+            ]
+            
+            cleaned = result
+            for pattern in cache_patterns:
+                cleaned = re.sub(pattern, "", cleaned, flags=re.MULTILINE)
+            
+            return cleaned.strip()
+            
+        # Handle dictionary result with content field
+        if isinstance(result, dict) and "content" in result:
+            content = result["content"]
+            
+            if isinstance(content, list) and len(content) > 0:
+                first_item = content[0]
+                if isinstance(first_item, dict) and "text" in first_item:
+                    text_content = first_item["text"]
+                    
+                    # Apply same cleaning to text content
+                    return clean_external_server_response(text_content)
+            
+            # Handle direct content
+            return clean_external_server_response(content)
+        
+        # Handle other formats
+        return str(result)
+        
+    except Exception as e:
+        logger.error(f"Error cleaning external server response: {e}")
+        return str(result) if result else "Error processing server response"
+
 def improved_extract_tool_output(result: Any) -> str:
     """
     Extract tool output from MCP result with better handling of edge cases.
@@ -341,6 +385,12 @@ def improved_extract_tool_output(result: Any) -> str:
         # Handle None result
         if result is None:
             return "No output from tool"
+        
+        # For external servers, apply cleaning first
+        # Detect external server responses by checking for common patterns
+        if (isinstance(result, dict) and "content" in result or
+            isinstance(result, str) and any(pattern in result for pattern in ["Contents of https://", "Failed to fetch"])):
+            return clean_external_server_response(result)
             
         # Handle string result directly
         if isinstance(result, str):
