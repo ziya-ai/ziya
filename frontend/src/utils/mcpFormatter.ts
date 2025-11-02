@@ -20,9 +20,10 @@ export function formatMCPOutput(
     showInput?: boolean;
     compact?: boolean;
     defaultCollapsed?: boolean;
+    fadeLastLine?: boolean;
   } = {}
 ): FormattedOutput {
-  const { maxLength = 5000, showInput = false, compact = false, defaultCollapsed = true } = options;
+  const { maxLength = 5000, showInput = false, compact = false, defaultCollapsed = true, fadeLastLine = false } = options;
   
   // Create a generic tool summary from input parameters
   const toolSummary = createToolSummary(toolName, input);
@@ -53,7 +54,30 @@ export function formatMCPOutput(
   
   // Handle shell command outputs specially
   if (toolName === 'mcp_run_shell_command' && typeof result === 'string') {
-    return formatShellCommand(result, { ...options, input, toolSummary, showInput: false });
+    // For shell commands, the result should already include the command line
+    // so we don't need to add it again
+    const lines = result.split('\n');
+    const shouldCollapse = lines.length > 5;
+    
+    let content = result;
+    if (shouldCollapse && fadeLastLine && lines.length > 3) {
+      const visibleLines = lines.slice(0, 3);
+      const remainingLines = lines.slice(3);
+      const lastVisibleLine = visibleLines[visibleLines.length - 1];
+      const otherLines = visibleLines.slice(0, -1);
+      
+      content = otherLines.join('\n') + '\n' + 
+        `<span style="opacity: 0.6; font-style: italic;">${lastVisibleLine}</span>\n` +
+        `<span style="opacity: 0.4; font-size: 0.9em;">... ${remainingLines.length} more lines ...</span>`;
+    }
+    
+    return {
+      content,
+      type: 'text',
+      showInput: false,
+      collapsed: shouldCollapse && defaultCollapsed,
+      summary: shouldCollapse ? `Output (${lines.length} lines, ${result.length} chars)` : undefined
+    };
   }
   
   // Handle workspace search outputs specially
@@ -64,6 +88,29 @@ export function formatMCPOutput(
   // Handle sequential thinking tool outputs specially
   if (toolName === 'mcp_sequentialthinking') {
     return formatSequentialThinking(result, input, options);
+  }
+  
+  // Handle time tool outputs specially
+  if (toolName === 'mcp_get_current_time') {
+    let cleanResult = typeof result === 'string' ? result : String(result);
+    
+    // Clean up common formatting patterns
+    cleanResult = cleanResult.replace(/^Input:\s*\{\}\s*\n*/, '');
+    cleanResult = cleanResult.replace(/^Result:\s*\n*/, '');
+    cleanResult = cleanResult.replace(/\n*Result:\s*\n*/, '\n');
+    cleanResult = cleanResult.trim();
+    
+    // If it still contains "Result:" at the start, remove it
+    if (cleanResult.startsWith('Result:')) {
+      cleanResult = cleanResult.substring(7).trim();
+    }
+    
+    return {
+      content: cleanResult,
+      type: 'text',
+      showInput: false,
+      collapsed: false
+    };
   }
   
   // Generic search results pattern detection
@@ -119,36 +166,49 @@ export function formatMCPOutput(
   // Handle string results
   if (typeof result === 'string') {
     // Check if it's a large text output that should be collapsed
-    const shouldCollapse = result.length > 500 || result.split('\n').length > 10;
+    const lines = result.split('\n');
+    const shouldCollapse = result.length > 500 || lines.length > 5;
+    
+    let content = result;
+    if (shouldCollapse && fadeLastLine && lines.length > 3) {
+      const visibleLines = lines.slice(0, 3);
+      const remainingLines = lines.slice(3);
+      const lastVisibleLine = visibleLines[visibleLines.length - 1];
+      const otherLines = visibleLines.slice(0, -1);
+      
+      content = otherLines.join('\n') + '\n' + 
+        `<span style="opacity: 0.6; font-style: italic;">${lastVisibleLine}</span>\n` +
+        `<span style="opacity: 0.4; font-size: 0.9em;">... ${remainingLines.length} more lines ...</span>`;
+    }
     
     // Check if it's JSON-like
     if ((result.startsWith('{') || result.startsWith('[')) && result.length > 2) {
       try {
         const parsed = JSON.parse(result);
-        return formatObject(parsed, { maxLength, showInput, input, compact, defaultCollapsed, toolSummary });
+        return formatObject(parsed, { maxLength, showInput, input, compact, defaultCollapsed, toolSummary, fadeLastLine });
       } catch (e) {
         // Not JSON, treat as plain text
         return {
-          content: result,
+          content,
           type: 'text',
           showInput: false,
           collapsed: shouldCollapse && defaultCollapsed,
-          summary: shouldCollapse ? `Output (${result.length} chars, ${result.split('\n').length} lines)` : undefined
+          summary: shouldCollapse ? `Output (${result.length} chars, ${lines.length} lines)` : undefined
         };
       }
     }
     return {
-      content: showInput ? `Input: ${formatInput(input)}\n\nResult:\n${result}` : result,
+      content: showInput ? `Input: ${formatInput(input)}\n\nResult:\n${content}` : content,
       type: 'text',
       showInput: false,
       collapsed: shouldCollapse && defaultCollapsed,
-      summary: shouldCollapse ? `Output (${result.length} chars, ${result.split('\n').length} lines)` : undefined
+      summary: shouldCollapse ? `Output (${result.length} chars, ${lines.length} lines)` : undefined
     };
   }
   
   // Handle object/array results
   if (typeof result === 'object' && result !== null) {
-    return formatObject(result, { maxLength, showInput: false, input, compact, defaultCollapsed, toolSummary });
+    return formatObject(result, { maxLength, showInput: false, input, compact, defaultCollapsed, toolSummary, fadeLastLine });
   }
   
   // Handle primitive types
@@ -220,7 +280,7 @@ function hasMetricsPattern(result: any): boolean {
 
 // Generic formatting functions (public-safe)
 function formatShellCommand(result: string, options: any): FormattedOutput {
-  const { input, toolSummary } = options;
+  const { input, toolSummary, fadeLastLine = false, defaultCollapsed = true } = options;
   const commandExecuted = toolSummary?.replace(/^\$ /, '') || input?.command || '';
   
   // Extract command from result if not in input (fallback)
@@ -230,8 +290,21 @@ function formatShellCommand(result: string, options: any): FormattedOutput {
     displayCommand = firstLine.substring(2); // Remove '$ ' prefix
   }
   
-  const lineCount = result.split('\n').length;
-  const shouldCollapse = lineCount > 10;
+  const lines = result.split('\n');
+  const lineCount = lines.length;
+  const shouldCollapse = lineCount > 5;
+  
+  let content = result;
+  if (shouldCollapse && fadeLastLine && lines.length > 3) {
+    const visibleLines = lines.slice(0, 3);
+    const remainingLines = lines.slice(3);
+    const lastVisibleLine = visibleLines[visibleLines.length - 1];
+    const otherLines = visibleLines.slice(0, -1);
+    
+    content = otherLines.join('\n') + '\n' + 
+      `<span style="opacity: 0.6; font-style: italic;">${lastVisibleLine}</span>\n` +
+      `<span style="opacity: 0.4; font-size: 0.9em;">... ${remainingLines.length} more lines ...</span>`;
+  }
   
   // Create a more descriptive summary that includes the command
   let summaryText: string | undefined = undefined;
@@ -242,10 +315,10 @@ function formatShellCommand(result: string, options: any): FormattedOutput {
   }
 
   return {
-    content: result,
+    content,
     type: 'text',
     showInput: false,
-    collapsed: shouldCollapse,
+    collapsed: shouldCollapse && defaultCollapsed,
     summary: shouldCollapse && displayCommand 
       ? `${toolSummary || `$ ${displayCommand}`} - Output (${lineCount} lines, ${result.length} chars)`
       : shouldCollapse ? `Command output (${lineCount} lines)` : undefined
@@ -756,28 +829,41 @@ function formatHtmlContent(contentObj: any, options: { showInput: boolean; input
   };
 }
 
-function formatObject(obj: any, options: { maxLength: number; showInput: boolean; input?: any; compact: boolean; defaultCollapsed: boolean; toolSummary?: string }): FormattedOutput {
-  const { maxLength, showInput, input, compact, defaultCollapsed, toolSummary } = options;
+function formatObject(obj: any, options: { maxLength: number; showInput: boolean; input?: any; compact: boolean; defaultCollapsed: boolean; toolSummary?: string; fadeLastLine?: boolean }): FormattedOutput {
+  const { maxLength, showInput, input, compact, defaultCollapsed, toolSummary, fadeLastLine = false } = options;
   
   try {
     const jsonString = JSON.stringify(obj, null, compact ? 0 : 2);
-    const shouldCollapse = jsonString.length > 1000 || jsonString.split('\n').length > 30;
+    const lines = jsonString.split('\n');
+    const shouldCollapse = jsonString.length > 1000 || lines.length > 5;
+    
+    let content = jsonString;
+    if (shouldCollapse && fadeLastLine && lines.length > 3) {
+      const visibleLines = lines.slice(0, 3);
+      const remainingLines = lines.slice(3);
+      const lastVisibleLine = visibleLines[visibleLines.length - 1];
+      const otherLines = visibleLines.slice(0, -1);
+      
+      content = otherLines.join('\n') + '\n' + 
+        `<span style="opacity: 0.6; font-style: italic;">${lastVisibleLine}</span>\n` +
+        `<span style="opacity: 0.4; font-size: 0.9em;">... ${remainingLines.length} more lines ...</span>`;
+    }
     
     // Truncate if too long
-    const truncated = jsonString.length > maxLength 
-      ? jsonString.substring(0, maxLength) + '\n...\n[Output truncated]'
-      : jsonString;
+    const truncated = content.length > maxLength 
+      ? content.substring(0, maxLength) + '\n...\n[Output truncated]'
+      : content;
     
-    const content = showInput 
+    const finalContent = showInput 
       ? `Input: ${formatInput(input)}\n\nResult:\n${truncated}`
       : truncated;
       
     return { 
-      content, 
+      content: finalContent, 
       type: 'json', 
       showInput,
       collapsed: shouldCollapse && defaultCollapsed,
-      summary: shouldCollapse ? `${toolSummary ? `${toolSummary} - ` : ''}JSON object (${jsonString.length} chars, ${Object.keys(obj).length} properties)` : toolSummary
+      summary: shouldCollapse ? `${toolSummary ? `${toolSummary} - ` : ''}JSON object (${lines.length} lines, ${Object.keys(obj).length} properties)` : toolSummary
     };
   } catch (e) {
     return { content: String(obj), type: 'text', showInput, collapsed: false };
