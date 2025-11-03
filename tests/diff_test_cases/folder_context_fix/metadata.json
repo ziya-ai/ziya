@@ -2,6 +2,5 @@
     "target_file": "frontend/src/context/FolderContext.tsx",
     "description": "Test applying a diff to fix missing closing braces in FolderContext.tsx",
     "date_added": "2025-01-18",
-    "issue_reference": "folder_context_syntax_fix",
-    "expected_to_fail": true
+    "issue_reference": "folder_context_syntax_fix"
 }
