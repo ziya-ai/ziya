@@ -433,6 +433,66 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
     """
     logger.debug("Applying patch directly without dry-run")
     
+    # CRITICAL: Correct line numbers before applying
+    file_path = pipeline.file_path
+    if os.path.exists(file_path):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            file_lines = f.read().splitlines()
+        
+        from ..parsing.diff_parser import parse_unified_diff_exact_plus
+        from ..application.hunk_line_correction import correct_hunk_line_numbers
+        
+        hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
+        corrected_hunks = correct_hunk_line_numbers(hunks, file_lines)
+        
+        if corrected_hunks != hunks:
+            logger.info("Correcting hunk line numbers before applying patch")
+            # Rebuild diff with corrected line numbers AND counts (only when counts would cause line loss)
+            diff_lines = git_diff.splitlines()
+            hunk_index = 0
+            for i, line in enumerate(diff_lines):
+                if line.startswith('@@'):
+                    if hunk_index < len(corrected_hunks):
+                        hunk = corrected_hunks[hunk_index]
+                        
+                        # Only correct if this hunk's line numbers were corrected
+                        if hunk.get('line_number_corrected'):
+                            # Count actual lines in this hunk from the diff
+                            context_count = 0
+                            add_count = 0
+                            remove_count = 0
+                            j = i + 1
+                            while j < len(diff_lines):
+                                next_line = diff_lines[j]
+                                if next_line.startswith('@@') or next_line.startswith('diff '):
+                                    break
+                                if next_line.startswith(' '):
+                                    context_count += 1
+                                elif next_line.startswith('+') and not next_line.startswith('+++'):
+                                    add_count += 1
+                                elif next_line.startswith('-') and not next_line.startswith('---'):
+                                    remove_count += 1
+                                j += 1
+                            
+                            actual_old_count = context_count + remove_count
+                            actual_new_count = context_count + add_count
+                            header_new_count = hunk.get('new_count', 0)
+                            
+                            # Only fix if new_count is too small (would cause patch to drop lines)
+                            if header_new_count < actual_new_count:
+                                new_header = f"@@ -{hunk['old_start']},{actual_old_count} +{hunk['new_start']},{actual_new_count} @@"
+                                diff_lines[i] = new_header
+                                logger.debug(f"Corrected hunk {hunk_index + 1} count: {header_new_count} -> {actual_new_count} (was too small)")
+                            else:
+                                # Just update line numbers, keep original counts
+                                new_header = f"@@ -{hunk['old_start']},{hunk.get('old_count', 0)} +{hunk['new_start']},{hunk.get('new_count', 0)} @@"
+                                diff_lines[i] = new_header
+                        hunk_index += 1
+            git_diff = '\n'.join(diff_lines)
+            if git_diff and not git_diff.endswith('\n'):
+                git_diff += '\n'
+            logger.debug(f"Corrected diff last 100 chars: {repr(git_diff[-100:])}")
+    
     # CRITICAL: Check for ambiguous context before applying
     print("DEBUG: Starting ambiguity check")  # DEBUG
     from ..parsing.diff_parser import parse_unified_diff_exact_plus
