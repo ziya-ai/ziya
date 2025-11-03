@@ -1,0 +1,4 @@
+{
+    "target_file": "frontend/src/index.css",
+    "description": "Test pure add with missing last line - last add line should be included"
+}

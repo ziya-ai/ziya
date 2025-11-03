@@ -1,0 +1,43 @@
+body.dark .streaming-input {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.05) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.05) 50%,
+    rgba(255, 255, 255, 0.05) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 40px 40px;
+  animation: streaming-animation 1s linear infinite;
+}
+
+@keyframes streaming-animation {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 40px 40px; }
+}
+
+/* Throttle retry button styling */
+.throttle-retry-button {
+  transition: all 0.2s ease;
+}
+
+.throttle-retry-button:hover {
+  background-color: #40a9ff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.3);
+}
+
+.throttle-retry-button:active {
+  transform: translateY(0);
+}
+
+.dark .throttle-retry-button:hover {
+  background-color: #177ddc !important;
+}
+
+.throttle-retry-button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
