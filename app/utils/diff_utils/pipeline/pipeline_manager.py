@@ -506,6 +506,16 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
                         )
                     return False
     
+    # Backup the file before applying patch
+    # If patch fails partway through, we need to restore the original
+    import shutil
+    backup_path = f"{file_path}.backup"
+    try:
+        shutil.copy2(file_path, backup_path)
+    except Exception as e:
+        logger.warning(f"Failed to create backup of {file_path}: {e}")
+        backup_path = None
+    
     # Calculate adaptive timeout based on diff size
     diff_lines = len(git_diff.splitlines())
     timeout = min(10, max(2, diff_lines / 100))  # 2-10 seconds
@@ -535,6 +545,11 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         # Handle misordered hunks
         if "misordered hunks" in patch_result.stderr:
             logger.warning("Patch reported misordered hunks - marking all hunks as failed")
+            # Restore backup since patch failed
+            if backup_path and os.path.exists(backup_path):
+                shutil.copy2(backup_path, file_path)
+                os.remove(backup_path)
+                logger.info(f"Restored original file from backup after patch failure")
             for hunk_id in pipeline.result.hunks:
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
@@ -550,6 +565,11 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         # If parse_patch_output returns empty dict, it means general failure (malformed patch)
         if not patch_status and patch_result.returncode != 0:
             logger.error("Patch failed with no specific hunk status - marking all hunks as failed")
+            # Restore backup since patch failed
+            if backup_path and os.path.exists(backup_path):
+                shutil.copy2(backup_path, file_path)
+                os.remove(backup_path)
+                logger.info(f"Restored original file from backup after patch failure")
             for hunk_id in pipeline.result.hunks:
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
@@ -590,11 +610,25 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         # Invalidate file cache after successful patch
         if any_hunk_succeeded:
             pipeline.invalidate_file_cache()
+            # Clean up backup on success
+            if backup_path and os.path.exists(backup_path):
+                os.remove(backup_path)
+        else:
+            # Restore backup if no hunks succeeded
+            if backup_path and os.path.exists(backup_path):
+                shutil.copy2(backup_path, file_path)
+                os.remove(backup_path)
+                logger.info(f"Restored original file from backup - no hunks succeeded")
         
         return any_hunk_succeeded
         
     except subprocess.TimeoutExpired:
         logger.error(f"Patch command timed out after {timeout}s")
+        # Restore backup on timeout
+        if backup_path and os.path.exists(backup_path):
+            shutil.copy2(backup_path, file_path)
+            os.remove(backup_path)
+            logger.info(f"Restored original file from backup after timeout")
         for hunk_id in pipeline.result.hunks:
             pipeline.update_hunk_status(
                 hunk_id=hunk_id,
