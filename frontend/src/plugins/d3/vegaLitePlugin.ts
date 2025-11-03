@@ -586,6 +586,60 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.data?.values) {
         fixColorLegendLabels(spec.encoding, spec.data.values);
       }
+      if (spec.hconcat) {
+        spec.hconcat.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) fixColorLegendLabels(s.encoding, dataValues);
+        });
+      }
+      if (spec.vconcat) {
+        spec.vconcat.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) fixColorLegendLabels(s.encoding, dataValues);
+        });
+      }
+      if (spec.layer) {
+        spec.layer.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) fixColorLegendLabels(s.encoding, dataValues);
+        });
+      }
+
+      // Fix 1.92: Remove redundant color legends when categorical field is already on an axis
+      const removeRedundantColorLegends = (encoding: any) => {
+        if (!encoding || !encoding.color) return;
+
+        const colorField = encoding.color.field;
+        if (!colorField) return;
+
+        // Check if the color field is the same as x or y axis field
+        const xField = encoding.x?.field;
+        const yField = encoding.y?.field;
+
+        // If color field matches an axis field (or is the categorical field in a bar chart), hide the legend
+        if (colorField === xField || colorField === yField) {
+          console.log(`🔧 LEGEND-REMOVE-FIX: Color field "${colorField}" is redundant with axis, hiding legend`);
+          
+          if (!encoding.color.legend) {
+            encoding.color.legend = null;
+          } else if (typeof encoding.color.legend === 'object') {
+            encoding.color.legend = null;
+          } else {
+            encoding.color.legend = null;
+          }
+        }
+      };
+
+      removeRedundantColorLegends(spec.encoding);
+      if (spec.hconcat) {
+        spec.hconcat.forEach((s: any) => removeRedundantColorLegends(s.encoding));
+      }
+      if (spec.vconcat) {
+        spec.vconcat.forEach((s: any) => removeRedundantColorLegends(s.encoding));
+      }
+      if (spec.layer) {
+        spec.layer.forEach((s: any) => removeRedundantColorLegends(s.encoding));
+      }
 
       // Fix literal color values being used as field references
       const fixLiteralColorFields = (encoding: any, dataValues: any[]) => {
@@ -827,6 +881,40 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.data?.values) {
         addDomainForNominalScales(spec.encoding, spec.data.values);
         fixLiteralColorFields(spec.encoding, spec.data.values);
+      if (spec.data?.values) {
+        addDomainForNominalScales(spec.encoding, spec.data.values);
+        fixLiteralColorFields(spec.encoding, spec.data.values);
+        fixGridLayoutIssues(spec);
+      }
+      if (spec.hconcat) {
+        spec.hconcat.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) {
+            addDomainForNominalScales(s.encoding, dataValues);
+            fixLiteralColorFields(s.encoding, dataValues);
+          }
+        });
+      }
+      if (spec.vconcat) {
+        spec.vconcat.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) {
+            addDomainForNominalScales(s.encoding, dataValues);
+            fixLiteralColorFields(s.encoding, dataValues);
+          }
+        });
+      }
+      if (spec.layer) {
+        spec.layer.forEach((s: any) => {
+          const dataValues = s.data?.values || spec.data?.values;
+          if (dataValues) {
+            addDomainForNominalScales(s.encoding, dataValues);
+            fixLiteralColorFields(s.encoding, dataValues);
+          }
+        });
+      }
+
+      console.log('🔧 VEGA-PREPROCESS: Preprocessing complete');
         fixGridLayoutIssues(spec);
       }
       if (spec.hconcat) {
