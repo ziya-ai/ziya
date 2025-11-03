@@ -160,6 +160,37 @@ def apply_diff_with_difflib_hybrid_forced_hunks(
         if hunk_number in skip_hunks:
             logger.info(f"Skipping hunk #{hunk_number} as requested")
             continue
+        
+        # PRIORITY: If this hunk has a corrected line number with high confidence, use it directly
+        if hunk.get('line_number_corrected') and hunk.get('correction_confidence', 0) > 0.80:
+            logger.info(f"Hunk #{hunk_number}: Using corrected line number {hunk['old_start']} (confidence {hunk.get('correction_confidence'):.2f})")
+            old_start_0based = hunk['old_start'] - 1
+            old_block = hunk.get('old_block', [])
+            new_lines = hunk.get('new_lines', [])
+            
+            if old_start_0based >= 0 and old_start_0based + len(old_block) <= len(final_lines_with_endings):
+                # Verify the context matches at this position
+                file_slice = final_lines_with_endings[old_start_0based:old_start_0based + len(old_block)]
+                normalized_file = [normalize_line_for_comparison(line) for line in file_slice]
+                normalized_old = [normalize_line_for_comparison(line) for line in old_block]
+                
+                if normalized_file == normalized_old:
+                    # Perfect match - apply directly
+                    # Detect dominant line ending
+                    original_content_str = "".join(original_lines_with_endings)
+                    crlf_count = original_content_str.count('\r\n')
+                    lf_count = original_content_str.count('\n') - crlf_count
+                    dominant_ending = '\r\n' if crlf_count > lf_count else '\n'
+                    
+                    new_lines_with_endings = [line + dominant_ending if not line.endswith('\n') else line for line in new_lines]
+                    final_lines_with_endings[old_start_0based:old_start_0based + len(old_block)] = new_lines_with_endings
+                    logger.info(f"Hunk #{hunk_number}: Applied at corrected position {old_start_0based}")
+                    
+                    # Update offset for subsequent hunks
+                    offset += len(new_lines) - len(old_block)
+                    continue
+                else:
+                    logger.warning(f"Hunk #{hunk_number}: Context mismatch at corrected position, falling back to normal processing")
             
         logger.debug(f"Processing hunk #{hunk_number}: old_start={hunk['old_start']}, old_count={hunk['old_count']}")
         
@@ -372,6 +403,33 @@ def apply_diff_with_difflib_hybrid_forced(
     applied_hunks = []
 
     for hunk_idx, h in enumerate(hunks, start=1):
+        # PRIORITY: If this hunk has a corrected line number with high confidence, use it directly
+        if h.get('line_number_corrected') and h.get('correction_confidence', 0) > 0.80:
+            logger.info(f"Hunk #{hunk_idx}: Using corrected line number {h['old_start']} (confidence {h.get('correction_confidence'):.2f})")
+            # Apply the hunk directly at the corrected position
+            old_start_0based = h['old_start'] - 1
+            old_block = h.get('old_block', [])
+            new_lines = h.get('new_lines', [])
+            
+            if old_start_0based >= 0 and old_start_0based + len(old_block) <= len(final_lines_with_endings):
+                # Verify the context matches at this position
+                file_slice = final_lines_with_endings[old_start_0based:old_start_0based + len(old_block)]
+                normalized_file = [normalize_line_for_comparison(line) for line in file_slice]
+                normalized_old = [normalize_line_for_comparison(line) for line in old_block]
+                
+                if normalized_file == normalized_old:
+                    # Perfect match - apply directly
+                    new_lines_with_endings = [line + dominant_ending if not line.endswith('\n') else line for line in new_lines]
+                    final_lines_with_endings[old_start_0based:old_start_0based + len(old_block)] = new_lines_with_endings
+                    logger.info(f"Hunk #{hunk_idx}: Applied at corrected position {old_start_0based}")
+                    
+                    # Track this hunk as applied
+                    applied_hunks.append((h, old_start_0based, len(old_block), len(new_lines)))
+                    offset += len(new_lines) - len(old_block)
+                    continue
+                else:
+                    logger.warning(f"Hunk #{hunk_idx}: Context mismatch at corrected position, falling back to normal processing")
+        
         # CRITICAL FIX: Use exact matching when added content is mostly whitespace/short tokens
         exact_match_applied = False
         old_block = h.get('old_block', [])
