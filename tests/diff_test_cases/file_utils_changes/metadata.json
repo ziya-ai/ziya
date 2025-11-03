@@ -1,4 +1,6 @@
 {
-    "target_file": "",
-    "description": "Test case: file_utils_changes"
+    "target_file": "app/utils/file_utils.py",
+    "description": "Test case: file_utils_changes",
+    "expected_to_fail": true,
+    "failure_reason": "Missing expected.py file - needs manual setup"
 }
