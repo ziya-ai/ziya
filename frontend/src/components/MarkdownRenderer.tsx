@@ -1385,7 +1385,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     ) : (
                         <React.Fragment>
                             {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
-                            {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
                             <col style={{ width: 'auto' }} />
                         </React.Fragment>
                     )}
@@ -1920,7 +1919,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
                                     <table className="diff-table diff-table-hunk diff-table-unified-hunk">
                                         <colgroup>
-                                            {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
                                             {showLineNumbers && <col className="diff-gutter-col" style={{ width: '50px', minWidth: '50px' }} />}
                                             <col style={{ width: 'auto' }} />
                                         </colgroup>
@@ -3486,6 +3484,19 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     // 2. Handle Code Blocks with explicit lang tags
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
+        
+        // CRITICAL FIX: Check for visualization types BEFORE tool types
+        // This prevents Vega-Lite blocks from being misidentified
+        if (lang === 'vega-lite' || lang === 'vegalite') {
+            return 'vega-lite';
+        }
+        if (lang === 'mermaid') {
+            return 'mermaid';
+        }
+        if (lang === 'graphviz' || lang === 'dot') {
+            return 'graphviz';
+        }
+        if (lang === 'd3') return 'd3';
 
         // Only log when debug logging is enabled and only for debugging specific issues
         if (isDebugLoggingEnabled() && false) {
@@ -3521,6 +3532,7 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             if (isDebugLoggingEnabled()) {
                 debugLog('Thinking block detected:', stepInfo);
             }
+            (token as TokenWithText).toolName = `thinking_${stepInfo}`;
             return 'tool';
         }
 
@@ -3541,17 +3553,13 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             }
         }
 
-        if (lang === 'mermaid') return 'mermaid';  // Check mermaid FIRST
-        if (lang === 'joint' || lang === 'jointjs') return 'joint';
-        if (lang === 'diagram') return 'joint';  // Also support 'diagram' as joint type
+        // Check remaining diagram types
+        if (lang === 'joint' || lang === 'jointjs' || lang === 'diagram') return 'joint';
         if (lang === 'diff') {
             console.log('✅ MarkdownRenderer - DETECTED AS DIFF (lang tag)');
             return 'diff';
         }
-        if (lang === 'graphviz' || lang === 'dot') return 'graphviz';
-        if (lang === 'vega-lite' || lang === 'vegalite') return 'vega-lite';
-        if (lang === 'vega-lite') return 'vega-lite';
-        if (lang === 'd3') return 'd3';
+        
         // If it has a specific lang tag but isn't special, it's 'code'
         return 'code';
     }
@@ -4548,6 +4556,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Pre-process indented diff blocks before any other processing
             processedMarkdown = normalizeIndentedDiffs(processedMarkdown);
+
+            // CRITICAL FIX: Ensure blank line before code fences that follow headings
+            // Marked.js requires blank lines before code blocks, but streaming content
+            // may have code fences immediately after headings (###\n```)
+            processedMarkdown = processedMarkdown.replace(
+                /(^#{1,6}\s+[^\n]+)\n(```(?:vega-lite|mermaid|graphviz|diff|d3))/gm,
+                '$1\n\n$2'
+            );
+            
+            // Also fix after paragraphs or text that directly precedes code fences
+            processedMarkdown = processedMarkdown.replace(/([^\n])\n(```(?:vega-lite|mermaid|graphviz|diff|d3))/g, '$1\n\n$2');
 
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {

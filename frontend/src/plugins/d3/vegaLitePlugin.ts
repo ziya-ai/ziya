@@ -4628,4 +4628,4 @@ ${svgData}`;
   }
 
   // Close showVegaLiteDebugView function
-}
+};
