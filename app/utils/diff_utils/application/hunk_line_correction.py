@@ -69,6 +69,7 @@ def find_best_match_position(context: List[str], file_lines: List[str]) -> Optio
 def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]) -> List[Dict[str, Any]]:
     """
     Correct hunk line numbers by finding best context matches in the file.
+    Adds 'line_number_corrected' and 'correction_confidence' metadata to corrected hunks.
     """
     if not hunks or not file_lines:
         return hunks
@@ -91,10 +92,12 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
             pos, confidence = result
             new_start = pos + 1  # Convert to 1-based
             
-            # Correct if different and high confidence
-            if new_start != old_start and confidence > 0.85:
+            # Correct if different and high confidence (lowered threshold to 0.80)
+            if new_start != old_start and confidence > 0.80:
                 new_hunk = hunk.copy()
                 new_hunk['old_start'] = new_start
+                new_hunk['line_number_corrected'] = True
+                new_hunk['correction_confidence'] = confidence
                 corrected.append(new_hunk)
                 corrections += 1
                 logger.info(f"Hunk {i}: corrected line {old_start} → {new_start} (confidence {confidence:.2f})")
