@@ -1,8 +1,8 @@
-import threading
-import subprocess
-import signal
-import sys
 import os
+import signal
+import subprocess
+import sys
+import threading
 
 
 def frontend_start():

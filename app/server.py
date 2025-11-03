@@ -507,7 +507,7 @@ async def startup_event():
             # ModelManager.invalidate_agent_chain_cache()  # Method doesn't exist
             
             # Initialize secure MCP tools
-            from app.mcp.enhanced_tools import get_connection_pool as get_secure_pool
+            from app.mcp.connection_pool import get_connection_pool as get_secure_pool
             secure_pool = get_secure_pool()
             secure_pool.set_server_configs(mcp_manager.server_configs)
             logger.info("Initialized secure MCP connection pool")
