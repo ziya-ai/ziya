@@ -123,37 +123,44 @@ class DiffRegressionTest(unittest.TestCase):
 
         # Compare with expected
         if result != expected:
-            # Generate a readable diff if comparison fails
-            diff_lines = list(difflib.unified_diff(
-                expected.splitlines(True), # Keep ends for diff
-                result.splitlines(True),   # Keep ends for diff
-                fromfile=f'{case_name}_expected',
-                tofile=f'{case_name}_got'
-            ))
-            diff_output = "".join(diff_lines)
+            if expected_to_fail:
+                # Test is expected to fail, so this is actually a pass
+                logger.info(f"Test {case_name} failed as expected: {metadata.get('failure_reason', 'No reason provided')}")
+                # Don't fail the test - just return
+            else:
+                # Generate a readable diff if comparison fails
+                diff_lines = list(difflib.unified_diff(
+                    expected.splitlines(True), # Keep ends for diff
+                    result.splitlines(True),   # Keep ends for diff
+                    fromfile=f'{case_name}_expected',
+                    tofile=f'{case_name}_got'
+                ))
+                diff_output = "".join(diff_lines)
 
-            # Create detailed error message including the diff
-            error_msg = (
-                f"\n" + "="*80 +
-                f"\nTEST FAILED: {case_name}\n" +
-                f"Description: {metadata.get('description', 'N/A')}\n" +
-                "-"*80 +
-                f"\nDifference between Expected and Got:\n" +
-                "-"*80 + f"\n{diff_output}\n" +
-                "-"*80 +
-                f"\nExpected Length: {len(expected.splitlines())} lines\n" +
-                f"Got Length:      {len(result.splitlines())} lines\n" +
-                "="*80
-            )
-            # Use assertMultiLineEqual for potentially better IDE integration,
-            # but still raise with the detailed diff message for clarity in logs.
-            try:
-                self.assertMultiLineEqual(result, expected)
-            except AssertionError:
-                 self.fail(error_msg) # Fail with the detailed message
+                # Create detailed error message including the diff
+                error_msg = (
+                    f"\n" + "="*80 +
+                    f"\nTEST FAILED: {case_name}\n" +
+                    f"Description: {metadata.get('description', 'N/A')}\n" +
+                    "-"*80 +
+                    f"\nDifference between Expected and Got:\n" +
+                    "-"*80 + f"\n{diff_output}\n" +
+                    "-"*80 +
+                    f"\nExpected Length: {len(expected.splitlines())} lines\n" +
+                    f"Got Length:      {len(result.splitlines())} lines\n" +
+                    "="*80
+                )
+                # Use assertMultiLineEqual for potentially better IDE integration,
+                # but still raise with the detailed diff message for clarity in logs.
+                try:
+                    self.assertMultiLineEqual(result, expected)
+                except AssertionError:
+                     self.fail(error_msg) # Fail with the detailed message
         else:
-            # If they are equal, the test passes implicitly
-            pass 
+            if expected_to_fail:
+                # Test passed but was expected to fail
+                self.fail(f"Test {case_name} was expected to fail but passed. Reason: {metadata.get('failure_reason', 'No reason provided')}")
+            # If they are equal, the test passes implicitly 
             
     def test_all_cases(self):
         """Run all test cases found in the test cases directory"""

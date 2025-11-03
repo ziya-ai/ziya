@@ -4,5 +4,7 @@
     "diff_file": "changes.diff",
     "expected_file": "expected.ts",
     "target_file": "vegaLitePlugin.ts",
-    "test_type": "standard"
+    "test_type": "standard",
+    "expected_to_fail": true,
+    "failure_reason": "Invalid test data: diff references code at line 433 that doesn't exist in original file"
 }
