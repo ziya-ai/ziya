@@ -29,13 +29,14 @@ def should_rebuild_frontend():
     """Check if frontend needs rebuilding."""
     frontend_dir = Path("frontend")
     build_dir = frontend_dir / "build"
+    success_marker = build_dir / ".build_success"
     
-    if not build_dir.exists():
+    if not build_dir.exists() or not success_marker.exists():
         return True
     
     # Get build time
     try:
-        build_mtime = os.path.getmtime(build_dir)
+        build_mtime = os.path.getmtime(success_marker)
     except OSError:
         return True
     
@@ -61,6 +62,11 @@ def main():
     if os.path.exists("dist"):
         shutil.rmtree("dist")
         print("Cleaned previous build artifacts")
+    
+    # Clear frontend success marker to force rebuild
+    success_marker = Path("frontend/build/.build_success")
+    if success_marker.exists():
+        success_marker.unlink()
 
     # Ensure app/templates directory exists (though process_wheel will handle copying from frontend/build)
     templates_dir = Path("app/templates")
@@ -80,6 +86,10 @@ def main():
                     print("Frontend dependencies (node_modules) already exist, skipping npm install.")
 
                 subprocess.run(["npm", "run", "build"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
+                
+                # Mark build as successful
+                success_marker = frontend_project_dir / "build" / ".build_success"
+                success_marker.touch()
                 print("Frontend build completed")
 
             except subprocess.CalledProcessError as e:
