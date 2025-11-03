@@ -337,7 +337,11 @@ def clean_input_diff(diff_content: str) -> str:
         result_lines.append(line)
 
     # End of loop
-    return '\n'.join(result_lines)
+    result = '\n'.join(result_lines)
+    # Preserve trailing newline if original had one
+    if diff_content.endswith('\n'):
+        result += '\n'
+    return result
 
 def correct_git_diff(git_diff: str, file_path: str) -> str:
     """
@@ -398,8 +402,13 @@ def correct_git_diff(git_diff: str, file_path: str) -> str:
                     if current_hunk:
                         original_hunks.append(current_hunk)
                     current_hunk = [line]
-                elif current_hunk and line.startswith(('+', '-', ' ')):
-                    current_hunk.append(line)
+                elif current_hunk:
+                    # Include all lines after hunk header until next hunk or end
+                    if line.startswith(('+', '-', ' ', '')):
+                        current_hunk.append(line)
+                    elif line.startswith('diff '):
+                        # New file, stop current hunk
+                        break
             if current_hunk:
                 original_hunks.append(current_hunk)
                 
