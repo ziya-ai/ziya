@@ -625,6 +625,8 @@ def apply_diff_with_difflib_hybrid_forced(
                         # Try to find a better match within a wider range
                         found_match = False
                         search_range = 30  # Search 30 lines before and after
+                        best_match_pos = fuzzy_best_pos
+                        best_match_ratio = fuzzy_best_ratio
                         
                         for offset in range(-search_range, search_range + 1):
                             test_pos = fuzzy_best_pos + offset
@@ -634,16 +636,26 @@ def apply_diff_with_difflib_hybrid_forced(
                             test_slice = final_lines_with_endings[test_pos:test_pos + len(h['old_block'])]
                             normalized_test_slice = [normalize_line_for_comparison(line) for line in test_slice]
                             
-                            # Check if this is a better match
+                            # Check if this is a better match than what we have
                             match_count = sum(1 for a, b in zip(normalized_test_slice, normalized_old_block_verify) if a == b)
                             match_ratio = match_count / len(normalized_old_block_verify) if normalized_old_block_verify else 0
                             
-                            if match_ratio > 0.75:  # If 75% of lines match (lowered to handle missing trailing whitespace)
-                                logger.info(f"Hunk #{hunk_idx}: Found better match at position {test_pos} with ratio {match_ratio:.2f}")
-                                remove_pos = test_pos
+                            # Only accept if it's better than our current best AND meets minimum threshold
+                            if match_ratio > best_match_ratio and match_ratio > 0.75:
+                                logger.info(f"Hunk #{hunk_idx}: Found better match at position {test_pos} with ratio {match_ratio:.2f} (previous: {best_match_ratio:.2f})")
+                                best_match_pos = test_pos
+                                best_match_ratio = match_ratio
                                 found_match = True
-                                fuzzy_match_applied = True
-                                break
+                        
+                        if found_match:
+                            remove_pos = best_match_pos
+                            fuzzy_match_applied = True
+                        elif best_match_ratio > 0.75:
+                            # Use the original fuzzy position if it's good enough
+                            logger.info(f"Hunk #{hunk_idx}: Using original fuzzy position {fuzzy_best_pos} with ratio {best_match_ratio:.2f}")
+                            remove_pos = fuzzy_best_pos
+                            found_match = True
+                            fuzzy_match_applied = True
                         
                         if not found_match:
                             # LAST RESORT: If we still can't find a match but we're confident about the position,
