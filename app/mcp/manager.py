@@ -545,6 +545,49 @@ class MCPManager:
         
         return identical_calls >= 5  # Allow max 5 identical calls before blocking
 
+    def _coerce_argument_types(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Coerce argument types based on tool schema to fix string-to-number issues."""
+        if not arguments:
+            return arguments
+            
+        # Find the tool schema
+        tool_schema = None
+        for client in self.clients.values():
+            if client.is_connected:
+                for tool in client.tools:
+                    if tool.name == tool_name:
+                        tool_schema = tool.inputSchema
+                        break
+                if tool_schema:
+                    break
+        
+        if not tool_schema or 'properties' not in tool_schema:
+            return arguments
+        
+        # Coerce types based on schema
+        coerced = {}
+        for key, value in arguments.items():
+            if key in tool_schema['properties']:
+                expected_type = tool_schema['properties'][key].get('type')
+                if expected_type == 'number' and isinstance(value, str):
+                    try:
+                        coerced[key] = int(value) if '.' not in value else float(value)
+                    except ValueError:
+                        coerced[key] = value
+                elif expected_type == 'integer' and isinstance(value, str):
+                    try:
+                        coerced[key] = int(value)
+                    except ValueError:
+                        coerced[key] = value
+                elif expected_type == 'boolean' and isinstance(value, str):
+                    coerced[key] = value.lower() in ('true', '1', 'yes')
+                else:
+                    coerced[key] = value
+            else:
+                coerced[key] = value
+        
+        return coerced
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Call an MCP tool.
@@ -584,6 +627,8 @@ class MCPManager:
         if tool_name.startswith("mcp_"):
             internal_tool_name = tool_name[4:]
         
+        # Coerce argument types based on tool schema
+        arguments = self._coerce_argument_types(internal_tool_name, arguments)
         
         if server_name:
             client = self.clients.get(server_name)

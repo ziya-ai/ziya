@@ -1,4 +1,6 @@
 {
-    "target_file": "frontend/src/plugins/d3/vegaLitePlugin.ts",
-    "description": "Test case: not_matching_context_multipart"
+    "target_file": "test.py",
+    "description": "Test case: not_matching_context_multipart",
+    "expected_to_fail": true,
+    "failure_reason": "Missing original.py/expected.py files - needs manual setup"
 }

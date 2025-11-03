@@ -3354,30 +3354,10 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
         _background_scan_thread = threading.Thread(target=background_scan, daemon=True)
         _background_scan_thread.start()
         logger.info("🔥 Started background scan")
-        time.sleep(0.05)  # Let thread start
+        time.sleep(0.1)  # Let thread start and initialize progress
     
     # Return scanning indicator
-    # Last resort: if we get here and there's still no data, try basic structure
-    try:
-        logger.warning("No cache available and no scan running, attempting basic folder read")
-        return get_basic_folder_structure(directory)
-    except Exception as e:
-        logger.error(f"Basic folder structure also failed: {e}")
-        return {
-            "children": {},
-            "_error": f"Unable to read directory: {str(e)}",
-            "_scanning": False
-        }
-    try:
-        logger.warning("No cache available and no scan running, attempting basic folder read")
-        return get_basic_folder_structure(directory)
-    except Exception as e:
-        logger.error(f"Basic folder structure also failed: {e}")
-        return {
-            "children": {},
-            "_error": f"Unable to read directory: {str(e)}",
-            "_scanning": False
-        }
+    return {"_scanning": True, "children": {}}
 
 @app.get('/api/folders')
 async def api_get_folders():

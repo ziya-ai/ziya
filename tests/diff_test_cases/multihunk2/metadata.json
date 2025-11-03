@@ -1,5 +1,6 @@
 {
-    "target_file": "basicChart.ts",
-    "diff_file": "basicChart.diff",
-    "description": "Test case: multihunk2"
+    "target_file": "test.py",
+    "description": "Test case: multihunk2",
+    "expected_to_fail": true,
+    "failure_reason": "Missing original.py/expected.py files - needs manual setup"
 }

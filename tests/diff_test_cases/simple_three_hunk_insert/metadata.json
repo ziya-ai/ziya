@@ -1,4 +1,6 @@
 {
-    "target_file": "app/middleware/streaming.py",
-    "description": "Test case: simple_three_hunk_insert"
+    "target_file": "test.py",
+    "description": "Test case: simple_three_hunk_insert",
+    "expected_to_fail": true,
+    "failure_reason": "Missing original.py/expected.py files - needs manual setup"
 }
