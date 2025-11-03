@@ -1,0 +1,5 @@
+{
+    "target_file": "basicChart.ts",
+    "diff_file": "basicChart.diff",
+    "description": "Test case: multihunk2"
+}
