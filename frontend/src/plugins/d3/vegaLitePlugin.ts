@@ -532,6 +532,61 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.vconcat) spec.vconcat.forEach((s: any) => convertOrdinalToNominal(s.encoding));
       if (spec.layer) spec.layer.forEach((s: any) => convertOrdinalToNominal(s.encoding));
 
+      // Fix 1.91: Fix color legends showing hex codes instead of meaningful labels
+      const fixColorLegendLabels = (encoding: any, dataValues: any[]) => {
+        if (!encoding || !dataValues || dataValues.length === 0) return;
+
+        ['color', 'fill', 'stroke'].forEach(channel => {
+          const channelSpec = encoding[channel];
+          if (channelSpec?.field && channelSpec?.type === 'nominal') {
+            // Check if the field contains literal color values (hex codes)
+            const fieldValues = [...new Set(dataValues.map(d => d[channelSpec.field]))].filter(v => v !== null && v !== undefined);
+            const hasHexColors = fieldValues.some(value =>
+              typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value)
+            );
+
+            if (hasHexColors) {
+              console.log(`🔧 LEGEND-LABEL-FIX: Color field "${channelSpec.field}" contains hex codes, switching to meaningful field for legend`);
+
+              // Find a more meaningful field for legend labels
+              const meaningfulFields = ['rating', 'label', 'name', 'category', 'type', 'status', 'group'];
+              const labelField = meaningfulFields.find(field =>
+                dataValues.length > 0 && dataValues[0].hasOwnProperty(field)
+              );
+
+              if (labelField) {
+                // Create mapping from meaningful label to color
+                const labelToColor = new Map();
+                dataValues.forEach(d => {
+                  if (d[channelSpec.field] && d[labelField]) {
+                    labelToColor.set(d[labelField], d[channelSpec.field]);
+                  }
+                });
+
+                // Get unique labels and their corresponding colors
+                const uniqueLabels = [...new Set(dataValues.map(d => d[labelField]).filter(v => v !== null && v !== undefined))];
+                const colorRange = uniqueLabels.map(label => labelToColor.get(label));
+
+                // Update encoding to use the meaningful field with proper color mapping
+                channelSpec.field = labelField;
+                channelSpec.scale = {
+                  domain: uniqueLabels,
+                  range: colorRange,
+                  type: 'ordinal'
+                };
+
+                console.log(`🔧 LEGEND-LABEL-FIX: Switched to meaningful field "${labelField}" with color mapping:`, 
+                  uniqueLabels.map((label, i) => `${label} -> ${colorRange[i]}`));
+              }
+            }
+          }
+        });
+      };
+
+      if (spec.data?.values) {
+        fixColorLegendLabels(spec.encoding, spec.data.values);
+      }
+
       // Fix literal color values being used as field references
       const fixLiteralColorFields = (encoding: any, dataValues: any[]) => {
         if (!encoding || !dataValues || dataValues.length === 0) return;
