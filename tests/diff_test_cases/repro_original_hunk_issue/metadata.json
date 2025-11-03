@@ -1,5 +1,6 @@
 {
-    "target_file": "app/mcp/tools.py",
-    "description": "Reproduces the original issue where only 3 of 4 hunks were applied due to a malformed hunk header with context.",
-    "expected_to_fail": false
+    "target_file": "test.py",
+    "description": "Test case: repro_original_hunk_issue",
+    "expected_to_fail": true,
+    "failure_reason": "Missing original.py/expected.py files - needs manual setup"
 }
