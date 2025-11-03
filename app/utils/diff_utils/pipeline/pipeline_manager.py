@@ -1210,6 +1210,13 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                             merged_hunk_mapping[new_idx] = [orig_idx]
                             break
         
+        # Try to correct hunk line numbers if they appear to be wrong
+        from ..application.hunk_line_correction import correct_hunk_line_numbers
+        corrected_hunks = correct_hunk_line_numbers(hunks, original_lines)
+        if corrected_hunks != hunks:
+            logger.info("Applied hunk line number corrections")
+            hunks = corrected_hunks
+        
         # CRITICAL FIX: Check for malformed hunks first
         malformed_hunks = []
         for i, hunk in enumerate(hunks, 1):
