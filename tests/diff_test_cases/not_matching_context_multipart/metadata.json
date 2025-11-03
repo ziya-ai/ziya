@@ -1,0 +1,4 @@
+{
+    "target_file": "frontend/src/plugins/d3/vegaLitePlugin.ts",
+    "description": "Test case: not_matching_context_multipart"
+}

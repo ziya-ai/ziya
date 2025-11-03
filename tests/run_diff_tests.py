@@ -930,10 +930,6 @@ class DiffRegressionTest(unittest.TestCase):
         """Test adding test-connection endpoint to MCP registry routes"""
         self.run_diff_test('mcp_registry_test_connection')
 
-    def test_trailing_comma_removal(self):
-        """Test removing trailing commas from JSON object properties"""
-        self.run_diff_test('trailing_comma_removal')
-
 
 # Dynamically generate test methods for all test case directories
 # This allows -k filtering to work without hardcoding every test
