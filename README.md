@@ -47,6 +47,21 @@ export GOOGLE_API_KEY=<YOUR-GOOGLE-API-KEY>
 pip install ziya
 ```
 
+#### Python 3.13 Users
+
+If you're using Python 3.13 and encounter build errors with the `tiktoken` dependency, use:
+
+```bash
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 pip install ziya
+```
+
+Or set the environment variable permanently:
+
+```bash
+export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+pip install ziya
+```
+
 ## Run Ziya
 
 ```bash 
