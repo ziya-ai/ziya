@@ -316,9 +316,17 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         return _check_pure_addition_already_applied(file_lines, added_lines, hunk, pos)
     
     # CRITICAL: For hunks with removals, validate that the content to be removed matches
-    # If removal validation fails, the hunk cannot be already applied
-    if removed_lines and not _validate_removal_content(file_lines, removed_lines, pos):
-        return False
+    # If removal validation fails, check if it's because the hunk was already applied
+    if removed_lines:
+        removal_matches = _validate_removal_content(file_lines, removed_lines, pos)
+        if not removal_matches:
+            # Removal content doesn't match
+            # For modifications (has additions), check if the new content is already there
+            if added_lines and _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace):
+                logger.debug(f"Hunk appears already applied: removal content gone, new content present at {pos}")
+                return True
+            # For pure deletions or when new content doesn't match - not applied
+            return False
     
     # Check if the expected result (new_lines) is already present at this position
     return _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace)
@@ -342,12 +350,31 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     if not added_lines:
         return True
     
+    # Strip trailing empty strings from added_lines (parser artifact)
+    while added_lines and added_lines[-1] == '':
+        added_lines = added_lines[:-1]
+    
+    if not added_lines:
+        return True
+    
     # Get context lines from the hunk
     hunk_lines = hunk.get('lines', [])
     context_lines = [line[1:] for line in hunk_lines if line.startswith(' ')]
     
     if not context_lines:
-        logger.debug("No context lines in hunk - cannot validate if pure addition is already applied")
+        logger.debug("No context lines in hunk - checking if added content exists anywhere in file")
+        # For pure additions with no context, check if the exact content exists anywhere
+        added_block = [normalize_line_for_comparison(line) for line in added_lines]
+        
+        # Search through the file for a matching block
+        for search_pos in range(len(file_lines) - len(added_lines) + 1):
+            file_block = [normalize_line_for_comparison(file_lines[search_pos + i]) 
+                         for i in range(len(added_lines))]
+            if file_block == added_block:
+                logger.debug(f"Found added content at position {search_pos} (no context match)")
+                return True
+        
+        logger.debug("Added content not found anywhere in file")
         return False
     
     added_block = [normalize_line_for_comparison(line) for line in added_lines]
@@ -370,8 +397,9 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     # Context matches, check if added lines are right after
     check_pos = pos + len(context_lines)
     
+    # Check if we have enough lines to compare (need check_pos + len(added_lines) lines total)
     if check_pos + len(added_lines) > len(file_lines):
-        logger.debug(f"Not enough lines after context to check added content")
+        logger.debug(f"Not enough lines after context to check added content (need {check_pos + len(added_lines)}, have {len(file_lines)})")
         return False
     
     file_block = [normalize_line_for_comparison(file_lines[check_pos + i]) 
@@ -513,10 +541,24 @@ def _check_expected_content_match(file_lines: List[str], new_lines: List[str], p
     
     file_slice = file_lines[pos:pos+len(new_lines)]
     
-    # CRITICAL FIX: Temporarily disable all matching to prevent false positives
-    # This is a conservative approach to fix the malformed state detection issue
-    logger.debug(f"Conservative approach: not marking any content as already applied at position {pos}")
-    return False
+    # Normalize lines for comparison
+    if ignore_whitespace:
+        normalized_file = [normalize_line_for_comparison(line) for line in file_slice]
+        normalized_new = [normalize_line_for_comparison(line) for line in new_lines]
+    else:
+        normalized_file = [line.rstrip('\n\r') for line in file_slice]
+        normalized_new = [line.rstrip('\n\r') for line in new_lines]
+    
+    # Check if they match
+    matches = normalized_file == normalized_new
+    
+    if not matches:
+        logger.debug(f"Content mismatch at position {pos}:")
+        logger.debug(f"  File ({len(normalized_file)} lines): {normalized_file[:3]}...")
+        logger.debug(f"  Expected ({len(normalized_new)} lines): {normalized_new[:3]}...")
+    
+    logger.debug(f"Content match at position {pos}: {matches}")
+    return matches
 
 
 def _lines_match_exactly(file_lines: List[str], expected_lines: List[str]) -> bool:

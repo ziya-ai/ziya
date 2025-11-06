@@ -1116,7 +1116,7 @@ def apply_diff_with_difflib_hybrid_forced(
             corrected_new_lines = []
             
             if adaptation_type == "systematic_loss":
-                # Original systematic loss handling
+                # Systematic loss handling with context preservation
                 for new_line in new_lines_content:
                     new_content = new_line.strip()
                     
@@ -1124,18 +1124,19 @@ def apply_diff_with_difflib_hybrid_forced(
                         corrected_new_lines.append(new_line + dominant_ending)
                         continue
                     
-                    # Look for matching content in original to preserve indentation
-                    found_original_indentation = None
+                    # Look for matching content in original - if found, use original line exactly
+                    found_original_line = None
                     for orig_line in original_lines_to_replace:
                         orig_content = orig_line.strip()
                         if orig_content and re.sub(r'\s+', ' ', orig_content) == re.sub(r'\s+', ' ', new_content):
-                            orig_indent = orig_line[:len(orig_line) - len(orig_line.lstrip())]
-                            found_original_indentation = orig_indent
+                            found_original_line = orig_line
                             break
                     
-                    if found_original_indentation is not None:
-                        corrected_new_lines.append(found_original_indentation + new_content + dominant_ending)
+                    if found_original_line is not None:
+                        # This is a context line - use the exact original line
+                        corrected_new_lines.append(found_original_line)
                     else:
+                        # This is an addition - use the new line
                         corrected_new_lines.append(new_line + dominant_ending)
                         
             elif adaptation_type == "fuzzy_mismatch":
@@ -1327,8 +1328,49 @@ def apply_diff_with_difflib_hybrid_forced(
                 if not boundary_corrected:
                     # Only reconstruct if boundary verification didn't already correct it
                     new_lines_with_endings = []
-                    for line in new_lines_content:
-                        new_lines_with_endings.append(line + dominant_ending)
+                    
+                    # EXPERIMENTAL: Try context preservation for simple cases
+                    # Only if we have both added and removed lines (replacements)
+                    has_additions = len(h.get('added_lines', [])) > 0
+                    has_removals = len(h.get('removed_lines', [])) > 0
+                    is_simple_replacement = has_additions and has_removals and len(h.get('old_block', [])) == len(new_lines_content)
+                    
+                    if is_simple_replacement:
+                        # Try to preserve context lines for simple replacements
+                        added_set = set(a.strip() for a in h.get('added_lines', []))
+                        old_block = h.get('old_block', [])
+                        removed_set = set(r.strip() for r in h.get('removed_lines', []))
+                        
+                        old_idx = 0
+                        for new_line in new_lines_content:
+                            new_stripped = new_line.strip()
+                            is_addition = new_stripped in added_set
+                            
+                            if is_addition and old_idx < len(old_block):
+                                # Check if this replaces a removed line
+                                old_stripped = old_block[old_idx].strip()
+                                if old_stripped in removed_set:
+                                    # Replacement - use new line
+                                    new_lines_with_endings.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
+                                    old_idx += 1
+                                else:
+                                    # Addition - use new line, don't consume old
+                                    new_lines_with_endings.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
+                            elif not is_addition:
+                                # Context - preserve from file
+                                if insert_pos + old_idx < len(final_lines_with_endings):
+                                    new_lines_with_endings.append(final_lines_with_endings[insert_pos + old_idx])
+                                else:
+                                    new_lines_with_endings.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
+                                old_idx += 1
+                            else:
+                                # Fallback
+                                new_lines_with_endings.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
+                    else:
+                        # Standard reconstruction for complex cases
+                        for line in new_lines_content:
+                            new_lines_with_endings.append(line + dominant_ending)
+                            
                 final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
 
         # --- Update Offset ---
