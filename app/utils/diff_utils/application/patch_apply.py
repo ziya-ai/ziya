@@ -861,11 +861,6 @@ def apply_diff_with_difflib_hybrid_forced(
         else:
             new_lines_content = h['new_lines']
         
-        print(f"DEBUG: Hunk #{hunk_idx} - new_lines_content has {len(new_lines_content)} lines")
-        if new_lines_content:
-            for i, line in enumerate(new_lines_content[:3]):
-                print(f"  Line {i}: {repr(line[:60] if len(line) > 60 else line)}")
-        
         # Preserve original line endings from the file
         new_lines_with_endings = []
         for line in new_lines_content:
@@ -1022,8 +1017,6 @@ def apply_diff_with_difflib_hybrid_forced(
                 continue
         else:
             logger.info(f"Hunk #{hunk_idx}: Skipping duplicate detection for corrected pure insertion")
-        
-        print(f"DEBUG: Hunk #{hunk_idx} - insert_pos={insert_pos}, end_remove_pos={end_remove_pos}")
 
         # --- Apply the hunk with intelligent indentation adaptation ---
         # Handle systematic indentation loss and indentation mismatches from fuzzy matching
@@ -1337,7 +1330,6 @@ def apply_diff_with_difflib_hybrid_forced(
                     final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
             else:
                 # Standard application
-                print(f"DEBUG: Standard application path - {len(new_lines_content)} lines")
                 if not boundary_corrected:
                     # Only reconstruct if boundary verification didn't already correct it
                     new_lines_with_endings = []
