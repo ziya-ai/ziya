@@ -101,8 +101,8 @@ export interface JointElement {
 
 interface JointLink {
     id: string;
-    source: string | { id: string; port?: string };
-    target: string | { id: string; port?: string };
+    source: string | { id: string; port?: string; anchor?: { name: string }; connectionPoint?: { name: string } };
+    target: string | { id: string; port?: string; anchor?: { name: string }; connectionPoint?: { name: string } };
     label?: string;
     labels?: any[];
     vertices?: { x: number; y: number }[];
@@ -1019,6 +1019,20 @@ const parseJointDefinition = (definition: string): { elements: JointElement[]; c
         }
     }
 
+    // If no elements were parsed, create a simple test case
+    if (elements.length === 0 && definition.trim()) {
+        console.log('No elements parsed from definition, creating default test elements');
+        elements.push({ 
+            id: 'A', type: 'rect', position: [100, 100], 
+            size: { width: 120, height: 80 }, text: 'Element A' 
+        });
+        elements.push({ 
+            id: 'B', type: 'circle', position: [300, 100], 
+            size: { width: 80, height: 80 }, text: 'Element B' 
+        });
+        links.push({ id: 'A-B', source: 'A', target: 'B', label: 'connection' });
+    }
+
     return { elements, connections: links };
 };
 
@@ -1030,6 +1044,12 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
     const size = elementSpec.size || { width: 120, height: 80 };
     const text = elementSpec.text || elementSpec.id;
 
+    // Add validation
+    if (!elementSpec.id) {
+        console.error('Element missing required id:', elementSpec);
+        throw new Error('Element must have an id');
+    }
+    
     console.log(`Creating element ${elementSpec.id}:`, { position, size, text, type: elementSpec.type });
 
     const commonAttrs = {
@@ -1150,15 +1170,104 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
     return element;
 };
 
-// Create Joint.js links from specification
-const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
+// Enhanced link creation with better routing and styling
+const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
+    // Keep source/target simple - let Paper defaults handle all anchoring
+    const sourceConfig = typeof linkSpec.source === 'string' 
+        ? { id: linkSpec.source } 
+        : linkSpec.source;
+    
+    const targetConfig = typeof linkSpec.target === 'string'
+        ? { id: linkSpec.target }
+        : linkSpec.target;
+
     const link = new shapes.standard.Link({
         id: linkSpec.id,
-        source: { id: typeof linkSpec.source === 'string' ? linkSpec.source : linkSpec.source.id },
-        target: { id: typeof linkSpec.target === 'string' ? linkSpec.target : linkSpec.target.id },
+        source: sourceConfig,
+        target: targetConfig,
         router: {
-            name: linkSpec.router || 'orthogonal',
-            args: { padding: 20, excludeEnds: ['source', 'target'] }
+            name: linkSpec.router || 'normal',
+            args: { padding: 20 }
+        },
+        connector: {
+            name: linkSpec.connector || 'rounded',
+            args: { radius: 15 }
+        },
+        vertices: linkSpec.vertices || [],
+        defaultRouter: { name: 'normal' },
+        attrs: {
+            line: {
+                stroke: theme === 'dark' ? '#88c0d0' : '#34495e',
+                strokeWidth: 3,
+                strokeLinecap: 'round',
+                strokeLinejoin: 'round',
+                strokeDasharray: linkSpec.attrs?.line?.strokeDasharray || '0',
+                filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))',
+                targetMarker: {
+                    type: 'path',
+                    d: 'M 14 -7 0 0 14 7 z',
+                    fill: theme === 'dark' ? '#88c0d0' : '#34495e',
+                    stroke: theme === 'dark' ? '#88c0d0' : '#34495e',
+                    strokeWidth: 2
+                }
+            },
+            wrapper: {
+                strokeWidth: 10,
+                stroke: 'transparent'
+            }
+        }
+    });
+
+    // Add label if specified
+    if (linkSpec.label) {
+        link.appendLabel({
+            position: 0.5,
+            attrs: {
+                rect: {
+                    fill: theme === 'dark' ? '#3b4252' : '#ffffff',
+                    stroke: theme === 'dark' ? '#4c566a' : '#bdc3c7',
+                    strokeWidth: 1,
+                    rx: 6,
+                    ry: 6,
+                    width: 'calc(w + 16)',
+                    height: 'calc(h + 8)',
+                    x: 'calc(x - 8)',
+                    y: 'calc(y - 4)'
+                },
+                text: {
+                    text: linkSpec.label,
+                    fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
+                    fontSize: 12,
+                    fontFamily: 'Arial, sans-serif',
+                    fontWeight: 'bold',
+                    textAnchor: 'middle',
+                    textVerticalAnchor: 'middle'
+                }
+            }
+        });
+    }
+
+    return link;
+};
+
+// Override the original createLink to use the enhanced version
+const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
+    // Prepare source and target with proper anchor points for better connections
+    const sourceConfig = typeof linkSpec.source === 'string' 
+        ? { id: linkSpec.source, anchor: { name: 'center' } } 
+        : { ...linkSpec.source, anchor: { name: 'center' } };
+    
+    const targetConfig = typeof linkSpec.target === 'string'
+        ? { id: linkSpec.target, anchor: { name: 'center' } }
+        : { ...linkSpec.target, anchor: { name: 'center' } };
+
+    const link = new shapes.standard.Link({
+        id: linkSpec.id,
+        source: sourceConfig,
+        target: targetConfig,
+        router: {
+            name: linkSpec.router || 'normal',
+            args: { padding: 10 }
         },
         connector: {
             name: linkSpec.connector || 'rounded',
@@ -1340,6 +1449,7 @@ export const jointPlugin: D3RenderPlugin = {
             } else if (spec.elements) {
                 // Handle object format
                 elements = Object.keys(spec.elements).map(id => ({
+                    ...{ type: 'rect' }, // Default type
                     id,
                     ...spec.elements![id]
                 }));
@@ -1347,6 +1457,8 @@ export const jointPlugin: D3RenderPlugin = {
 
                 console.log('Parsed from object format:', {
                     elements: elements.length,
+                    elementIds: elements.map(e => e.id),
+                    elementTypes: elements.map(e => e.type || 'undefined'),
                     connections: connections.length
                 });
             } else {
@@ -1384,8 +1496,19 @@ export const jointPlugin: D3RenderPlugin = {
                 interactive: spec.interactive !== false,
                 snapLinks: { radius: 30 },
                 linkPinning: false,
+                // Use center anchors and boundary connection points
+                defaultAnchor: function(endView, endMagnet) {
+                    const center = endView.model.getBBox().center();
+                    console.log('Computing anchor for', endView.model.id, ':', center);
+                    return endView.model.getBBox().center();
+                },
+                defaultConnectionPoint: function(endView, endMagnet, refPoint) {
+                    const point = endView.model.getBBox().pointNearestToPoint(refPoint);
+                    console.log('Computing connection point for', endView.model.id, 'ref:', refPoint, 'result:', point);
+                    return endView.model.getBBox().pointNearestToPoint(refPoint);
+                },
                 // Fix viewport and scaling issues
-                defaultRouter: { name: 'orthogonal', args: { padding: 25 } },
+                defaultRouter: { name: 'normal' },
                 defaultConnector: { name: 'rounded', args: { radius: 15 } },
                 markAvailable: true,
                 // Ensure proper viewport handling
@@ -1489,7 +1612,7 @@ export const jointPlugin: D3RenderPlugin = {
                     if (element) {
                         jointElements.push(element);
                         graph.addCell(element);
-                        console.log(`Created element: ${elementSpec.id}`, element);
+                        console.log(`Successfully created element: ${elementSpec.id}`);
                     }
                 } catch (error) {
                     console.warn(`Failed to create element ${elementSpec.id}:`, error);
@@ -2162,70 +2285,7 @@ const getPortPosition = (position: string) => {
     return positions[position as keyof typeof positions] || { x: '50%', y: '50%' };
 };
 
-// Enhanced link creation with better routing and styling
-const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
-    const link = new shapes.standard.Link({
-        id: linkSpec.id,
-        source: { id: typeof linkSpec.source === 'string' ? linkSpec.source : linkSpec.source.id },
-        target: { id: typeof linkSpec.target === 'string' ? linkSpec.target : linkSpec.target.id },
-        router: {
-            name: linkSpec.router || 'orthogonal',
-            args: { padding: 20, excludeEnds: ['source', 'target'] }
-        },
-        connector: {
-            name: linkSpec.connector || 'rounded',
-            args: { radius: 15 }
-        },
-        vertices: linkSpec.vertices || [],
-        attrs: {
-            line: {
-                stroke: theme === 'dark' ? '#88c0d0' : '#34495e',
-                strokeWidth: 3,
-                strokeLinecap: 'round',
-                strokeLinejoin: 'round',
-                filter: 'drop-shadow(1px 1px 3px rgba(0,0,0,0.2))',
-                targetMarker: {
-                    type: 'path',
-                    d: 'M 14 -7 0 0 14 7 z',
-                    fill: theme === 'dark' ? '#88c0d0' : '#34495e',
-                    stroke: theme === 'dark' ? '#88c0d0' : '#34495e',
-                    strokeWidth: 1
-                }
-            }
-        }
-    });
 
-    // Enhanced label handling with background
-    if (linkSpec.label) {
-        link.appendLabel({
-            position: 0.5,
-            attrs: {
-                rect: {
-                    fill: theme === 'dark' ? '#3b4252' : '#ffffff',
-                    stroke: theme === 'dark' ? '#4c566a' : '#bdc3c7',
-                    strokeWidth: 1,
-                    rx: 6,
-                    ry: 6,
-                    width: 'calc(w + 16)',
-                    height: 'calc(h + 8)',
-                    x: 'calc(x - 8)',
-                    y: 'calc(y - 4)'
-                },
-                text: {
-                    text: linkSpec.label,
-                    fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
-                    fontSize: 12,
-                    fontFamily: 'Arial, sans-serif',
-                    fontWeight: 'bold',
-                    textAnchor: 'middle',
-                    textVerticalAnchor: 'middle'
-                }
-            }
-        });
-    }
-
-    return link;
-};
 
 const createDatabaseElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
     const position = Array.isArray(elementSpec.position) ?

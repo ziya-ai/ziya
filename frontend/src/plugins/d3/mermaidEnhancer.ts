@@ -1626,10 +1626,18 @@ export function initMermaidEnhancer(): void {
     finalDef = finalDef.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
 
     // CRITICAL FIX: Quote subgraph names that contain spaces or parentheses
-    finalDef = finalDef.replace(/^(\s*subgraph\s+)([^"{\n]+?)(\s*)$/gm, (match, subgraphKeyword, name, ending) => {
+    finalDef = finalDef.replace(/^(\s*subgraph\s+)([^{\n]+?)(\s*)$/gm, (match, subgraphKeyword, name, ending) => {
       const trimmedName = name.trim();
+      
+      // CRITICAL: Don't quote if the name already contains a display name in brackets
+      // Pattern: SubgraphId["Display Name"] - this is already valid syntax
+      if (trimmedName.includes('[') && trimmedName.includes(']')) {
+        return match;
+      }
+      
+      // Only quote if name contains spaces or parentheses AND is not already quoted
       if (trimmedName.includes(' ') || trimmedName.includes('(') || trimmedName.includes(')')) {
-        return `${subgraphKeyword}"${trimmedName}"${ending}`;
+        return trimmedName.startsWith('"') ? match : `${subgraphKeyword}"${trimmedName}"${ending}`;
       }
       return match;
     });
@@ -1654,7 +1662,25 @@ export function initMermaidEnhancer(): void {
 
     console.log('Mixed node shapes - processing:', finalDef.substring(0, 200));
 
-    finalDef = finalDef.replace(/(\w+)(\[|\()([\s\S]*?)(\]|\))/g, (match, nodeId, open, content, close) => {
+    // CRITICAL FIX: Handle stadium shapes ([...]) separately before processing other shapes
+    // Stadium shapes have TWO opening chars and TWO closing chars
+    finalDef = finalDef.replace(/(\w+)\(\[([\s\S]*?)\]\)/g, (match, nodeId, content) => {
+      // Skip if already properly quoted
+      if (content.match(/^"[\s\S]*"$/)) {
+        return match;
+      }
+      
+      // Quote if content has special characters
+      if (/[()\/\n<>&:\.,']/.test(content) || content.includes('<br>')) {
+        const escapedContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
+        console.log(`Adding quotes for stadium shape: ${match} -> ${nodeId}(["${escapedContent}"])`);
+        return `${nodeId}(["${escapedContent}"])`;
+      }
+      return match;
+    });
+    
+    // Now handle regular shapes (single bracket/paren)
+    finalDef = finalDef.replace(/(\w+)(\[|\()(?!\[)([\s\S]*?)(\]|\))(?!\])/g, (match, nodeId, open, content, close) => {
       // Skip subgraph display names - they should not be modified
       const beforeMatch = finalDef.substring(Math.max(0, finalDef.indexOf(match) - 50), finalDef.indexOf(match));
       if (beforeMatch.includes('subgraph')) {
@@ -1677,8 +1703,13 @@ export function initMermaidEnhancer(): void {
         return match;
       }
 
-      // Skip if already properly quoted
-      if (content.match(/^"[\s\S]*"$/)) {
+      // Skip if already properly quoted - check for quotes at start AND end
+      // Also handle case where quotes might have been added by earlier processors
+      const hasQuotes = (content.startsWith('"') && content.endsWith('"')) ||
+                        (content.startsWith('""') && content.endsWith('""'));
+      
+      if (hasQuotes) {
+        console.log(`Skipping already quoted content: ${nodeId}${open}${content}${close}`);
         return match;
       }
 

@@ -856,7 +856,9 @@ ${svgData}`;
                                 lineHeight: '1.45';
                                 whiteSpace: 'pre-wrap';
                                 wordBreak: 'break-word';
-                                fontFamily: 'Monaco, Menlo, \"Ubuntu Mono\", monospace'
+                                fontFamily: 'Monaco, Menlo, \"Ubuntu Mono\", monospace';
+                                maxHeight: '500px';
+                                overflow: 'auto'
                             "><code>${spec.definition}</code></pre>
                         </div>
                     `;
@@ -878,33 +880,6 @@ ${svgData}`;
                 graphvizPlugin.render(container, d3, spec, !isDarkMode);
             };
             actionsContainer.appendChild(themeButton);
-            
-            // Add debug button to manually trigger text fixes
-            const debugButton = document.createElement('button');
-            debugButton.innerHTML = '🔍 Debug';
-            debugButton.className = 'diagram-action-button graphviz-debug-button';
-            debugButton.onclick = () => {
-                console.log('=== GRAPHVIZ DEBUG ANALYSIS ===');
-                const svg = container.querySelector('svg');
-                if (svg) {
-                    const textElements = svg.querySelectorAll('text');
-                    console.log(`Found ${textElements.length} text elements:`);
-                    
-                    textElements.forEach((textEl, i) => {
-                        const content = textEl.textContent?.trim();
-                        const fill = textEl.getAttribute('fill');
-                        const computedFill = window.getComputedStyle(textEl).fill;
-                        const parent = textEl.parentElement;
-                        const parentBg = parent?.querySelector('ellipse, polygon, rect, circle')?.getAttribute('fill');
-                        
-                        console.log(`Text ${i}: "${content}" fill="${fill}" computed="${computedFill}" parentBg="${parentBg}"`);
-                    });
-                    
-                    // Manually trigger the fix
-                    enhanceTextVisibility(svg, isDarkMode);
-                }
-            };
-            actionsContainer.appendChild(debugButton);
         } catch (error) {
             console.error('Graphviz rendering error:', error);
 
