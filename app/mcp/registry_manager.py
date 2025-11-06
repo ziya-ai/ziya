@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any
 
 from app.mcp.registry.registry import get_provider_registry, initialize_registry_providers
 from app.mcp.registry.interface import RegistryServiceInfo, ToolSearchResult
+from app.mcp.registry.aggregator import get_registry_aggregator
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger
 
@@ -20,6 +21,7 @@ class RegistryIntegrationManager:
         """Initialize the registry integration manager."""
         initialize_registry_providers()
         self.provider_registry = get_provider_registry()
+        self.aggregator = get_registry_aggregator()
         self.mcp_manager = get_mcp_manager()
         self.config_path = self._get_config_path()
     
@@ -66,68 +68,40 @@ class RegistryIntegrationManager:
         return os.getenv('ZIYA_INCLUDE_INTERNAL_REGISTRIES', 'false').lower() == 'true'
     
     async def get_available_services(self, max_results: int = 100, provider_filter: Optional[List[str]] = None) -> List[RegistryServiceInfo]:
-        """Get all available services from all configured registries."""
-        all_services = []
+        """Get unified list of services with deduplication across all registries."""
+        # Use aggregator for unified results
+        services = await self.aggregator.get_all_services(
+            max_results=max_results,
+            include_internal=self._should_include_internal_providers()
+        )
         
-        providers = self.provider_registry.get_available_providers(self._should_include_internal_providers())
+        # Apply provider filter if specified
         if provider_filter:
-            providers = [p for p in providers if p.identifier in provider_filter]
+            services = [
+                s for s in services 
+                if s.provider_metadata.get('provider_id') in provider_filter or
+                   any(p in provider_filter for p in s.provider_metadata.get('available_in', []))
+            ]
         
-        for provider in providers:
-            try:
-                result = await provider.list_services(max_results=max_results)
-                services = result['services']
-                
-                # Add provider information to each service
-                for service in services:
-                    service.provider_metadata = service.provider_metadata or {}
-                    service.provider_metadata.update({
-                        'provider_name': provider.name,
-                        'provider_id': provider.identifier,
-                        'is_internal': provider.is_internal
-                    })
-                
-                all_services.extend(services)
-                    
-            except Exception as e:
-                logger.error(f"Error fetching services from provider {provider.identifier}: {e}")
-                continue
-        
-        return all_services[:max_results]
+        return services
     
     async def search_services_by_tools(self, query: str, provider_filter: Optional[List[str]] = None) -> List[ToolSearchResult]:
-        """Search for services that provide tools matching a query across all providers."""
-        all_results = []
+        """Search for services using unified aggregator."""
+        results = await self.aggregator.search_unified(
+            query=query,
+            max_results=20,
+            include_internal=self._should_include_internal_providers()
+        )
         
-        providers = self.provider_registry.get_available_providers(self._should_include_internal_providers())
+        # Apply provider filter if specified
         if provider_filter:
-            providers = [p for p in providers if p.identifier in provider_filter]
+            results = [
+                r for r in results
+                if r.service.provider_metadata.get('provider_id') in provider_filter or
+                   any(p in provider_filter for p in r.service.provider_metadata.get('available_in', []))
+            ]
         
-        for provider in providers:
-            if not provider.supports_search:
-                continue
-                
-            try:
-                results = await provider.search_tools(query, max_results=10)
-                
-                # Add provider metadata to results
-                for result in results:
-                    result.service.provider_metadata = result.service.provider_metadata or {}
-                    result.service.provider_metadata.update({
-                        'provider_name': provider.name,
-                        'provider_id': provider.identifier,
-                        'is_internal': provider.is_internal
-                    })
-                
-                all_results.extend(results)
-                
-            except Exception as e:
-                logger.error(f"Error searching tools in provider {provider.identifier}: {e}")
-                continue
-        
-        # Sort by relevance score if available
-        all_results.sort(key=lambda x: x.relevance_score or 0, reverse=True)
-        return all_results[:20]  # Limit total results
+        return results
     
     async def install_service(self, service_id: str, provider_id: Optional[str] = None) -> Dict[str, Any]:
         """Install an MCP service from any available registry."""

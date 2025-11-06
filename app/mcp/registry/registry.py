@@ -9,6 +9,10 @@ from botocore.exceptions import ClientError
 
 from app.mcp.registry.interface import RegistryProvider
 from app.mcp.registry.providers.amazon_internal import AmazonInternalRegistryProvider
+from app.mcp.registry.providers.official_mcp import OfficialMCPRegistryProvider
+from app.mcp.registry.providers.smithery import SmitheryRegistryProvider
+from app.mcp.registry.providers.pulsemcp import PulseMCPRegistryProvider
+from app.mcp.registry.providers.awesome_list import AwesomeListRegistryProvider
 from app.mcp.registry.providers.github import GitHubRegistryProvider
 from app.utils.logging_utils import logger
 
@@ -100,11 +104,39 @@ def initialize_registry_providers():
     """Initialize all available registry providers based on environment."""
     registry = get_provider_registry()
     
-    # Always register GitHub/community provider for external users
+    # Register official MCP registry (highest priority)
+    registry.register_provider_class(
+        "official-mcp",
+        OfficialMCPRegistryProvider,
+        is_default=True
+    )
+    
+    # Register PulseMCP (large community collection)
+    registry.register_provider_class(
+        "pulsemcp",
+        PulseMCPRegistryProvider,
+        is_default=True
+    )
+    
+    # Register Smithery (quality-focused)
+    registry.register_provider_class(
+        "smithery",
+        SmitheryRegistryProvider,
+        is_default=True
+    )
+    
+    # Register Awesome Lists (community-maintained)
+    registry.register_provider_class(
+        "awesome-lists",
+        AwesomeListRegistryProvider,
+        is_default=True
+    )
+    
+    # Keep GitHub provider for backwards compatibility (deprecated)
     registry.register_provider_class(
         "github",
         GitHubRegistryProvider,
-        is_default=True
+        is_default=False
     )
     
     # Register Amazon internal provider only if we're in an Amazon environment
