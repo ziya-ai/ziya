@@ -1,0 +1,6 @@
+{
+    "description": "Add builtin service handling to installService and isServiceInstalled methods, remove duplicate functions",
+    "target_file": "frontend/src/components/MCPRegistryModal.tsx",
+    "expected_to_fail": true,
+    "failure_reason": "Hunk 3 (large deletion of 33 lines) is intentionally skipped due to low confidence (0.85 < 0.90 threshold). This prevents corruption by not applying risky deletions."
+}

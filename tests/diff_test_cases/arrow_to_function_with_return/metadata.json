@@ -1,0 +1,4 @@
+{
+    "description": "Convert arrow function to regular function with early variable declaration and explicit return",
+    "target_file": "MCPRegistryModal.tsx"
+}

@@ -1,0 +1,5 @@
+{
+    "description": "Multi-hunk diff modifying anchor configurations in jointPlugin",
+    "category": "multi_hunk",
+    "target_file": "test.ts"
+}

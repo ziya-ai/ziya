@@ -1,0 +1,66 @@
+diff --git a/frontend/src/plugins/d3/jointPlugin.ts b/frontend/src/plugins/d3/jointPlugin.ts
+--- a/frontend/src/plugins/d3/jointPlugin.ts
++++ b/frontend/src/plugins/d3/jointPlugin.ts
+@@ -1252,14 +1252,18 @@
+ 
+ // Override the original createLink to use the enhanced version
+ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
+-    // Prepare source and target with proper anchor points for better connections
++    // Prepare source and target with center anchors for proper connections
+     const sourceConfig = typeof linkSpec.source === 'string' 
+-        ? { id: linkSpec.source, anchor: { name: 'center' } } 
+-        : { ...linkSpec.source, anchor: { name: 'center' } };
++        ? { id: linkSpec.source, anchor: { name: 'center', args: { rotate: true } } } 
++        : { 
++            ...linkSpec.source, 
++            anchor: linkSpec.source.anchor || { name: 'center', args: { rotate: true } }
++        };
+     
+     const targetConfig = typeof linkSpec.target === 'string'
+-        ? { id: linkSpec.target, anchor: { name: 'center' } }
+-        : { ...linkSpec.target, anchor: { name: 'center' } };
++        ? { id: linkSpec.target, anchor: { name: 'center', args: { rotate: true } } }
++        : { 
++            ...linkSpec.target, 
++            anchor: linkSpec.target.anchor || { name: 'center', args: { rotate: true } }
++        };
+ 
+     const link = new shapes.standard.Link({
+         id: linkSpec.id,
+@@ -1269,6 +1273,10 @@ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
+             name: linkSpec.router || 'normal',
+             args: { padding: 10 }
+         },
++        connectionStrategy: (end, view, magnet, coords) => {
++            // Use the center of the element as connection point
++            return view.model.getBBox().center();
++        },
+         connector: {
+             name: linkSpec.connector || 'rounded',
+             args: { radius: 15 }
+@@ -1345,14 +1353,18 @@ export const jointPlugin: D3RenderPlugin = {
+ 
+ // Enhanced link creation with better routing and styling
+ const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
+-    // Prepare source and target with proper connection points
++    // Prepare source and target with center anchors for proper connections
+     const sourceConfig = typeof linkSpec.source === 'string' 
+-        ? { id: linkSpec.source } 
+-        : linkSpec.source;
++        ? { id: linkSpec.source, anchor: { name: 'center', args: { rotate: true } } } 
++        : { 
++            ...linkSpec.source, 
++            anchor: linkSpec.source.anchor || { name: 'center', args: { rotate: true } }
++        };
+     
+     const targetConfig = typeof linkSpec.target === 'string'
+-        ? { id: linkSpec.target }
+-        : linkSpec.target;
++        ? { id: linkSpec.target, anchor: { name: 'center', args: { rotate: true } } }
++        : { 
++            ...linkSpec.target, 
++            anchor: linkSpec.target.anchor || { name: 'center', args: { rotate: true } }
++        };
+ 
+     const link = new shapes.standard.Link({
+         id: linkSpec.id,
