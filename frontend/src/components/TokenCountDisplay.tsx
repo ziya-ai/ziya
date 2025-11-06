@@ -78,6 +78,10 @@ export const TokenCountDisplay = memo(() => {
     const [astResolutionsLoaded, setAstResolutionsLoaded] = useState(false);
     const [currentAstResolution, setCurrentAstResolution] = useState<string>('medium');
     const [astResolutionLoading, setAstResolutionLoading] = useState(false);
+    const [mcpEnabled, setMcpEnabled] = useState(false);
+    const [mcpTokenCount, setMcpTokenCount] = useState(0);
+    const [mcpServerCount, setMcpServerCount] = useState(0);
+    const builtinServerNames = ['time', 'shell'];
 
     const lastMuteSignatureRef = useRef<string>('');
     const lastTokenCalcRunRef = useRef<number>(0);
@@ -171,6 +175,49 @@ export const TokenCountDisplay = memo(() => {
 
         checkAstEnabled();
     }, [fetchAstResolutions]);
+
+    // Check MCP status and fetch token costs
+    useEffect(() => {
+        let isMounted = true;
+
+        const checkMcpStatus = async () => {
+            try {
+                const response = await fetch('/api/mcp/status');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (isMounted) {
+                        const isEnabled = data.initialized && !data.disabled;
+                        setMcpEnabled(isEnabled);
+
+                        if (isEnabled && data.token_costs) {
+                            // Count non-builtin servers
+                            const nonBuiltinServers = Object.keys(data.servers || {}).filter(
+                                name => !builtinServerNames.includes(name)
+                            );
+                            const hasNonBuiltinServers = nonBuiltinServers.length > 0;
+
+                            // Only show MCP tokens if there are non-builtin servers
+                            if (hasNonBuiltinServers) {
+                                setMcpTokenCount(data.token_costs.enabled_tool_tokens || 0);
+                                setMcpServerCount(nonBuiltinServers.length);
+                            } else {
+                                setMcpTokenCount(0);
+                                setMcpServerCount(0);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.debug('Could not fetch MCP status:', error);
+            }
+        };
+
+        checkMcpStatus();
+
+        return () => {
+            isMounted = false;
+        };
+    }, []);
 
     const handleAstResolutionChange = useCallback(async (newResolution: string) => {
         setAstResolutionLoading(true);
@@ -386,7 +433,7 @@ export const TokenCountDisplay = memo(() => {
     }, [modelLimits]);
 
     // Include AST tokens in the total when AST is enabled
-    const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0);
+    const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0) + (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
 
   // Optimized token calculation with better debouncing
     const tokenCalculationEffect = useCallback(() => {
@@ -622,48 +669,61 @@ export const TokenCountDisplay = memo(() => {
     // Determine if we should show the detailed total format
     const showDetailedTotal = containerWidth > 350;
 
-    // Create token display items with even spacing
-    const tokenItems = [
-        <Tooltip key="files" title="Tokens from selected files">
-            {(() => {
-                const accurateCount = Object.keys(accurateTokenCounts).length;
-                // Count actual files (not directories) in checked keys
-                const selectedFiles = checkedKeys.filter(key => {
-                    const keyStr = String(key);
-                    // More precise file detection: has extension and doesn't end with /
-                    return keyStr.includes('.') && !keyStr.endsWith('/') && 
-                           keyStr.split('/').pop()?.includes('.');
-                }).length;
-                
-                const isFullyAccurate = selectedFiles > 0 && accurateCount === selectedFiles;
-                const hasAnyAccurate = accurateCount > 0;
-                
-                return (
-            <span>Files: <span style={getTokenStyle(totalTokenCount)}>
-                {totalTokenCount.toLocaleString()}{isFullyAccurate ? '✓' : (hasAnyAccurate ? '~' : '~')}</span>
-            </span>
-                );
-            })()}
-        </Tooltip>
-    ];
+    // Helper to get file token display with accuracy indicator
+    const getFileTokenDisplay = () => {
+        const accurateCount = Object.keys(accurateTokenCounts).length;
+        const selectedFiles = checkedKeys.filter(key => {
+            const keyStr = String(key);
+            return keyStr.includes('.') && !keyStr.endsWith('/') && 
+                   keyStr.split('/').pop()?.includes('.');
+        }).length;
+        
+        const isFullyAccurate = selectedFiles > 0 && accurateCount === selectedFiles;
+        const hasAnyAccurate = accurateCount > 0;
+        
+        return `${totalTokenCount.toLocaleString()}${isFullyAccurate ? '✓' : (hasAnyAccurate ? '~' : '~')}`;
+    };
 
-    // Add AST item if enabled
+    // Build breakdown items (Files, MCP, AST, Chat)
+    const breakdownItems: React.ReactElement[] = [];
+    
+    // Always show Files
+    breakdownItems.push(
+        <Tooltip key="files" title="Tokens from selected files">
+            <span style={{ fontSize: '10px' }}>
+                Files: <span style={getTokenStyle(totalTokenCount)}>{getFileTokenDisplay()}</span>
+            </span>
+        </Tooltip>
+    );
+    
+    // Add MCP if enabled and has non-builtin servers
+    if (mcpEnabled && mcpServerCount > 0) {
+        breakdownItems.push(
+            <Tooltip key="mcp" title={`MCP tool tokens from ${mcpServerCount} server${mcpServerCount !== 1 ? 's' : ''}`}>
+                <span style={{ fontSize: '10px' }}>
+                    MCP: <span style={getTokenStyle(mcpTokenCount)}>{mcpTokenCount.toLocaleString()}</span>
+                </span>
+            </Tooltip>
+        );
+    }
+    
+    // Add AST if enabled
     if (astEnabled) {
-        // Always render as dropdown if AST is enabled, even if menu items aren't loaded yet
         const astComponent = astResolutionsLoaded ? (
             <Dropdown
                 menu={{ items: astMenuItems, onClick: handleMenuClick }}
                 trigger={['click']}
                 disabled={astResolutionLoading}
-                onOpenChange={(open) => console.log('Dropdown open state changed:', open)}
             >
                 <span style={{
+                    fontSize: '10px',
                     cursor: 'pointer',
                     userSelect: 'none',
                     opacity: astResolutionLoading ? 0.6 : 1,
                     padding: '2px 4px',
                     borderRadius: '2px',
-                    border: '1px solid transparent'
+                    border: '1px solid transparent',
+                    display: 'inline-block'
                 }}
                     onMouseEnter={(e) => {
                         e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.05)';
@@ -673,46 +733,34 @@ export const TokenCountDisplay = memo(() => {
                         e.currentTarget.style.backgroundColor = 'transparent';
                         e.currentTarget.style.borderColor = 'transparent';
                     }}
-                    onClick={() => console.log('AST span clicked')}
                 >
                     AST: <span style={getTokenStyle(astTokenCount)}>{astTokenCount.toLocaleString()}</span>
                 </span>
             </Dropdown>
         ) : (
-            <span style={{ opacity: 0.6 }}>
+            <span style={{ fontSize: '10px', opacity: 0.6 }}>
                 AST: <span style={getTokenStyle(astTokenCount)}>
                     {astTokenCount.toLocaleString()}
                 </span>
                 {astResolutionLoading && <span style={{ marginLeft: '4px' }}>⟳</span>}
             </span>
         );
-        tokenItems.push(
+        
+        breakdownItems.push(
             <Tooltip key="ast" title="AST tokens - click to change resolution">
                 {astComponent}
             </Tooltip>
         );
     }
-
-    tokenItems.push(
+    
+    // Always show Chat
+    breakdownItems.push(
         <Tooltip key="chat" title="Tokens from chat history">
-            <span>Chat: <span style={getTokenStyle(chatTokenCount)}>
-                {chatTokenCount.toLocaleString()}</span></span>
+            <span style={{ fontSize: '10px' }}>
+                Chat: <span style={getTokenStyle(chatTokenCount)}>{chatTokenCount.toLocaleString()}</span>
+            </span>
         </Tooltip>
     );
-
-    // Only show the total if we have meaningful token counts
-    const hasTokens = totalTokenCount > 0 || chatTokenCount > 0 || (astEnabled && astTokenCount > 0);
-
-    if (hasTokens) {
-        tokenItems.push(
-            <Tooltip key="total" title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`}>
-                <span>Total: <span style={getTokenStyle(combinedTokenCount)}>
-                    {showDetailedTotal
-                        ? `${combinedTokenCount.toLocaleString()} / ${tokenLimit.toLocaleString()} (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`
-                        : combinedTokenCount.toLocaleString()}</span></span>
-            </Tooltip>
-        );
-    }
 
     const tokenDisplay = useMemo(() => (
         <div ref={containerRef} className="token-summary" style={{
@@ -749,18 +797,38 @@ export const TokenCountDisplay = memo(() => {
                 opacity: isLoading ? 0.5 : 1,
                 transition: 'opacity 0.3s ease'
             }}>
-                <Typography.Text strong style={{ fontSize: '12px', marginBottom: '2px' }}>
-                    Input Token Estimates
-                </Typography.Text>
+                {/* Header row with Token Estimate and Total */}
                 <div style={{
                     display: 'flex',
                     justifyContent: 'space-between',
-                    fontSize: '11px',
-                    width: '100%',
-                    flexWrap: 'nowrap'
+                    alignItems: 'center',
+                    marginBottom: '2px'
                 }}>
-                    {tokenItems}
+                    <Typography.Text strong style={{ fontSize: '12px' }}>
+                        Token Estimate
+                    </Typography.Text>
+                    <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`}>
+                        <span style={{ fontSize: '11px' }}>
+                            {containerWidth > 180 && 'Total: '}
+                            <span style={getTokenStyle(combinedTokenCount)}>
+                                {containerWidth > 250
+                                    ? `${combinedTokenCount.toLocaleString()} / ${tokenLimit.toLocaleString()}`
+                                    : combinedTokenCount.toLocaleString()}
+                            </span>
+                        </span>
+                    </Tooltip>
                 </div>
+                
+                {/* Breakdown row */}
+                <div style={{
+                    display: 'flex',
+                    gap: '8px',
+                    flexWrap: 'wrap',
+                    fontSize: '10px'
+                }}>
+                    {breakdownItems}
+                </div>
+                
                 <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens used`} mouseEnterDelay={0.5}>
                     <div>
                         <Progress
@@ -775,7 +843,7 @@ export const TokenCountDisplay = memo(() => {
                 </Tooltip>
             </div>
         </div>
-    ), [isLoading, combinedTokenCount, getProgressStatus, isDarkMode, tokenItems, tokenLimit]);
+    ), [isLoading, combinedTokenCount, getProgressStatus, isDarkMode, breakdownItems, tokenLimit, containerWidth, getFileTokenDisplay]);
 
     return (
         <div className="token-display-container">
