@@ -471,6 +471,7 @@ export const sendPayload = async (
     let currentThinkingContent = '';
     let errorOccurred = false;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
+    let originalRequestParams = { messages, question, checkedItems, conversationId }; // Store for retry
     let activeFeedbackToolId: string | null = null;
 
     // Connect feedback WebSocket
@@ -868,6 +869,61 @@ export const sendPayload = async (
                     return;
                 }
 
+                // Handle throttling errors that occur between tool calls
+                if (unwrappedData.type === 'throttling_error') {
+                    console.log('🔄 THROTTLING_ERROR: Received throttling error chunk:', unwrappedData);
+                    
+                    // Create an inline throttling notification after the last tool
+                    const throttlingNotification = `\n\n---\n\n` +
+                        `⚠️ **Rate Limit Reached**\n` +
+                        `${unwrappedData.retry_message || unwrappedData.detail}\n\n` +
+                        `**Tools executed before throttling:** ${unwrappedData.tools_executed || 0}\n\n` +
+                        `<div style="margin-top: 12px; padding: 12px; background-color: rgba(250, 173, 20, 0.1); border-left: 3px solid #faad14; border-radius: 4px;">` +
+                        `<button class="throttle-retry-button" data-conversation-id="${conversationId}" data-throttle-wait="${unwrappedData.suggested_wait || 60}" style="padding: 8px 16px; background-color: #1890ff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; margin-right: 8px;">🔄 Retry Now</button>` +
+                        `<span style="color: #666; font-size: 13px;">Recommended wait: ${unwrappedData.suggested_wait || 60}s</span>` +
+                        `</div>`;
+
+                    // Add the notification to the streamed content
+                    currentContent += throttlingNotification;
+                    setStreamedContentMap((prev: Map<string, string>) => {
+                        const next = new Map(prev);
+                        next.set(conversationId, currentContent);
+                        return next;
+                    });
+                    
+                    // Mark that streaming has ended due to throttling
+                    errorOccurred = false; // Not a fatal error - user can retry
+                    
+                    // Attach click handler after React renders the button
+                    setTimeout(() => {
+                        const retryButton = document.querySelector(`[data-conversation-id="${conversationId}"].throttle-retry-button`) as HTMLButtonElement;
+                        if (retryButton && !retryButton.dataset.handlerAttached) {
+                            retryButton.dataset.handlerAttached = 'true';
+                            retryButton.onclick = async () => {
+                                console.log('🔄 RETRY: User clicked retry button after throttling');
+                                
+                                // Disable the button during retry
+                                retryButton.disabled = true;
+                                retryButton.textContent = '⏳ Waiting...';
+                                
+                                // Wait the suggested time
+                                const waitTime = parseInt(retryButton.dataset.throttleWait || '60', 10);
+                                message.info(`Waiting ${waitTime} seconds before retry...`, waitTime);
+                                await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+                                
+                                // Retry by calling sendPayload recursively with original parameters
+                                message.info('Retrying request...');
+                                await sendPayload(originalRequestParams.messages, originalRequestParams.question, 
+                                    originalRequestParams.checkedItems, originalRequestParams.conversationId,
+                                    streamedContentMap, setStreamedContentMap, setIsStreaming, 
+                                    removeStreamingConversation, addMessageToConversation, isStreamingToCurrentConversation, setProcessingState, setReasoningContentMap);
+                            };
+                        }
+                    }, 100);
+                    
+                    // Don't return - let the stream complete naturally to save content
+                }
+
                 // SIMPLIFIED CONTENT PROCESSING - Single path for all content
                 let contentToAdd = '';
 
@@ -1037,6 +1093,15 @@ export const sendPayload = async (
 
                     // Prepare content for display
                     let displayContent = unwrappedData.result;
+                    
+                    // Parse result if it's a JSON string to extract the actual content
+                    if (typeof displayContent === 'string' && (displayContent.startsWith('{') || displayContent.startsWith('['))) {
+                        try {
+                            displayContent = JSON.parse(displayContent);
+                        } catch (e) {
+                            // Keep as string if parsing fails
+                        }
+                    }
 
                     // For shell commands, add command as first line if not present
                     if (actualToolName === 'run_shell_command' && storedInput?.command && !displayContent.startsWith('$ ')) {
@@ -1044,7 +1109,9 @@ export const sendPayload = async (
                     }
 
                     // Format the content
-                    const formatted = formatMCPOutput(toolName, displayContent, storedInput, {
+                    // Use unwrappedData.args if available, fallback to storedInput
+                    const inputForFormatter = unwrappedData.args || storedInput;
+                    const formatted = formatMCPOutput(toolName, displayContent, inputForFormatter, {
                         showInput: false,
                         maxLength: 10000,
                         defaultCollapsed: true

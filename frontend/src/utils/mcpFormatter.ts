@@ -2,6 +2,95 @@
  * Utility for pretty-printing MCP tool outputs
  */
 
+/**
+ * Detect and parse rich text formats in tool outputs
+ */
+function detectAndParseRichContent(content: string): {
+  hasRichContent: boolean;
+  format: 'html' | 'markdown' | 'ansi' | 'none';
+  parsed?: string;
+} {
+  if (!content || typeof content !== 'string') {
+    return { hasRichContent: false, format: 'none' };
+  }
+  
+  // Detect HTML with code blocks (like workspace search results)
+  if (content.includes('<pre><code class="language-')) {
+    const parsedMarkdown = parseHtmlCodeBlocksToMarkdown(content);
+    if (parsedMarkdown) {
+      return {
+        hasRichContent: true,
+        format: 'html',
+        parsed: parsedMarkdown
+      };
+    }
+  }
+  
+  // Detect general HTML content
+  if (content.includes('<div') || content.includes('<p>') || content.includes('<table')) {
+    return {
+      hasRichContent: true,
+      format: 'html',
+      parsed: content
+    };
+  }
+  
+  // Detect markdown formatting
+  const hasMarkdownIndicators = (
+    content.includes('```') || // Code blocks
+    /^#{1,6}\s/.test(content) || // Headers
+    /^\*\s/.test(content) || // Unordered lists
+    /^\d+\.\s/.test(content) || // Ordered lists
+    content.includes('**') || // Bold
+    content.includes('__') || // Bold alternative
+    /\[.*\]\(.*\)/.test(content) // Links
+  );
+  
+  if (hasMarkdownIndicators) {
+    return {
+      hasRichContent: true,
+      format: 'markdown',
+      parsed: content
+    };
+  }
+  
+  // Detect ANSI escape codes (colored terminal output)
+  if (content.includes('\x1b[') || content.includes('\u001b[')) {
+    return {
+      hasRichContent: true,
+      format: 'ansi',
+      parsed: content
+    };
+  }
+  
+  return { hasRichContent: false, format: 'none' };
+}
+
+/**
+ * Parse HTML code blocks to markdown
+ */
+function parseHtmlCodeBlocksToMarkdown(htmlContent: string): string | null {
+  // Extract result blocks: "N. /path/to/file ... <pre><code class="language-X">...</code></pre>"
+  const resultRegex = /(\d+)\.\s+([^\n]+)\n\s+(\d+\s+matching\s+lines?)\s*\n<pre><code\s+class="language-(\w+)">([^]*?)<\/code><\/pre>/g;
+  
+  const matches = [...htmlContent.matchAll(resultRegex)];
+  if (matches.length === 0) return null;
+  
+  let markdown = '';
+  matches.forEach((match, index) => {
+    const [, fileNumber, filePath, matchCount, language, code] = match;
+    markdown += `### ${fileNumber}. ${filePath}\n\n`;
+    markdown += `*${matchCount}*\n\n`;
+    markdown += `\`\`\`${language || 'text'}\n${code.trim()}\n\`\`\`\n\n`;
+    
+    if (index < matches.length - 1) {
+      markdown += `---\n\n`;
+    }
+  });
+  
+  return markdown;
+}
+
 export interface FormattedOutput {
   content: string;
   type: 'json' | 'text' | 'table' | 'list' | 'error' | 'search_results' | 'html_content';
@@ -27,6 +116,23 @@ export function formatMCPOutput(
   
   // Create a generic tool summary from input parameters
   const toolSummary = createToolSummary(toolName, input);
+  
+  // EARLY CHECK: Detect rich content and render it appropriately
+  if (typeof result === 'string') {
+    const richContent = detectAndParseRichContent(result);
+    
+    if (richContent.hasRichContent && richContent.parsed) {
+      const lines = richContent.parsed.split('\n');
+      const shouldCollapse = richContent.parsed.length > 1000 || lines.length > 20;
+      
+      return {
+        content: richContent.parsed,
+        type: 'text', // Will be rendered as markdown through ToolBlock
+        collapsed: shouldCollapse && defaultCollapsed,
+        summary: shouldCollapse ? `${toolSummary ? `${toolSummary} - ` : ''}Rich content (${lines.length} lines)` : toolSummary
+      };
+    }
+  }
   
   // Try internal formatter first (if available)
   const internalResult = tryInternalFormatter?.(toolName, result, options);
@@ -78,11 +184,6 @@ export function formatMCPOutput(
       collapsed: shouldCollapse && defaultCollapsed,
       summary: shouldCollapse ? `Output (${lines.length} lines, ${result.length} chars)` : undefined
     };
-  }
-  
-  // Handle workspace search outputs specially
-  if (toolName === 'mcp_WorkspaceSearch' && result && typeof result === 'object') {
-    return formatWorkspaceSearch(result, { ...options, input, toolSummary });
   }
   
   // Handle sequential thinking tool outputs specially
@@ -327,9 +428,13 @@ function formatShellCommand(result: string, options: any): FormattedOutput {
 
 function formatWorkspaceSearch(result: any, options: any): FormattedOutput {
   const { input } = options;
-  const searchQuery = input?.searchQuery || '';
-  const searchType = input?.searchType || 'contentLiteral';
-  const contextLines = input?.contextLines || 0;
+  
+  // Extract search parameters - handle both direct input and nested in result
+  const effectiveInput = input || {};
+  const searchQuery = effectiveInput.searchQuery !== undefined ? effectiveInput.searchQuery : '';
+  const searchType = effectiveInput.searchType || 'contentLiteral';
+  const contextLines = effectiveInput.contextLines || 0;
+  const globPatterns = effectiveInput.globPatterns;
   
   // Handle both direct result and wrapped content
   const searchData = result.content || result;
@@ -338,12 +443,25 @@ function formatWorkspaceSearch(result: any, options: any): FormattedOutput {
   const hasMore = searchData.hasMore || false;
   
   if (!results.length) {
-    const searchSummary = searchQuery ? `No matches found for "${searchQuery}"` : 'No results found';
+    // Include query, search type, and context info in a compact format
+    const contextInfo = contextLines > 0 ? ` with ${contextLines} context lines` : '';
+    
+    // Always include search query information, even if empty
+    const queryDisplay = searchQuery || '(empty query)';
+    const searchSummary = `No matches found for "${queryDisplay}" (${searchType})${contextInfo}`;
+    
+    // Add helpful context if glob patterns were used
+    const globInfo = globPatterns 
+      ? ` in patterns: ${Array.isArray(globPatterns) ? JSON.stringify(globPatterns) : globPatterns}` 
+      : '';
+    
+    const fullSummary = searchSummary + globInfo;
+    
     return {
-      content: searchSummary,
+      content: fullSummary,
       type: 'search_results',
       collapsed: false,
-      summary: searchSummary
+      summary: fullSummary
     };
   }
   
@@ -742,6 +860,26 @@ export function registerInternalFormatter(formatter: (toolName: string, result: 
   tryInternalFormatter = formatter;
 }
 
+// Helper to extract query from search results content
+function extractQueryFromSearchResults(content: any): string | null {
+  // Try to parse search metadata from various formats
+  if (typeof content === 'string') {
+    // Look for "Query: X" pattern in search results
+    const queryMatch = content.match(/Query:\s*"([^"]+)"/);
+    if (queryMatch) return queryMatch[1];
+    
+    // Look for search results header with query
+    const headerMatch = content.match(/Search results for "([^"]+)"/i);
+    if (headerMatch) return headerMatch[1];
+  }
+  
+  // Check if it's in the metadata
+  if (content.query) return content.query;
+  if (content.searchQuery) return content.searchQuery;
+  
+  return null;
+}
+
 function formatSearchResults(searchContent: any, options: { showInput: boolean; input?: any; maxLength: number }): FormattedOutput {
   const { showInput, input, maxLength } = options;
   const results = searchContent.results || [];
@@ -754,7 +892,17 @@ function formatSearchResults(searchContent: any, options: { showInput: boolean; 
     };
   }
   
-  // Create a summary
+  // Extract query information for display
+  const query = input?.query || input?.searchQuery || extractQueryFromSearchResults(searchContent) || '';
+  const domain = input?.domain || 'ALL';
+  
+  // Create a summary with query information
+  let summaryPrefix = '';
+  if (query) {
+    summaryPrefix = `Query: "${query}"${domain !== 'ALL' ? ` in ${domain}` : ''}\n\n`;
+  }
+  
+  // Create results summary
   const summary = `Found ${results.length} result${results.length === 1 ? '' : 's'}${searchContent.totalResults ? ` (${searchContent.totalResults} total)` : ''}`;
   
   // Format results in a more readable way
@@ -772,29 +920,22 @@ function formatSearchResults(searchContent: any, options: { showInput: boolean; 
     formattedResults = results.map((result: any, index: number) => {
       // Handle the nested body error structure
       let bodyInfo = '';
-      if (result.body) {
-        try {
-          const bodyObj = JSON.parse(result.body);
-          if (bodyObj.error) {
-            bodyInfo = ` (${bodyObj.error})`;
-          }
-        } catch (e) {
+      const title = result.displayTitle || 'Untitled';
+      const url = result.url || '';
+      
+      // Create markdown link for the title
+      const titleLink = url ? `[${title}](${url})` : title;
+      
+      return `${index + 1}. ${titleLink} ${domain}\n   ${date ? `Modified: ${date}` : ''}`;
           // Body isn't JSON, use as-is if short
           bodyInfo = result.body.length < 50 ? ` - ${result.body}` : '';
-        }
-      }
-      const domain = result.domain ? `[${result.domain}]` : '';
-      const date = result.modificationDate ? new Date(result.modificationDate).toLocaleDateString() : '';
-      return `${index + 1}. ${result.displayTitle || 'Untitled'} ${domain}${bodyInfo}\n   ${result.url}\n   ${date ? `Modified: ${date}` : ''}`;
-    }).join('\n\n');
-  } else {
     // Generic object format
     formattedResults = JSON.stringify(results, null, 2);
   }
   
   const content = showInput 
-    ? `Input: ${formatInput(input)}\n\n${summary}\n\n${formattedResults}`
-    : `${summary}\n\n${formattedResults}`;
+    ? `Input: ${formatInput(input)}\n\n${summaryPrefix}${summary}\n\n${formattedResults}`
+    : `${summaryPrefix}${summary}\n\n${formattedResults}`;
     
   return {
     content: content.length > maxLength ? content.substring(0, maxLength) + '\n...\n[Results truncated]' : content,
@@ -891,7 +1032,9 @@ function createToolSummary(toolName: string, input: any): string {
     'InternalSearch': (input) => {
       const query = input.query || '';
       const domain = input.domain || 'ALL';
-      return query ? `"${query}" in ${domain}` : '';
+      const domainDisplay = domain !== 'ALL' ? ` in ${domain}` : '';
+      return query ? `"${query}"${domainDisplay}` : 
+             domain !== 'ALL' ? `Search in ${domain}` : '';
     },
     'ReadInternalWebsites': (input) => {
       const inputs = input.inputs || [];

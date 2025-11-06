@@ -17,7 +17,8 @@ const AMAZON_TOOL_MAPPINGS = {
   'mcp_WorkspaceGitDetails': 'workspace_git',
   'mcp_GetPipelineHealth': 'pipeline_health',
   'mcp_InternalCodeSearch': 'code_search',
-  'mcp_ReadInternalWebsites': 'website_content'
+  'mcp_ReadInternalWebsites': 'website_content',
+  'mcp_WorkspaceSearch': 'workspace_search'
 };
 
 const AMAZON_FIELD_LABELS = {
@@ -55,11 +56,89 @@ function formatBuilderMcpOutput(toolName: string, result: any, options: any): Fo
       // Let generic formatter handle code search since it follows standard search pattern
       return null;
     default:
-      return null;
+    case 'workspace_git':
+      return formatAmazonWorkspaceGit(result, options);
+    case 'workspace_search':
+      return formatAmazonWorkspaceSearch(result, options);
   }
 }
 
-function formatAmazonAcronym(result: any, options: any): FormattedOutput {
+/**
+ * Parse workspace search HTML results into structured format
+ */
+function parseWorkspaceSearchHTML(content: string): Array<{
+  fileNumber: number;
+  filePath: string;
+  matchCount: string;
+  language: string;
+  code: string;
+}> {
+  const results: Array<any> = [];
+  
+  // Extract result blocks: "N. /path/to/file ... <pre><code class="language-X">...</code></pre>"
+  const resultRegex = /(\d+)\.\s+([^\n]+)\n\s+(\d+\s+matching\s+lines?)\s*\n<pre><code\s+class="language-(\w+)">([^]*?)<\/code><\/pre>/g;
+  
+  let match;
+  while ((match = resultRegex.exec(content)) !== null) {
+    const [, fileNumber, filePath, matchCount, language, code] = match;
+    results.push({
+      fileNumber: parseInt(fileNumber),
+      filePath: filePath.trim(),
+      matchCount: matchCount.trim(),
+      language: language || 'text',
+      code: code.trim()
+    });
+  }
+  
+  return results;
+}
+
+function formatAmazonWorkspaceSearch(result: any, options: any): FormattedOutput | null {
+  // Only handle string results with our specific HTML format
+  if (typeof result === 'string' && result.includes('<pre><code class="language-')) {
+    const parsedResults = parseWorkspaceSearchHTML(result);
+    
+    if (parsedResults.length > 0) {
+      // Extract query info from content header
+      const queryMatch = result.match(/Query:\s*"([^"]+)"\s*\((\w+)\)\s*-\s*(\d+)\s+results?/);
+      const query = queryMatch ? queryMatch[1] : '';
+      const searchType = queryMatch ? queryMatch[2] : '';
+      const totalResults = queryMatch ? queryMatch[3] : parsedResults.length;
+      
+      // Format as markdown with proper code blocks for rich rendering
+      let markdown = `**🔍 Workspace Search Results**\n\n`;
+      markdown += `Query: **"${query}"** (${searchType}) - ${totalResults} result${totalResults !== '1' ? 's' : ''}\n\n`;
+      markdown += `---\n\n`;
+      
+      parsedResults.forEach((result, index) => {
+        markdown += `### ${result.fileNumber}. ${result.filePath}\n\n`;
+        markdown += `*${result.matchCount}*\n\n`;
+        markdown += `\`\`\`${result.language}\n${result.code}\n\`\`\`\n\n`;
+        
+        if (index < parsedResults.length - 1) {
+          markdown += `---\n\n`;
+        }
+      });
+      
+      return {
+        content: markdown,
+        type: 'text',
+        collapsed: false,
+        metadata: {
+          query,
+          searchType,
+          resultCount: parsedResults.length
+        }
+      };
+    }
+  }
+  
+  // Not our HTML format or no results parsed - return null to let generic formatter handle it
+  
+  return null;
+}
+
+function formatAmazonAcronym(result: any, options: any): FormattedOutput | null {
   if (!result.results?.[0]) {
     return { content: 'No acronym definitions found', type: 'text', collapsed: false };
   }

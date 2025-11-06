@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Tag, Space, Button, Spin, Alert, Descriptions, Switch, message, Collapse, Select, Tabs, List, Empty } from 'antd';
+import { Modal, Tag, Space, Button, Spin, Alert, Descriptions, Switch, message, Collapse, Select, Tabs, List, Empty, Tooltip, Statistic, Card, Row, Col, Divider } from 'antd';
+import { useTheme } from '../context/ThemeContext';
 import MCPRegistryModal from './MCPRegistryModal';
 import MarkdownRenderer from './MarkdownRenderer';
 import {
@@ -9,7 +10,9 @@ import {
     ToolOutlined,
     DatabaseOutlined,
     FileTextOutlined,
-    CloudServerOutlined
+    CloudServerOutlined,
+    ExperimentOutlined,
+    WarningOutlined,
 } from '@ant-design/icons';
 
 const { Panel } = Collapse;
@@ -32,6 +35,15 @@ interface MCPServer {
     enabled?: boolean;
 }
 
+interface BuiltinToolCategory {
+    name: string;
+    description: string;
+    enabled: boolean;
+    dependencies_available: boolean;
+    available_tools: string[];
+    requires_dependencies?: string[];
+}
+
 interface MCPStatus {
     initialized: boolean;
     servers: Record<string, MCPServer>;
@@ -41,6 +53,17 @@ interface MCPStatus {
     config_exists?: boolean;
     config_search_paths?: string[];
     server_configs?: Record<string, { enabled: boolean }>;
+    token_costs?: {
+        servers: Record<string, number>;
+        total_tool_tokens: number;
+        enabled_tool_tokens: number;
+        instructions: {
+            total_instruction_tokens: number;
+            enabled_models: number;
+            total_models: number;
+            per_model_cost: number;
+        };
+    };
 }
 
 interface MCPTool {
@@ -84,6 +107,8 @@ interface MCPPermissions {
 
 const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => {
     const [status, setStatus] = useState<MCPStatus | null>(null);
+    const { isDarkMode } = useTheme();
+    const [builtinTools, setBuiltinTools] = useState<Record<string, BuiltinToolCategory>>({});
     const [loading, setLoading] = useState(false);
     const [showRegistry, setShowRegistry] = useState(false);
     const [toggling, setToggling] = useState<Record<string, boolean>>({});
@@ -121,6 +146,15 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                 setStatus(data);
             } else {
                 console.error('MCP status fetch failed:', response.status, response.statusText);
+            }
+            
+            // Fetch builtin tools status
+            const builtinResponse = await fetch('/api/mcp/builtin-tools/status');
+            if (builtinResponse.ok) {
+                const builtinData = await builtinResponse.json();
+                setBuiltinTools(builtinData.categories || {});
+            } else {
+                console.error('Failed to fetch builtin tools status');
             }
         } catch (error) {
             console.error('Failed to fetch MCP status:', error);
@@ -262,6 +296,27 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
         return serverName;
     };
 
+    const handleBuiltinToolToggle = async (category: string, enabled: boolean) => {
+        try {
+            const response = await fetch('/api/mcp/builtin-tools/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ category, enabled })
+            });
+            
+            if (response.ok) {
+                setBuiltinTools(prev => ({
+                    ...prev,
+                    [category]: { ...prev[category], enabled }
+                }));
+                message.success(`${enabled ? 'Enabled' : 'Disabled'} ${category} builtin tools`);
+                window.dispatchEvent(new CustomEvent('mcpStatusChanged')); // Notify other components
+            }
+        } catch (error) {
+            message.error('Failed to update builtin tool settings');
+        }
+    };
+
     const getConfigStatusMessage = () => {
         if (!status) return null;
 
@@ -309,6 +364,15 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
         }
     };
 
+    const formatTokenCount = (tokens: number): string => {
+        if (tokens >= 1000000) {
+            return `${(tokens / 1000000).toFixed(1)}M`;
+        }
+        if (tokens >= 1000) {
+            return `${(tokens / 1000).toFixed(1)}K`;
+        }
+        return tokens.toString();
+    };
 
     return (
         <Modal
@@ -334,25 +398,238 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                 </div>
             ) : status ? (
                 <Space direction="vertical" style={{ width: '100%' }} size="large">
-                    <Alert
-                        message={`MCP System ${status.initialized ? 'Initialized' : 'Not Initialized'}`}
-                        description={
-                            <div>
-                                <div>{status.connected_servers}/{status.total_servers} servers connected</div>
-                                <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.8 }}>
-                                    {getConfigStatusMessage()}
+                    <Row gutter={16}>
+                        <Col span={12}>
+                            <Alert
+                                message={`MCP System ${status.initialized ? 'Initialized' : 'Not Initialized'}`}
+                                description={
+                                    <div>
+                                        <div>{status.connected_servers}/{status.total_servers} servers connected</div>
+                                        <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.8 }}>
+                                            {getConfigStatusMessage()}
+                                        </div>
+                                    </div>
+                                }
+                                type={status.initialized && status.connected_servers > 0 ? 'success' : 'warning'}
+                                showIcon
+                                style={{ height: '100%' }}
+                            />
+                        </Col>
+                        <Col span={12}>
+                            {status.token_costs && (() => {
+                                const { total_tool_tokens, enabled_tool_tokens, instructions } = status.token_costs;
+                                const grandTotal = total_tool_tokens + instructions.per_model_cost;
+                                
+                                return (
+                                    <Alert
+                                        message="Total Context Token Usage"
+                                        description={
+                                            <div>
+                                                <div style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '8px' }}>
+                                                    {formatTokenCount(grandTotal)} <span style={{ fontSize: '14px', fontWeight: 'normal', opacity: 0.7 }}>tokens</span>
+                                                </div>
+                                                <div style={{ fontSize: '12px', opacity: 0.7 }}>
+                                                    <div>🔧 MCP Tools: <strong>{formatTokenCount(total_tool_tokens)}</strong> tokens (from {Object.keys(status.token_costs.servers).length} servers)</div>
+                                                    <div>📋 Instructions: <strong>{formatTokenCount(instructions.per_model_cost)}</strong> tokens (for current model)</div>
+                                                </div>
+                                            </div>
+                                        }
+                                        type="info"
+                                        showIcon
+                                        style={{ height: '100%' }}
+                                    />
+                                );
+                            })()}
+                            {!status.token_costs && (
+                                <Alert
+                                    message="Token Usage Unavailable"
+                                    description="Token cost calculation is not available"
+                                    type="warning"
+                                    showIcon
+                                    style={{ height: '100%' }}
+                                />
+                            )}
+                        </Col>
+                    </Row>
+                    
+                    {/* Builtin Tools Section */}
+                    <div>
+                        <Divider orientation="left">
+                            <Space>
+                                <ExperimentOutlined />
+                                Builtin Tools
+                                {Object.keys(builtinTools).length > 0 && (
+                                    <Tag color="blue">
+                                        {Object.values(builtinTools).filter((cat: any) => cat.enabled).length} enabled
+                                        {/* Also count builtin servers */}
+                                        {status.servers && Object.values(status.servers).filter((s: any) => s.builtin).length > 0 && 
+                                            ` + ${Object.values(status.servers).filter((s: any) => s.builtin).length} servers`}
+                                    </Tag>
+                                )}
+                            </Space>
+                        </Divider>
+                        <div style={{ marginBottom: 16 }}>
+                            <Alert
+                                type="info"
+                                message="Builtin Tool Categories"
+                                description="Optional tools that run directly within Ziya without external servers. Perfect for enterprise architects and network engineers."
+                                showIcon
+                            />
+                        </div>
+                        
+                        {/* Render builtin MCP servers (time, shell) */}
+                        {status.servers && Object.entries(status.servers)
+                            .filter(([name, server]: [string, any]) => server.builtin)
+                            .map(([name, server]: [string, any]) => {
+                                const isEnabled = status.server_configs?.[name]?.enabled !== false;
+                                const tokenCount = status.token_costs?.servers[name] || 0;
+                                
+                                return (
+                                    <div key={name} style={{ 
+                                        marginBottom: 12, 
+                                        padding: 16, 
+                                        border: isDarkMode ? '1px solid #434343' : '1px solid #eee',
+                                        borderRadius: 6,
+                                        backgroundColor: isEnabled && server.connected ? (isDarkMode ? '#162312' : '#f6ffed') : (isDarkMode ? '#1f1f1f' : '#fafafa')
+                                    }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                                                    <strong style={{ fontSize: '14px', textTransform: 'capitalize' }}>{name} Server</strong>
+                                                    <Tag color={isEnabled && server.connected ? 'green' : (isEnabled ? 'orange' : 'default')} style={{ marginLeft: 8 }}>
+                                                        {isEnabled ? (server.connected ? 'Connected' : 'Disconnected') : 'Disabled'}
+                                                    </Tag>
+                                                    <Tag color="purple" style={{ marginLeft: 4 }}>
+                                                        <ExperimentOutlined /> Builtin Server
+                                                    </Tag>
+                                                    {server.tools > 0 && (
+                                                        <Tag color="blue" style={{ marginLeft: 4 }}>
+                                                            <ToolOutlined /> {server.tools} tool{server.tools !== 1 ? 's' : ''}
+                                                        </Tag>
+                                                    )}
+                                                    {tokenCount > 0 && (
+                                                        <Tag color="cyan" style={{ marginLeft: 4 }}>
+                                                            {formatTokenCount(tokenCount)} tokens
+                                                        </Tag>
+                                                    )}
+                                                </div>
+                                                <div style={{ fontSize: '12px', color: isDarkMode ? '#a0a0a0' : '#666', marginBottom: 8 }}>
+                                                    {name === 'time' ? 'Provides current date and time information' : 
+                                                     name === 'shell' ? 'Execute shell commands with configurable safety controls' : 
+                                                     'Built-in MCP server'}
+                                                </div>
+                                                {server.connected && server.tools > 0 && (
+                                                    <div style={{ fontSize: '11px', color: isDarkMode ? '#888' : '#999' }}>
+                                                        <Space>
+                                                            <span>{server.tools} tools</span>
+                                                            {server.resources > 0 && <span>• {server.resources} resources</span>}
+                                                            {server.prompts > 0 && <span>• {server.prompts} prompts</span>}
+                                                        </Space>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <Switch
+                                                checked={isEnabled}
+                                                onChange={(checked) => toggleServer(name, checked)}
+                                                loading={toggling[name]}
+                                                size="small"
+                                            />
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        
+                        {Object.entries(builtinTools).map(([category, config]: [string, BuiltinToolCategory]) => (
+                            <div key={category} style={{ 
+                                marginBottom: 12, 
+                                padding: 16, 
+                                border: isDarkMode ? '1px solid #434343' : '1px solid #eee',
+                                borderRadius: 6,
+                                backgroundColor: config.enabled ? (isDarkMode ? '#162312' : '#f6ffed') : (isDarkMode ? '#1f1f1f' : '#fafafa')
+                            }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                    <div style={{ flex: 1 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                                            <strong style={{ fontSize: '14px' }}>{config.name}</strong>
+                                            <Tag color={config.dependencies_available ? 'green' : 'orange'} style={{ marginLeft: 8 }}>
+                                                {config.dependencies_available ? 'Ready' : 'Dependencies Missing'}
+                                            </Tag>
+                                            <Tag color="purple" style={{ marginLeft: 4 }}>
+                                                <ExperimentOutlined /> Builtin
+                                            </Tag>
+                                        </div>
+                                        <div style={{ fontSize: '12px', color: isDarkMode ? '#a0a0a0' : '#666', marginBottom: 8 }}>
+                                            {config.description}
+                                        </div>
+                                        {config.requires_dependencies && !config.dependencies_available && (
+                                            <Alert 
+                                                type="warning" 
+                                                message="Missing Dependencies"
+                                                description={
+                                                    <div>
+                                                        Install with: <code>pip install {config.requires_dependencies.join(' ')}</code>
+                                                    </div>
+                                                }
+                                                style={{ marginBottom: 8 }}
+                                            />
+                                        )}
+                                        {config.available_tools && config.available_tools.length > 0 && (
+                                            <div style={{ fontSize: '11px', color: isDarkMode ? '#888' : '#999' }}>
+                                                Available tools: {config.available_tools.join(', ')}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <Switch
+                                        checked={config.enabled}
+                                        onChange={(checked) => handleBuiltinToolToggle(category, checked)}
+                                        disabled={!config.dependencies_available}
+                                        size="small"
+                                    />
                                 </div>
                             </div>
+                        ))}
+                        
+                        {Object.keys(builtinTools).length === 0 && (
+                            <Empty 
+                                description="No builtin tools available" 
+                                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                style={{ margin: '32px 0' }}
+                            />
+                        )}
+                    </div>
+                    
+                    {/* MCP Servers Section */}
+                    {(() => {
+                        // Only show MCP Servers section if there are non-builtin servers
+                        const nonBuiltinServers = status.servers && status.server_configs ? 
+                            Object.keys(status.server_configs).filter(name => !status.servers[name]?.builtin) : [];
+                        
+                        if (nonBuiltinServers.length === 0) {
+                            return null; // Don't render the section if no non-builtin servers
                         }
-                        type={status.initialized && status.connected_servers > 0 ? 'success' : 'warning'}
-                        showIcon
-                    />
-
+                        
+                        return (
+                            <>
+                    <Divider orientation="left">
+                        <Space>
+                            <CloudServerOutlined />
+                                        External MCP Servers
+                            {status.servers && (
+                                <Tag color="blue">
+                                                {nonBuiltinServers.length} configured
+                                </Tag>
+                            )}
+                        </Space>
+                    </Divider>
+                    
                     <Collapse activeKey={expandedKeys} onChange={handlePanelChange}>
-                        {(status.server_configs ? Object.keys(status.server_configs) : Object.keys(status.servers)).map(name => {
+                                    {nonBuiltinServers.map(name => {
                             const server = status.servers[name] || { connected: false, resources: 0, tools: 0, prompts: 0, capabilities: {} };
                             const isEnabled = status.server_configs?.[name]?.enabled !== false;
                             const serverPermission = permissions?.servers?.[name]?.permission || permissions?.defaults?.server || 'ask';
+                                        
+                                        // Skip builtin servers as they're shown in builtin section
+                                        if (server.builtin) return null;
 
                             return (
                                 <Panel
@@ -369,6 +646,12 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                                             <Space>
                                                 <Tag icon={<ToolOutlined />}>{server.tools} tools</Tag>
                                                 <Tag icon={<DatabaseOutlined />}>{server.resources} resources</Tag>
+                                                {status.token_costs?.servers[name] !== undefined && (
+                                                    <Tag color={isEnabled && server.connected ? undefined : 'default'} 
+                                                         style={isEnabled && server.connected ? {} : { opacity: 0.5 }}>
+                                                        {formatTokenCount(status.token_costs.servers[name])} tokens
+                                                    </Tag>
+                                                )}
                                             </Space>
                                         </div>
                                     }
@@ -391,6 +674,14 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                                                     <Option value="ask">Ask</Option>
                                                 </Select>
                                             </Descriptions.Item>
+                                            {status.token_costs?.servers[name] && (
+                                                <Descriptions.Item label="Context Cost">
+                                                    <Tag color={isEnabled && server.connected ? undefined : 'default'}
+                                                         style={isEnabled && server.connected ? {} : { opacity: 0.5 }}>
+                                                        {formatTokenCount(status.token_costs.servers[name])} tokens
+                                                    </Tag>
+                                                </Descriptions.Item>
+                                            )}
                                         </Descriptions>
                                         {detailsLoading[name] ? <Spin /> : serverDetails[name] ? (
                                             <Tabs defaultActiveKey="tools">
@@ -406,7 +697,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                                                                         description={
                                                                             tool.description ? (
                                                                                 <div style={{ fontSize: '13px' }}>
-                                                                                    <MarkdownRenderer 
+                                                                                    <MarkdownRenderer
                                                                                         markdown={tool.description}
                                                                                         enableCodeApply={false}
                                                                                     />
@@ -435,7 +726,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                                                                     description={
                                                                         resource.description ? (
                                                                             <div style={{ fontSize: '13px' }}>
-                                                                                <MarkdownRenderer 
+                                                                                <MarkdownRenderer
                                                                                     markdown={resource.description}
                                                                                     enableCodeApply={false}
                                                                                 />
@@ -459,7 +750,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                                                                     description={
                                                                         prompt.description ? (
                                                                             <div style={{ fontSize: '13px' }}>
-                                                                                <MarkdownRenderer 
+                                                                                <MarkdownRenderer
                                                                                     markdown={prompt.description}
                                                                                     enableCodeApply={false}
                                                                                 />
@@ -481,11 +772,19 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                             );
                         })}
                     </Collapse>
+                            </>
+                        );
+                    })()}
+                    
+                    {/* Show message if no external servers configured */}
+                    {status.servers && Object.keys(status.servers).filter(name => !status.servers[name]?.builtin).length === 0 && (
+                        <Alert message="No external MCP servers configured" type="info" showIcon style={{ marginTop: 16 }} />
+                    )}
                 </Space>
             ) : (
                 <Alert message="Failed to load MCP status" type="error" />
             )}
-            
+
             <MCPRegistryModal
                 visible={showRegistry}
                 onClose={() => {
