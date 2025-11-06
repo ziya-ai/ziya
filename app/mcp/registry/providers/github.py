@@ -21,6 +21,7 @@ class GitHubRegistryProvider(RegistryProvider):
     """Provider for GitHub-based MCP registry (community/public servers)."""
     
     def __init__(self, registry_repo: str = "modelcontextprotocol/registry"):
+        # Note: This provider is deprecated - no static registry file exists
         self.registry_repo = registry_repo
         self.github_api_base = "https://api.github.com"
     
@@ -48,13 +49,14 @@ class GitHubRegistryProvider(RegistryProvider):
     ) -> Dict[str, Any]:
         """List services from GitHub registry repository."""
         try:
-            # Try to fetch registry data from GitHub (this is just a placeholder)
-            url = f"{self.github_api_base}/repos/{self.registry_repo}/contents/registry.json"
-            response = requests.get(url)
+            # GitHub provider is deprecated - the official registry moved to registry.modelcontextprotocol.io
+            logger.info("GitHub provider is deprecated - use Official MCP Registry instead")
             
-            # If the registry doesn't exist yet, return empty results instead of crashing
+            url = f"{self.github_api_base}/repos/{self.registry_repo}/contents/registry.json"
+            
+            # Return empty results since no static registry file exists
             if response.status_code == 404:
-                logger.info(f"GitHub registry not found at {url}, returning empty results")
+                logger.debug(f"GitHub static registry file doesn't exist (expected)")
                 return {
                     'services': [],
                     'next_token': None
@@ -103,7 +105,11 @@ class GitHubRegistryProvider(RegistryProvider):
             }
             
         except Exception as e:
-            logger.error(f"Error listing GitHub registry services: {e}")
+            logger.debug(f"GitHub registry access failed (expected - provider deprecated): {e}")
+            return {
+                'services': [],
+                'next_token': None
+            }
             raise
     
     async def get_service_detail(self, service_id: str) -> RegistryServiceInfo:

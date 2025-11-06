@@ -27,6 +27,17 @@ class SupportLevel(Enum):
     EXPERIMENTAL = "Experimental"
 
 
+class InstallationType(Enum):
+    """Type of installation method."""
+    NPM = "npm"
+    PYPI = "pypi"
+    DOCKER = "docker"
+    GIT = "git"
+    REMOTE = "remote"
+    BINARY = "binary"
+    UNKNOWN = "unknown"
+
+
 @dataclass
 class RegistryServiceInfo:
     """Standardized service information across all registry providers."""
@@ -41,6 +52,7 @@ class RegistryServiceInfo:
     
     # Installation information
     installation_instructions: Dict[str, Any]
+    installation_type: InstallationType = InstallationType.UNKNOWN
     
     # Optional metadata
     tags: List[str] = None
@@ -50,6 +62,11 @@ class RegistryServiceInfo:
     security_review_url: Optional[str] = None
     documentation_url: Optional[str] = None
     license: Optional[str] = None
+    
+    # Additional discovery metadata
+    download_count: Optional[int] = None
+    star_count: Optional[int] = None
+    last_release_date: Optional[datetime] = None
     
     # Provider-specific data
     provider_metadata: Dict[str, Any] = None
