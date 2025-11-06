@@ -649,6 +649,21 @@ class ConversationDB implements DB {
         }
         return this._importConversations(data);
     }
+    
+    private validateImportedConversation(conv: any): boolean {
+        return !!(
+            conv &&
+            typeof conv === 'object' &&
+            conv.id &&
+            typeof conv.id === 'string' &&
+            conv.id.length > 0 &&
+            conv.title &&
+            typeof conv.title === 'string' &&
+            conv.messages &&
+            Array.isArray(conv.messages)
+        );
+    }
+    
     private async _importConversations(data: string): Promise<void> {
         if (!this.db) {
             throw new Error('Database not initialized');
@@ -663,7 +678,14 @@ class ConversationDB implements DB {
             if (Array.isArray(parsedData)) {
                 // Old format - just conversations
                 importedConversations = parsedData;
-                console.log('Importing legacy format (conversations only)');
+                console.log('Importing legacy format:', data.length, 'conversations');
+                
+                // CRITICAL FIX: Validate all conversations before importing
+                importedConversations = importedConversations.filter(c => {
+                    const valid = this.validateImportedConversation(c);
+                    if (!valid) console.warn('⚠️ Skipping invalid conversation:', c.id?.substring(0, 8) || 'no-id');
+                    return valid;
+                });
             } else if (parsedData && typeof parsedData === 'object') {
                 // New format - object with conversations and folders
                 if (parsedData.conversations && Array.isArray(parsedData.conversations)) {
@@ -676,32 +698,69 @@ class ConversationDB implements DB {
                     conversations: importedConversations.length,
                     folders: importedFolders.length
                 });
+                
+                // CRITICAL FIX: Validate all conversations
+                const invalidCount = importedConversations.length;
+                importedConversations = importedConversations.filter(c => {
+                    const valid = this.validateImportedConversation(c);
+                    if (!valid) console.warn('⚠️ Skipping invalid conversation:', c.id?.substring(0, 8) || 'no-id');
+                    return valid;
+                });
+                
+                if (importedConversations.length < invalidCount) {
+                    console.warn(`⚠️ IMPORT: Filtered out ${invalidCount - importedConversations.length} invalid conversations`);
+                }
             } else {
                 throw new Error('Invalid import format - expected array or object with conversations');
             }
 
-            // Ensure all imported conversations are marked as active
-            const processedConversations = importedConversations.map(conv => ({ ...conv, isActive: true }));
+            // Get existing conversations to prevent duplicates
+            const existingConversations = await this.getConversations();
+            const existingIds = new Set(existingConversations.map(c => c.id));
+            
+            // CRITICAL FIX: Only import conversations that don't already exist
+            const newConversations = importedConversations.filter(c => !existingIds.has(c.id));
+            const duplicateCount = importedConversations.length - newConversations.length;
+            
+            if (duplicateCount > 0) {
+                console.warn(`⚠️ IMPORT: Skipping ${duplicateCount} duplicate conversations`);
+            }
+            
+            if (newConversations.length === 0) {
+                console.log('ℹ️ IMPORT: No new conversations to import');
+                return;
+            }
 
-            // Validate each conversation
+            // Ensure all imported conversations are marked as active with explicit versions
+            const processedConversations = newConversations.map(conv => ({
+                ...conv,
+                isActive: true,
+                _version: conv._version || Date.now(),
+                lastAccessedAt: conv.lastAccessedAt || Date.now()
+            }));
+
+            // Final validation
             const validConversations = processedConversations.filter(conv =>
                 this.validateConversations([conv])
             );
 
             if (validConversations.length === 0) {
-                throw new Error('No valid conversations found in import file');
+                console.warn('⚠️ IMPORT: No valid conversations after filtering');
+                return;
             }
+            
+            console.log(`📥 IMPORT: Validated ${validConversations.length} conversations for import`);
 
             // Import folders first (if any)
             if (importedFolders.length > 0) {
-                console.log('Importing folders:', importedFolders.length);
-
                 // Get existing folders to avoid duplicates
                 const existingFolders = await this.getFolders();
                 const existingFolderIds = new Set(existingFolders.map(f => f.id));
 
                 // Only import folders that don't already exist
                 const newFolders = importedFolders.filter(folder => !existingFolderIds.has(folder.id));
+                
+                console.log(`📁 IMPORT: Adding ${newFolders.length} new folders (${importedFolders.length - newFolders.length} already exist)`);
 
                 // Save new folders
                 for (const folder of newFolders) {
@@ -717,40 +776,29 @@ class ConversationDB implements DB {
                 }
             }
 
-            console.debug('Importing conversations:', {
-                total: processedConversations.length,
-                valid: validConversations.length
-            });
-            // Get existing conversations
-            const existingConversations = await this.getConversations();
             // Merge conversations, keeping existing ones if IDs conflict
-            const mergedConversations = [...existingConversations];
-            for (const importedConv of validConversations) {
-                const existingIndex = mergedConversations.findIndex(c => c.id === importedConv.id);
-                if (existingIndex === -1) {
-                    // New conversation
-                    mergedConversations.push({
-                        ...importedConv,
-                        _version: Date.now(),
-                        isActive: true
-                    });
-                }
-            }
+            const mergedConversations = [...existingConversations, ...validConversations];
+            
+            console.log(`💾 IMPORT: Final merge - ${existingConversations.length} existing + ${validConversations.length} new = ${mergedConversations.length} total`);
+            
             // Start a transaction
             const tx = this.db.transaction([STORE_NAME], 'readwrite');
             const store = tx.objectStore(STORE_NAME);
+            
             return new Promise((resolve, reject) => {
                 const request = store.put(mergedConversations, 'current');
 
                 request.onsuccess = () => {
-                    console.debug('Successfully saved imported conversations:', {
-                        count: mergedConversations.length,
-                        ids: mergedConversations.map(c => c.id)
-                    });
+                    console.log(`✅ IMPORT COMPLETE: Saved ${mergedConversations.length} total conversations`);
                     resolve();
                 };
 
                 request.onerror = () => reject(request.error);
+                
+                tx.onerror = () => {
+                    console.error('❌ Import transaction failed:', tx.error);
+                    reject(tx.error);
+                };
             });
         } catch (error) {
             console.error('Import error:', error);

@@ -13,7 +13,8 @@ import {
   Folder,
   FolderOpen,
   Javascript,
-  DataObject
+  DataObject,
+  Language
 } from '@mui/icons-material';
 
 export const getFileIcon = (fileName: string, isOpen?: boolean): JSX.Element => {
@@ -72,6 +73,11 @@ export const getFileIcon = (fileName: string, isOpen?: boolean): JSX.Element => 
   // Archive files
   if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2'].includes(extension)) {
     return <Archive sx={{ color: '#795548', fontSize: 16, mr: 0.5 }} />;
+  }
+
+  // Network capture files
+  if (['pcap', 'pcapng', 'cap', 'dmp'].includes(extension)) {
+    return <Language sx={{ color: '#00bcd4', fontSize: 16, mr: 0.5 }} />;
   }
 
   // Default file icon
