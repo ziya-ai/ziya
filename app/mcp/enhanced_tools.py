@@ -153,9 +153,15 @@ def create_secure_result_marker(tool_name: str, execution_time: float) -> str:
 class DirectMCPTool(BaseTool):
     """Wrapper for direct MCP tools that don't go through external servers."""
     
+    # Declare as Pydantic field to prevent validation errors
+    tool_instance: Any = None
+    
+    class Config:
+        """Pydantic config to allow arbitrary types."""
+        arbitrary_types_allowed = True
+    
     def __init__(self, tool_instance):
         """Initialize the direct MCP tool wrapper."""
-        self.tool_instance = tool_instance
         
         # Initialize BaseTool with the tool's metadata
         super().__init__(
@@ -163,6 +169,9 @@ class DirectMCPTool(BaseTool):
             description=f"[DIRECT] {tool_instance.description}",
             args_schema=None  # Will be set from tool's input schema
         )
+        
+        # Set tool_instance after super().__init__
+        self.tool_instance = tool_instance
         
         # Set the args schema if available
         if hasattr(tool_instance, 'InputSchema'):
@@ -179,7 +188,14 @@ class DirectMCPTool(BaseTool):
         # Run the async execute method
         try:
             loop = asyncio.get_event_loop()
-            result = loop.run_until_complete(self.tool_instance.execute(**kwargs))
+            if loop.is_running():
+                # Already in async context, create a task
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, self.tool_instance.execute(**kwargs))
+                    result = future.result(timeout=30)
+            else:
+                result = loop.run_until_complete(self.tool_instance.execute(**kwargs))
         except RuntimeError:
             # No event loop, create one
             result = asyncio.run(self.tool_instance.execute(**kwargs))
@@ -187,9 +203,26 @@ class DirectMCPTool(BaseTool):
         # Format the result
         if isinstance(result, dict):
             if result.get("error"):
-                return f"❌ Error: {result.get('message', 'Unknown error')}"
+                error_message = result.get('message', 'Unknown error')
+                return f"❌ Error: {error_message}"
             elif result.get("success"):
-                return result.get("message", "Operation completed successfully")
+                message = result.get("message", "Operation completed successfully")
+                
+                # Add additional details for folder creation
+                if "folder" in result:
+                    folder = result["folder"]
+                    message += f"\n\nFolder Details:\n- ID: {folder['id']}\n- Name: {folder['name']}"
+                    if folder.get('parent_id'):
+                        message += f"\n- Parent: {folder['parent_id']}"
+                
+                # Add additional details for conversation creation  
+                elif "conversation" in result:
+                    conv = result["conversation"]
+                    message += f"\n\nConversation Details:\n- ID: {conv['id']}\n- Title: {conv['title']}\n- URL: {conv.get('url', 'N/A')}"
+                    if conv.get('folder_id'):
+                        message += f"\n- Folder: {conv['folder_id']}"
+                
+                return message
             else:
                 return str(result)
         else:
@@ -203,7 +236,8 @@ class DirectMCPTool(BaseTool):
             # Format the result
             if isinstance(result, dict):
                 if result.get("error"):
-                    return f"❌ Error: {result.get('message', 'Unknown error')}"
+                    error_message = result.get('message', 'Unknown error')
+                    return f"❌ Error: {error_message}"
                 elif result.get("success"):
                     # For successful operations, provide detailed response
                     message = result.get("message", "Operation completed successfully")
@@ -709,6 +743,22 @@ def create_secure_mcp_tools() -> List[BaseTool]:
             )
             
             secure_tools.append(secure_tool)
+        
+        # Add builtin direct MCP tools if enabled
+        try:
+            from app.mcp.builtin_tools import get_enabled_builtin_tools
+            builtin_tools = get_enabled_builtin_tools()
+            
+            for tool_instance in builtin_tools:
+                direct_tool = DirectMCPTool(tool_instance)
+                secure_tools.append(direct_tool)
+                logger.debug(f"Added builtin tool: {tool_instance.name}")
+                
+            if builtin_tools:
+                logger.info(f"Added {len(builtin_tools)} builtin MCP tools")
+                
+        except ImportError as e:
+            logger.debug(f"Builtin tools not available: {e}")
             
         # Add conversation management tools if available
         try:
@@ -723,6 +773,9 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     except Exception as e:
         logger.warning(f"Failed to create secure MCP tools: {str(e)}")
         return []
+    
+    # Conversation management tools disabled - requires server-side conversation state implementation
+    logger.debug("Conversation management tools disabled (not yet integrated with client-side state)")
     
     # Cache the result
     _secure_tool_cache = secure_tools

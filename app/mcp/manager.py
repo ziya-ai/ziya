@@ -46,10 +46,10 @@ class MCPManager:
         self._failed_servers: set = set()  # Servers that have failed too many times
         
         # Loop detection for repetitive tool calls
-        self._recent_tool_calls: List[tuple] = []  # (tool_name, arguments, timestamp)
+        self._recent_tool_calls: Dict[str, List[tuple]] = {}  # conversation_id -> [(tool_name, arguments, timestamp)]
         self._max_recent_calls = 10
-        self._loop_detection_window = 30  # seconds
-        
+        self._loop_detection_window = 60  # seconds - increased for conversation-aware tracking
+    
     def _get_builtin_server_definitions(self) -> Dict[str, Dict[str, Any]]:
         """Defines configurations for built-in MCP servers."""
         builtin_servers = {}
@@ -73,6 +73,19 @@ class MCPManager:
                 "description": "Provides shell command execution",
                 "builtin": True
             }
+            logger.info(f"Found built-in MCP server package at: {package_dir}")
+        except ImportError:
+            logger.error("Built-in MCP server package 'app.mcp_servers' not found. Built-in servers will be unavailable.")
+        except Exception as e:
+            
+            # PCAP Analysis builtin server (disabled by default)
+            builtin_servers["pcap_analysis"] = {
+                "command": ["internal"],  # Special marker for direct MCP tools
+                "enabled": False,  # Disabled by default
+                "description": "PCAP analysis and network protocol correlation tools",
+                "builtin": True
+            }
+            
             logger.info(f"Found built-in MCP server package at: {package_dir}")
         except ImportError:
             logger.error("Built-in MCP server package 'app.mcp_servers' not found. Built-in servers will be unavailable.")
@@ -144,42 +157,42 @@ class MCPManager:
         # Re-search for config files in case new ones were added
         self.refresh_config_path()
         
-        try:
         # Load configuration
-            server_configs = self.builtin_server_definitions.copy()
-            logger.info(f"Initialized with {len(server_configs)} built-in server definitions.")
+        server_configs = self.builtin_server_definitions.copy()
+        logger.info(f"Initialized with {len(server_configs)} built-in server definitions.")
 
-            if self.config_path and os.path.exists(self.config_path):
-                logger.info(f"Loading user MCP configuration from: {self.config_path}")
-                try:
-                    with open(self.config_path, 'r') as f:
-                        user_config_data = json.load(f)
-                    user_servers = user_config_data.get("mcpServers", {})
-                    
-                    for name, user_cfg in user_servers.items():
-                        if name in server_configs and server_configs[name].get("builtin"):
-                            logger.info(f"User configuration for '{name}' overrides built-in server.")
-                            updated_config = server_configs[name].copy()
-                            updated_config.update(user_cfg)
-                            updated_config["builtin"] = True 
-                            server_configs[name] = updated_config
-                        else:
-                            logger.info(f"Loaded user-defined server: '{name}'")
-                            server_configs[name] = {**user_cfg, "builtin": False}
-                    
-                    logger.info(f"Loaded {len(user_servers)} user server configurations from {self.config_path}. Total servers: {len(server_configs)}")
-                except Exception as e:
-                    logger.error(f"Error loading user MCP config from {self.config_path}: {e}")
+        if self.config_path and os.path.exists(self.config_path):
+            logger.info(f"Loading user MCP configuration from: {self.config_path}")
+            try:
+                with open(self.config_path, 'r') as f:
+                    user_config_data = json.load(f)
+                user_servers = user_config_data.get("mcpServers", {})
+                
+                for name, user_cfg in user_servers.items():
+                    if name in server_configs and server_configs[name].get("builtin"):
+                        logger.info(f"User configuration for '{name}' overrides built-in server.")
+                        updated_config = server_configs[name].copy()
+                        updated_config.update(user_cfg)
+                        updated_config["builtin"] = True 
+                        server_configs[name] = updated_config
+                    else:
+                        logger.info(f"Loaded user-defined server: '{name}'")
+                        server_configs[name] = {**user_cfg, "builtin": False}
+                
+                logger.info(f"Loaded {len(user_servers)} user server configurations from {self.config_path}. Total servers: {len(server_configs)}")
+            except Exception as e:
+                logger.error(f"Error loading user MCP config from {self.config_path}: {e}")
+        else:
+            if self.config_path:
+                logger.debug(f"No MCP config file found at {self.config_path}. Using built-in server defaults.")
             else:
-                if self.config_path:
-                    logger.debug(f"No MCP config file found at {self.config_path}. Using built-in server defaults.")
-                else:
-                    logger.debug(f"No MCP configuration file found. Searched: {getattr(self, 'config_search_paths', [])}. Using built-in server defaults.")
-            self.server_configs = server_configs # Store the final merged configs
-        
+                logger.debug(f"No MCP configuration file found. Searched: {getattr(self, 'config_search_paths', [])}. Using built-in server defaults.")
+        self.server_configs = server_configs # Store the final merged configs
+    
+        try:
             # Connect to each configured server
             connection_tasks = []
-        
+
             for server_name, server_config in self.server_configs.items():
                 if not server_config.get("enabled", True):
                     logger.info(f"MCP server {server_name} is disabled, skipping")
@@ -212,7 +225,7 @@ class MCPManager:
                         if not Path(builtin_script_path).exists():
                             logger.error(f"Built-in MCP server script not found at resolved path: {builtin_script_path}")
                             continue
-            
+                
                 # Pass the environment to the client
                 enhanced_config = server_config.copy()
                 enhanced_config["env"] = server_env
@@ -244,17 +257,16 @@ class MCPManager:
             
             # Debug server status
             for server_name, client in self.clients.items():
-                    if client.is_connected:
-                        logger.info(f"✅ {server_name}: {len(client.tools)} tools, {len(client.resources)} resources")
-                        logger.debug(f"   Tools: {', '.join(tool.name for tool in client.tools)}")
-                    else:
-                        logger.warning(f"❌ {server_name}: Connection failed")
-                
+                if client.is_connected:
+                    logger.info(f"✅ {server_name}: {len(client.tools)} tools, {len(client.resources)} resources")
+                    logger.debug(f"   Tools: {', '.join(tool.name for tool in client.tools)}")
+                else:
+                    logger.warning(f"❌ {server_name}: Connection failed")
+            
             logger.info(f"Server breakdown: {builtin_count} built-in, {user_count} user-configured")
             
             self.is_initialized = True
             return True
-            
         except Exception as e:
             logger.error(f"Error initializing MCP manager: {str(e)}")
             return False
@@ -514,37 +526,57 @@ class MCPManager:
                         return content
         return None
     
-    def _is_repetitive_call(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
-        """Check if this tool call is repetitive within the detection window."""
+    def _is_repetitive_call(self, tool_name: str, arguments: Dict[str, Any], conversation_id: Optional[str] = None) -> bool:
+        """
+        Check if this tool call is repetitive within the detection window for this conversation.
+        
+        Args:
+            tool_name: Name of the tool being called
+            arguments: Tool arguments
+            conversation_id: Optional conversation ID for conversation-specific tracking
+            
+        Returns:
+            True if the call should be blocked as repetitive
+        """
+        # Use a default conversation ID if none provided
+        conv_id = conversation_id or 'default'
+        
         current_time = time.time()
         call_signature = (tool_name, json.dumps(arguments, sort_keys=True))
         
+        # Get or create the call list for this conversation
+        if conv_id not in self._recent_tool_calls:
+            self._recent_tool_calls[conv_id] = []
+        
+        conv_calls = self._recent_tool_calls[conv_id]
+        
         # Clean old calls outside the window
-        self._recent_tool_calls = [
-            (name, args, timestamp) for name, args, timestamp in self._recent_tool_calls
+        self._recent_tool_calls[conv_id] = [
+            (name, args, timestamp) for name, args, timestamp in conv_calls
             if current_time - timestamp <= self._loop_detection_window
         ]
         
         # Count identical calls in the window
-        identical_calls = sum(1 for name, args, timestamp in self._recent_tool_calls 
+        identical_calls = sum(1 for name, args, timestamp in self._recent_tool_calls[conv_id]
                              if (name, args) == call_signature)
         
         # Allow retries with different parameters or after reasonable delay
         if identical_calls > 0:
-            last_call_time = max(timestamp for name, args, timestamp in self._recent_tool_calls 
+            last_call_time = max(timestamp for name, args, timestamp in self._recent_tool_calls[conv_id]
                                 if (name, args) == call_signature)
             if current_time - last_call_time > 10:  # Allow retry after 10 seconds
                 identical_calls = 0
         
-        # Add current call
-        self._recent_tool_calls.append((tool_name, json.dumps(arguments, sort_keys=True), current_time))
-        
-        # Keep only recent calls
-        if len(self._recent_tool_calls) > self._max_recent_calls:
-            self._recent_tool_calls = self._recent_tool_calls[-self._max_recent_calls:]
+        # CRITICAL FIX: Only add call if we're NOT blocking it
+        if identical_calls < 5:
+            self._recent_tool_calls[conv_id].append((tool_name, json.dumps(arguments, sort_keys=True), current_time))
+            
+            # Keep only recent calls per conversation
+            if len(self._recent_tool_calls[conv_id]) > self._max_recent_calls:
+                self._recent_tool_calls[conv_id] = self._recent_tool_calls[conv_id][-self._max_recent_calls:]
         
         return identical_calls >= 5  # Allow max 5 identical calls before blocking
-
+    
     def _coerce_argument_types(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Coerce argument types based on tool schema to fix string-to-number issues."""
         if not arguments:
@@ -597,14 +629,18 @@ class MCPManager:
             arguments: Tool arguments
             server_name: Specific server to use (if None, tries all servers)
             
+        Keyword Args:
+            conversation_id: Optional conversation ID for tracking repetitive calls
+            
         Returns:
             Tool execution result or None if not found
         """
-        # Check for repetitive calls
-        if self._is_repetitive_call(tool_name, arguments):
+        # Check for repetitive calls (conversation-aware)
+        conversation_id = arguments.get('conversation_id') if isinstance(arguments, dict) else None
+        if self._is_repetitive_call(tool_name, arguments, conversation_id):
             logger.warning(f"🔍 MCP_MANAGER: Blocking repetitive tool call: {tool_name} with {arguments}")
             return {
-                "error": True, 
+                "error": True,
                 "message": f"Tool call blocked: {tool_name} has been called repeatedly with similar arguments. Please try a different approach or check if the previous results contain what you need.",
                 "code": -32001
             }

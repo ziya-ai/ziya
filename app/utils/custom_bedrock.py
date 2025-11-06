@@ -225,7 +225,11 @@ class CustomBedrockClient:
                 raise enhanced_error
             
             # If it's still a validation error or connection error, convert to a user-friendly message
-            if ("Input is too long" in retry_error_str or 
+            # But preserve inference profile errors
+            if "inference profile" in retry_error_str.lower() or "on-demand throughput" in retry_error_str.lower():
+                logger.error(f"Extended context retry failed with inference profile error: {retry_error_str}")
+                raise retry_error
+            elif ("Input is too long" in retry_error_str or 
                 "Connection was closed" in retry_error_str or
                 "ValidationException" in retry_error_str):
                 logger.error("Extended context retry failed - content may be too large even for extended context")

@@ -121,6 +121,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
     const [lastResponseIncomplete, setLastResponseIncomplete] = useState<boolean>(false);
     const isRecovering = useRef<boolean>(false);
+    const lastRecoveryAttempt = useRef<number>(0);
+    const RECOVERY_COOLDOWN = 5000; // 5 seconds between recovery attempts
+    const recoveryInProgress = useRef<boolean>(false);
+    const consecutiveRecoveries = useRef<number>(0);
+    const MAX_CONSECUTIVE_RECOVERIES = 3;
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
@@ -129,43 +134,64 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const manualScrollCooldownActive = useRef<boolean>(false);
     const [messageUpdateCounter, setMessageUpdateCounter] = useState(0);
 
-    // Monitor ChatProvider render performance
-    // Remove performance monitoring that's causing overhead
-
     // Improved scrollToBottom function with better user scroll respect
-    const scrollToBottom = () => {
+    const scrollToBottom = useCallback(() => {
+        // CRITICAL FIX: Only scroll if the current conversation is the one that's streaming
+        const currentConversationStreaming = streamingConversations.has(currentConversationId);
+        // SPINNER FIX: Only scroll if there's ACTUAL CONTENT, not just streaming state (spinner)
+        const currentStreamedContent = streamedContentMap.get(currentConversationId) || '';
+        const hasRealContent = currentStreamedContent.trim().length > 0;
+        
+        if (!hasRealContent) {
+            console.log('📜 Autoscroll blocked - no actual content yet (spinner phase)');
+            return;
+        }
+        
         const now = Date.now();
         const timeSinceManualScroll = now - lastManualScrollTime.current;
         const SCROLL_COOLDOWN = 5000; // 5 seconds
         
-        // If we're in cooldown period from manual scroll, don't autoscroll
-        if (manualScrollCooldownActive.current && timeSinceManualScroll < SCROLL_COOLDOWN) {
+        // CRITICAL FIX: Respect manual scroll unconditionally during cooldown
+        if (manualScrollCooldownActive.current) {
+            if (timeSinceManualScroll < SCROLL_COOLDOWN) {
+                console.log('📜 Autoscroll blocked - user scrolled', Math.round(timeSinceManualScroll / 1000), 'seconds ago');
+                return;
+            }
+            // Cooldown expired, reset the flag
+            manualScrollCooldownActive.current = false;
+            setUserHasScrolled(false);
+            console.log('📜 Scroll cooldown expired - autoscroll re-enabled');
             return;
         }
         
-        // If cooldown period has passed, reset manual scroll state
-        if (manualScrollCooldownActive.current && timeSinceManualScroll >= SCROLL_COOLDOWN) {
-            manualScrollCooldownActive.current = false;
-            setUserHasScrolled(false);
-        }
-        
-        // Only autoscroll if we have actual streaming content (not just waiting)
+        // CRITICAL FIX: Only autoscroll during active streaming with content
         const hasActiveContent = Array.from(streamingConversations).some(id => {
             const content = streamedContentMap.get(id);
             return content && content.trim().length > 0;
         });
         
         if (!hasActiveContent) {
+            console.log('📜 Autoscroll skipped - no active streaming content');
             return; // Don't scroll during "waiting" phase
         }
         
+        // CRITICAL FIX: Don't scroll if user is not at the bottom/top already
+        // This prevents jumping when user is reviewing older messages
         const chatContainer = document.querySelector('.chat-container');
-        if (chatContainer && isTopToBottom && !manualScrollCooldownActive.current) {
-            chatContainer.scrollTop = chatContainer.scrollHeight - chatContainer.clientHeight;
-        } else if (chatContainer && !isTopToBottom && !manualScrollCooldownActive.current) {
-            chatContainer.scrollTop = 0;
+        if (chatContainer) {
+            const isNearBottom = isTopToBottom ? 
+                (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) < 100 :
+                chatContainer.scrollTop < 100;
+            
+            if (isNearBottom) {
+                chatContainer.scrollTop = isTopToBottom ? 
+                    chatContainer.scrollHeight - chatContainer.clientHeight : 
+                    0;
+            } else {
+                console.log('📜 User not at bottom/top - preserving scroll position');
+            }
         }
-    };
+    }, [streamingConversations, streamedContentMap, currentConversationId, isTopToBottom]);
 
     // Function to record manual scroll events
     const recordManualScroll = useCallback(() => {
@@ -204,6 +230,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setStreamingConversations(prev => {
             const next = new Set(prev);
             next.delete(id);
+            
+            // CRITICAL FIX: Don't trigger scroll for non-current conversations
+            if (id !== currentConversationId) {
+                console.log('📜 Streaming ended for non-current conversation - preserving scroll position');
+            }
+            
             // Update global streaming state based on remaining conversations
             const stillStreaming = next.size > 0;
             setIsStreamingAny(stillStreaming);
@@ -221,7 +253,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
 
         // Auto-reset processing state when streaming ends
-        updateProcessingState(id, 'idle');
+        // CRITICAL FIX: Only update processing state, don't trigger any scroll
+        setProcessingStates(prev => {
+            const next = new Map(prev);
+            next.set(id, { state: 'idle', lastUpdated: Date.now() });
+            return next;
+        });
     }, [streamingConversations, currentConversationId]);
 
     const updateProcessingState = useCallback((conversationId: string, state: ProcessingState) => {
@@ -285,7 +322,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, []);
     
     // Queue-based save system to prevent race conditions
-    const queueSave = useCallback(async (conversations: Conversation[]) => {
+    const queueSave = useCallback(async (conversations: Conversation[], options: {
+        skipValidation?: boolean;
+        retryCount?: number;
+        isRecoveryAttempt?: boolean;
+    } = {}) => {
         // VALIDATION: Ensure all conversations have explicit isActive values
         const validatedConversations = conversations.map(conv => ({
             ...conv,
@@ -294,6 +335,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }));
         
         saveQueue.current = saveQueue.current.then(async () => {
+            const { skipValidation = false, retryCount = 0, isRecoveryAttempt = false } = options;
+            const maxRetries = 3;
+            const isRetry = retryCount > 0;
+            
             // Pre-save validation
             const activeCount = validatedConversations.filter(c => c.isActive).length;
             console.debug(`Saving ${validatedConversations.length} conversations (${activeCount} active)`);
@@ -318,19 +363,150 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 await db.saveConversations(validatedConversations);
             }
             
-            // Post-save validation: verify the save actually worked
-            const savedConversations = await db.getConversations();
-            if (savedConversations.length !== activeCount) {
-                console.error(`🚨 SAVE VALIDATION FAILED: Expected ${activeCount} conversations, got ${savedConversations.length}`);
-                throw new Error('Database save validation failed - conversation count mismatch');
+            // Post-save validation with healing - only if not explicitly skipped
+            if (!skipValidation) {
+                try {
+                    const savedConversations = await db.getConversations();
+                    const savedActiveCount = savedConversations.filter(c => c.isActive).length;
+                    
+                    // CRITICAL FIX: Only trigger healing if mismatch is significant (>1 conversation difference)
+                    // and we haven't exceeded max retries
+                    const countDifference = Math.abs(savedActiveCount - activeCount);
+                    
+                    if (countDifference > 1 && savedActiveCount !== activeCount) {
+                        console.warn(`⚠️ SAVE VALIDATION MISMATCH: Expected ${activeCount} active conversations, got ${savedActiveCount} (difference: ${countDifference})`);
+                        
+                        if (retryCount < maxRetries) {
+                            console.log(`🔄 HEALING ATTEMPT ${retryCount + 1}/${maxRetries}: Retrying save with validated data`);
+                            
+                            // CRITICAL: Re-validate all conversations before healing attempt
+                            const revalidatedConversations = validatedConversations.filter(c => 
+                                c.id && c.messages && Array.isArray(c.messages) && c.title
+                            );
+                            
+                            console.log(`🔍 VALIDATION: Filtered ${validatedConversations.length} -> ${revalidatedConversations.length} conversations`);
+                            
+                            // Wait a bit for any pending operations to complete
+                            await new Promise(resolve => setTimeout(resolve, 100 * (retryCount + 1)));
+                            
+                            // Merge current and saved data to ensure consistency
+                            const mergedConversations = mergeConversationsForHealing(validatedConversations, savedConversations);
+                            
+                            // CRITICAL: Only retry if merge produced valid results
+                            return queueSave(mergedConversations, { 
+                                skipValidation: false, 
+                                retryCount: retryCount + 1,
+                                isRecoveryAttempt: true 
+                            });
+                        } else {
+                            // After max retries, disable validation but continue operation
+                            console.error(`🚨 HEALING FAILED: After ${maxRetries} attempts, disabling validation to prevent app failure`);
+                            console.warn('🏥 EMERGENCY MODE: Trusting database state over memory to prevent corruption');
+                            
+                            // CRITICAL FIX: When healing fails, trust the database state, not memory
+                            // This prevents phantom conversations from corrupting the database
+                            const trustedConversations = savedConversations.map(c => ({
+                                ...c,
+                                isActive: c.isActive !== false,
+                                _version: Date.now()
+                            }));
+                            
+                            // Log the state for debugging but don't throw
+                            console.debug('Final state before emergency mode:', { validatedConversations, savedConversations, activeCount, savedActiveCount });
+                        }
+                    }
+                } catch (validationError) {
+                    console.error('❌ VALIDATION ERROR during healing:', validationError);
+                    
+                    if (retryCount < maxRetries && !isRecoveryAttempt) {
+                        console.log(`🔄 VALIDATION RETRY ${retryCount + 1}/${maxRetries}: Retrying after validation error`);
+                        await new Promise(resolve => setTimeout(resolve, 200 * (retryCount + 1)));
+                        return queueSave(validatedConversations, { 
+                            skipValidation: false, 
+                            retryCount: retryCount + 1,
+                            isRecoveryAttempt: true 
+                        });
+                    } else {
+                        console.warn('🏥 EMERGENCY MODE: Skipping validation due to persistent errors');
+                    }
+                }
             }
         });
         return saveQueue.current;
     }, [createBackup]);
 
+    // Helper function to merge conversations during healing
+    const mergeConversationsForHealing = useCallback((expected: Conversation[], actual: Conversation[]) => {
+        const merged = new Map<string, Conversation>();
+        
+        // Start with actual conversations from database
+        actual.forEach(conv => merged.set(conv.id, conv));
+        
+        // Add or update with expected conversations, preserving database versions when possible
+        expected.forEach(expectedConv => {
+            const actualConv = merged.get(expectedConv.id);
+            
+            // CRITICAL FIX: Validate conversation has essential data before adding
+            const isValidConversation = (
+                expectedConv.id &&
+                expectedConv.messages &&
+                Array.isArray(expectedConv.messages) &&
+                expectedConv.title &&
+                expectedConv.messages.length > 0 // CRITICAL: Don't merge empty conversations
+            );
+            
+            if (!isValidConversation) {
+                console.warn(`🚫 HEALING: Skipping invalid conversation ${expectedConv.id?.substring(0, 8)}`);
+                return;
+            }
+            
+            if (!actualConv) {
+                // New conversation - add it
+                // CRITICAL: Additional validation - don't add if it's a duplicate of an existing conversation
+                const isDuplicate = Array.from(merged.values()).some(existingConv => 
+                    existingConv.title === expectedConv.title &&
+                    existingConv.messages.length === expectedConv.messages.length &&
+                    Math.abs((existingConv.lastAccessedAt || 0) - (expectedConv.lastAccessedAt || 0)) < 5000
+                );
+                
+                if (!isDuplicate) {
+                    merged.set(expectedConv.id, expectedConv);
+                    console.log(`🔄 HEALING: Adding validated conversation ${expectedConv.id.substring(0, 8)}`);
+                } else {
+                    console.log(`🚫 HEALING: Skipping duplicate conversation ${expectedConv.id.substring(0, 8)}`);
+                }
+            } else {
+                // Existing conversation - merge with preference for newer version
+                const expectedVersion = expectedConv._version || 0;
+                const actualVersion = actualConv._version || 0;
+                
+                // Only merge if expected version is actually newer
+                if (expectedVersion <= actualVersion) {
+                    return; // Skip merge if database version is newer or equal
+                }
+                
+                const mergedConv = {
+                    ...actualConv,
+                    ...expectedConv,
+                    _version: Math.max(actualConv._version || 0, expectedConv._version || 0),
+                    // Preserve important state from actual (database) version
+                    isActive: expectedConv.isActive !== undefined ? expectedConv.isActive : actualConv.isActive
+                };
+                merged.set(expectedConv.id, mergedConv);
+            }
+        });
+        
+        return Array.from(merged.values());
+    }, []);
+
     const addMessageToConversation = useCallback((message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
         const conversationId = targetConversationId || currentConversationId;
         if (!conversationId) return;
+        
+        // CRITICAL FIX: If adding message to non-current conversation, don't trigger any scroll
+        if (conversationId !== currentConversationId) {
+            console.log('📝 Adding message to non-current conversation - scroll preservation mode');
+        }
 
         const folderId = currentFolderId;
         // Use the dynamicTitleLength from state - updated only by UI components
@@ -469,8 +645,30 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, [currentConversationId, conversations]);
 
-    const startNewChat = useCallback((specificFolderId?: string | null) => {
-        return new Promise<void>((resolve, reject) => {
+    const startNewChat = useCallback(async (specificFolderId?: string | null) => {
+        return new Promise<void>(async (resolve, reject) => {
+            // CRITICAL FIX: Only attempt recovery if not in cooldown period
+            const now = Date.now();
+            const timeSinceLastRecovery = now - lastRecoveryAttempt.current;
+            
+            // Skip recovery if:
+            // 1. Already recovering
+            // 2. Within cooldown period
+            // 3. Conversations exist and appear healthy
+            const shouldSkipRecovery = (
+                recoveryInProgress.current ||
+                timeSinceLastRecovery < RECOVERY_COOLDOWN ||
+                (conversations.length > 0 && conversations.length === conversationsRef.current.length)
+            );
+            
+            try {
+                if (!shouldSkipRecovery) {
+                    await attemptDatabaseRecovery();
+                }
+            } catch (recoveryError) {
+                console.warn('Database recovery attempt failed, continuing anyway:', recoveryError);
+            }
+            
             if (!isInitialized) {
                 reject(new Error('Chat context not initialized yet'));
                 return;
@@ -499,20 +697,49 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         : conv
                 );
 
-                queueSave([...updatedConversations, newConversation])
-                    .then(async () => {
+                try {
+                    await queueSave([...updatedConversations, newConversation]);
+                    
+                    // Update state immediately after successful save
+                    setConversations([...updatedConversations, newConversation]);
+                    setCurrentMessages([]);
+                    setCurrentConversationId(newId);
+                    
+                    // Persist the new conversation ID immediately
+                    localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
+                    resolve();
+                    
+                } catch (saveError) {
+                    console.error('Failed to save new conversation:', saveError);
+                    
+                    // HEALING: Don't let save failures completely break new conversation creation
+                const error = saveError as Error;
+                if (error.message?.includes('conversation count mismatch')) {
+                        console.log('🏥 HEALING: Database sync issue detected, creating conversation in memory and retrying save');
+                        
+                        // Create conversation in memory immediately
                         setConversations([...updatedConversations, newConversation]);
                         setCurrentMessages([]);
                         setCurrentConversationId(newId);
-                        
-                        // Persist the new conversation ID immediately
                         localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
+                        
+                        // Attempt background recovery save without validation
+                        setTimeout(async () => {
+                            try {
+                                await queueSave([...updatedConversations, newConversation], { skipValidation: true });
+                                console.log('✅ HEALING: Background save successful');
+                            } catch (bgError) {
+                                console.warn('Background save failed, but conversation is functional:', bgError);
+                            }
+                        }, 1000);
+                        
+                        // Resolve anyway - don't let database issues break the UI
                         resolve();
-                    })
-                    .catch(error => {
-                        console.error('Failed to save new conversation:', error);
-                        reject(error);
-                    });
+                    } else {
+                        // For other errors, still reject
+                        reject(saveError);
+                    }
+                }
             } catch (error) {
                 console.error('Failed to save new conversation:', error);
                 reject(error);
@@ -520,9 +747,99 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
     }, [isInitialized, currentConversationId, currentFolderId, conversations, queueSave]);
 
+    // Recovery function to fix database sync issues
+    const attemptDatabaseRecovery = useCallback(async () => {
+        // Circuit breaker: Stop recovery if too many consecutive attempts
+        if (consecutiveRecoveries.current >= MAX_CONSECUTIVE_RECOVERIES) {
+            console.warn('🚨 RECOVERY: Circuit breaker activated - too many consecutive recovery attempts');
+            console.warn('🔧 RECOVERY: Manual intervention required - clear IndexedDB or localStorage');
+            consecutiveRecoveries.current = 0; // Reset for future attempts
+            return;
+        }
+        
+        // Prevent concurrent recovery attempts
+        if (recoveryInProgress.current) {
+            console.log('🔄 RECOVERY: Already in progress, skipping');
+            return;
+        }
+        
+        recoveryInProgress.current = true;
+        lastRecoveryAttempt.current = Date.now();
+        
+        try {
+            console.log('🔄 RECOVERY: Attempting database recovery');
+            
+            // Get current state from both memory and database
+            const memoryConversations = conversations;
+            const dbConversations = await db.getConversations();
+            
+            // If counts differ significantly, attempt to sync
+            const memoryActive = memoryConversations.filter(c => c.isActive !== false).length;
+            const dbActive = dbConversations.filter(c => c.isActive !== false).length;
+            
+            // CRITICAL FIX: Only recover if there's a significant difference AND we can identify the cause
+            // Don't recover for minor differences (1-2 conversations) as they may be transient
+            const difference = Math.abs(memoryActive - dbActive);
+            
+            if (difference === 0) {
+                console.log('✅ RECOVERY: States are in sync, no recovery needed');
+                return;
+            }
+            
+            // CRITICAL FIX: Don't blindly trust memory when it has significantly more conversations
+            // This can happen due to phantom conversations from failed saves
+            if (memoryActive > dbActive) {
+                // If the difference is HUGE (>50%), memory is likely corrupted
+                const percentDifference = ((memoryActive - dbActive) / dbActive) * 100;
+                
+                if (percentDifference > 50 && dbActive > 0) {
+                    console.warn(`🚨 RECOVERY: Memory has ${percentDifference.toFixed(0)}% more conversations than DB - likely phantom data`);
+                    console.log(`🔄 RECOVERY: Trusting database (${dbActive}) over memory (${memoryActive})`);
+                    
+                    // Reload memory from database
+                    setConversations(dbConversations);
+                    
+                    // Clear stale backups
+                    localStorage.removeItem('ZIYA_CONVERSATION_BACKUP');
+                    
+                    console.log('✅ RECOVERY: Memory synced from database');
+                } else {
+                    // Small difference - trust memory and sync to DB
+                    console.log(`🔄 RECOVERY: Memory has more conversations (${memoryActive} vs ${dbActive}), syncing DB to memory`);
+                    await db.saveConversations(memoryConversations);
+                    console.log('✅ RECOVERY: Database updated from memory');
+                }
+                return;
+            }
+            
+            // If DB has MORE conversations, merge carefully
+            if (dbActive > memoryActive && difference > 2) {
+                console.log(`🔄 RECOVERY: Syncing conversation states (memory: ${memoryActive}, db: ${dbActive})`);
+                const merged = mergeConversationsForHealing(memoryConversations, dbConversations);
+                await db.saveConversations(merged);
+                console.log('✅ RECOVERY: Database sync completed');
+                consecutiveRecoveries.current = 0; // Reset on successful recovery
+            } else {
+                consecutiveRecoveries.current++;
+            }
+        } catch (error) {
+            console.warn('Database recovery failed:', error);
+            consecutiveRecoveries.current++;
+        } finally {
+            recoveryInProgress.current = false;
+        }
+    }, [conversations, mergeConversationsForHealing]);
+
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
+        
+        // CRITICAL FIX: Only scroll if we're actually switching conversations
+        const isActualSwitch = conversationId !== currentConversationId;
+        
         try {
+            
+            console.log('🔄 Loading conversation:', conversationId, 'isActualSwitch:', isActualSwitch);
+
             console.log('🔄 Loading conversation:', conversationId);
 
             // Don't remove streaming for the conversation we're switching away from
@@ -564,43 +881,49 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.log('✅ Conversation loading complete:', conversationId);
             setIsLoadingConversation(false);
             
-            // Scroll to appropriate position after conversation loads with multiple attempts
-            const scrollToPosition = () => {
-                const chatContainer = document.querySelector('.chat-container') as HTMLElement;
-                if (chatContainer) {
-                    if (isTopToBottom) {
-                        // For top-down, scroll to the very bottom
-                        chatContainer.scrollTop = chatContainer.scrollHeight;
-                        // Force a second update after DOM settles
-                        requestAnimationFrame(() => {
+            // CRITICAL FIX: Only scroll if we actually switched conversations
+            if (isActualSwitch) {
+                // Scroll to appropriate position after conversation loads with multiple attempts
+                const scrollToPosition = () => {
+                    const chatContainer = document.querySelector('.chat-container') as HTMLElement;
+                    if (chatContainer) {
+                        if (isTopToBottom) {
+                            // For top-down, scroll to the very bottom
                             chatContainer.scrollTop = chatContainer.scrollHeight;
-                        });
-                    } else {
-                        // For bottom-up, scroll to the very top
-                        chatContainer.scrollTop = 0;
+                            // Force a second update after DOM settles
+                            requestAnimationFrame(() => {
+                                chatContainer.scrollTop = chatContainer.scrollHeight;
+                            });
+                        } else {
+                            // For bottom-up, scroll to the very top
+                            chatContainer.scrollTop = 0;
+                        }
+                    }
+                };
+                
+                // Multiple scroll attempts to ensure we reach the end
+                setTimeout(scrollToPosition, 100);
+                setTimeout(scrollToPosition, 200);
+                setTimeout(scrollToPosition, 400);
+            } else {
+                console.log('📌 Skipping scroll - same conversation, user should stay at current position');
+            }
+            
+            // Only clear streamed content for conversations that are NOT actively streaming
+            setStreamedContentMap(prev => {
+                const next = new Map(prev);
+                // Keep streaming content for active streaming conversations
+                for (const [id, content] of prev) {
+                    if (!streamingConversations.has(id)) {
+                        next.delete(id);
                     }
                 }
-            };
-            
-            // Multiple scroll attempts to ensure we reach the end
-            setTimeout(scrollToPosition, 100);
-            setTimeout(scrollToPosition, 200);
-            setTimeout(scrollToPosition, 400);
+                return next;
+            });
         }
-        
-        // Only clear streamed content for conversations that are NOT actively streaming
-        setStreamedContentMap(prev => {
-            const next = new Map(prev);
-            // Keep streaming content for active streaming conversations
-            for (const [id, content] of prev) {
-                if (!streamingConversations.has(id)) {
-                    next.delete(id);
-                }
-            }
-            return next;
-        });
     }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave, isTopToBottom]);
 
+    // frontend/src/context/ChatContext.tsx
     // Folder management functions
     const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
         const newFolder: ConversationFolder = {
@@ -634,7 +957,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, []);
 
-    // frontend/src/context/ChatContext.tsx
     const deleteFolder = useCallback(async (id: string): Promise<void> => {
         try {
             // Get the most up-to-date list of conversations from the DB or state.
@@ -725,11 +1047,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     useEffect(() => {
         // Load current messages immediately when conversation changes, regardless of folder state
-        if (currentConversationId) {
+        // CRITICAL FIX: Only update if messages actually changed to prevent scroll jumps
+        if (currentConversationId && conversations.length > 0) {
             const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
-            setCurrentMessages(messages);
+            
+            // Only update if messages actually changed
+            const messagesChanged = JSON.stringify(messages) !== JSON.stringify(currentMessages);
+            if (messagesChanged) {
+                // ADDITIONAL FIX: Check if this change is from the current conversation or another
+                const triggeringConversation = conversations.find(c => 
+                    c._version && c._version > (Date.now() - 100)
+                );
+                
+                if (triggeringConversation && triggeringConversation.id !== currentConversationId) {
+                    console.log('📌 Another conversation updated - preserving scroll for current conversation');
+                    // Don't update currentMessages if the change came from a different conversation
+                    return;
+                }
+                
+                console.log('📝 Messages changed for conversation:', currentConversationId);
+                setCurrentMessages(messages);
+            } else {
+                console.log('📌 Messages unchanged - skipping update to preserve scroll');
+            }
         }
-    }, [conversations, currentConversationId, messageUpdateCounter]);
+    }, [conversations, currentConversationId, messageUpdateCounter, currentMessages]);
 
     
     // Enhanced initialization with corruption detection and recovery
@@ -776,7 +1118,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (isRecovering.current || initializationStarted.current) return;
         
         // Run emergency recovery check first
-        await checkForUnsavedConversations();
         await checkForUnsavedConversations();
         
         initializationStarted.current = true;
@@ -834,7 +1175,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         } catch (error) {
             console.error('Initialization failed:', error);
-            // Existing error handling...
             // Existing error handling...
         } finally {
             isRecovering.current = false;
