@@ -441,9 +441,51 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         
         from ..parsing.diff_parser import parse_unified_diff_exact_plus
         from ..application.hunk_line_correction import correct_hunk_line_numbers
+        from ..application.overlapping_hunks_fix import fix_overlapping_hunks
         
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
+        
+        # Fix overlapping hunks before correction
+        original_file_content = '\n'.join(file_lines)
+        hunks = fix_overlapping_hunks(hunks, original_file_content)
+        
         corrected_hunks = correct_hunk_line_numbers(hunks, file_lines)
+        
+        # Check if all hunks are already applied before attempting to apply
+        all_already_applied = True
+        for hunk in corrected_hunks:
+            # For corrected hunks, check at the corrected position and nearby
+            # Get the corrected position (1-based from hunk, convert to 0-based)
+            corrected_pos = hunk.get('old_start', 1) - 1
+            
+            # Check at corrected position first
+            hunk_applied = is_hunk_already_applied(file_lines, hunk, corrected_pos)
+            
+            # If not applied at corrected position, search nearby (within 20 lines)
+            if not hunk_applied:
+                search_range = 20
+                start_pos = max(0, corrected_pos - search_range)
+                end_pos = min(len(file_lines), corrected_pos + search_range)
+                
+                for pos in range(start_pos, end_pos):
+                    if is_hunk_already_applied(file_lines, hunk, pos):
+                        hunk_applied = True
+                        logger.info(f"Hunk #{hunk.get('number')} is already applied at position {pos} (searched near {corrected_pos})")
+                        break
+            else:
+                logger.info(f"Hunk #{hunk.get('number')} is already applied at corrected position {corrected_pos}")
+            
+            if not hunk_applied:
+                all_already_applied = False
+                break
+        
+        if all_already_applied:
+            logger.info("All hunks are already applied - skipping patch application")
+            # Mark all hunks as already applied
+            for hunk in corrected_hunks:
+                pipeline.update_hunk_status(hunk.get('number'), PipelineStage.SYSTEM_PATCH, HunkStatus.ALREADY_APPLIED)
+            pipeline.complete()
+            return False  # No changes written
         
         if corrected_hunks != hunks:
             logger.info("Correcting hunk line numbers before applying patch")
@@ -1854,6 +1896,36 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 lines = modified_content.splitlines(True)
                 if len(lines) > 22:
                     logger.info(f"DEBUG: Line 23 before write: {repr(lines[22])}")
+                
+                # CRITICAL FIX: Detect and remove duplicated content
+                # Sometimes fuzzy matching creates duplicates when it can't distinguish locations
+                modified_lines = modified_content.splitlines(keepends=True)
+                original_line_count = len(original_lines)
+                
+                # Check if content appears to be duplicated (file is roughly 2x original size)
+                if len(modified_lines) >= original_line_count * 1.8:
+                    # Look for the original content appearing twice
+                    # Compare first N lines with lines starting at various offsets
+                    for offset in range(original_line_count - 2, original_line_count + 3):
+                        if offset <= 0 or offset >= len(modified_lines):
+                            continue
+                        
+                        # Check if original content appears at this offset
+                        matches = 0
+                        for i, orig_line in enumerate(original_lines):
+                            if offset + i >= len(modified_lines):
+                                break
+                            if orig_line.strip() == modified_lines[offset + i].strip():
+                                matches += 1
+                        
+                        # If most lines match, we found a duplicate
+                        if matches >= len(original_lines) * 0.7:
+                            logger.warning(f"Detected duplicated content at offset {offset}")
+                            logger.warning(f"Original: {len(original_lines)} lines, Modified: {len(modified_lines)} lines, Matches: {matches}")
+                            # Keep only content from offset onwards (the version with changes)
+                            modified_content = ''.join(modified_lines[offset:])
+                            logger.info(f"Removed duplicate, keeping {len(modified_lines) - offset} lines")
+                            break
                 
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(modified_content)

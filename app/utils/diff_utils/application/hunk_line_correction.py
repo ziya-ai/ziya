@@ -23,6 +23,16 @@ def extract_context_from_hunk(hunk: Dict[str, Any]) -> List[str]:
                 context.append(clean.rstrip('\n\r'))
         return context
     
+    # Try content field (from parse_unified_diff)
+    content = hunk.get('content', [])
+    if content:
+        for line in content:
+            if isinstance(line, str):
+                # Remove diff markers - include context (' ') and removed ('-') lines
+                clean = line[1:] if line and line[0] in ' -' else line
+                context.append(clean.rstrip('\n\r'))
+        return context
+    
     # Fallback to removed_lines
     removed = hunk.get('removed_lines', [])
     if removed:
@@ -36,10 +46,12 @@ def normalize_for_matching(line: str) -> str:
     return line.strip()
 
 
-def find_best_match_position(context: List[str], file_lines: List[str]) -> Optional[Tuple[int, float]]:
+def find_best_match_position(context: List[str], file_lines: List[str], original_line: Optional[int] = None) -> Optional[Tuple[int, float]]:
     """
     Find best position in file for given context using fuzzy matching.
     Returns (line_number, confidence) or None.
+    
+    When multiple positions have similar match ratios, prefers the one closest to original_line.
     """
     if not context or not file_lines:
         return None
@@ -47,53 +59,123 @@ def find_best_match_position(context: List[str], file_lines: List[str]) -> Optio
     # Normalize context for matching
     norm_context = [normalize_for_matching(line) for line in context]
     
+    # Count empty lines in context for structural matching
+    context_empty_count = sum(1 for line in context if not line.strip())
+    
     best_ratio = 0.0
     best_pos = None
     context_len = len(context)
+    matches = []  # Store all good matches with their empty line counts
     
     # Search entire file for best match
     for i in range(len(file_lines) - context_len + 1):
         segment = [normalize_for_matching(line.rstrip('\n\r')) for line in file_lines[i:i + context_len]]
         ratio = SequenceMatcher(None, norm_context, segment).ratio()
         
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_pos = i
+        # Track empty line count for this segment
+        segment_empty_count = sum(1 for line in file_lines[i:i + context_len] if not line.strip())
+        
+        if ratio > 0.7:  # Require 70% match
+            matches.append((i, ratio, segment_empty_count))
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_pos = i
     
-    if best_ratio > 0.7:  # Require 70% match
-        return (best_pos, best_ratio)
+    if not matches:
+        return None
     
-    return None
+    # Prefer matches with exact empty line count when there are multiple good matches
+    if len(matches) > 1:
+        threshold = best_ratio * 0.95  # Within 5% of best
+        good_matches = [(pos, ratio, empty_cnt) for pos, ratio, empty_cnt in matches if ratio >= threshold]
+        
+        # First, try to find matches with exact empty line count
+        exact_empty_matches = [(pos, ratio) for pos, ratio, empty_cnt in good_matches if empty_cnt == context_empty_count]
+        
+        if exact_empty_matches:
+            # Among exact matches, prefer closest to original line
+            if original_line is not None:
+                best_pos = min(exact_empty_matches, key=lambda m: abs(m[0] - (original_line - 1)))[0]
+            else:
+                best_pos = exact_empty_matches[0][0]
+        elif original_line is not None:
+            # No exact matches, prefer closest to original line
+            best_pos = min(good_matches, key=lambda m: abs(m[0] - (original_line - 1)))[0]
+    
+    return (best_pos, best_ratio)
 
 
 def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]) -> List[Dict[str, Any]]:
     """
     Correct hunk line numbers by finding best context matches in the file.
     Adds 'line_number_corrected' and 'correction_confidence' metadata to corrected hunks.
+    Filters out large deletions with low confidence to prevent corruption.
     """
+    print(f"DEBUG: correct_hunk_line_numbers called with {len(hunks) if hunks else 0} hunks")
     if not hunks or not file_lines:
         return hunks
     
     corrected = []
     corrections = 0
+    skipped = 0
     
     for i, hunk in enumerate(hunks, 1):
+        print(f"DEBUG: Processing hunk {i}")
         old_start = hunk.get('old_start', 1)
         context = extract_context_from_hunk(hunk)
+        
+        print(f"DEBUG: Hunk {i} has context: {len(context) if context else 0} lines")
         
         if not context:
             corrected.append(hunk)
             continue
         
-        # Find best match
-        result = find_best_match_position(context, file_lines)
+        # Find best match, passing original line for proximity preference
+        result = find_best_match_position(context, file_lines, old_start)
+        
+        print(f"DEBUG: Hunk {i} result: {result}")
         
         if result:
             pos, confidence = result
             new_start = pos + 1  # Convert to 1-based
             
-            # Correct if different and high confidence (lowered threshold to 0.80)
-            if new_start != old_start and confidence > 0.80:
+            # For large deletions, require higher confidence to avoid removing wrong content
+            old_count = hunk.get('old_count', 0)
+            new_count = hunk.get('new_count', 0)
+            is_large_deletion = (old_count - new_count) > 20
+            min_confidence = 0.90 if is_large_deletion else 0.80
+            
+            print(f"DEBUG: Hunk {i}: old_count={old_count}, new_count={new_count}, deletion_size={old_count - new_count}, is_large={is_large_deletion}, conf={confidence:.2f}, min={min_confidence}")
+            
+            # Special case: if this is a large deletion with low confidence,
+            # check if there are duplicate occurrences later in the file
+            if is_large_deletion and confidence < min_confidence:
+                print(f"DEBUG: Entering large deletion low confidence block for hunk {i}")
+                # Search for better matches further in the file
+                better_matches = []
+                for i in range(len(file_lines) - len(context) + 1):
+                    if i == pos:  # Skip the one we already found
+                        continue
+                    segment = [normalize_for_matching(line.rstrip('\n\r')) for line in file_lines[i:i + len(context)]]
+                    norm_context = [normalize_for_matching(line) for line in context]
+                    ratio = SequenceMatcher(None, norm_context, segment).ratio()
+                    if ratio >= min_confidence:
+                        better_matches.append((i + 1, ratio))
+                
+                if better_matches:
+                    # Found better match(es) - use the one closest to original line
+                    new_start, confidence = min(better_matches, key=lambda m: abs(m[0] - old_start))
+                    logger.info(f"Hunk {i}: found better match for large deletion at line {new_start} (confidence {confidence:.2f})")
+                else:
+                    # No better match found and confidence too low - skip this hunk entirely
+                    logger.warning(f"Hunk {i}: large deletion has low confidence ({confidence:.2f}) and no better match found - skipping to prevent corruption")
+                    skipped += 1
+                    logger.info(f"DEBUG: About to continue, skipped count is now {skipped}")
+                    continue
+            
+            logger.info(f"DEBUG: After large deletion check for hunk {i}, confidence={confidence:.2f}, min={min_confidence}")
+            # Correct if different and high confidence
+            if new_start != old_start and confidence > min_confidence:
                 new_hunk = hunk.copy()
                 new_hunk['old_start'] = new_start
                 new_hunk['line_number_corrected'] = True
@@ -108,5 +190,7 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
     
     if corrections:
         logger.info(f"Corrected {corrections}/{len(hunks)} hunk line numbers")
+    if skipped:
+        logger.warning(f"Skipped {skipped}/{len(hunks)} hunks to prevent corruption")
     
     return corrected
