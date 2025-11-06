@@ -1118,6 +1118,9 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'tool_result_for_model':
                         # Don't stream to frontend - this is for model conversation only
                         logger.debug(f"Tool result for model conversation: {chunk.get('tool_use_id')}")
+                    elif chunk.get('type') == 'throttling_error':
+                        # Pass through throttling errors to frontend for inline display
+                        yield f"data: {json.dumps(chunk)}\n\n"
                     elif chunk.get('type') == 'iteration_continue':
                         # Send heartbeat to flush stream before next iteration
                         yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
@@ -3362,6 +3365,11 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
 @app.get('/api/folders')
 async def api_get_folders():
     """Get the folder structure for API compatibility with improved error handling."""
+    # Add cache headers to help frontend avoid unnecessary requests
+    from fastapi import Response
+    response = Response()
+    response.headers["Cache-Control"] = "public, max-age=30"
+    
     try:
         # Get the user's codebase directory
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
