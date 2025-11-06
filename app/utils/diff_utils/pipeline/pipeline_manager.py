@@ -1903,7 +1903,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 original_line_count = len(original_lines)
                 
                 # Check if content appears to be duplicated (file is roughly 2x original size)
-                if len(modified_lines) >= original_line_count * 1.8:
+                # Skip if original file was empty (original_line_count == 0)
+                if len(modified_lines) >= original_line_count * 1.8 and original_line_count > 0:
                     # Look for the original content appearing twice
                     # Compare first N lines with lines starting at various offsets
                     for offset in range(original_line_count - 2, original_line_count + 3):
