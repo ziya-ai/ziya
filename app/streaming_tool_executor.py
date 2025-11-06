@@ -22,6 +22,7 @@ class StreamingToolExecutor:
         # Use provided model_id or get from ModelManager (which handles region-specific IDs)
         if model_id:
             self.model_id = model_id
+            logger.debug(f"StreamingToolExecutor: Using provided model_id: {self.model_id}")
         else:
             config_model_id = self.model_config.get('model_id') if self.model_config else None
             if config_model_id:
@@ -29,6 +30,7 @@ class StreamingToolExecutor:
                 self.model_id, _ = ModelManager._get_region_specific_model_id_with_region_update(
                     config_model_id, region, self.model_config, model_name
                 )
+                logger.debug(f"StreamingToolExecutor: Resolved model_id from config: {self.model_id} (config was: {config_model_id})")
             else:
                 raise ValueError("No model_id configured. Set ZIYA_MODEL or provide model_id parameter.")
         
@@ -417,6 +419,7 @@ class StreamingToolExecutor:
                             'body': json.dumps(body)
                         }
                         
+                        logger.debug(f"🔍 API_PARAMS: Calling invoke_model_with_response_stream with modelId={self.model_id}")
                         response = self.bedrock.invoke_model_with_response_stream(**api_params)
                         break  # Success, exit retry loop
                     except Exception as e:
@@ -1180,9 +1183,52 @@ class StreamingToolExecutor:
                         continue
 
             except Exception as e:
-                logger.error(f"Error in stream_with_tools iteration {iteration}: {str(e)}", exc_info=True)
-                yield {'type': 'error', 'content': f'Error: {e}'}
-                return
+                error_str = str(e)
+                logger.error(f"Error in stream_with_tools iteration {iteration}: {error_str}", exc_info=True)
+                
+                # Check if this is a throttling error
+                is_throttling = any(indicator in error_str for indicator in [
+                    "ThrottlingException", 
+                    "Too many tokens",
+                    "Too many requests", 
+                    "Rate exceeded",
+                    "rate limit"
+                ])
+                
+                if is_throttling:
+                    # Extract suggested wait time if available
+                    suggested_wait = 60  # Default 60 seconds
+                    if "please wait" in error_str.lower():
+                        # Try to extract time from error message
+                        import re
+                        wait_match = re.search(r'wait (\d+)', error_str.lower())
+                        if wait_match:
+                            suggested_wait = int(wait_match.group(1))
+                    
+                    # Check if this is a token-based throttling (more severe)
+                    is_token_throttling = "Too many tokens" in error_str
+                    
+                    # Yield a special throttling error chunk with all info needed for inline display
+                    yield {
+                        'type': 'throttling_error',
+                        'error': 'throttling_error',
+                        'detail': error_str,
+                        'suggested_wait': suggested_wait,
+                        'is_token_throttling': is_token_throttling,
+                        'iteration': iteration,
+                        'tools_executed': len(tool_results),
+                        'can_retry': True,
+                        'retry_message': f"AWS rate limit exceeded after {len(tool_results)} tool execution(s). "
+                                       f"Please wait {suggested_wait} seconds before retrying.",
+                        'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                    }
+                    logger.info(f"🔄 THROTTLING: Yielded throttling error chunk after {len(tool_results)} tools")
+                    return
+                else:
+                    # For non-throttling errors, yield generic error
+                    logger.error(f"Non-throttling error in iteration {iteration}: {error_str}")
+                    yield {'type': 'error', 'content': f'Error: {e}'}
+                    return
 
     def _update_code_block_tracker(self, text: str, tracker: Dict[str, Any]) -> None:
         """Update code block tracking state based on text content."""

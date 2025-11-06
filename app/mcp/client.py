@@ -70,6 +70,11 @@ class MCPClient:
         self._last_successful_call = time.time()
         self._last_reconnect_attempt = 0  # Rate limit reconnections
         
+        # Rate limiting for tool calls
+        self._tool_call_timestamps: Dict[str, float] = {}
+        self._tool_rate_limits: Dict[str, float] = {}
+        self._default_rate_limit: float = 2.0  # Default 2 seconds between consecutive calls
+        
         # External server health monitoring
         self._consecutive_failures = 0
         self._last_health_check = 0
@@ -677,6 +682,42 @@ class MCPClient:
             
             return result
     
+    def set_tool_rate_limit(self, tool_name: str, seconds: float) -> None:
+        """
+        Set a custom rate limit for a specific tool.
+        
+        Args:
+            tool_name: Name of the tool to configure
+            seconds: Minimum seconds between consecutive calls (0 to disable rate limiting)
+        """
+        self._tool_rate_limits[tool_name] = seconds
+        logger.info(f"Set rate limit for tool '{tool_name}': {seconds}s")
+    
+    def _check_rate_limit(self, tool_name: str) -> Optional[float]:
+        """
+        Check if a tool call should be rate limited.
+        
+        Args:
+            tool_name: Name of the tool to check
+            
+        Returns:
+            None if call is allowed, otherwise returns seconds to wait
+        """
+        # Get rate limit for this tool (use default if not configured)
+        rate_limit = self._tool_rate_limits.get(tool_name, self._default_rate_limit)
+        
+        # Rate limiting disabled for this tool
+        if rate_limit <= 0:
+            return None
+            
+        # Check last call time
+        last_call = self._tool_call_timestamps.get(tool_name)
+        if last_call is None:
+            return None  # First call to this tool
+            
+        elapsed = time.time() - last_call
+        return max(0, rate_limit - elapsed) if elapsed < rate_limit else None
+    
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Call a tool on the MCP server."""
         try:
@@ -696,6 +737,19 @@ class MCPClient:
                         "code": -32602
                     }
                 arguments = validated_args
+            
+            # Check rate limit before executing
+            wait_time = self._check_rate_limit(name)
+            if wait_time is not None and wait_time > 0:
+                logger.warning(f"Rate limit active for tool '{name}': waiting {wait_time:.1f}s")
+                # Wait for the remaining time
+                await asyncio.sleep(wait_time)
+            elif wait_time == 0:
+                # Exactly at the rate limit boundary, add a small delay
+                await asyncio.sleep(0.1)
+            
+            # Record this call attempt
+            self._tool_call_timestamps[name] = time.time()
             
             result = await self._send_request("tools/call", {
                 "name": name,
@@ -759,6 +813,19 @@ class MCPClient:
                 
             field_schema = properties[key]
             expected_type = field_schema.get("type")
+            
+            # Handle array type conversion
+            if expected_type == "array":
+                if isinstance(value, str):
+                    # Convert string to single-element array
+                    logger.debug(f"Converting string to array for {key}: '{value}' -> ['{value}']")
+                    validated[key] = [value]
+                elif isinstance(value, list):
+                    validated[key] = value
+                else:
+                    logger.warning(f"Unexpected type for array field {key}: {type(value)}")
+                    validated[key] = value
+                continue
             
             # Type conversion
             if expected_type == "integer" and isinstance(value, str):
