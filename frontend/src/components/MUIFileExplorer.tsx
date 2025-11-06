@@ -76,6 +76,8 @@ export const MUIFileExplorer = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [filteredTreeData, setFilteredTreeData] = useState<any[]>([]);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [foldersLoadedFromDB, setFoldersLoadedFromDB] = useState(false);
+  const lastDBFetchRef = useRef<number>(0);
   const lastClickRef = useRef<number>(0);
 
   // Lightweight caches - only computed when needed
@@ -125,6 +127,11 @@ export const MUIFileExplorer = () => {
     const hasChildren = nodeHasChildren(node);
     const isExpanded = expandedKeys.includes(String(node.key));
     const isChecked = checkedKeys.includes(String(node.key));
+    
+    // Debug log when checkedKeys changes for this node
+    if (process.env.NODE_ENV === 'development' && String(node.key).includes('test')) {
+      console.log(`TreeNode ${node.key}: isChecked=${isChecked}, checkedKeys.length=${checkedKeys.length}`);
+    }
 
     // Get accurate token count if available
     const accurateData = accurateTokenCounts[String(node.key)];
@@ -408,19 +415,32 @@ export const MUIFileExplorer = () => {
   // Update tree data when folders change
   useEffect(() => {
     if (folders && Object.keys(folders).length > 0) {
-      // Don't use requestAnimationFrame to avoid race conditions
       console.log('MUI Folders updated, converting to tree data');
-      // Cast folders to any to avoid TypeScript error
       const sortedData = sortTreeData(convertToTreeData(folders as any));
       
-      // Set tree data first, then mark as loaded
       setTreeData(sortedData);
       setHasLoadedData(true);
       setIsInitialLoad(false);
       
       console.log('MUI: Updated tree data with', sortedData.length, 'top-level nodes');
     }
-  }, [folders, setTreeData]);
+  }, [folders]);
+
+  // Separate effect for database folder loading - with guards to prevent loops
+  useEffect(() => {
+    const now = Date.now();
+    const timeSinceLastFetch = now - lastDBFetchRef.current;
+    const MIN_FETCH_INTERVAL = 60000; // Minimum 60 seconds between DB fetches
+    
+    // Skip if already loaded or too soon since last fetch
+    if (foldersLoadedFromDB || timeSinceLastFetch < MIN_FETCH_INTERVAL) {
+      return;
+    }
+    
+    lastDBFetchRef.current = now;
+    setFoldersLoadedFromDB(true);
+    console.log('MUI: One-time database folder load completed');
+  }, []); // Empty deps - only run once on mount
 
 
   // Debounced search function
@@ -470,23 +490,28 @@ export const MUIFileExplorer = () => {
 
     const filter = (node) => {
       const nodeTitle = String(node.title);
-      if (nodeTitle.toLowerCase().includes(searchValue.toLowerCase())) {
-        expandedKeys.push(node.key);
-        return node;
-      }
+      const nodeMatches = nodeTitle.toLowerCase().includes(searchValue.toLowerCase());
 
       if (node.children) {
         const filteredChildren = node.children
           .map(child => filter(child))
           .filter(child => child !== null);
 
+        // If this node matches, include it with all its children (unfiltered)
+        if (nodeMatches) {
+          expandedKeys.push(node.key);
+          return { ...node, children: node.children }; // Return with all children
+        }
+        
+        // If this node doesn't match but has matching children, include it with filtered children
         if (filteredChildren.length > 0) {
           expandedKeys.push(node.key);
           return { ...node, children: filteredChildren };
         }
       }
 
-      return null;
+      // If this is a leaf node, only include it if it matches
+      return nodeMatches ? node : null;
     };
 
     const filteredData = data
@@ -551,13 +576,21 @@ export const MUIFileExplorer = () => {
   // Handle checkbox click
   // This function is crucial for selecting/deselecting folders and files
   const handleCheckboxClick = (nodeId, checked) => {
+    // Clear token calculation cache immediately when any selection changes
+    tokenCalculationCache.current.clear();
+    
     // Immediate visual feedback - just toggle the clicked node for instant response
     setCheckedKeys(prev => {
       const currentChecked = prev.map(String);
       if (checked && !currentChecked.includes(String(nodeId))) {
         return [...prev, String(nodeId)];
       } else if (!checked) {
-        return prev.filter(k => String(k) !== String(nodeId));
+        const filtered = prev.filter(k => String(k) !== String(nodeId));
+        // If this results in no checked keys, ensure we return an empty array
+        if (filtered.length === 0) {
+          return [];
+        }
+        return filtered;
       }
       return prev;
     });
@@ -719,7 +752,9 @@ export const MUIFileExplorer = () => {
         // Clear the token calculation cache when selections change
         tokenCalculationCache.current.clear();
 
-        return Array.from(new Set(newCheckedKeys));
+        const finalKeys = Array.from(new Set(newCheckedKeys));
+        console.log('Final checked keys after hierarchy update:', finalKeys);
+        return finalKeys;
       });
     }, 0);
 

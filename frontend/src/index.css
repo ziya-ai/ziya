@@ -2208,3 +2208,27 @@ body:not(.dark) .token.attr-name {
   0% { background-position: 0% 0%; }
   100% { background-position: 40px 40px; }
 }
+
+/* Throttle retry button styling */
+.throttle-retry-button {
+  transition: all 0.2s ease;
+}
+
+.throttle-retry-button:hover {
+  background-color: #40a9ff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.3);
+}
+
+.throttle-retry-button:active {
+  transform: translateY(0);
+}
+
+.dark .throttle-retry-button:hover {
+  background-color: #177ddc !important;
+}
+
+.throttle-retry-button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

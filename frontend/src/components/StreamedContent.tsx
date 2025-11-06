@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, useTransition, useId, Suspense } from 'react';
 import { useChatContext, ProcessingState } from '../context/ChatContext';
+import { useFolderContext } from '../context/FolderContext';
 import { Space, Alert, Typography } from 'antd';
 import { v4 as uuidv4 } from 'uuid';
 import StopStreamButton from './StopStreamButton';
@@ -7,12 +8,15 @@ import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import ReasoningDisplay from './ReasoningDisplay';
+import { sendPayload } from '../apis/chatApi';
+import { convertKeysToStrings } from '../utils/types';
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC<{}> = () => {
     const [error, setError] = useState<string | null>(null);
     const [connectionLost, setConnectionLost] = useState<boolean>(false);
     const [isLoading, setIsLoading] = useState<boolean>(false);
+    const [isRetrying, setIsRetrying] = useState<boolean>(false);
     const contentRef = useRef<HTMLDivElement>(null);
     const isAutoScrollingRef = useRef<boolean>(false);
     const [showThinkingIndicator, setShowThinkingIndicator] = useState<boolean>(false);
@@ -21,12 +25,10 @@ export const StreamedContent: React.FC<{}> = () => {
     const [hasShownContent, setHasShownContent] = useState<boolean>(false);
     const lastScrollPositionRef = useRef<number>(0);
     const processedPreservedEvents = useRef<Set<string>>(new Set());
-
     const {
         streamedContentMap,
         addMessageToConversation,
         isStreaming,
-        getProcessingState,
         setIsStreaming,
         currentConversationId,
         streamingConversations,
@@ -35,8 +37,14 @@ export const StreamedContent: React.FC<{}> = () => {
         isTopToBottom,
         setUserHasScrolled,
         removeStreamingConversation,
+        setStreamedContentMap,
+        setReasoningContentMap,
+        getProcessingState,
+        updateProcessingState,
+        conversations
     } = useChatContext();
 
+    const { checkedKeys } = useFolderContext();
 
     // Get the latest streamed content directly without memoization to avoid stale content
     const streamedContent = streamedContentMap.get(currentConversationId) ?? '';
@@ -96,6 +104,11 @@ export const StreamedContent: React.FC<{}> = () => {
     }, [streamedContent, isTopToBottom, userHasScrolled, streamingConversations, currentConversationId]);
     // Function to detect processing state from content
     const detectProcessingState = useCallback((content: string): ProcessingState => {
+        // Check for throttling notification
+        if (content.includes('⚠️ **Rate Limit Reached**') || content.includes('throttle-retry-button')) {
+            return 'error'; // Mark as error state so UI shows appropriate feedback
+        }
+        
         if (content.includes('🔧 **Executing Tool**:') || content.includes('tool_display') || content.includes('tool_result')) {
             return 'awaiting_tool_response';
         }
@@ -481,14 +494,17 @@ export const StreamedContent: React.FC<{}> = () => {
             if (!container) return;
 
             let scrollCheckInterval: NodeJS.Timeout;
+            let consecutiveAtActiveEndChecks = 0;
             const ACTIVE_END_THRESHOLD = 100; // Increased threshold to be more forgiving
-            let consecutiveAtActiveEndChecks = 0; // Counter to prevent flicker
-            const REQUIRED_CONSECUTIVE_CHECKS = 3; // Increased to prevent premature re-enabling
-
+            const REQUIRED_CONSECUTIVE_CHECKS = 2;
+            
+            // CRITICAL FIX: Only monitor for active streaming, not for static failed content
+            const isActivelyStreaming = streamingConversations.has(currentConversationId);
+            
             // Only monitor for return to active end if user has scrolled away AND we have content
-            // But not if we're just showing loading indicators
+            // But not if we're just showing loading indicators or static retry buttons
             const hasActualContent = streamedContent && streamedContent.trim().length > 0;
-            if (streamingConversations.has(currentConversationId) &&
+            if (isActivelyStreaming &&
                 userHasScrolled &&
                 hasActualContent) {
 
@@ -509,7 +525,7 @@ export const StreamedContent: React.FC<{}> = () => {
                         // Only re-enable auto-scroll after consecutive checks to prevent flicker
                         if (consecutiveAtActiveEndChecks >= REQUIRED_CONSECUTIVE_CHECKS &&
                             userHasScrolled &&
-                            streamingConversations.has(currentConversationId)) {
+                            isActivelyStreaming) {
                             setUserHasScrolled(false);
                             clearInterval(scrollCheckInterval);
                         }
@@ -636,6 +652,41 @@ export const StreamedContent: React.FC<{}> = () => {
                             : '');
                     preservedContent += errorContext;
 
+                    // Add retry button handler
+                    const handleContinue = async () => {
+                        if (isRetrying) return;
+                        
+                        setIsRetrying(true);
+                        
+                        try {
+                            // Get current conversation messages
+                            const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
+                            
+                            // Send a continuation prompt
+                            await sendPayload(
+                                messages,
+                                "Please continue your previous response.",
+                                convertKeysToStrings(checkedKeys),
+                                currentConversationId,
+                                streamedContentMap,
+                                setStreamedContentMap,
+                                setIsStreaming,
+                                removeStreamingConversation,
+                                addMessageToConversation,
+                                true,
+                                (state) => updateProcessingState(currentConversationId, state),
+                                setReasoningContentMap
+                            );
+                        } catch (error) {
+                            console.error('Continue failed:', error);
+                        } finally {
+                            setIsRetrying(false);
+                        }
+                    };
+
+                    // Add retry button HTML to preserved content
+                    preservedContent += '\n\n<div style="margin-top: 16px;"><button class="continue-button" data-continue-handler="true">↗️ Continue Response</button></div>';
+
                     console.log('Creating preserved message with content length:', preservedContent.length);
                     console.log('First 200 chars:', preservedContent.substring(0, 200));
                     console.log('Contains existing streamed content:', !!existing_streamed_content);
@@ -657,6 +708,25 @@ export const StreamedContent: React.FC<{}> = () => {
 
                     addMessageToConversation(preservedMessage, currentConversationId);
                     console.log('Added preserved message with successful tool results');
+
+                    // Attach click handler to the continue button after React renders it
+                    setTimeout(() => {
+                        const continueButton = document.querySelector('[data-continue-handler="true"]') as HTMLButtonElement;
+                        if (continueButton && !continueButton.dataset.handlerAttached) {
+                            continueButton.dataset.handlerAttached = 'true';
+                            continueButton.addEventListener('click', handleContinue);
+                            
+                            // Style the button
+                            continueButton.style.padding = '6px 15px';
+                            continueButton.style.fontSize = '14px';
+                            continueButton.style.fontWeight = '500';
+                            continueButton.style.borderRadius = '6px';
+                            continueButton.style.border = '1px solid #1890ff';
+                            continueButton.style.backgroundColor = '#f0f8ff';
+                            continueButton.style.color = '#1890ff';
+                            continueButton.style.cursor = 'pointer';
+                        }
+                    }, 100);
 
                     // Now remove the streaming conversation since we've preserved the content
                     removeStreamingConversation(currentConversationId);

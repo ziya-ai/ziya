@@ -37,6 +37,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         updateProcessingState,
         setConversations,
         toggleMessageMute,
+        recordManualScroll,
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();
@@ -49,6 +50,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                            streamedContentMap.get(currentConversationId) !== '',
         streamedContent: streamedContentMap.get(currentConversationId) || ''
     }), [streamingConversations, streamedContentMap, currentConversationId]);
+    const previousStreamingStateRef = useRef<boolean>(false);
     
     // Use memoized state instead of direct context access
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
@@ -110,6 +112,26 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         return () => observer.disconnect();
     }, [isTopToBottom, currentMessages.length]);
 
+    // CRITICAL FIX: Detect when OTHER conversations complete streaming
+    useEffect(() => {
+        const wasStreaming = previousStreamingStateRef.current;
+        const isNowStreaming = isCurrentlyStreaming;
+        
+        // If streaming state changed for the current conversation from true to false
+        if (wasStreaming && !isNowStreaming) {
+            console.log('✅ Current conversation finished streaming - normal completion');
+        }
+        
+        // CRITICAL: If streaming ended but NOT for current conversation, preserve scroll
+        if (streamingConversations.size === 0 && !isNowStreaming && !wasStreaming) {
+            console.log('📌 Another conversation finished streaming - preserving current scroll position');
+            // Prevent any scroll effects from firing
+            recordManualScroll();
+        }
+        
+        previousStreamingStateRef.current = isNowStreaming;
+    }, [isCurrentlyStreaming, streamingConversations, recordManualScroll]);
+
     // Update active streaming conversations reference
     useEffect(() => {
         // Create the handler function
@@ -167,9 +189,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         const message = currentMessages[index];
         const isLastMessage = index === currentMessages.length - 1;
         const nextIndex = index + 1;
-        const nextMessage = nextIndex < currentMessages.length ? currentMessages[nextIndex] : null;
         const hasNextMessage = nextIndex < currentMessages.length;
+        const nextMessage = hasNextMessage ? currentMessages[nextIndex] : null;
 
+        // SPINNER FIX: A message with a retry button is a FAILED state, not a streaming state
+        // It should NOT trigger auto-scrolling behavior
+        // The needs-response class is purely visual, not a streaming indicator
+        
         // Show retry if this is a human message and either:
         // 1. It's the last message, or
         // 2. The next message isn't from the assistant
@@ -180,7 +206,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
             (isLastMessage ||
                 (hasNextMessage && nextMessage?.role !== 'assistant'));
     };
-
     // Render retry button with explanation
     const renderRetryButton = (index: number) => {
         if (!shouldShowRetry(index)) return null;

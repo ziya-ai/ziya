@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId } from 'react';
+import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, useLayoutEffect } from 'react';
 import { marked, Tokens } from 'marked';
 import { Alert, Button, message, Tooltip } from 'antd';
 import { parseDiff, tokenize } from 'react-diff-view';
@@ -20,6 +20,7 @@ import { FileOperationRenderer } from './FileOperationRenderer';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
 import { restartStreamWithEnhancedContext } from '../apis/chatApi';
+import { sendPayload } from '../apis/chatApi';
 import { formatMCPOutput } from '../utils/mcpFormatter';
 
 // Thinking component for DeepSeek reasoning content
@@ -31,7 +32,7 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
 
     // Parse markdown in children if it's a string
     const isString = typeof children === 'string';
-    
+
     useEffect(() => {
         if (isString) {
             const result = marked.parse(children, { breaks: true, gfm: true });
@@ -67,7 +68,7 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
                 <span>🤔 Thinking...</span>
             </div>
             {isExpanded && (
-                <div 
+                <div
                     style={{
                         padding: '12px',
                         fontSize: '13px',
@@ -122,11 +123,19 @@ interface ToolBlockProps {
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
     const [isExpanded, setIsExpanded] = useState(false);
-    
+
     // Extract command/query from toolName if it contains encoded information
-    const [actualToolName, encodedCommand] = toolName.includes('|') 
+    const [actualToolName, encodedCommand] = toolName.includes('|')
         ? toolName.split('|', 2)
         : [toolName, ''];
+    
+    // Define cleanToolName early for use in header
+    const cleanToolName = actualToolName.replace('mcp_', '').replace(/_/g, ' ');
+    
+    // Extract query from content if this is internalsearch
+    const isInternalSearch = actualToolName === 'mcp_InternalSearch';
+    const queryMatch = isInternalSearch && content.match(/Query:\s*"([^"]+)"/);
+    const searchQuery = queryMatch ? queryMatch[1] : '';
 
     // Try to format the content intelligently
     const formattedOutput = useMemo(() => {
@@ -142,7 +151,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
         } catch (e) {
             // Not JSON, continue with regular processing
         }
-        
+
         // For non-JSON content, create a simple formatted output
         const shouldCollapse = content.length > 500 || content.split('\n').length > 15;
         return {
@@ -152,19 +161,23 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
             summary: shouldCollapse ? `Output (${content.length} chars, ${content.split('\n').length} lines)` : undefined
         };
     }, [toolName, content]);
-    
+
     // Extract command/query information for display in header
     const getToolSummary = () => {
         // If we have encoded command from the lang attribute, use it
         if (encodedCommand) {
             // Check if it's a shell command
             if (encodedCommand.includes(': $ ')) {
-                return `🔧 ${encodedCommand}`;
-            }
-            // Check if it's a search query
-            if (encodedCommand.includes(': "')) {
-                return `🔍 ${encodedCommand}`;
-            }
+            return `🔧 ${encodedCommand}`;
+        }
+        // Check if it's a search query
+        if (searchQuery) {
+            return `🔍 ${cleanToolName}: "${searchQuery}"`;
+        }
+        // Check if it's a search query from encoded command
+        if (encodedCommand.includes(': "')) {
+            return `🔍 ${encodedCommand}`;
+        }
             // Check if it's multiple parameters
             if (encodedCommand.endsWith(': multiple')) {
                 return `🛠️ ${encodedCommand}`;
@@ -172,14 +185,13 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
             // Generic display
             return `🛠️ ${encodedCommand}`;
         }
-        
+
         // Fallback: extract from content or show generic tool name
-        const cleanToolName = actualToolName.replace('mcp_', '').replace(/_/g, ' ');
         return `🛠️ ${cleanToolName}`;
     };
-    
+
     const toolSummary = getToolSummary();
-    
+
     // Check if this is a security error from shell command blocking
     let isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
         content.includes('Command not allowed') ||
@@ -234,7 +246,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
 
     const { content: formattedContent, collapsed, summary } = formattedOutput;
     const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
-    
+
     // Don't clean tool markers - they're already properly formatted by the backend
     // Aggressive cleaning corrupts diffs, code blocks, and template literals
     const cleanContent = formattedContent.trim();
@@ -287,14 +299,14 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span>{getToolSummary()}</span>
                     {shouldShowCollapsed && (
-                    <div style={{
-                        marginLeft: 'auto',
-                        fontSize: '11px',
-                        opacity: 0.7,
-                        cursor: 'pointer',
-                        fontWeight: 'normal'
-                    }} onClick={(e) => {
-                        e.stopPropagation();
+                        <div style={{
+                            marginLeft: 'auto',
+                            fontSize: '11px',
+                            opacity: 0.7,
+                            cursor: 'pointer',
+                            fontWeight: 'normal'
+                        }} onClick={(e) => {
+                            e.stopPropagation();
                             setIsExpanded(!isExpanded);
                         }}>
                             {isExpanded ? '▼ Collapse' : '▶ Expand'} {summary && `(${summary})`}
@@ -302,9 +314,9 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                     )}
                 </div>
             </div>
-            
+
             {shouldShowCollapsed && !isExpanded ? (
-                <div 
+                <div
                     style={{
                         padding: '16px',
                         color: colors.contentText,
@@ -341,16 +353,16 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                 </div>
             ) : (
                 <pre style={{
-                margin: 0,
-                padding: '16px',
-                color: colors.contentText,
-                whiteSpace: 'pre-wrap',
+                    margin: 0,
+                    padding: '16px',
+                    color: colors.contentText,
+                    whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
                     maxHeight: isExpanded ? 'none' : '400px',
                     overflow: isExpanded ? 'visible' : 'auto'
-            }}>
+                }}>
                     {cleanContent}
-            </pre>
+                </pre>
             )}
         </div>
     );
@@ -600,7 +612,7 @@ const extractAllFilesFromDiff = (diffContent: string): string[] => {
     // First pass: identify new file creations
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        
+
         // Check for new file mode marker
         if (line.includes('new file mode')) {
             // Look backwards and forwards for the file path
@@ -640,7 +652,7 @@ const extractAllFilesFromDiff = (diffContent: string): string[] => {
     // Remove duplicates and filter out new file creations
     const uniqueFiles = [...new Set(files)];
     const existingFiles = uniqueFiles.filter(file => !newFiles.has(file));
-    
+
     console.log('🔄 CONTEXT_ENHANCEMENT: File analysis:', { allFiles: uniqueFiles, newFiles: Array.from(newFiles), existingFiles });
     return existingFiles;
 };
@@ -3361,12 +3373,12 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     //  Check if this should be a tool block instead
     if (token.lang?.startsWith('tool:')) {
         const toolName = token.lang.substring(5);
-        
+
         // Special handling for thinking blocks
         if (toolName === 'mcp_sequentialthinking' || token.lang?.startsWith('thinking:')) {
             return <ThinkingBlock isDarkMode={isDarkMode}>{token.text || ''}</ThinkingBlock>;
         }
-        
+
         console.log('🔧 CodeBlock redirecting to ToolBlock:', toolName);
         return <ToolBlock toolName={toolName} content={token.text || ''} isDarkMode={isDarkMode} />;
     }
@@ -3430,8 +3442,9 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' |
+    'circuitikz' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
-    'br' | 'list_item' |
+    'br' | 'list_item' | 'circuitikz' | 'latex' |
     'unknown';
 
 // Track last log timestamp to prevent excessive logging
@@ -3484,7 +3497,7 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     // 2. Handle Code Blocks with explicit lang tags
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
-        
+
         // CRITICAL FIX: Check for visualization types BEFORE tool types
         // This prevents Vega-Lite blocks from being misidentified
         if (lang === 'vega-lite' || lang === 'vegalite') {
@@ -3495,6 +3508,12 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         }
         if (lang === 'graphviz' || lang === 'dot') {
             return 'graphviz';
+        }
+        if (lang === 'circuitikz' || lang === 'tikz' || lang === 'latex') {
+            return 'circuitikz';
+        }
+        if (lang === 'latex-circuit') {
+            return 'circuitikz';
         }
         if (lang === 'd3') return 'd3';
 
@@ -3555,16 +3574,18 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         // Check remaining diagram types
         if (lang === 'joint' || lang === 'jointjs' || lang === 'diagram') return 'joint';
+
         if (lang === 'diff') {
             console.log('✅ MarkdownRenderer - DETECTED AS DIFF (lang tag)');
             return 'diff';
         }
-        
+
         // If it has a specific lang tag but isn't special, it's 'code'
         return 'code';
     }
 
     // 2. Content-based detection for code blocks *without* specific lang tags
+    // This is where trimmedText is available
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
         const trimmedText = text.trim();
@@ -3638,6 +3659,8 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             (trimmedText.startsWith('graph') && trimmedText.match(/^graph\s+\w*\s*\{/))) {
             return 'graphviz';
         }
+
+
         // Check for diff content more robustly within the first few lines
         const linesToCheck = text.split('\n').slice(0, 5); // Check first 5 lines for diff markers
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
@@ -3828,6 +3851,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     };
                     console.log(`🎯 CALLING D3RENDERER WITH MERMAID SPEC:`, mermaidSpec);
                     return <D3Renderer key={index} spec={mermaidSpec} type="d3" isStreaming={isStreaming} />;
+
                 case 'vega-lite':
                     if (!hasText(tokenWithText)) return null;
 
@@ -4157,7 +4181,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // List of known/safe HTML tags that we want to actually render as HTML
                     const knownHtmlTags = [
                         'div', 'span', 'p', 'br', 'hr', 'strong', 'em', 'b', 'i', 'u', 's',
-                        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                        'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'button',
                         'ul', 'ol', 'li', 'dl', 'dt', 'dd',
                         'table', 'thead', 'tbody', 'tr', 'th', 'td',
                         'a', 'img', 'video', 'audio',
@@ -4177,6 +4201,14 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             ? htmlContent
                             : htmlContent.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
                         return <span key={index} dangerouslySetInnerHTML={{ __html: mathWithNamespace }} />;
+                    }
+
+                    // CRITICAL FIX: Detect throttling/rate limit messages and render them directly
+                    // These contain interactive retry buttons that must not be escaped
+                    const isThrottlingMessage = htmlContent.includes('throttle-retry-button') ||
+                                               (htmlContent.includes('Rate Limit') && htmlContent.includes('<button'));
+                    if (isThrottlingMessage) {
+                        return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
                     }
 
                     // Check if this is a wrapped MathML block
@@ -4522,6 +4554,7 @@ const normalizeIndentedDiffs = (content: string): string => {
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
+    const containerRef = useRef<HTMLDivElement>(null);
 
     // All refs declared at the top to ensure they're in scope for useMemo
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
@@ -4553,18 +4586,27 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             markdownRef.current = markdown;
             // During streaming, if we already have a diff being rendered, keep it stable
             let processedMarkdown = markdown;
-
             // Pre-process indented diff blocks before any other processing
             processedMarkdown = normalizeIndentedDiffs(processedMarkdown);
 
-            // CRITICAL FIX: Ensure blank line before code fences that follow headings
-            // Marked.js requires blank lines before code blocks, but streaming content
-            // may have code fences immediately after headings (###\n```)
+            // CRITICAL FIX: Ensure blank line before code fences in all problematic cases
+            // Marked.js requires blank lines before code blocks for proper parsing
+
+            // Fix 1: Code fence on same line as heading (e.g., "### Title ```vega-lite")
             processedMarkdown = processedMarkdown.replace(
-                /(^#{1,6}\s+[^\n]+)\n(```(?:vega-lite|mermaid|graphviz|diff|d3))/gm,
+                /(^#{1,6}\s+[^\n`]+?)\s+(```(?:vega-lite|mermaid|graphviz|diff|d3|json|javascript|typescript|python))/gm,
                 '$1\n\n$2'
             );
-            
+
+            // Fix 2: Code fence immediately after heading on next line (e.g., "###\n```")
+            processedMarkdown = processedMarkdown.replace(
+                /(\d+\.\s+[^\n`]+?)\s+(```(?:vega-lite|mermaid|graphviz|diff|d3|json))/gm,
+                '$1\n\n$2'
+            );
+
+            // Also fix after paragraphs or text that directly precedes code fences
+            processedMarkdown = processedMarkdown.replace(/([^\n])\n(```(?:vega-lite|mermaid|graphviz|diff|d3))/g, '$1\n\n$2');
+
             // Also fix after paragraphs or text that directly precedes code fences
             processedMarkdown = processedMarkdown.replace(/([^\n])\n(```(?:vega-lite|mermaid|graphviz|diff|d3))/g, '$1\n\n$2');
 
@@ -4746,11 +4788,77 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef);
     }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, forceRenderKey]); // Use forceRenderKey to trigger re-renders
 
+    // Attach event listeners to throttle retry buttons after render
+    const { currentConversationId, currentMessages, addMessageToConversation, streamedContentMap, 
+            setStreamedContentMap, setIsStreaming, removeStreamingConversation, streamingConversations, 
+            updateProcessingState, addStreamingConversation } = useChatContext();
+    const { checkedKeys } = useFolderContext();
+    
+    useLayoutEffect(() => {
+        if (!containerRef.current) return;
+
+        // Find all throttle retry buttons in the rendered content
+        const buttons = containerRef.current.querySelectorAll('.throttle-retry-button');
+        
+        if (buttons.length > 0) {
+            console.log(`Found ${buttons.length} throttle retry button(s), attaching event listeners`);
+        }
+        
+        const handleRetryClick = async (event: Event) => {
+            const button = event.currentTarget as HTMLButtonElement;
+            const conversationId = button.getAttribute('data-conversation-id');
+            const throttleWait = button.getAttribute('data-throttle-wait');
+            
+            if (!conversationId) return;
+            
+            console.log('🔄 Throttle retry button clicked:', { conversationId, throttleWait });
+            
+            // Disable button and show loading state
+            button.disabled = true;
+            button.textContent = '⏳ Retrying...';
+            
+            // Get the last user message to retry
+            const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
+            if (!lastUserMessage) {
+                message.error('No message to retry');
+                return;
+            }
+            
+            // Retry the request using the existing sendPayload infrastructure
+            addStreamingConversation(conversationId);
+            await sendPayload(
+                currentMessages.filter(msg => !msg.muted),
+                lastUserMessage.content,
+                checkedKeys as string[],
+                conversationId,
+                streamedContentMap,
+                setStreamedContentMap,
+                setIsStreaming,
+                removeStreamingConversation,
+                addMessageToConversation,
+                streamingConversations.has(conversationId),
+                (state) => updateProcessingState(conversationId, state)
+            );
+        };
+        
+        buttons.forEach(button => {
+            button.addEventListener('click', handleRetryClick);
+        });
+        
+        // Cleanup
+        return () => {
+            buttons.forEach(button => {
+                button.removeEventListener('click', handleRetryClick);
+            });
+        };
+    }, [containerRef, currentConversationId, currentMessages, addMessageToConversation, streamedContentMap, 
+        setStreamedContentMap, setIsStreaming, removeStreamingConversation, streamingConversations, 
+        updateProcessingState, checkedKeys, addStreamingConversation]);
+
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
         renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode) :
-
-        <div>{renderedContent}</div>;
+        <div ref={containerRef}>{renderedContent}</div>;
 }, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply);
 // Note: forceRender prop is intentionally not included in the memo comparison to ensure re-rendering during streaming
 

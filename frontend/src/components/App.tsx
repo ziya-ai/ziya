@@ -194,39 +194,45 @@ export const App: React.FC = () => {
                 const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 20;
                 const isNearBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < 100;
 
-                // If user scrolls to bottom, reset userHasScrolled to re-enable auto-scrolling
-                // But only if there's actual streaming content, not just loading indicators
                 const currentStreamedContent = streamedContentMap.get(currentConversationId);
                 const hasActualContent = currentStreamedContent && currentStreamedContent.trim().length > 0;
 
-                if (isAtBottom && userHasScrolled && hasActualContent) {
-                    console.log('📜 User scrolled back to bottom with actual content - resuming auto-scroll');
+                // CRITICAL FIX: Don't re-enable auto-scroll when there's no active streaming
+                // A retry button means the stream has ENDED with an error - no more content will arrive
+                const isActivelyStreaming = streamingConversations.has(currentConversationId);
+                
+                // If user scrolls to bottom, reset userHasScrolled to re-enable auto-scrolling
+                // But ONLY if there's actually active streaming happening
+                // Don't re-enable for static content (like failed queries with retry buttons)
+                if (isAtBottom && userHasScrolled && hasActualContent && isActivelyStreaming) {
+                    console.log('📜 User scrolled back to bottom during active stream - resuming auto-scroll');
                     setUserHasScrolled(false);
                     wasFollowingStreamRef.current = true;
-                    // Reset the manual scroll timing to allow immediate auto-scroll resume
                     (recordManualScroll as any).lastScrollTime = 0;
                     return;
                 }
 
                 // If user scrolls away from bottom significantly, mark as manual scroll
-
+                // But ONLY during active streaming - not for static failed content
                 if (!isNearBottom && Math.abs(scrollTop - lastScrollPositionRef.current) > 50) {
-                    if (!userHasScrolled) {
+                    // Only record manual scroll if there's active streaming
+                    // This prevents fighting the user on static content
+                    if (!userHasScrolled && isActivelyStreaming) {
                         console.log('📜 User scrolled away from bottom - pausing auto-scroll');
                         recordManualScroll(); // Use the new function that includes timing
                         (recordManualScroll as any).lastScrollTime = Date.now();
                         wasFollowingStreamRef.current = false;
                     }
-                } else if (isNearBottom && userHasScrolled && hasActualContent) {
+                } else if (isNearBottom && userHasScrolled && hasActualContent && isActivelyStreaming) {
                     // Only re-enable if user deliberately scrolls back AND we have actual content
+                    // This prevents continuous scroll attempts on static failed content
                     console.log('📜 User scrolled back near bottom with content - resuming auto-scroll');
                     setUserHasScrolled(false);
                     wasFollowingStreamRef.current = true;
                     (recordManualScroll as any).lastScrollTime = 0; // Reset timing
-                }
 
-                lastScrollPositionRef.current = scrollTop;
-            }, 50); // Faster response to user scroll actions
+                }
+            }, 250); // 250ms debounce
         };
 
         chatContainer.addEventListener('scroll', handleScroll, { passive: true });
@@ -340,10 +346,18 @@ export const App: React.FC = () => {
         const lastMessage = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
         const isNewUserMessage = lastMessage?.role === 'human';
 
+        // Check if we're actively streaming - not just showing a static retry button
+        const isActivelyStreaming = streamingConversations.has(currentConversationId);
+        
         // CRITICAL: Only scroll if there's actually new content or a new user message
+        // Don't scroll for static failed queries with retry buttons
         const currentStreamedContent = streamedContentMap.get(currentConversationId);
         const hasNewStreamedContent = currentStreamedContent && currentStreamedContent.trim().length > 0;
 
+        // Don't auto-scroll if we're not actively streaming and there's no new user message
+        // This prevents fighting the user on static content (like retry buttons)
+        if (!isNewUserMessage && !isActivelyStreaming) return;
+        
         if (!isNewUserMessage && !hasNewStreamedContent) return; // No new content = no scroll
 
         // Check manual scroll cooldown, but allow new user messages to override
@@ -387,11 +401,12 @@ export const App: React.FC = () => {
 
 
         // For streaming content updates, be more conservative about auto-scrolling
-        const isStreamingContent = streamingConversations.has(currentConversationId);
+        // Only auto-scroll during ACTIVE streaming, not for static failed content
         const hasActualStreamedContent = currentStreamedContent && currentStreamedContent.trim().length > 0;
 
-        // Only auto-scroll during streaming if we have actual content AND user hasn't scrolled away
-        if (isStreamingContent && hasActualStreamedContent && wasFollowingStreamRef.current) {
+        // Only auto-scroll during ACTIVE streaming if we have actual content AND user hasn't scrolled away
+        // Don't auto-scroll for static content like retry buttons
+        if (isActivelyStreaming && hasActualStreamedContent && wasFollowingStreamRef.current) {
             const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
             if (chatContainer) {
                 const { scrollTop, scrollHeight, clientHeight } = chatContainer;
