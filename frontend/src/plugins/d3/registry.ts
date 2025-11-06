@@ -15,7 +15,7 @@ const pluginRegistry: D3RenderPlugin[] = [
     graphvizPlugin,
     vegaLitePlugin,
     jointPlugin,
-    d2Plugin
+    d2Plugin,
     // Add more plugins here as needed
 ];
 pluginRegistry.forEach(plugin => {

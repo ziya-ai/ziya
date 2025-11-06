@@ -1009,11 +1009,22 @@ ${svgData}`;
                     backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                     padding: '16px',
                     borderRadius: '4px',
-                    overflow: 'auto',
+                    overflowX: 'auto',
+                    overflowY: 'auto',
                     maxHeight: '60vh',
-                    color: isDarkMode ? '#e6e6e6' : '#24292e'
+                    color: isDarkMode ? '#e6e6e6' : '#24292e',
+                    margin: 0
                 }}>
-                    <code>{typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code>
+                    <code style={{
+                        display: 'block',
+                        whiteSpace: 'pre-wrap',
+                        overflowX: 'auto',
+                        overflowY: 'auto',
+                        wordBreak: 'break-word',
+                        wordWrap: 'break-word',
+                        minWidth: '100%',
+                        width: 'max-content'
+                    }}>{typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code>
                 </pre>
             </Modal>
         </div>

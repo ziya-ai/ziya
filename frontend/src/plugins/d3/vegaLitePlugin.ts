@@ -1361,7 +1361,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Check if we have a fold transform and y-axis but missing x-axis or color encodings
       if (spec.transform?.some((t: any) => t.fold) && spec.encoding?.y &&
-        (!spec.encoding?.x || !spec.encoding?.color)) {
+        (!spec.encoding?.x || !spec.encoding?.color || !spec.encoding?.yOffset)) {
 
         console.log('🔧 BAR-FOLD-FIX: Detected bar chart with fold transform missing x/color encodings');
 
@@ -1385,6 +1385,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
             type: 'nominal',
             title: keyField.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
           };
+        }
+
+        // Add missing yOffset encoding for grouped bars (horizontal layout)
+        if (!spec.encoding.yOffset && spec.encoding.y.type === 'nominal') {
+          spec.encoding.yOffset = {
+            field: keyField
+          };
+          console.log(`🔧 BAR-FOLD-FIX: Added yOffset="${keyField}" encoding for grouped bars`);
         }
 
         console.log(`🔧 BAR-FOLD-FIX: Added x="${valueField}" and color="${keyField}" encodings`);
@@ -1470,71 +1478,18 @@ export const vegaLitePlugin: D3RenderPlugin = {
         spec.mark = {
           type: 'line',
           point: true,
-          strokeWidth: 2
+          tooltip: true
         };
       }
 
-      // Fix 5.3: Handle line charts with size encoding (should use point marks instead)
-      if (spec.mark === 'line' && spec.encoding?.size) {
-        console.log('🔧 LLM-CHART-FIX: Converting simple line chart with size encoding to point chart');
-        spec.mark = {
-          type: 'point',
-          filled: true,
-          strokeWidth: 2
-        };
-      }
-
-      // Fix 5.3b: Handle line charts with point:true and size encoding 
-      if (spec.mark && typeof spec.mark === 'object' && spec.mark.type === 'line' && spec.mark.point && spec.encoding?.size) {
-        console.log('🔧 LLM-CHART-FIX: Converting line+point chart with size encoding to pure point chart');
-        spec.mark = {
-          type: 'point',
-          filled: true,
-          strokeWidth: spec.mark.strokeWidth || 2,
-          color: spec.mark.color
-        };
-      }
-
-      console.log('🔧 LLM-CHART-FIX: LLM chart fixes complete');
       return spec;
     };
-
-    // Apply LLM fixes before other preprocessing
-    spec = fixRectChartsWithFixedY(spec);
-
-    // Apply missing Y-axis fix after rect fixes
-    spec = fixChartsWithMissingYAfterTransforms(spec);
-
-    // Apply arc chart fixes
-    spec = fixInvalidColorSchemeInArcs(spec);
-    spec = fixMissingTheta2InArcs(spec);
-
-    // Apply layered chart fixes
-    spec = fixLayeredChartsWithMismatchedScales(spec);
-
-    // Apply rect with fold fixes
-    spec = fixRectChartsWithFoldMissingEncodings(spec);
-
-    // Apply inappropriate domain fixes
-    spec = fixInappropriateYAxisDomainsInLayers(spec);
-
-    // Apply point chart fixes
-    spec = fixPointChartsWithFoldMissingEncodings(spec);
-
-    // Apply bar chart with fold fixes
-    spec = fixBarChartsWithFoldMissingEncodings(spec);
-
-    // Apply LLM fixes after rect fixes
-    spec = fixLLMGeneratedCharts(spec);
-
-    // Apply tooltip fixes
-    spec = fixTooltipEncodings(spec);
-
+    // Parse spec into a common format first
+    let parsedSpec: any;
     if (typeof spec === 'string') {
       const extractedContent = extractDefinitionFromYAML(spec, 'vega-lite');
       try {
-        const rawSpec = JSON.parse(extractedContent);
-        vegaSpec = preprocessVegaSpec(sanitizeSpec(rawSpec));
+        parsedSpec = JSON.parse(extractedContent);
       } catch (parseError) {
         console.debug('Vega-Lite: JSON parse error during processing:', parseError);
         throw parseError; // Re-throw to be handled by outer try-catch
@@ -1542,18 +1497,33 @@ export const vegaLitePlugin: D3RenderPlugin = {
     } else if (spec.definition) {
       const extractedContent = extractDefinitionFromYAML(spec.definition, 'vega-lite');
       try {
-        const rawSpec = JSON.parse(extractedContent);
-        vegaSpec = preprocessVegaSpec(sanitizeSpec(rawSpec));
+        parsedSpec = JSON.parse(extractedContent);
       } catch (parseError) {
         console.debug('Vega-Lite: JSON parse error during processing:', parseError);
         throw parseError; // Re-throw to be handled by outer try-catch
       }
     } else {
       // Use the spec object directly, but remove our custom properties
-      const rawSpec = sanitizeSpec({ ...spec });
-      ['type', 'isStreaming', 'forceRender', 'definition', 'isMarkdownBlockClosed'].forEach(prop => delete rawSpec[prop]);
-      vegaSpec = preprocessVegaSpec(rawSpec);
+      parsedSpec = { ...spec };
+      ['type', 'isStreaming', 'forceRender', 'definition', 'isMarkdownBlockClosed'].forEach(prop => delete parsedSpec[prop]);
     }
+    
+    // Sanitize and apply all chart fixes in one place
+    let fixedSpec = sanitizeSpec(parsedSpec);
+    fixedSpec = fixRectChartsWithFixedY(fixedSpec);
+    fixedSpec = fixChartsWithMissingYAfterTransforms(fixedSpec);
+    fixedSpec = fixInvalidColorSchemeInArcs(fixedSpec);
+    fixedSpec = fixMissingTheta2InArcs(fixedSpec);
+    fixedSpec = fixLayeredChartsWithMismatchedScales(fixedSpec);
+    fixedSpec = fixRectChartsWithFoldMissingEncodings(fixedSpec);
+    fixedSpec = fixInappropriateYAxisDomainsInLayers(fixedSpec);
+    fixedSpec = fixPointChartsWithFoldMissingEncodings(fixedSpec);
+    fixedSpec = fixBarChartsWithFoldMissingEncodings(fixedSpec);
+    fixedSpec = fixLLMGeneratedCharts(fixedSpec);
+    fixedSpec = fixTooltipEncodings(fixedSpec);
+    
+    // Now preprocess the fixed spec
+    vegaSpec = preprocessVegaSpec(fixedSpec);
 
     console.log('Vega-Lite: Spec processed, starting try block for rendering...');
 
