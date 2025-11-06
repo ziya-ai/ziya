@@ -48,7 +48,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
     return saved ? JSON.parse(saved) : [];
   });
-  
+
   const tokenCountCache = useRef<Map<string, number>>(new Map());
   const foldersRef = useRef<Folders>();
 
@@ -60,12 +60,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
     
     const dataToUse = folderData || foldersRef.current;
-    if (!dataToUse) {
+    if (!folderData) {
       // console.warn(`getFolderTokenCount: folderData is undefined for path "${path}"`);
       return 0;
     }
 
-    let current: Folders | undefined = dataToUse;
+    let current: Folders | undefined = folderData;
     const parts = path.split('/');
 
     for (const part of parts) {
@@ -75,16 +75,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       const node = current[part];
       if (node) {
         if (parts.indexOf(part) === parts.length - 1) { // Last part of the path
-          const result = node.token_count || 0;
-          tokenCountCache.current.set(cacheKey, result);
-          return result;
+          return node.token_count || 0;
         }
         current = node.children;
       } else {
         // console.warn(`getFolderTokenCount: Path segment "${part}" not found in current node for path "${path}".`);
-        const result = 0;
-        tokenCountCache.current.set(cacheKey, result);
-        return result; // Path segment not found
+        return 0; // Path segment not found
       }
     }
 

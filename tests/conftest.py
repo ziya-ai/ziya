@@ -1,33 +1,33 @@
 """
-Pytest configuration file.
-
-This file contains fixtures and configuration for pytest.
+Pytest configuration and shared fixtures.
 """
 
 import pytest
+import pytest_asyncio
+import sys
+import os
+from pathlib import Path
+
+# Set asyncio mode
+pytest_plugins = ('pytest_asyncio',)
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 
 def pytest_configure(config):
-    """Configure pytest."""
-    # Register the asyncio marker
-    config.addinivalue_line("markers", "asyncio: mark test as an asyncio test")
-    # Register the real_api marker
-    config.addinivalue_line("markers", "real_api: mark test as making real API calls")
-    # Register the mock_api marker
-    config.addinivalue_line("markers", "mock_api: mark test as using mocked API calls")
+    """Configure pytest with custom markers."""
+    config.addinivalue_line(
+        "markers", 
+        "integration: mark test as integration test (requires network)"
+    )
+    config.option.asyncio_mode = "auto"
 
 
 @pytest.fixture
-def mock_aws_credentials(monkeypatch):
-    """Mock AWS credentials for testing."""
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
-    monkeypatch.setenv("AWS_SECURITY_TOKEN", "testing")
-    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
-
-
-@pytest.fixture
-def mock_boto3_client(mocker):
-    """Mock boto3 client for testing."""
-    return mocker.patch("boto3.client")
+def temp_config_dir(tmp_path):
+    """Create a temporary config directory for testing."""
+    config_dir = tmp_path / ".ziya"
+    config_dir.mkdir()
+    return config_dir

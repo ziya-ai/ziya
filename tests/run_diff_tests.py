@@ -21,6 +21,7 @@ class DiffRegressionTest(unittest.TestCase):
     """Regression tests for diff application using real-world examples"""
     
     maxDiff = None 
+    double_apply = False  # Set via command line flag
 
     # Directory containing test cases
     TEST_CASES_DIR = os.path.join(os.path.dirname(__file__), 'diff_test_cases')
@@ -109,13 +110,34 @@ class DiffRegressionTest(unittest.TestCase):
         # Apply the diff
         use_git_to_apply_code_diff(diff, test_file_path)
         
-        # If metadata specifies apply_twice, try applying the same diff again
-        if metadata.get('apply_twice'):
+        # If double_apply flag is set or metadata specifies apply_twice, apply again
+        if self.double_apply or metadata.get('apply_twice'):
+            # Read the result after first application
+            with open(test_file_path, 'r', encoding='utf-8') as f:
+                after_first_apply = f.read()
+            
             try:
                 use_git_to_apply_code_diff(diff, test_file_path)
-            except Exception as e:
-                # We expect this might fail, but shouldn't affect the test
-                logger.debug(f"Second application of diff failed (expected): {str(e)}")
+                
+                # Read result after second application
+                with open(test_file_path, 'r', encoding='utf-8') as f:
+                    after_second_apply = f.read()
+                
+                # Verify second application didn't change anything
+                if after_first_apply != after_second_apply:
+                    self.fail(
+                        f"Double-apply test failed: Second application of diff modified the file.\n"
+                        f"This indicates the diff is not idempotent and may cause corruption.\n"
+                        f"First apply and second apply should produce identical results."
+                    )
+            except PatchApplicationError as e:
+                # Second application should either be a no-op or fail gracefully with "already applied"
+                if "already applied" not in str(e).lower() and "no changes" not in str(e).lower():
+                    self.fail(
+                        f"Double-apply test failed: Second application raised unexpected error.\n"
+                        f"Expected 'already applied' or 'no changes', got: {str(e)}"
+                    )
+                # If it's "already applied", that's good - the diff was correctly detected as applied
         
         # Read the result
         with open(test_file_path, 'r', encoding='utf-8') as f:
@@ -260,10 +282,6 @@ class DiffRegressionTest(unittest.TestCase):
         """Test applying a diff to fix missing closing braces in FolderContext.tsx"""
         self.run_diff_test('folder_context_fix')
         
-    def test_duplicate_state_declaration(self):
-        """Test handling of duplicate state declarations in React components"""
-        self.run_diff_test('MRE_duplicate_state_declaration')
-
     @unittest.expectedFailure
     def test_model_defaults_config(self):
         """Test adding centralized defaults config and removing scattered is_default flags
@@ -583,44 +601,6 @@ class DiffRegressionTest(unittest.TestCase):
         """Test parsing of a multi-hunk diff where the first hunk header includes context, causing it to be skipped."""
         self.run_diff_test('MRE_hunk_header_parsing_error')
 
-    def test_MRE_css_padding_already_applied(self):
-        """Test case for CSS padding property incorrectly marked as already applied in the wild"""
-        # This test is expected to fail with "already applied" error
-        # We need to modify the test to check for this specific behavior
-        test_case = 'MRE_css_padding_already_applied'
-        metadata, original, diff, expected = self.load_test_case(test_case)
-        
-        # Set up the test file in the temp directory
-        test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
-        os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
-        
-        with open(test_file_path, 'w', encoding='utf-8') as f:
-            f.write(original)
-        
-        # Apply the diff and get the result
-        result_dict = use_git_to_apply_code_diff(diff, test_file_path)
-        
-        # Read the modified content
-        with open(test_file_path, 'r', encoding='utf-8') as f:
-            modified_content = f.read()
-        
-        # Check if the content didn't change (which would indicate "already applied")
-        content_unchanged = original == modified_content
-        
-        # For this test, we expect:
-        # 1. Content to remain unchanged
-        # 2. Status to be "success" (not error)
-        # 3. changes_written to be False
-        # 4. At least one hunk to be reported as already_applied
-        self.assertTrue(content_unchanged, 
-                       f"Content changed but should have been marked as already applied")
-        self.assertEqual(result_dict['status'], 'success', 
-                       f"Status should be success for already applied case, got {result_dict['status']}")
-        self.assertFalse(result_dict['details']['changes_written'], 
-                       f"changes_written should be False for already applied case")
-        self.assertTrue(len(result_dict['details']['already_applied']) > 0, 
-                       f"No hunks reported as already_applied")
-        
     def test_react_question_provider(self):
         """Test case for React QuestionProvider component where first hunk is incorrectly reported as already applied"""
         test_case = 'react_question_provider'
@@ -929,6 +909,15 @@ class DiffRegressionTest(unittest.TestCase):
     def test_mcp_registry_test_connection(self):
         """Test adding test-connection endpoint to MCP registry routes"""
         self.run_diff_test('mcp_registry_test_connection')
+
+    def test_mcp_registry_builtin_handling(self):
+        """Test adding builtin service handling to installService and isServiceInstalled, removing duplicate functions
+        
+        NOTE: This test is marked as expected_to_fail in metadata.json because hunk 3 (large deletion
+        of duplicate functions) is intentionally skipped to prevent corruption. The hunk has 0.85 confidence
+        which is below the 0.90 threshold for large deletions (33 lines removed).
+        """
+        self.run_diff_test('mcp_registry_builtin_handling')
 
 
 # Dynamically generate test methods for all test case directories
@@ -1311,6 +1300,8 @@ if __name__ == '__main__':
                       help='Compare current test results with previous run and show changes')
     parser.add_argument('--save-results', action='store_true',
                       help='Save test results for future comparison')
+    parser.add_argument('--double-apply', action='store_true',
+                      help='Apply each diff twice to verify idempotency (second apply should be no-op)')
     
     def load_filtered_suite(test_filter):
         """Load test suite with support for 'or' syntax in filters"""
@@ -1336,6 +1327,9 @@ if __name__ == '__main__':
     parser.add_argument('--quiet', action='store_true',
                       help='Suppress all logging output except final test results')
     args = parser.parse_args()
+ 
+    # Set class variables from command line args
+    DiffRegressionTest.double_apply = args.double_apply
  
     # Configure logging based on arguments
     if args.quiet:

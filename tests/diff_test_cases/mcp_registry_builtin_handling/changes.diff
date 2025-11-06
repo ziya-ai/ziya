@@ -1,0 +1,92 @@
+diff --git a/frontend/src/components/MCPRegistryModal.tsx b/frontend/src/components/MCPRegistryModal.tsx
+--- a/frontend/src/components/MCPRegistryModal.tsx
++++ b/frontend/src/components/MCPRegistryModal.tsx
+@@ -279,6 +279,23 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose }
+     };
+ 
+     const installService = async (serviceId: string) => {
++        // Handle builtin services differently
++        if (serviceId.startsWith('builtin_')) {
++            const category = serviceId.replace('builtin_', '');
++            try {
++                const response = await fetch('/api/mcp/builtin-tools/toggle', {
++                    method: 'POST',
++                    headers: { 'Content-Type': 'application/json' },
++                    body: JSON.stringify({ category, enabled: true })
++                });
++                
++                if (response.ok) {
++                    message.success(`Enabled ${category} builtin tools`);
++                    await loadAvailableServices();
++                    window.dispatchEvent(new Event('mcpStatusChanged'));
++                } else {
++                    message.error('Failed to enable builtin tools');
++                }
++            } catch (error) {
++                message.error('Failed to enable builtin tools');
++            }
++            return;
++        }
++        
+         setInstalling(prev => ({ ...prev, [serviceId]: true }));
+         try {
+             const response = await fetch('/api/mcp/registry/services/install', {
+@@ -309,6 +326,10 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose }
+     };
+ 
+     const isServiceInstalled = (serviceId: string) => {
++        // Check if builtin service is enabled
++        if (serviceId.startsWith('builtin_')) {
++            // For now, always show as installable (enable/disable)
++            return false;
++        }
+         return installedServices.some(s => s.serviceId === serviceId);
+     };
+ 
+@@ -332,39 +353,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose }
+         }
+     };
+ 
+-    const getSupportLevelColor = (level: string) => {
+-        switch (level) {
+-            case 'Recommended': return 'green';
+-            case 'Supported': return 'blue';
+-            case 'Under assessment': return 'orange';
+-            case 'In development': return 'red';
+-            case 'Community': return 'cyan';
+-            case 'Experimental': return 'purple';
+-            default: return 'default';
+-        }
+-    };
+-
+-    const isServiceInstalled = (serviceId: string) => {
+-        return installedServices.some(s => s.serviceId === serviceId);
+-    };
+-
+-    const uninstallService = async (serverName: string) => {
+-        try {
+-            const response = await fetch('/api/mcp/registry/services/uninstall', {
+-                method: 'POST',
+-                headers: { 'Content-Type': 'application/json' },
+-                body: JSON.stringify({ server_name: serverName })
+-            });
+-
+-            if (response.ok) {
+-                message.success('Service uninstalled successfully');
+-                await loadInstalledServices();
+-
+-                // Refresh MCP status
+-                window.dispatchEvent(new Event('mcpStatusChanged'));
+-            } else {
+-                const error = await response.json();
+-                message.error(`Uninstall failed: ${error.detail}`);
+-            }
+-        } catch (error) {
+-            console.error('Uninstall error:', error);
+-            message.error('Uninstall failed');
+-        }
+-    };
+-
+     const toggleServiceExpanded = (serviceId: string) => {
+         setExpandedServices(prev => ({
+             ...prev,
