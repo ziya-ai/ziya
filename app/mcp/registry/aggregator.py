@@ -229,13 +229,40 @@ class RegistryAggregator:
         provider,
         max_results: int
     ) -> List[RegistryServiceInfo]:
-        """Fetch services from a single provider."""
+        """Fetch services from a single provider with pagination support."""
         try:
             logger.info(f"Fetching from provider: {provider.identifier}")
-            result = await provider.list_services(max_results=max_results)
-            services = result.get('services', [])
-            logger.info(f"Fetched {len(services)} services from {provider.identifier}")
-            return services
+            
+            all_services = []
+            next_token = None
+            page = 1
+            
+            while len(all_services) < max_results:
+                # Calculate how many more services we need
+                remaining = max_results - len(all_services)
+                page_size = min(remaining, 500)  # Max 500 per page
+                
+                result = await provider.list_services(
+                    max_results=page_size,
+                    next_token=next_token
+                )
+                
+                services = result.get('services', [])
+                next_token = result.get('next_token')
+                
+                all_services.extend(services)
+                
+                if not next_token or not services:
+                    break  # No more pages
+                
+                page += 1
+                if page > 10:  # Safety limit
+                    logger.warning(f"Reached page limit for {provider.identifier}")
+                    break
+            
+            logger.info(f"Fetched {len(all_services)} services from {provider.identifier}")
+            return all_services
+            
         except Exception as e:
             logger.error(f"Error fetching from provider {provider.identifier}: {e}")
             logger.exception(e)  # Full traceback for debugging
@@ -256,11 +283,16 @@ class RegistryAggregator:
         tasks = []
         for provider in providers:
             if provider.supports_search:
+                logger.info(f"Adding search task for provider: {provider.identifier}")
                 tasks.append(provider.search_tools(query, max_results))
+            else:
+                logger.info(f"Provider {provider.identifier} does not support search")
         
         if not tasks:
             logger.warning("No providers support search")
             return []
+        
+        logger.info(f"Executing {len(tasks)} search tasks for query: '{query}'")
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -276,6 +308,10 @@ class RegistryAggregator:
                 continue
             
             for tool_result in result:
+                # Debug unknown services
+                if 'unknown' in tool_result.service.service_id.lower() or 'unknown' in tool_result.service.service_name.lower():
+                    logger.warning(f"Found unknown service: ID={tool_result.service.service_id}, Name={tool_result.service.service_name}, Provider={tool_result.service.provider_metadata}")
+                
                 fingerprint = self._compute_service_fingerprint(tool_result.service)
                 
                 # Keep highest relevance score for each unique service

@@ -35,6 +35,7 @@ class InstallationType(Enum):
     GIT = "git"
     REMOTE = "remote"
     BINARY = "binary"
+    MCP_REGISTRY = "mcp-registry"
     UNKNOWN = "unknown"
 
 
