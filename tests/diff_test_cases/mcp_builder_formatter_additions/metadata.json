@@ -1,0 +1,6 @@
+{
+    "target_file": "frontend/src/internal/mcpBuilderFormatter.ts",
+    "description": "Add new MCP tool mappings and formatter functions. Tests idempotency - applying the diff twice should not create duplicates.",
+    "date_added": "2025-11-06",
+    "apply_twice": true
+}

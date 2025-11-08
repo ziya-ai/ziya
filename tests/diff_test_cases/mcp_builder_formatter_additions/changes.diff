@@ -1,0 +1,359 @@
+diff --git a/frontend/src/internal/mcpBuilderFormatter.ts b/frontend/src/internal/mcpBuilderFormatter.ts
+--- a/frontend/src/internal/mcpBuilderFormatter.ts
++++ b/frontend/src/internal/mcpBuilderFormatter.ts
+@@ -10,6 +10,7 @@ const AMAZON_TOOL_MAPPINGS = {
+   'mcp_SearchAcronymCentral': 'acronym',
+   'mcp_TicketingReadActions': 'ticketing', 
+   'mcp_TaskeiGetRooms': 'taskei_rooms',
++  'mcp_TaskeiListTasks': 'taskei_tasks',
+   'mcp_OncallReadActions': 'oncall',
+   'mcp_ApolloReadActions': 'apollo',
+   'mcp_GetSasRisks': 'sas_risks',
++  'mcp_GetPipelineHealth': 'pipeline_health',
+   'mcp_WorkspaceGitDetails': 'workspace_git',
+   'mcp_InternalCodeSearch': 'code_search',
++  'mcp_ReadInternalWebsites': 'website_content',
+   'mcp_WorkspaceSearch': 'workspace_search'
+ };
+ 
+@@ -40,8 +43,14 @@ function formatBuilderMcpOutput(toolName: string, result: any, options: any): F
+   switch (toolType) {
+     case 'acronym':
+       return formatAmazonAcronym(result, options);
+     case 'ticketing':
+       return formatAmazonTicketing(result, options);
+     case 'taskei_rooms':
+       return formatAmazonTaskeiRooms(result, options);
++    case 'taskei_tasks':
++      return formatAmazonTaskeiTasks(result, options);
+     case 'oncall':
+       return formatAmazonOncall(result, options);
+     case 'apollo':
+       return formatAmazonApollo(result, options);
+     case 'sas_risks':
+       return formatAmazonSasRisks(result, options);
++    case 'pipeline_health':
++      return formatAmazonPipelineHealth(result, options);
+     case 'workspace_git':
+       return formatAmazonWorkspaceGit(result, options);
+     case 'code_search':
+-      // Let generic formatter handle code search since it follows standard search pattern
+-      return null;
++      return formatAmazonCodeSearch(result, options);
++    case 'website_content':
++      return formatAmazonWebsiteContent(result, options);
+     default:
+       return null;
+   }
+ }
+ 
++function formatAmazonTaskeiTasks(result: any, options: any): FormattedOutput {
++  // Handle wrapped content
++  const data = result.content || result;
++  const tasks = data.tasks || (Array.isArray(data) ? data : []);
++  
++  if (!tasks.length) {
++    return { content: 'No tasks found', type: 'text', collapsed: false };
++  }
++  
++  const total = data.total || tasks.length;
++  const hasMore = data.hasMore || false;
++  
++  const formattedTasks = tasks.map((task: any, index: number) => {
++    const id = task.id || task.taskId || '';
++    const name = task.name || task.title || 'Untitled';
++    const status = task.status || 'Unknown';
++    const priority = task.priority || '';
++    const estimate = task.estimate || task.planningEstimate || '';
++    const assignee = task.assignee || 'Unassigned';
++    
++    let taskInfo = `${index + 1}. **${name}** [${id}]\n`;
++    
++    // Status line with visual indicators
++    const statusIcon = status === 'Open' ? '🔵' : status === 'Closed' ? '✅' : '⚪';
++    const priorityIcon = priority === 'High' ? '🔴' : priority === 'Medium' ? '🟡' : priority === 'Low' ? '🟢' : '';
++    
++    taskInfo += `   ${statusIcon} Status: ${status}`;
++    if (priority) taskInfo += ` | ${priorityIcon} Priority: ${priority}`;
++    if (estimate) taskInfo += ` | Est: ${estimate}pts`;
++    taskInfo += '\n';
++    
++    taskInfo += `   • Assignee: ${assignee}\n`;
++    
++    if (task.room && task.room.name) {
++      taskInfo += `   • Room: ${task.room.name}\n`;
++    }
++    
++    if (task.labels && task.labels.length > 0) {
++      taskInfo += `   • Labels: ${task.labels.join(', ')}\n`;
++    }
++    
++    const updated = task.lastUpdatedDate ? new Date(task.lastUpdatedDate).toLocaleDateString() : '';
++    if (updated) {
++      taskInfo += `   • Updated: ${updated}\n`;
++    }
++    
++    return taskInfo;
++  }).join('\n');
++  
++  const summary = `Found ${total} task${total === 1 ? '' : 's'}${hasMore ? '+' : ''}`;
++  
++  return {
++    content: `${summary}\n\n${formattedTasks}`,
++    type: 'list',
++    collapsed: tasks.length > 5,
++    summary: tasks.length > 5 ? summary : undefined
++  };
++}
++
++function formatAmazonCodeSearch(result: any, options: any): FormattedOutput {
++  // Handle wrapped content
++  const data = result.content || result;
++  const results = data.results || [];
++  
++  if (!results.length) {
++    return { content: 'No code results found', type: 'text', collapsed: false };
++  }
++  
++  const total = data.total || results.length;
++  const query = data.query || '';
++  
++  const formattedResults = results.map((result: any, index: number) => {
++    const repo = result.repository || 'Unknown';
++    const file = result.file || result.path || '';
++    const url = result.url || '';
++    const matchCount = result.matchCount || result.lines?.length || 0;
++    
++    // Create clickable link for the file
++    const fileLink = url ? `[${file}](${url})` : file;
++    
++    let resultInfo = `${index + 1}. ${fileLink} (${repo})\n`;
++    resultInfo += `   ${matchCount} match${matchCount === 1 ? '' : 'es'}\n`;
++    
++    // Add code snippet if available
++    if (result.lines && result.lines.length > 0) {
++      const ext = file.split('.').pop()?.toLowerCase() || 'text';
++      const langMap: {[key: string]: string} = {
++        'py': 'python', 'js': 'javascript', 'ts': 'typescript',
++        'java': 'java', 'rb': 'ruby', 'go': 'go'
++      };
++      const language = langMap[ext] || ext;
++      
++      const snippet = result.lines.slice(0, 5).join('\n');
++      resultInfo += `\n\`\`\`${language}\n${snippet}\n\`\`\`\n`;
++    }
++    
++    return resultInfo;
++  }).join('\n');
++  
++  let summaryPrefix = '';
++  if (query) {
++    summaryPrefix = `🔍 **"${query}"** in code\n\n`;
++  }
++  
++  const summary = `Found ${total} result${total === 1 ? '' : 's'}`;
++  
++  return {
++    content: `${summaryPrefix}${summary}\n\n${formattedResults}`,
++    type: 'search_results',
++    collapsed: results.length > 3,
++    summary: results.length > 3 ? summary : undefined
++  };
++}
++
++function formatAmazonPipelineHealth(result: any, options: any): FormattedOutput {
++  // Handle wrapped content and array responses
++  const pipelines = Array.isArray(result) ? result : 
++                    result.pipelines ? result.pipelines : 
++                    [result];
++  
++  if (!pipelines.length) {
++    return { content: 'No pipeline data found', type: 'text', collapsed: false };
++  }
++  
++  const formattedPipelines = pipelines.map((pipeline: any) => {
++    const name = pipeline.pipelineName || 'Unknown Pipeline';
++    const enabled = pipeline.enabled !== false;
++    const badge = pipeline.fitnessBadge || 'none';
++    const metrics = pipeline.healthMetrics || {};
++    const isBlocked = pipeline.isBlocked || false;
++    
++    let pipelineInfo = `**${name}**\n\n`;
++    
++    // Status line with visual indicators
++    const statusIcon = isBlocked ? '🟡' : '🟢';
++    const statusText = isBlocked ? 'BLOCKED' : 'HEALTHY';
++    const enabledIcon = enabled ? '✅' : '❌';
++    const badgeIcon = badge === 'gold' ? '🥇' : badge === 'silver' ? '🥈' : badge === 'bronze' ? '🥉' : '⚪';
++    
++    pipelineInfo += `Status: ${statusIcon} ${statusText} | Badge: ${badgeIcon} ${badge} | Enabled: ${enabledIcon}\n\n`;
++    
++    // Health metrics with visual indicators
++    pipelineInfo += `Health Metrics:\n`;
++    const failedBuilds = metrics.failedBuilds || 0;
++    const failedDeploys = metrics.failedDeployments || 0;
++    const failedProdDeploys = metrics.failedProdDeployments || 0;
++    const pendingApprovals = metrics.pendingManualApprovals || 0;
++    
++    pipelineInfo += `• Builds: ${failedBuilds > 0 ? '❌' : '✅'} ${failedBuilds} failed\n`;
++    pipelineInfo += `• Deployments: ${failedDeploys > 0 ? '❌' : '✅'} ${failedDeploys} failed`;
++    if (failedProdDeploys > 0) pipelineInfo += ` (${failedProdDeploys} in prod)`;
++    pipelineInfo += '\n';
++    
++    if (pendingApprovals > 0) {
++      pipelineInfo += `• Manual Approvals: ⏸️ ${pendingApprovals} pending\n`;
++    }
++    
++    if (isBlocked) {
++      pipelineInfo += `\n⚠️ Pipeline is blocked and requires operator intervention\n`;
++    }
++    
++    return pipelineInfo;
++  }).join('\n---\n\n');
++  
++  return {
++    content: pipelines.length === 1 ? formattedPipelines : `Pipeline Health (${pipelines.length}):\n\n${formattedPipelines}`,
++    type: 'list',
++    collapsed: pipelines.length > 3,
++    summary: pipelines.length > 3 ? `${pipelines.length} pipelines` : undefined
++  };
++}
++
++function formatAmazonWebsiteContent(result: any, options: any): FormattedOutput {
++  // Handle wrapped content
++  const content = result.content || result;
++  
++  // Extract text from various formats
++  let text = '';
++  if (Array.isArray(content)) {
++    text = content.map((item: any) => item.text || item).join('\n');
++  } else if (typeof content === 'object' && content.text) {
++    text = content.text;
++  } else if (typeof content === 'string') {
++    text = content;
++  }
++  
++  if (!text) {
++    return { content: 'No content available', type: 'text', collapsed: false };
++  }
++  
++  // Strip HTML and convert to readable format
++  let cleaned = text
++    // Convert HTML headers to markdown
++    .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n')
++    .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n')
++    .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n')
++    .replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\n')
++    
++    // Convert lists
++    .replace(/<ul[^>]*>(.*?)<\/ul>/gis, (match, list) => {
++      return list.replace(/<li[^>]*>(.*?)<\/li>/gi, '• $1\n');
++    })
++    .replace(/<ol[^>]*>(.*?)<\/ol>/gis, (match, list) => {
++      let counter = 1;
++      return list.replace(/<li[^>]*>(.*?)<\/li>/gi, () => `${counter++}. $1\n`);
++    })
++    
++    // Convert paragraphs
++    .replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n\n')
++    
++    // Convert links
++    .replace(/<a[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi, '[$2]($1)')
++    
++    // Convert line breaks
++    .replace(/<br\s*\/?>/gi, '\n')
++    
++    // Convert code blocks
++    .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
++    .replace(/<pre[^>]*>(.*?)<\/pre>/gis, '\n```\n$1\n```\n')
++    
++    // Remove remaining HTML tags
++    .replace(/<[^>]+>/g, '')
++    
++    // Clean up excessive newlines
++    .replace(/\n{3,}/g, '\n\n')
++    
++    // Decode HTML entities
++    .replace(/&lt;/g, '<')
++    .replace(/&gt;/g, '>')
++    .replace(/&amp;/g, '&')
++    .replace(/&quot;/g, '"')
++    .replace(/&#39;/g, "'")
++    .replace(/&nbsp;/g, ' ')
++    
++    .trim();
++  
++  const lines = cleaned.split('\n');
++  const shouldCollapse = cleaned.length > 1000 || lines.length > 20;
++  
++  return {
++    content: cleaned,
++    type: 'text',
++    collapsed: shouldCollapse,
++    summary: shouldCollapse ? `Content (${lines.length} lines, ${cleaned.length} chars)` : undefined
++  };
++}
++
+ function formatAmazonAcronym(result: any, options: any): FormattedOutput {
+   if (!result.results?.[0]) {
+@@ -280,4 +379,52 @@ function formatAmazonWorkspaceGit(result: any, options: any): FormattedOutput {
+   return { content: JSON.stringify(result, null, 2), type: 'json', collapsed: true };
+ }
+ 
++function formatAmazonCodeSearch(result: any, options: any): FormattedOutput {
++  // Handle wrapped content
++  const data = result.content || result;
++  const results = data.results || [];
++  
++  if (!results.length) {
++    return { content: 'No code results found', type: 'text', collapsed: false };
++  }
++  
++  const total = data.total || results.length;
++  const query = data.query || '';
++  
++  const formattedResults = results.map((result: any, index: number) => {
++    const repo = result.repository || 'Unknown';
++    const file = result.file || result.path || '';
++    const url = result.url || '';
++    const matchCount = result.matchCount || result.lines?.length || 0;
++    
++    // Create clickable link for the file
++    const fileLink = url ? `[${file}](${url})` : file;
++    
++    let resultInfo = `${index + 1}. ${fileLink} (${repo})\n`;
++    resultInfo += `   ${matchCount} match${matchCount === 1 ? '' : 'es'}\n`;
++    
++    // Add code snippet if available
++    if (result.lines && result.lines.length > 0) {
++      const ext = file.split('.').pop()?.toLowerCase() || 'text';
++      const langMap: {[key: string]: string} = {
++        'py': 'python', 'js': 'javascript', 'ts': 'typescript', 'tsx': 'typescript',
++        'java': 'java', 'rb': 'ruby', 'go': 'go', 'rs': 'rust', 'cpp': 'cpp', 'c': 'c'
++      };
++      const language = langMap[ext] || ext;
++      
++      const snippet = result.lines.slice(0, 5).join('\n');
++      resultInfo += `\n\`\`\`${language}\n${snippet}\n\`\`\`\n`;
++    }
++    
++    return resultInfo;
++  }).join('\n');
++  
++  let summaryPrefix = '';
++  if (query) {
++    summaryPrefix = `🔍 **"${query}"** in code\n\n`;
++  }
++  
++  const summary = `Found ${total} result${total === 1 ? '' : 's'}`;
++  
++  return {
++    content: `${summaryPrefix}${summary}\n\n${formattedResults}`,
++    type: 'search_results',
++    collapsed: results.length > 3,
++    summary: results.length > 3 ? summary : undefined
++  };
++}
++
+ // Register the internal formatter
+ registerInternalFormatter(formatBuilderMcpOutput);
