@@ -1,0 +1,35 @@
+--- a/test.ts
++++ b/test.ts
+@@ -4,7 +4,28 @@
+       return handleA();
+     case 'b':
+       return handleB();
+     case 'c':
+-      // Old handling
+-      return null;
++      return handleC();
++    case 'd':
++      return handleD();
+     default:
+       return null;
+   }
+ }
+ 
++function newFunction() {
++  const data = getData();
++  if (!data) {
++    return 'no data';
++  }
++  
++  const result = data.map((item: any) => {
++    const id = item.id || '';
++    const name = item.name || 'Untitled';
++    return `${id}: ${name}`;
++  }).join('\n');
++  
++  return result;
++}
++
+ function existingFunction() {
+   return 'existing';
+ }
