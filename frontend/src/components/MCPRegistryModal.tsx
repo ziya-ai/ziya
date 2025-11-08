@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     Modal, List, Card, Button, Input, Tag, Space, Tabs, Select, Tooltip, Switch, Progress, Form, Collapse,
-    message, Spin, Alert, Typography, Divider, Badge, Checkbox, Statistic, Row, Col, Empty, Radio, Descriptions
+    message, Spin, Alert, Typography, Divider, Badge, Checkbox, Statistic, Row, Col, Empty, Radio, Descriptions, Popconfirm
 } from 'antd';
 import MarkdownRenderer from './MarkdownRenderer';
 import {
@@ -151,6 +151,8 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(10);
     const browseServicesScrollRef = useRef<HTMLDivElement>(null);
+    const [mcpRegistryMissingModal, setMcpRegistryMissingModal] = useState(false);
+    const [pendingInstallServiceId, setPendingInstallServiceId] = useState<string | null>(null);
 
     useEffect(() => {
         if (visible) {
@@ -336,7 +338,102 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
         }
     };
 
+    const checkMcpRegistryBinary = async (): Promise<boolean> => {
+        try {
+            const response = await fetch('/api/mcp/registry/check-binary');
+            if (response.ok) {
+                const data = await response.json();
+                return data.available === true;
+            }
+            return false;
+        } catch (error) {
+            console.error('Error checking mcp-registry binary:', error);
+            return false;
+        }
+    };
+
+    const isAmazonInternalService = (serviceId: string): boolean => {
+        // Check if this service is from amazon-internal registry
+        const service = availableServices.find(s => s.serviceId === serviceId);
+        if (!service) return false;
+        
+        // Check provider ID or availableIn array
+        return service.provider.id === 'amazon-internal' || 
+               service.provider.availableIn?.includes('amazon-internal') || false;
+    };
+
+    const handleMcpRegistryRetry = async () => {
+        setMcpRegistryMissingModal(false);
+        
+        if (!pendingInstallServiceId) return;
+        
+        // Retry the check
+        const binaryExists = await checkMcpRegistryBinary();
+        if (binaryExists) {
+            // Proceed with installation
+            await proceedWithInstallation(pendingInstallServiceId);
+            setPendingInstallServiceId(null);
+        } else {
+            // Still missing, show the modal again
+            setMcpRegistryMissingModal(true);
+        }
+    };
+
+    const handleMcpRegistryCancel = () => {
+        setMcpRegistryMissingModal(false);
+        setPendingInstallServiceId(null);
+        // Remove the installing state for this service
+        setInstalling(prev => ({ ...prev, [pendingInstallServiceId!]: false }));
+    };
+
+    const proceedWithInstallation = async (serviceId: string) => {
+        try {
+            const response = await fetch('/api/mcp/registry/services/install', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    service_id: serviceId,
+                    provider_id: null // Let the system find the right provider
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.status === 'success') {
+                    const serviceName = result.server_name || result.service_id || serviceId;
+                    message.success(`Successfully installed ${serviceName}`);
+                } else {
+                    message.error(`Installation failed: ${result.error || 'Unknown error'}`);
+                }
+                await loadInstalledServices();
+
+                // Refresh MCP status
+                window.dispatchEvent(new Event('mcpStatusChanged'));
+            } else {
+                const error = await response.json();
+                message.error(`Installation failed: ${error.error || error.detail || 'Unknown error'}`);
+            }
+        } catch (error) {
+            console.error('Installation error:', error);
+            message.error('Installation failed');
+        } finally {
+            setInstalling(prev => ({ ...prev, [serviceId]: false }));
+        }
+    };
+
     const installService = async (serviceId: string) => {
+        // Check if this is an amazon-internal service
+        if (isAmazonInternalService(serviceId)) {
+            // Check if mcp-registry binary exists
+            const binaryExists = await checkMcpRegistryBinary();
+            if (!binaryExists) {
+                // Show modal and store the pending service ID
+                setPendingInstallServiceId(serviceId);
+                setMcpRegistryMissingModal(true);
+                return;
+            }
+        }
+
         // Handle builtin services differently
         if (serviceId.startsWith('builtin_')) {
             const category = serviceId.replace('builtin_', '');
@@ -386,34 +483,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
 
         setInstalling(prev => ({ ...prev, [serviceId]: true }));
         try {
-            const response = await fetch('/api/mcp/registry/services/install', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    service_id: serviceId,
-                    provider_id: null // Let the system find the right provider
-                })
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const serviceName = result.server_name || result.service_id || serviceId;
-                    message.success(`Successfully installed ${serviceName}`);
-                } else {
-                    message.error(`Installation failed: ${result.error || 'Unknown error'}`);
-                }
-                await loadInstalledServices();
-
-                // Refresh MCP status
-                window.dispatchEvent(new Event('mcpStatusChanged'));
-            } else {
-                const error = await response.json();
-                message.error(`Installation failed: ${error.error || error.detail || 'Unknown error'}`);
-            }
-        } catch (error) {
-            console.error('Installation error:', error);
-            message.error('Installation failed');
+            await proceedWithInstallation(serviceId);
         } finally {
             setInstalling(prev => ({ ...prev, [serviceId]: false }));
         }
@@ -421,7 +491,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
 
     const isServiceInstalled = (serviceId: string) => {
         // Check if builtin service is enabled
-        if (serviceId.startsWith('builtin_')) {
+        if (serviceId?.startsWith('builtin_')) {
             const category = serviceId.replace('builtin_', '');
             
             // Check if it's a builtin MCP server (time, shell)
@@ -509,6 +579,11 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     };
 
     const toggleRegistry = async (registryId: string, enabled: boolean) => {
+        // Update local state immediately for responsive UI
+        setProviders(prev => prev.map(p => 
+            p.id === registryId ? { ...p, enabled } : p
+        ));
+
         try {
             // This would be a new endpoint to enable/disable registries
             const response = await fetch('/api/mcp/registry/providers/toggle', {
@@ -519,10 +594,22 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
 
             if (response.ok) {
                 message.success(`${enabled ? 'Enabled' : 'Disabled'} registry`);
-                await loadProviders();
-                await loadAvailableServices();
+                // Only reload available services if we're enabling a registry
+                if (enabled) {
+                    await loadAvailableServices();
+                }
+            } else {
+                // Revert local state on failure
+                setProviders(prev => prev.map(p => 
+                    p.id === registryId ? { ...p, enabled: !enabled } : p
+                ));
+                message.error('Failed to toggle registry');
             }
         } catch (error) {
+            // Revert local state on error
+            setProviders(prev => prev.map(p => 
+                p.id === registryId ? { ...p, enabled: !enabled } : p
+            ));
             console.error('Error toggling registry:', error);
             message.error('Failed to toggle registry');
         }
@@ -653,7 +740,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                     {service.provider.name}
                                 </Tag>
                             )}
-                            <Badge count={`v${service.version}`} color="blue" />
                             {service.installationType && (
                                 <Tag color="geekblue">{service.installationType}</Tag>
                             )}
@@ -755,8 +841,9 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                 ))}
                             </div>
 
-                            <Text type="secondary" style={{ fontSize: '12px' }}>
-                                ID: {service.serviceId}
+                            <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
+                                <span>ID: {service.serviceId}</span>
+                                {service.version && <span>v{service.version}</span>}
                             </Text>
                         </div>
                     }
@@ -766,7 +853,11 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     };
 
     const renderInstalledService = (service: InstalledService) => {
-        const isBuiltinService = service.serviceId.startsWith('builtin_');
+        if (!service || !service.serviceId) {
+            return null; // Skip rendering if service is invalid
+        }
+        
+        const isBuiltinService = service.serviceId?.startsWith('builtin_') || false;
         const isManuallyConfigured = service._manually_configured === true;
         
         return (
@@ -852,7 +943,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                     {service.provider?.name || 'Unknown'}
                                 </Tag>
                             )}
-                            {service.version && <Badge count={`v${service.version}`} color="blue" />}
                             {service.installationType && (
                                 <Tag color="geekblue">{service.installationType}</Tag>
                             )}
@@ -975,8 +1065,9 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                 ))}
                             </div>
 
-                            <Text type="secondary" style={{ fontSize: '12px' }}>
-                                ID: {service.serviceId}
+                            <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
+                                <span>ID: {service.serviceId}</span>
+                                {service.version && <span>v{service.version}</span>}
                             </Text>
                         </div>
                     }
@@ -1024,6 +1115,11 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                         <Tag color={getSupportLevelColor(result.service.supportLevel!)}>
                             {result.service.supportLevel}
                         </Tag>
+                        {result.service.provider && (
+                            <Tag color={result.service.provider.isInternal ? 'gold' : 'blue'}>
+                                {result.service.provider.name}
+                            </Tag>
+                        )}
                     </Space>
                 }
                 description={
@@ -1031,6 +1127,20 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                         <Paragraph ellipsis={{ rows: 1 }} style={{ marginBottom: 8 }}>
                             {result.service.serviceDescription}
                         </Paragraph>
+                        <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                            <span>ID: {result.service.serviceId}</span>
+                            {result.service.version && <span>v{result.service.version}</span>}
+                        </Text>
+                        {result.service.provider?.availableIn && result.service.provider.availableIn.length > 0 && (
+                            <div style={{ marginBottom: 8 }}>
+                                <Text type="secondary" style={{ fontSize: '12px' }}>Available in: </Text>
+                                {result.service.provider.availableIn.map((registry: string, index: number) => (
+                                    <Tag key={registry} color="default">
+                                        {registry}
+                                    </Tag>
+                                ))}
+                            </div>
+                        )}
                         <div style={{ marginTop: 8 }}>
                             <Text strong>Matching Tools:</Text>
                             <div style={{ marginTop: 4 }}>
@@ -1138,20 +1248,20 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                                 {serviceNames.length > 0 ? (
                                                     <div style={{ maxHeight: '200px', overflow: 'auto', paddingLeft: '10px' }}>
                                                         {serviceNames.map(name => (
-                                                            <div key={name} style={{ fontSize: '12px', padding: '2px 0', color: '#666' }}>
+                                                            <div key={name} style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#666' }}>
                                                                 • {name}
                                                             </div>
                                                         ))}
                                                     </div>
                                                 ) : (
-                                                    <Text type="secondary" style={{ fontSize: '12px' }}>No services available</Text>
+                                                    <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>No services available</Text>
                                                 )}
                                             </Panel>
                                         </Collapse>
                                     </Col>
                                     <Col span={8}>
                                         <div style={{ textAlign: 'center' }}>
-                                            <div style={{ fontSize: '12px', color: '#8c8c8c', marginBottom: '4px' }}>
+                                            <div style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c', marginBottom: '4px' }}>
                                                 Status
                                             </div>
                                             <Tag color={isEnabled ? 'green' : 'default'}>
@@ -1162,10 +1272,10 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                     <Col span={8}>
                                         {stats.lastFetched && (
                                             <div style={{ textAlign: 'center' }}>
-                                                <div style={{ fontSize: '12px', color: '#8c8c8c', marginBottom: '4px' }}>
+                                                <div style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c', marginBottom: '4px' }}>
                                                     Last Updated
                                                 </div>
-                                                <div style={{ fontSize: '12px' }}>
+                                                <div style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
                                                     {new Date(stats.lastFetched).toLocaleTimeString()}
                                                 </div>
                                             </div>
@@ -1173,7 +1283,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                     </Col>
                                 </Row>
 
-                                <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                                <div style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c' }}>
                                     <Text code>{provider.id}</Text>
                                     {stats.fetchTime && (
                                         <span style={{ marginLeft: 8 }}>
@@ -1278,7 +1388,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                             valueStyle={{ fontSize: '24px', fontWeight: 'bold', color: '#52c41a' }}
                                             prefix={<GlobalOutlined />}
                                         />
-                                        <div style={{ marginTop: '8px', paddingLeft: '10px', fontSize: '12px', color: '#8c8c8c' }}>
+                                        <div style={{ marginTop: '8px', paddingLeft: '10px', fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c' }}>
                                             <div>↳ Internal: {providers.filter(p => p.isInternal).length}</div>
                                             <div>↳ External: {providers.filter(p => !p.isInternal).length}</div>
                                         </div>
@@ -1291,7 +1401,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                             value={totalAvailableServices}
                                             valueStyle={{ fontSize: '24px', fontWeight: 'bold', color: '#1890ff' }}
                                         />
-                                        <div style={{ marginTop: '8px', paddingLeft: '10px', fontSize: '12px', color: '#8c8c8c' }}>
+                                        <div style={{ marginTop: '8px', paddingLeft: '10px', fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c' }}>
                                             <div>↳ Installed: {installedServices.length}</div>
                                             <div>↳ Available: {totalAvailableServices - installedServices.length}</div>
                                         </div>
@@ -1304,7 +1414,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                             value={Object.keys(stats?.bySupport || {}).length}
                                             valueStyle={{ fontSize: '24px', fontWeight: 'bold', color: '#faad14' }}
                                         />
-                                        <div style={{ marginTop: '8px', paddingLeft: '10px', fontSize: '12px', color: '#8c8c8c' }}>
+                                        <div style={{ marginTop: '8px', paddingLeft: '10px', fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c' }}>
                                             {stats && Object.entries(stats.bySupport).slice(0, 2).map(([level, count]) => (
                                                 <div key={level}>↳ {level}: {count as number}</div>
                                             ))}
@@ -1318,7 +1428,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                             value={Object.keys(stats?.byType || {}).length}
                                             valueStyle={{ fontSize: '24px', fontWeight: 'bold', color: '#722ed1' }}
                                         />
-                                        <div style={{ marginTop: '8px', paddingLeft: '10px', fontSize: '12px', color: '#8c8c8c' }}>
+                                        <div style={{ marginTop: '8px', paddingLeft: '10px', fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c' }}>
                                             {stats && Object.entries(stats.byType).slice(0, 2).map(([type, count]) => (
                                                 <div key={type}>↳ {type}: {count as number}</div>
                                             ))}
@@ -1459,7 +1569,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                     </Col>
                                     <Col span={6}>
                                         <div style={{ textAlign: 'left' }}>
-                                            <div style={{ fontSize: '12px', color: '#8c8c8c', marginBottom: '4px' }}>Top Type</div>
+                                            <div style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c', marginBottom: '4px' }}>Top Type</div>
                                             <div>
                                                 <span style={{ fontSize: '16px', fontWeight: 'bold' }}>
                                                     {(() => {
@@ -1469,7 +1579,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                                 </span>
                                             </div>
                                             <div>
-                                                <span style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                                                <span style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between', color: '#8c8c8c' }}>
                                                     {(() => {
                                                         const topEntry = Object.entries(stats.byType).sort((a, b) => (b[1] as number) - (a[1] as number))[0];
                                                         const count = topEntry?.[1] || 0;
@@ -1498,7 +1608,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                             Include Amazon Internal
                                         </Checkbox>
                                         <Divider type="vertical" />
-                                        <Text type="secondary" style={{ fontSize: '12px' }}>
+                                        <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
                                             {providers.length} registries active
                                         </Text>
                                         <Divider type="vertical" />
@@ -1713,10 +1823,17 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                     <Spin size="large" />
                                 </div>
                             ) : toolSearchResults.length > 0 ? (
-                                <List
-                                    dataSource={toolSearchResults}
-                                    renderItem={renderToolSearchResult}
-                                />
+                                <div>
+                                    <div style={{ marginBottom: 16, padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
+                                        <Text type="secondary">
+                                            Found {toolSearchResults.length} result{toolSearchResults.length !== 1 ? 's' : ''} for "{searchQuery}"
+                                        </Text>
+                                    </div>
+                                    <List
+                                        dataSource={toolSearchResults}
+                                        renderItem={renderToolSearchResult}
+                                    />
+                                </div>
                             ) : searchQuery ? (
                                 <div style={{ textAlign: 'center', padding: '40px' }}>
                                     <Text type="secondary">No tools found for "{searchQuery}"</Text>
@@ -1941,6 +2058,43 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                         )}
                     </Space>
                 ) : null}
+            </Modal>
+
+            {/* MCP Registry Binary Missing Modal */}
+            <Modal
+                title={
+                    <Space>
+                        <WarningOutlined style={{ color: '#faad14' }} />
+                        <span>MCP Registry Required</span>
+                    </Space>
+                }
+                open={mcpRegistryMissingModal}
+                onCancel={handleMcpRegistryCancel}
+                footer={[
+                    <Button key="cancel" onClick={handleMcpRegistryCancel}>
+                        Cancel
+                    </Button>,
+                    <Button key="retry" type="primary" onClick={handleMcpRegistryRetry}>
+                        Retry
+                    </Button>
+                ]}
+                width={500}
+            >
+                <Alert
+                    message="Installation Blocked"
+                    description={
+                        <div>
+                            <p>To install Amazon internal MCP servers, you need to install the <code>mcp-registry</code> tool locally using Toolbox.</p>
+                            <p style={{ marginTop: '12px', marginBottom: '8px' }}>Please run:</p>
+                            <pre style={{ backgroundColor: '#f5f5f5', padding: '8px', borderRadius: '4px', fontSize: '13px' }}>
+                                <code>toolbox install mcp-registry</code>
+                            </pre>
+                            <p style={{ marginTop: '12px' }}>After installation, click <strong>Retry</strong> to continue.</p>
+                        </div>
+                    }
+                    type="warning"
+                    showIcon
+                />
             </Modal>
         </Modal >
     );
