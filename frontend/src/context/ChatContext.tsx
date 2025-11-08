@@ -133,84 +133,143 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const lastManualScrollTime = useRef<number>(0);
     const manualScrollCooldownActive = useRef<boolean>(false);
     const [messageUpdateCounter, setMessageUpdateCounter] = useState(0);
+    
+    // CRITICAL: Track scroll state per conversation to prevent cross-conversation interference
+    const conversationScrollStates = useRef<Map<string, {
+        userScrolledAway: boolean;
+        lastManualScrollTime: number;
+        isAtEnd: boolean;
+    }>>(new Map());
 
     // Improved scrollToBottom function with better user scroll respect
     const scrollToBottom = useCallback(() => {
-        // CRITICAL FIX: Only scroll if the current conversation is the one that's streaming
-        const currentConversationStreaming = streamingConversations.has(currentConversationId);
-        // SPINNER FIX: Only scroll if there's ACTUAL CONTENT, not just streaming state (spinner)
-        const currentStreamedContent = streamedContentMap.get(currentConversationId) || '';
-        const hasRealContent = currentStreamedContent.trim().length > 0;
+        const chatContainer = document.querySelector('.chat-container');
+        if (!chatContainer) return;
         
-        if (!hasRealContent) {
+        // Get or create scroll state for current conversation
+        if (!conversationScrollStates.current.has(currentConversationId)) {
+            conversationScrollStates.current.set(currentConversationId, {
+                userScrolledAway: false,
+                lastManualScrollTime: 0,
+                isAtEnd: true
+            });
+        }
+        
+        const scrollState = conversationScrollStates.current.get(currentConversationId)!;
+        
+        // STEP 1: Only proceed if the current conversation is the one that's streaming
+        const currentConversationStreaming = streamingConversations.has(currentConversationId);
+        
+        if (!currentConversationStreaming) {
+            return; // Absolutely no scroll changes if not streaming current conversation
+        }
+        
+        // STEP 2: Check for actual content (not just spinner)
+        const streamedContent = streamedContentMap.get(currentConversationId) || '';
+        const hasContent = streamedContent.trim().length > 0;
+        
+        if (!hasContent) {
             console.log('📜 Autoscroll blocked - no actual content yet (spinner phase)');
             return;
         }
         
+        // STEP 3: Respect if user has scrolled away from end
         const now = Date.now();
-        const timeSinceManualScroll = now - lastManualScrollTime.current;
-        const SCROLL_COOLDOWN = 5000; // 5 seconds
-        
-        // CRITICAL FIX: Respect manual scroll unconditionally during cooldown
-        if (manualScrollCooldownActive.current) {
-            if (timeSinceManualScroll < SCROLL_COOLDOWN) {
-                console.log('📜 Autoscroll blocked - user scrolled', Math.round(timeSinceManualScroll / 1000), 'seconds ago');
-                return;
-            }
-            // Cooldown expired, reset the flag
-            manualScrollCooldownActive.current = false;
-            setUserHasScrolled(false);
-            console.log('📜 Scroll cooldown expired - autoscroll re-enabled');
-            return;
-        }
-        
-        // CRITICAL FIX: Only autoscroll during active streaming with content
-        const hasActiveContent = Array.from(streamingConversations).some(id => {
-            const content = streamedContentMap.get(id);
-            return content && content.trim().length > 0;
-        });
-        
-        if (!hasActiveContent) {
-            console.log('📜 Autoscroll skipped - no active streaming content');
-            return; // Don't scroll during "waiting" phase
-        }
-        
-        // CRITICAL FIX: Don't scroll if user is not at the bottom/top already
-        // This prevents jumping when user is reviewing older messages
-        const chatContainer = document.querySelector('.chat-container');
-        if (chatContainer) {
-            const isNearBottom = isTopToBottom ? 
-                (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) < 100 :
-                chatContainer.scrollTop < 100;
+        if (scrollState.userScrolledAway) {
+            const timeSinceScroll = now - scrollState.lastManualScrollTime;
+            const COOLDOWN = 5000;
             
-            if (isNearBottom) {
-                chatContainer.scrollTop = isTopToBottom ? 
-                    chatContainer.scrollHeight - chatContainer.clientHeight : 
-                    0;
-            } else {
-                console.log('📜 User not at bottom/top - preserving scroll position');
+            if (timeSinceScroll < COOLDOWN) {
+                return; // User scrolled away, respect their choice
             }
+            
+            // Cooldown expired - check if user returned to end
+            const scrollTop = chatContainer.scrollTop;
+            const scrollHeight = chatContainer.scrollHeight;
+            const clientHeight = chatContainer.clientHeight;
+            
+            const isAtEnd = isTopToBottom ? 
+                (scrollHeight - scrollTop - clientHeight) < 50 :
+                scrollTop < 50;
+            
+            if (!isAtEnd) {
+                return; // User still away from end
+            }
+            
+            // User returned to end
+            scrollState.userScrolledAway = false;
+            scrollState.isAtEnd = true;
         }
+        
+        // STEP 4: Check if user is currently at the end
+        const scrollTop = chatContainer.scrollTop;
+        const scrollHeight = chatContainer.scrollHeight;
+        const clientHeight = chatContainer.clientHeight;
+        
+        const isCurrentlyAtEnd = isTopToBottom ? 
+            (scrollHeight - scrollTop - clientHeight) < 50 :
+            scrollTop < 50;
+        
+        if (!isCurrentlyAtEnd) {
+            return; // User not at end, don't scroll
+        }
+        
+        // STEP 5: Maintain position at end
+        const targetScroll = isTopToBottom ? 
+            scrollHeight - clientHeight : 
+            0;
+        
+        chatContainer.scrollTop = targetScroll;
+        scrollState.isAtEnd = true;
     }, [streamingConversations, streamedContentMap, currentConversationId, isTopToBottom]);
 
     // Function to record manual scroll events
     const recordManualScroll = useCallback(() => {
+        // Update scroll state for CURRENT conversation only
+        if (!conversationScrollStates.current.has(currentConversationId)) {
+            conversationScrollStates.current.set(currentConversationId, {
+                userScrolledAway: true,
+                lastManualScrollTime: Date.now(),
+                isAtEnd: false
+            });
+        } else {
+            const scrollState = conversationScrollStates.current.get(currentConversationId)!;
+            scrollState.userScrolledAway = true;
+            scrollState.lastManualScrollTime = Date.now();
+            scrollState.isAtEnd = false;
+        }
+        
+        // Keep global state for backward compatibility
         lastManualScrollTime.current = Date.now();
         manualScrollCooldownActive.current = true;
         setUserHasScrolled(true);
-        console.log('📜 Manual scroll recorded - autoscroll disabled for 5 seconds');
-    }, []);
+    }, [currentConversationId]);
     
-    // Make timing accessible for external checks
-    (recordManualScroll as any).lastScrollTime = lastManualScrollTime.current;
-    
-    // Make timing accessible for external checks
-    (recordManualScroll as any).getTimeSinceLastScroll = () => Date.now() - lastManualScrollTime.current;
+    // Clean up scroll state when conversations are deleted
+    useEffect(() => {
+        const activeIds = new Set(conversations.map(c => c.id));
+        conversationScrollStates.current.forEach((_, id) => {
+            if (!activeIds.has(id)) {
+                conversationScrollStates.current.delete(id);
+            }
+        });
+    }, [conversations]);
 
     useEffect(() => {
         conversationsRef.current = conversations;
         streamingConversationsRef.current = streamingConversations;
     }, [conversations, streamingConversations]);
+
+    const updateProcessingState = useCallback((conversationId: string, state: ProcessingState) => {
+        setProcessingStates(prev => {
+            const next = new Map(prev);
+            next.set(conversationId, {
+                state,
+                lastUpdated: Date.now()
+            });
+            return next;
+        });
+    }, []);
 
     const addStreamingConversation = useCallback((id: string) => {
         setStreamingConversations(prev => {
@@ -223,26 +282,27 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return next;
         });
         updateProcessingState(id, 'sending');
-    }, []);
+    }, [updateProcessingState]);
 
     const removeStreamingConversation = useCallback((id: string) => {
+        // CRITICAL: Check if this is the CURRENT conversation
+        const isCurrentConv = id === currentConversationId;
+        
         console.log('Removing from streaming set:', { id, currentSet: Array.from(streamingConversations) });
         setStreamingConversations(prev => {
             const next = new Set(prev);
-            next.delete(id);
-            
-            // CRITICAL FIX: Don't trigger scroll for non-current conversations
-            if (id !== currentConversationId) {
-                console.log('📜 Streaming ended for non-current conversation - preserving scroll position');
+            // CRITICAL: Preserve scroll for non-current conversations
+            if (!isCurrentConv) {
+                console.log('📌 Background conversation finished - NO scroll changes:', id.substring(0, 8));
             }
+            
+            next.delete(id);
             
             // Update global streaming state based on remaining conversations
             const stillStreaming = next.size > 0;
+            setIsStreaming(stillStreaming);
             setIsStreamingAny(stillStreaming);
-            // Only update isStreaming if this was the current conversation
-            if (id === currentConversationId) {
-                setIsStreaming(false);
-            }
+            
             return next;
         });
 
@@ -253,25 +313,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
 
         // Auto-reset processing state when streaming ends
-        // CRITICAL FIX: Only update processing state, don't trigger any scroll
         setProcessingStates(prev => {
             const next = new Map(prev);
             next.set(id, { state: 'idle', lastUpdated: Date.now() });
             return next;
         });
-    }, [streamingConversations, currentConversationId]);
-
-    const updateProcessingState = useCallback((conversationId: string, state: ProcessingState) => {
-        setProcessingStates(prev => {
-            const next = new Map(prev);
-            next.set(conversationId, {
-                state,
-                lastUpdated: Date.now()
-            });
-            return next;
-        });
-
-    }, []);
+    }, [currentConversationId]);
 
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {
         return processingStates.get(conversationId)?.state || 'idle';
@@ -302,16 +349,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 if (Array.isArray(parsed) && parsed.length === activeConversations.length) {
                     localStorage.setItem('ZIYA_CONVERSATION_BACKUP', backupData);
                     localStorage.setItem('ZIYA_BACKUP_TIMESTAMP', Date.now().toString());
-                    
-                    // Enhanced logging to track what gets backed up
-                    console.debug(`✅ Backup created: ${activeConversations.length} conversations`);
-                    if (process.env.NODE_ENV === 'development') {
-                        console.debug('Backed up conversation IDs:', activeConversations.map(c => ({
-                            id: c.id,
-                            isActive: c.isActive,
-                            messageCount: c.messages?.length || 0
-                        })));
-                    }
                 } else {
                     console.error('❌ Backup verification failed');
                 }
@@ -878,7 +915,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
             });
         } finally {
             // Always clear loading state, even if folder operations are pending
-            console.log('✅ Conversation loading complete:', conversationId);
+            
+            // Reset scroll state for newly loaded conversation
+            conversationScrollStates.current.set(conversationId, {
+                userScrolledAway: false,
+                lastManualScrollTime: 0,
+                isAtEnd: true
+            });
+            
             setIsLoadingConversation(false);
             
             // CRITICAL FIX: Only scroll if we actually switched conversations
@@ -890,10 +934,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         if (isTopToBottom) {
                             // For top-down, scroll to the very bottom
                             chatContainer.scrollTop = chatContainer.scrollHeight;
-                            // Force a second update after DOM settles
-                            requestAnimationFrame(() => {
-                                chatContainer.scrollTop = chatContainer.scrollHeight;
-                            });
                         } else {
                             // For bottom-up, scroll to the very top
                             chatContainer.scrollTop = 0;
@@ -901,12 +941,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
                 };
                 
-                // Multiple scroll attempts to ensure we reach the end
-                setTimeout(scrollToPosition, 100);
-                setTimeout(scrollToPosition, 200);
-                setTimeout(scrollToPosition, 400);
+                // Execute scroll positioning
+                scrollToPosition();
             } else {
-                console.log('📌 Skipping scroll - same conversation, user should stay at current position');
+                console.log('📌 Not switching - preserving scroll position');
             }
             
             // Only clear streamed content for conversations that are NOT actively streaming
