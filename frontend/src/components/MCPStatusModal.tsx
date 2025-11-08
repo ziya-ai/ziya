@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Tag, Space, Button, Spin, Alert, Descriptions, Switch, message, Collapse, Select, Tabs, List, Empty, Tooltip, Statistic, Card, Row, Col, Divider } from 'antd';
+import { Modal, Tag, Space, Button, Spin, Alert, Descriptions, Switch, message, Collapse, Select, Tabs, List, Empty, Tooltip, Statistic, Card, Row, Col, Divider, Typography } from 'antd';
 import { useTheme } from '../context/ThemeContext';
 import MCPRegistryModal from './MCPRegistryModal';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -13,15 +13,18 @@ import {
     CloudServerOutlined,
     ExperimentOutlined,
     WarningOutlined,
+    SettingOutlined,
 } from '@ant-design/icons';
 
 const { Panel } = Collapse;
 const { Option } = Select;
 const { TabPane } = Tabs;
+const { Text } = Typography;
 
 interface MCPStatusModalProps {
     visible: boolean;
     onClose: () => void;
+    onOpenShellConfig?: () => void;
 }
 
 interface MCPServer {
@@ -52,7 +55,12 @@ interface MCPStatus {
     config_path?: string;
     config_exists?: boolean;
     config_search_paths?: string[];
-    server_configs?: Record<string, { enabled: boolean }>;
+    server_configs?: Record<string, { 
+        enabled: boolean;
+        description?: string;
+        service_id?: string;
+        [key: string]: any;
+    }>;
     token_costs?: {
         servers: Record<string, number>;
         total_tool_tokens: number;
@@ -88,6 +96,7 @@ interface ServerDetails {
     tools: MCPTool[];
     resources: MCPResource[];
     prompts: MCPPrompt[];
+    logs?: string[];
 }
 
 type PermissionLevel = 'enabled' | 'disabled' | 'ask';
@@ -105,7 +114,7 @@ interface MCPPermissions {
     }>;
 }
 
-const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => {
+const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpenShellConfig }) => {
     const [status, setStatus] = useState<MCPStatus | null>(null);
     const { isDarkMode } = useTheme();
     const [builtinTools, setBuiltinTools] = useState<Record<string, BuiltinToolCategory>>({});
@@ -222,6 +231,30 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
         }
     };
 
+    const uninstallService = async (serverName: string) => {
+        setToggling(prev => ({ ...prev, [serverName]: true }));
+        try {
+            const response = await fetch(`/api/mcp/registry/services/uninstall/${serverName}`, {
+                method: 'DELETE',
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                message.success(`Service ${serverName} uninstalled successfully`);
+                await fetchMCPStatus(); // Refresh status
+                window.dispatchEvent(new Event('mcpStatusChanged'));
+            } else {
+                const error = await response.json();
+                message.error(`Failed to uninstall service: ${error.detail || 'Unknown error'}`);
+            }
+        } catch (error) {
+            message.error('Failed to uninstall service');
+            console.error('Uninstall error:', error);
+        } finally {
+            setToggling(prev => ({ ...prev, [serverName]: false }));
+        }
+    };
+
     const updateServerPermission = async (serverName: string, permission: PermissionLevel) => {
         try {
             const response = await fetch('/api/mcp/permissions/server', {
@@ -271,12 +304,12 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
             } else {
                 console.error(`Failed to fetch details for ${serverName}: ${response.status} ${response.statusText}`);
                 // Set empty details to prevent infinite loading
-                setServerDetails(prev => ({ ...prev, [serverName]: { tools: [], resources: [], prompts: [] } }));
+                setServerDetails(prev => ({ ...prev, [serverName]: { tools: [], resources: [], prompts: [], logs: [] } }));
             }
         } catch (error) {
             console.error(`Failed to fetch details for ${serverName}:`, error);
             // Set empty details to prevent infinite loading
-            setServerDetails(prev => ({ ...prev, [serverName]: { tools: [], resources: [], prompts: [] } }));
+            setServerDetails(prev => ({ ...prev, [serverName]: { tools: [], resources: [], prompts: [], logs: [] } }));
         } finally {
             setDetailsLoading(prev => ({ ...prev, [serverName]: false }));
         }
@@ -293,6 +326,13 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
     };
 
     const getServerDisplayName = (serverName: string) => {
+        const serverConfig = status?.server_configs?.[serverName];
+        if (serverConfig?.description && serverConfig.description.trim()) {
+            return serverConfig.description;
+        }
+        if (serverConfig?.service_id) {
+            return serverConfig.service_id;
+        }
         return serverName;
     };
 
@@ -528,12 +568,26 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                                                     </div>
                                                 )}
                                             </div>
-                                            <Switch
-                                                checked={isEnabled}
-                                                onChange={(checked) => toggleServer(name, checked)}
-                                                loading={toggling[name]}
-                                                size="small"
-                                            />
+                                            <Space>
+                                                {name === 'shell' && (
+                                                    <Button
+                                                        size="small"
+                                                        icon={<SettingOutlined />}
+                                                        onClick={() => {
+                                                            onOpenShellConfig?.();
+                                                            onClose();
+                                                        }}
+                                                    >
+                                                        Configure
+                                                    </Button>
+                                                )}
+                                                <Switch
+                                                    checked={isEnabled}
+                                                    onChange={(checked) => toggleServer(name, checked)}
+                                                    loading={toggling[name]}
+                                                    size="small"
+                                                />
+                                            </Space>
                                         </div>
                                     </div>
                                 );
@@ -682,6 +736,19 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                                                     </Tag>
                                                 </Descriptions.Item>
                                             )}
+                                            {!isEnabled && status.server_configs?.[name]?.registry_provider && (
+                                                <Descriptions.Item label="Actions">
+                                                    <Button 
+                                                        type="primary" 
+                                                        danger 
+                                                        size="small"
+                                                        onClick={() => uninstallService(name)}
+                                                        loading={toggling[name]}
+                                                    >
+                                                        Uninstall Service
+                                                    </Button>
+                                                </Descriptions.Item>
+                                            )}
                                         </Descriptions>
                                         {detailsLoading[name] ? <Spin /> : serverDetails[name] ? (
                                             <Tabs defaultActiveKey="tools">
@@ -762,6 +829,49 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose }) => 
                                                         )}
                                                         locale={{ emptyText: <Empty description="No prompts found" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
                                                     />
+                                                </TabPane>
+                                                <TabPane tab="Config Stanza" key="config">
+                                                    <div>
+                                                        <Text type="secondary" style={{ fontSize: '12px', marginBottom: 8, display: 'block' }}>
+                                                            Configuration file: {status.config_path || '~/.ziya/mcp_config.json'}
+                                                        </Text>
+                                                        <pre style={{ 
+                                                            backgroundColor: isDarkMode ? '#1f1f1f' : '#f5f5f5',
+                                                            padding: '12px',
+                                                            borderRadius: '4px',
+                                                            fontSize: '12px',
+                                                            overflow: 'auto',
+                                                            maxHeight: '300px'
+                                                        }}>
+                                                            {JSON.stringify(status.server_configs?.[name] || {}, null, 2)}
+                                                        </pre>
+                                                    </div>
+                                                </TabPane>
+                                                <TabPane tab="Logs" key="logs">
+                                                    <div>
+                                                        <Text type="secondary" style={{ fontSize: '12px', marginBottom: 8, display: 'block' }}>
+                                                            Server logs (startup, errors, and recent activity)
+                                                        </Text>
+                                                        {serverDetails[name]?.logs?.length ? (
+                                                            <pre style={{ 
+                                                                backgroundColor: isDarkMode ? '#1f1f1f' : '#f5f5f5',
+                                                                padding: '12px',
+                                                                borderRadius: '4px',
+                                                                fontSize: '11px',
+                                                                overflow: 'auto',
+                                                                maxHeight: '300px',
+                                                                whiteSpace: 'pre-wrap',
+                                                                wordBreak: 'break-word'
+                                                            }}>
+                                                                {serverDetails[name]?.logs?.join('\n')}
+                                                            </pre>
+                                                        ) : (
+                                                            <Empty 
+                                                                description={server.connected ? "No recent logs" : "Server disconnected - no logs available"} 
+                                                                image={Empty.PRESENTED_IMAGE_SIMPLE} 
+                                                            />
+                                                        )}
+                                                    </div>
                                                 </TabPane>
                                             </Tabs>
                                         ) : (

@@ -282,6 +282,4 @@ function formatAmazonWorkspaceGit(result: any, options: any): FormattedOutput {
 }
 
 // Register the internal formatter
-
-// Register the internal formatter
 registerInternalFormatter(formatBuilderMcpOutput);
