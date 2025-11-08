@@ -108,6 +108,23 @@ def is_whitespace_only_change(old_lines: List[str], new_lines: List[str]) -> boo
     
     return True
 
+def verify_line_delta(hunk_idx: int, hunk: Dict[str, Any], insert_pos: int, end_remove_pos: int, 
+                      new_lines_count: int) -> None:
+    """Verify the line delta matches expected change."""
+    expected_delta = len(hunk.get('added_lines', [])) - len(hunk.get('removed_lines', []))
+    actual_removed = end_remove_pos - insert_pos
+    actual_delta = new_lines_count - actual_removed
+    
+    print(f"DEBUG verify_line_delta: Hunk #{hunk_idx}, expected={expected_delta}, actual={actual_delta}")
+    
+    if actual_delta != expected_delta:
+        logger.warning(
+            f"Hunk #{hunk_idx}: Line delta mismatch! "
+            f"Expected {expected_delta} (added={len(hunk.get('added_lines', []))}, "
+            f"removed={len(hunk.get('removed_lines', []))}), "
+            f"got {actual_delta} (inserted={new_lines_count}, removed={actual_removed})"
+        )
+
 def apply_diff_with_difflib_hybrid_forced_hunks(
     file_path: str, hunks: List[Dict[str, Any]], original_lines_with_endings: List[str],
     skip_hunks: List[int] = None
@@ -160,6 +177,20 @@ def apply_diff_with_difflib_hybrid_forced_hunks(
         if hunk_number in skip_hunks:
             logger.info(f"Skipping hunk #{hunk_number} as requested")
             continue
+        
+        # Check if this hunk's added content already exists in the file (duplicate from previous hunk)
+        added_lines = hunk.get('added_lines', [])
+        logger.debug(f"Hunk #{hunk_number}: has {len(added_lines)} added_lines")
+        if added_lines and len(added_lines) > 10:  # Only check substantial additions
+            # Use first and last few lines as signature to detect duplicates
+            signature_lines = added_lines[:5] + added_lines[-5:]
+            signature = '\n'.join([line.strip() for line in signature_lines if line.strip()])
+            
+            # Check if this signature exists in the current file state
+            file_content = '\n'.join([line.strip() for line in final_lines_with_endings if line.strip()])
+            if signature and signature in file_content:
+                logger.warning(f"Hunk #{hunk_number}: Added content signature already exists in file, skipping to avoid duplication")
+                continue
         
         # PRIORITY: If this hunk has a corrected line number with high confidence, use it directly
         if hunk.get('line_number_corrected') and hunk.get('correction_confidence', 0) > 0.80:
@@ -800,6 +831,7 @@ def apply_diff_with_difflib_hybrid_forced(
                                         # Apply the insertion immediately to avoid further processing
                                         logger.debug(f"Hunk #{hunk_idx}: Replacing/inserting at position {insert_pos}:{end_remove_pos} with: {new_lines_content}")
                                         final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                                        verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
                                         logger.info(f"Hunk #{hunk_idx}: Successfully applied corrected pure insertion")
                                         continue  # Skip the rest of the hunk processing
                                     else:
@@ -926,7 +958,20 @@ def apply_diff_with_difflib_hybrid_forced(
             insert_pos = remove_pos + len(h['old_block'])
             end_remove_pos = insert_pos
             
-            # Skip duplicate check for pure additions
+            # Check for duplicate content before skipping duplicate check
+            added_lines_only = h.get('added_lines', [])
+            if added_lines_only and len(added_lines_only) > 10:
+                # Use first 5 lines as signature to detect if content already exists
+                signature_lines = added_lines_only[:5]
+                signature = '\n'.join([line.strip() for line in signature_lines if line.strip()])
+                
+                # Check if this signature already exists in the file
+                file_content = '\n'.join([line.strip() for line in final_lines_with_endings if line.strip()])
+                if signature and signature in file_content:
+                    logger.warning(f"Hunk #{hunk_idx}: Added content signature already exists in file, skipping to avoid duplication")
+                    continue
+            
+            # Skip duplicate check for pure additions (line-level duplicates)
             skip_duplicate_check = True
             
             logger.debug(f"Hunk #{hunk_idx}: Pure addition - inserting {len(added_lines_only)} lines after context at pos={insert_pos}")
@@ -1290,6 +1335,7 @@ def apply_diff_with_difflib_hybrid_forced(
                     print(f"  Corrected line {i}: {repr(line[:60] if len(line) > 60 else line)}")
             
             final_lines_with_endings[insert_pos:end_remove_pos] = corrected_new_lines
+            verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(corrected_new_lines))
             logger.info(f"Hunk #{hunk_idx}: Applied indentation adaptation ({adaptation_type})")
         else:
             # Standard application - check if we should use surgical approach for fuzzy matches
@@ -1314,6 +1360,7 @@ def apply_diff_with_difflib_hybrid_forced(
                             for line in new_lines_content:
                                 new_lines_with_endings.append(line + dominant_ending)
                             final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                            verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
                     except Exception as e:
                         logger.warning(f"Hunk #{hunk_idx}: Surgical application failed ({str(e)}), falling back to standard")
                         # Fall back to standard application
@@ -1321,6 +1368,7 @@ def apply_diff_with_difflib_hybrid_forced(
                         for line in new_lines_content:
                             new_lines_with_endings.append(line + dominant_ending)
                         final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                        verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
                 else:
                     logger.info(f"Hunk #{hunk_idx}: Skipping surgical application for pure addition/deletion, using standard approach")
                     # Use standard application for pure additions/deletions
@@ -1328,6 +1376,7 @@ def apply_diff_with_difflib_hybrid_forced(
                     for line in new_lines_content:
                         new_lines_with_endings.append(line + dominant_ending)
                     final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                    verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
             else:
                 # Standard application
                 if not boundary_corrected:
@@ -1377,6 +1426,7 @@ def apply_diff_with_difflib_hybrid_forced(
                             new_lines_with_endings.append(line + dominant_ending)
                             
                 final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
 
         # --- Update Offset ---
         # The actual number of lines removed might be different from actual_remove_count
