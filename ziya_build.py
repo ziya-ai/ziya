@@ -62,11 +62,6 @@ def main():
     if os.path.exists("dist"):
         shutil.rmtree("dist")
         print("Cleaned previous build artifacts")
-    
-    # Clear frontend success marker to force rebuild
-    success_marker = Path("frontend/build/.build_success")
-    if success_marker.exists():
-        success_marker.unlink()
 
     # Ensure app/templates directory exists (though process_wheel will handle copying from frontend/build)
     templates_dir = Path("app/templates")
@@ -77,6 +72,12 @@ def main():
     if frontend_project_dir.exists():
         if should_rebuild_frontend():
             print("Building frontend...")
+            
+            # Remove old success marker before attempting build
+            success_marker = frontend_project_dir / "build" / ".build_success"
+            if success_marker.exists():
+                success_marker.unlink()
+            
             try:
                 # Check if node_modules exists, if not run npm install
                 if not (frontend_project_dir / "node_modules").exists():
@@ -88,7 +89,6 @@ def main():
                 subprocess.run(["npm", "run", "build"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
                 
                 # Mark build as successful
-                success_marker = frontend_project_dir / "build" / ".build_success"
                 success_marker.touch()
                 print("Frontend build completed")
 
