@@ -56,7 +56,7 @@ export const basicChartPlugin: D3RenderPlugin = {
                 .append('g')
                 .attr('transform', `translate(${margin.left},${margin.top})`)
 
-            const data = Array.isArray(spec.data) ? spec.data : [];;
+            const data = Array.isArray(spec.data) ? spec.data : [];
 
             // Create scales
             const x = d3.scaleBand()
