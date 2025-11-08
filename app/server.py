@@ -745,7 +745,14 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
             
             # Replace the tool call with properly formatted tool block
             clean_output = clean_internal_sentinels(tool_output)
-            replacement = f"\n```tool:{tool_name}\n{clean_output.strip()}\n```\n"
+            
+            # For sequential thinking, include the query in the tool name for better UI display
+            display_tool_name = tool_name
+            if tool_name == "mcp_sequentialthinking" and arguments.get("query"):
+                query = arguments["query"][:80]  # Limit length
+                display_tool_name = f"{tool_name}|{query}"
+            
+            replacement = f"\n```tool:{display_tool_name}\n{clean_output.strip()}\n```\n"
             modified_response = modified_response.replace(tool_call_block, replacement)
             
         except Exception as e:

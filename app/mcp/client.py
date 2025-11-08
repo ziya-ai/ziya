@@ -67,6 +67,7 @@ class MCPClient:
         self.resources: List[MCPResource] = []
         self.tools: List[MCPTool] = []
         self.prompts: List[MCPPrompt] = []
+        self.logs: List[str] = []  # Store server logs
         self._last_successful_call = time.time()
         self._last_reconnect_attempt = 0  # Rate limit reconnections
         
@@ -91,8 +92,54 @@ class MCPClient:
             command = self.server_config.get("command", [])
             if isinstance(command, str):
                 command = [command]
+            
+            # For registry-installed services without explicit command, generate from installation_path
+            if not command and self.server_config.get("installation_path"):
+                installation_path = self.server_config["installation_path"]
+                logger.info(f"Attempting to generate command for registry service at: {installation_path}")
+                self.logs.append(f"INFO: Looking for executable in {installation_path}")
+                
+                if not os.path.exists(installation_path):
+                    logger.error(f"Installation path does not exist: {installation_path}")
+                    self.logs.append(f"ERROR: Installation path does not exist: {installation_path}")
+                else:
+                    # Look for common executable patterns in the installation directory
+                    import glob
+                    
+                    # Check for Python scripts
+                    python_files = glob.glob(os.path.join(installation_path, "*.py"))
+                    logger.info(f"Found Python files: {python_files}")
+                    self.logs.append(f"INFO: Found Python files: {python_files}")
+                    
+                    if python_files:
+                        # Use the first Python file found
+                        command = ["python", python_files[0]]
+                        logger.info(f"Generated command for registry service: {command}")
+                        self.logs.append(f"INFO: Generated command: {command}")
+                    else:
+                        # Check for executable files
+                        try:
+                            files = os.listdir(installation_path)
+                            logger.info(f"Files in installation directory: {files}")
+                            self.logs.append(f"INFO: Files in directory: {files}")
+                            
+                            if not files:
+                                self.logs.append("ERROR: Installation directory is empty - service may not have been properly installed")
+                            
+                            for file in files:
+                                file_path = os.path.join(installation_path, file)
+                                if os.path.isfile(file_path) and os.access(file_path, os.X_OK):
+                                    command = [file_path]
+                                    logger.info(f"Found executable for registry service: {command}")
+                                    self.logs.append(f"INFO: Found executable: {command}")
+                                    break
+                        except Exception as e:
+                            logger.error(f"Error listing installation directory: {e}")
+                            self.logs.append(f"ERROR: Cannot list directory: {e}")
+            
             if not command:
                 logger.error(f"No command specified for MCP server: {self.server_config.get('name', 'unknown')}")
+                self.logs.append("ERROR: No command specified in server configuration")
                 return False
             
             # Use the preserved user codebase directory instead of current working directory
@@ -165,6 +212,9 @@ class MCPClient:
                  limit=1024 * 1024  # 1MB buffer limit for large tool lists
             )
             
+            # Start background task to capture logs
+            asyncio.create_task(self._capture_logs())
+            
             # Initialize the connection
             init_result = await self._send_request("initialize", {
                 "protocolVersion": "2024-11-05",
@@ -197,6 +247,7 @@ class MCPClient:
                 return True
             else:
                 logger.error(f"Failed to initialize MCP server connection: {self.server_config.get('name', 'unknown')}")
+                self.logs.append(f"ERROR: Failed to initialize MCP server connection")
                 # Log any available output for debugging
                 if self.process:
                     try:
@@ -214,18 +265,29 @@ class MCPClient:
                         stderr_output = stderr_output_bytes.decode('utf-8', errors='ignore')
                         if stdout_output:
                             logger.error(f"MCP server stdout: {stdout_output}")
+                            self.logs.append(f"STDOUT: {stdout_output}")
                         if stderr_output:
                             logger.error(f"MCP server stderr: {stderr_output}")
+                            self.logs.append(f"STDERR: {stderr_output}")
+                        if not stdout_output and not stderr_output:
+                            self.logs.append("ERROR: No output from server process")
                     except Exception as e:
                         logger.error(f"Error reading MCP server output: {e}")
+                        self.logs.append(f"ERROR: Failed to read server output - {str(e)}")
                     finally:
                         # Ensure we clean up the process and connection state
                         self.process = None
                         self.is_connected = False
                 return False
                 
+        except FileNotFoundError as e:
+            logger.error(f"MCP server executable not found: {str(e)}")
+            self.logs.append(f"ERROR: Executable not found - {str(e)}")
+            self.is_connected = False
+            return False
         except Exception as e:
             logger.error(f"Error connecting to MCP server: {str(e)}")
+            self.logs.append(f"ERROR: Connection failed - {str(e)}")
             self.is_connected = False
             await self.disconnect()
             return False
@@ -864,3 +926,27 @@ class MCPClient:
         except Exception as e:
             logger.error(f"Error getting MCP prompt {name} from {self.server_config.get('name', 'unknown')}: {str(e)}")
             return None
+    
+    async def _capture_logs(self):
+        """Capture stdout and stderr from the MCP server process."""
+        if not self.process:
+            return
+            
+        try:
+            # Read stderr for startup errors
+            while True:
+                if self.process.stderr:
+                    line = await self.process.stderr.readline()
+                    if line:
+                        log_entry = f"STDERR: {line.decode().strip()}"
+                        self.logs.append(log_entry)
+                        # Keep only last 100 log entries
+                        if len(self.logs) > 100:
+                            self.logs.pop(0)
+                    else:
+                        break
+                else:
+                    break
+        except Exception as e:
+            logger.error(f"Error capturing logs for {self.server_config.get('name', 'unknown')}: {e}")
+            self.logs.append(f"ERROR: Failed to capture logs - {str(e)}")
