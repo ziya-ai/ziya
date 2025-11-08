@@ -1,0 +1,5 @@
+{
+    "target_file": "test.ts",
+    "description": "MRE: Hunk with removals in middle and additions after should not insert trailing context as new content",
+    "date_added": "2025-11-06"
+}
