@@ -28,7 +28,9 @@ class InstallationHelper:
             'oci': InstallationType.DOCKER,
             'git': InstallationType.GIT,
             'remote': InstallationType.REMOTE,
-            'binary': InstallationType.BINARY
+            'binary': InstallationType.BINARY,
+            'mcp-registry': InstallationType.MCP_REGISTRY,
+            'registry': InstallationType.MCP_REGISTRY
         }
         
         return type_map.get(install_type, InstallationType.UNKNOWN)
@@ -40,7 +42,8 @@ class InstallationHelper:
             InstallationType.NPM: ('npm', 'npm --version'),
             InstallationType.PYPI: ('python', 'python --version'),
             InstallationType.DOCKER: ('docker', 'docker --version'),
-            InstallationType.GIT: ('git', 'git --version')
+            InstallationType.GIT: ('git', 'git --version'),
+            InstallationType.MCP_REGISTRY: ('mcp-registry', 'mcp-registry --version')
         }
         
         if install_type not in checks:
