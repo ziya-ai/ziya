@@ -228,7 +228,7 @@ async def get_mcp_status():
             "config_path": config_info["config_path"],
             "config_exists": config_info["config_exists"],
             "config_search_paths": config_info["search_paths"],
-            "server_configs": {name: {"enabled": config.get("enabled", True)} for name, config in server_configs.items()},
+            "server_configs": server_configs,
             "token_costs": {
                 "servers": server_token_costs,
                 "total_tool_tokens": total_tool_tokens,
@@ -678,6 +678,7 @@ async def get_mcp_server_details(server_name: str):
             "tools": [asdict(tool) for tool in client.tools],
             "resources": [asdict(resource) for resource in client.resources],
             "prompts": [asdict(prompt) for prompt in client.prompts],
+            "logs": client.logs if hasattr(client, 'logs') else [],
         }
     except Exception as e:
         logger.error(f"Error getting details for server {server_name}: {e}")
@@ -922,6 +923,10 @@ async def get_registry_services(
             from app.mcp.builtin_tools import BUILTIN_TOOL_CATEGORIES, get_builtin_tools_for_category, check_pcap_dependencies
             
             for category, config in BUILTIN_TOOL_CATEGORIES.items():
+                # Skip hidden categories
+                if config.get("hidden", False):
+                    continue
+                    
                 # Check dependencies
                 dependencies_available = True
                 if category == "pcap_analysis":
@@ -1138,6 +1143,10 @@ async def get_builtin_tools_status():
         categories = {}
         
         for category, config in BUILTIN_TOOL_CATEGORIES.items():
+            # Skip hidden categories
+            if config.get("hidden", False):
+                continue
+                
             # Check if dependencies are available
             dependencies_available = True
             if category == "pcap_analysis":

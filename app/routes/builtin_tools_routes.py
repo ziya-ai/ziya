@@ -31,6 +31,10 @@ async def get_builtin_tools_status():
         categories = {}
         
         for category, config in BUILTIN_TOOL_CATEGORIES.items():
+            # Skip hidden categories
+            if config.get("hidden", False):
+                continue
+                
             # Check if dependencies are available
             dependencies_available = True
             if category == "pcap_analysis":

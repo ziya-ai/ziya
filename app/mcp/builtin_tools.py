@@ -18,7 +18,8 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "description": "Network packet capture analysis and protocol correlation tools",
         "enabled_by_default": False,
         "requires_dependencies": ["scapy", "dpkt"],
-        "tools": []  # Will be populated dynamically
+        "tools": [],  # Will be populated dynamically
+        "hidden": True  # Hidden for release - not ready yet
     }
 }
 
