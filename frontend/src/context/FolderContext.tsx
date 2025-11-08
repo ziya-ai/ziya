@@ -170,21 +170,17 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       if (data.results) {
         setAccurateTokenCounts(prev => {
           const updated = { ...prev };
-          console.log('Processing accurate token count results:', Object.keys(data.results).length, 'files');
+          const counts: Record<string, number> = {};
           Object.entries(data.results).forEach(([path, result]: [string, any]) => {
             if (result.accurate_count !== undefined) {
               updated[path] = {
                 count: result.accurate_count,
                 timestamp: result.timestamp
               };
+              counts[path] = result.accurate_count;
             }
-            console.log(`Updated accurate count for ${path}: ${result.accurate_count}`);
           });
-
-          // Debug log to compare with estimated counts
-          Object.entries(updated).forEach(([path, result]) => {
-            // Remove excessive logging
-          });
+          console.debug('Updated accurate counts:', counts);
 
           // Force a refresh of components that depend on token counts
           setForceRefreshCounter(prev => prev + 1);

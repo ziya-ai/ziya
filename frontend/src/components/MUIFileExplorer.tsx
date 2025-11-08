@@ -903,12 +903,8 @@ export const MUIFileExplorer = () => {
     return () => window.removeEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
   });
   // Show loading state while scanning and no data
-  console.log('Loading check:', { isScanning, isInitialLoad, hasLoadedData, muiTreeDataLength: muiTreeData?.length, scanProgress });
   if ((isScanning || isInitialLoad) && (!hasLoadedData || !muiTreeData || muiTreeData.length === 0)) {
     const showSlowLoadingTip = scanProgress && scanProgress.elapsed >= 60;
-    if (scanProgress) {
-      console.log('Scan active - elapsed:', scanProgress.elapsed, 'showTip:', showSlowLoadingTip);
-    }
     return (
       <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
         <Box sx={{

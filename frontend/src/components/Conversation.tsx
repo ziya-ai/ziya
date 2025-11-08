@@ -114,23 +114,33 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
 
     // CRITICAL FIX: Detect when OTHER conversations complete streaming
     useEffect(() => {
+        // Track which conversations just stopped streaming
+        const previousSet = previousStreamingStateRef.current ? new Set([currentConversationId]) : new Set();
+        const currentSet = new Set(Array.from(streamingConversations));
+        
         const wasStreaming = previousStreamingStateRef.current;
         const isNowStreaming = isCurrentlyStreaming;
         
-        // If streaming state changed for the current conversation from true to false
-        if (wasStreaming && !isNowStreaming) {
-            console.log('✅ Current conversation finished streaming - normal completion');
-        }
-        
-        // CRITICAL: If streaming ended but NOT for current conversation, preserve scroll
-        if (streamingConversations.size === 0 && !isNowStreaming && !wasStreaming) {
-            console.log('📌 Another conversation finished streaming - preserving current scroll position');
-            // Prevent any scroll effects from firing
-            recordManualScroll();
-        }
-        
+        // Update ref
         previousStreamingStateRef.current = isNowStreaming;
-    }, [isCurrentlyStreaming, streamingConversations, recordManualScroll]);
+        
+        // Detect if ANY conversation finished (including background ones)
+        const streamingEnded = streamingConversations.size < previousSet.size || 
+                              (wasStreaming && !isNowStreaming);
+        
+        if (streamingEnded) {
+            // Check if it was the current conversation or a background one
+            if (wasStreaming && !isNowStreaming) {
+                console.log('✅ Current conversation finished streaming');
+                // Scroll behavior handled by scrollToBottom in ChatContext
+            } else if (streamingConversations.size < previousSet.size) {
+                // A background conversation finished
+                console.log('📌 Background conversation finished - locking scroll position');
+                // CRITICAL: Lock scroll position to prevent any movement
+                recordManualScroll();
+            }
+        }
+    }, [isCurrentlyStreaming, streamingConversations, currentConversationId, recordManualScroll]);
 
     // Update active streaming conversations reference
     useEffect(() => {
@@ -218,6 +228,21 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                     size="small"
                     onClick={async () => {
                         const message = currentMessages[index];
+                        
+                        // CRITICAL: Check scroll position BEFORE starting retry
+                        const chatContainer = document.querySelector('.chat-container');
+                        if (chatContainer) {
+                            const isAtEnd = isTopToBottom ?
+                                (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) < 50 :
+                                chatContainer.scrollTop < 50;
+                            
+                            if (!isAtEnd) {
+                                // User scrolled up to review - preserve their position
+                                recordManualScroll();
+                                console.log('📜 Retry while scrolled away - position locked');
+                            }
+                        }
+                        
                         addStreamingConversation(currentConversationId);
                         try {
                             // Filter out muted messages before retrying - explicitly exclude muted messages
