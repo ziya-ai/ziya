@@ -14,6 +14,7 @@ from app.mcp.registry.providers.smithery import SmitheryRegistryProvider
 from app.mcp.registry.providers.pulsemcp import PulseMCPRegistryProvider
 from app.mcp.registry.providers.awesome_list import AwesomeListRegistryProvider
 from app.mcp.registry.providers.github import GitHubRegistryProvider
+from app.mcp.registry.providers.open_mcp import OpenMCPProvider
 from app.utils.logging_utils import logger
 
 
@@ -129,6 +130,13 @@ def initialize_registry_providers():
     registry.register_provider_class(
         "awesome-lists",
         AwesomeListRegistryProvider,
+        is_default=True
+    )
+    
+    # Register Open MCP (community registry)
+    registry.register_provider_class(
+        "open-mcp",
+        OpenMCPProvider,
         is_default=True
     )
     

@@ -2,6 +2,7 @@
 API routes for MCP Registry integration.
 """
 
+import shutil
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -26,6 +27,20 @@ class ToolSearchRequest(BaseModel):
     query: str = Field(..., description="Natural language query for tool search")
     max_tools: int = Field(default=10, description="Maximum number of tools to return")
     providers: Optional[List[str]] = Field(None, description="Limit search to specific providers")
+
+
+@router.get("/check-binary")
+async def check_mcp_registry_binary():
+    """Check if mcp-registry binary is available in PATH."""
+    try:
+        binary_path = shutil.which('mcp-registry')
+        return {
+            "available": binary_path is not None,
+            "path": binary_path
+        }
+    except Exception as e:
+        logger.error(f"Error checking mcp-registry binary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/providers")
@@ -111,7 +126,7 @@ async def list_installed_services():
     """Get list of currently installed registry services."""
     try:
         registry_manager = get_registry_manager()
-        installed = registry_manager.get_installed_services()
+        installed = await registry_manager.get_installed_services()
         
         return {
             "services": installed,
@@ -139,6 +154,25 @@ async def install_service(request: ServiceInstallRequest):
         raise
     except Exception as e:
         logger.error(f"Error installing service: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/services/uninstall/{server_name}")
+async def uninstall_service_by_name(server_name: str):
+    """Uninstall an MCP service by server name."""
+    try:
+        registry_manager = get_registry_manager()
+        result = await registry_manager.uninstall_service(server_name)
+        
+        if result['status'] == 'error':
+            raise HTTPException(status_code=400, detail=result['error'])
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uninstalling service {server_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -173,9 +207,6 @@ async def search_tools(request: ToolSearchRequest):
         # Format response
         formatted_results = []
         for result in results:
-            service = result['service']
-            tools = result['matching_tools']
-            
             formatted_results.append({
                 "service": {
                     "serviceId": result.service.service_id,
@@ -185,8 +216,10 @@ async def search_tools(request: ToolSearchRequest):
                     "status": result.service.status.value,
                     "provider": {
                         "id": result.service.provider_metadata.get('provider_id'),
-                        "name": result.service.provider_metadata.get('provider_name')
-                    }
+                        "name": result.service.provider_metadata.get('provider_name'),
+                        "isInternal": result.service.provider_metadata.get('provider_id') == 'amazon-internal'
+                    },
+                    "availableIn": result.service.provider_metadata.get('available_in', [result.service.provider_metadata.get('provider_name', 'Unknown')])
                 },
                 "matchingTools": [
                     {
