@@ -1487,7 +1487,7 @@ export const jointPlugin: D3RenderPlugin = {
 
             const paper = new dia.Paper({
                 el: container,
-                width,
+                width: width,
                 height,
                 gridSize: spec.grid !== false ? 10 : 1,
                 drawGrid: spec.grid !== false,
@@ -1496,76 +1496,22 @@ export const jointPlugin: D3RenderPlugin = {
                 interactive: spec.interactive !== false,
                 snapLinks: { radius: 30 },
                 linkPinning: false,
-                // Use center anchors and boundary connection points
-                defaultAnchor: function(endView, endMagnet) {
-                    const center = endView.model.getBBox().center();
-                    console.log('Computing anchor for', endView.model.id, ':', center);
-                    return endView.model.getBBox().center();
-                },
-                defaultConnectionPoint: function(endView, endMagnet, refPoint) {
-                    const point = endView.model.getBBox().pointNearestToPoint(refPoint);
-                    console.log('Computing connection point for', endView.model.id, 'ref:', refPoint, 'result:', point);
-                    return endView.model.getBBox().pointNearestToPoint(refPoint);
-                },
-                // Fix viewport and scaling issues
-                defaultRouter: { name: 'normal' },
+                defaultAnchor: { name: 'center' },
+                defaultConnectionPoint: { name: 'boundary' },
+                defaultRouter: { name: 'manhattan' },
                 defaultConnector: { name: 'rounded', args: { radius: 15 } },
-                markAvailable: true,
-                // Ensure proper viewport handling
-                restrictTranslate: false, // Allow free positioning but ensure content fits
-                multiLinks: false,
-                embeddingMode: false,
                 background: {
                     color: theme === 'dark' ? '#1f1f1f' : '#ffffff'
                 },
-                validateConnection: (cellViewS, magnetS, cellViewT, magnetT) => {
-                    // Prevent self-connections and validate port types
-                    if (cellViewS === cellViewT) return false;
-                    if (magnetS && magnetT) {
-                        const sourceGroup = magnetS.getAttribute('port-group');
-                        const targetGroup = magnetT.getAttribute('port-group');
-                        // Allow connections from output to input, or between compatible groups
-                        return sourceGroup !== targetGroup;
-                    }
-                    return true;
-                }
             });
 
             // Store paper reference for cleanup
             (container as any)._jointPaper = paper;
 
-            // CRITICAL FIX: Override problematic parent container styles that are constraining the Joint.js paper
-            const jointRendererContainer = container.closest('.joint-renderer-container');
-            if (jointRendererContainer) {
-                const containerEl = jointRendererContainer as HTMLElement;
-                containerEl.style.height = `${height}px`;
-                containerEl.style.minHeight = `${height}px`;
-                containerEl.style.maxHeight = 'none';
-                containerEl.style.overflow = 'visible';
-                containerEl.style.alignItems = 'stretch'; // Don't center, let content fill
-                console.log('Fixed Joint.js container constraints');
-            }
-
-            // Make debugging objects globally available
-            (window as any).jointDebug = {
-                paper, graph, container, spec, width, height, theme
-            };
-
             // Remove loading spinner
             if (loadingSpinner && loadingSpinner.parentNode === container) {
                 container.removeChild(loadingSpinner);
             }
-
-            // CRITICAL FIX: Ensure SVG uses full interactive area
-            setTimeout(() => {
-                const paperSvg = container.querySelector('svg[joint-selector="svg"]');
-                if (paperSvg) {
-                    (paperSvg as SVGElement).style.overflow = 'visible';
-                    paperSvg.setAttribute('width', width.toString());
-                    paperSvg.setAttribute('height', height.toString());
-                    console.log('Fixed SVG overflow and dimensions');
-                }
-            }, 100);
 
             // Create and add elements
             const jointElements: dia.Element[] = [];
@@ -1683,78 +1629,10 @@ export const jointPlugin: D3RenderPlugin = {
 
             // Fit content to paper after layout - ensure all content is visible
             setTimeout(() => {
-                try {
-                    // Get content bounds WITHOUT resetting transforms first
-                    // This preserves any layout-applied positioning
-                    const contentBBox = paper.getContentBBox();
-                    console.log('Initial content bounds:', contentBBox);
+                // Simple approach: just fit the content to the available space
+                paper.scaleContentToFit({ padding: 20, minScale: 0.5, maxScale: 1.5 });
+            }, 300); // Wait for layout to complete
 
-                    if (!contentBBox) {
-                        console.warn('No content bbox available, skipping fit');
-                        return;
-                    }
-
-                    // Reset transforms AFTER getting initial bounds
-                    paper.translate(0, 0);
-                    paper.scale(1);
-
-                    // Get fresh bounds after reset
-                    const freshBBox = paper.getContentBBox();
-                    console.log('Fresh content bounds after reset:', freshBBox);
-                    console.log('Paper dimensions:', { width, height });
-
-                    if (freshBBox) {
-                        // Center the content in the paper
-                        // Ensure we don't push content above or to the left of the canvas
-                        const minX = Math.max(20, -freshBBox.x); // Minimum 20px margin from left
-                        const minY = Math.max(20, -freshBBox.y); // Minimum 20px margin from top
-
-                        const centerX = Math.max(minX, (width - freshBBox.width) / 2 - freshBBox.x);
-                        const centerY = Math.max(minY, (height - freshBBox.height) / 2 - freshBBox.y);
-
-                        console.log('Centering content:', { centerX, centerY });
-
-                        // Apply centering translation
-                        paper.translate(centerX, centerY);
-
-                        // CRITICAL: Force the paper to actually render at full size
-                        const paperElement = container.querySelector('.joint-paper');
-                        const svgElement = container.querySelector('svg[joint-selector="svg"]');
-
-                        if (paperElement && svgElement) {
-                            (paperElement as HTMLElement).style.width = `${width}px`;
-                            (paperElement as HTMLElement).style.height = `${height}px`;
-                            (paperElement as HTMLElement).style.minHeight = `${height}px`;
-
-                            (svgElement as SVGElement).style.width = `${width}px`;
-                            (svgElement as SVGElement).style.height = `${height}px`;
-                            svgElement.setAttribute('width', width.toString());
-                            svgElement.setAttribute('height', height.toString());
-                            console.log('Forced paper and SVG to full dimensions');
-                        }
-                        // Verify the transform was applied
-                        setTimeout(() => {
-                            console.log('Transform after translate:', paper.viewport.getCTM());
-                            console.log('Viewport transform attr:', paper.viewport.getAttribute('transform'));
-                        }, 100);
-
-                        // Only scale if content doesn't fit (using fresh bbox)
-                        if (freshBBox.width > width - 40 || freshBBox.height > height - 40) {
-                            const scaleX = (width - 40) / freshBBox.width;
-                            const scaleY = (height - 40) / freshBBox.height;
-                            const scale = Math.min(scaleX, scaleY, 1.0); // Don't scale up
-
-                            console.log('Scaling content:', { scaleX, scaleY, finalScale: scale });
-                            paper.scale(scale);
-                        }
-                    } else {
-                        console.log('Content fits within paper bounds, no scaling needed');
-                    }
-                    console.log('Content fitted to paper');
-                } catch (fitError) {
-                    console.warn('Failed to fit content:', fitError);
-                }
-            }, 500); // Longer delay to ensure layout is complete
             // Add interaction handlers
             paper.on('element:pointerclick', (elementView: dia.ElementView) => {
                 console.log('Element clicked:', elementView.model.id);
@@ -1804,219 +1682,9 @@ export const jointPlugin: D3RenderPlugin = {
                 margin: 2px;
             `;
             fitButton.onclick = () => {
-                // Reset transformations and re-center
-                console.log('Fit button clicked - resetting and re-centering');
-
-                // Get current content bounds
-                const currentBBox = paper.getContentBBox();
-                console.log('Current content bounds for fit:', currentBBox);
-
-                if (!currentBBox) {
-                    console.warn('No content to fit');
-                    return;
-                }
-
-                // Reset transforms
-                paper.translate(0, 0);
-                paper.scale(1);
-
-                // Get bounds after reset
-                const resetBBox = paper.getContentBBox();
-                console.log('Content bounds after reset:', resetBBox);
-
-                if (resetBBox) {
-                    // Ensure we don't push content above or to the left of the canvas
-                    const minX = Math.max(20, -resetBBox.x); // Minimum 20px margin from left
-                    const minY = Math.max(20, -resetBBox.y); // Minimum 20px margin from top
-
-                    const centerX = Math.max(minX, (width - resetBBox.width) / 2 - resetBBox.x);
-                    const centerY = Math.max(minY, (height - resetBBox.height) / 2 - resetBBox.y);
-
-                    console.log('Fit operation - centering to:', { centerX, centerY });
-                    paper.translate(centerX, centerY);
-
-                    // Apply scaling if content is too large
-                    if (resetBBox.width > width - 40 || resetBBox.height > height - 40) {
-                        const scaleX = (width - 40) / resetBBox.width;
-                        const scaleY = (height - 40) / resetBBox.height;
-                        const scale = Math.min(scaleX, scaleY, 1.0);
-
-                        console.log('Fit operation - scaling content:', { scale });
-                        paper.scale(scale);
-                    }
-                }
+                paper.scaleContentToFit({ padding: 20, minScale: 0.5, maxScale: 1.5 });
             };
             actionsContainer.appendChild(fitButton);
-
-            // Debug button
-            const debugButton = document.createElement('button');
-            debugButton.innerHTML = '🔍 Debug';
-            debugButton.className = 'diagram-action-button';
-            debugButton.style.cssText = `
-                background-color: #28a745;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 12px;
-                cursor: pointer;
-                font-size: 12px;
-                margin: 2px;
-            `;
-            debugButton.onclick = () => {
-                const bbox = paper.getContentBBox();
-                const paperRect = container.getBoundingClientRect();
-
-                console.log('=== Joint.js Debug Info ===');
-                console.log('Paper dimensions:', { width, height });
-                console.log('Container rect:', paperRect);
-                console.log('Content bbox:', bbox);
-                console.log('Paper viewport:', paper.viewport);
-                console.log('Current transform:', paper.viewport.getCTM());
-                console.log('Elements:', graph.getElements().map(el => ({
-                    id: el.id,
-                    position: el.get('position'),
-                    size: el.get('size')
-                })));
-
-                // Show visual debugging overlay
-                const overlay = document.createElement('div');
-                overlay.style.cssText = `
-                    position: absolute;
-                    top: 0; left: 0;
-                    width: 100%; height: 100%;
-                    background: rgba(255,0,0,0.2);
-                    border: 2px solid red;
-                    pointer-events: none;
-                    z-index: 9999;
-                `;
-                container.appendChild(overlay);
-
-                setTimeout(() => {
-                    if (overlay.parentNode) container.removeChild(overlay);
-                }, 3000);
-
-                // Try automatic fixes
-                console.log('Attempting automatic centering...');
-                paper.translate(0, 0);
-                paper.scale(1);
-
-                if (bbox) {
-                    const centerX = (width - bbox.width) / 2 - bbox.x;
-                    const centerY = (height - bbox.height) / 2 - bbox.y;
-                    console.log('Centering to:', { centerX, centerY });
-                    paper.translate(centerX, centerY);
-
-                    // Verify the transform was applied and provide debugging
-                    setTimeout(() => {
-                        const newTransform = paper.viewport.getCTM();
-                        const transformAttr = paper.viewport.getAttribute('transform');
-                        console.log('After manual center - Transform matrix:', newTransform);
-                        console.log('After manual center - Transform attr:', transformAttr);
-                        console.log('Element positions after center:', graph.getElements().map(el => ({
-                            id: el.id,
-                            position: el.get('position')
-                        })));
-
-                        // Debug the grid layer specifically
-                        const gridLayer = container.querySelector('.joint-grid-layer svg');
-                        const gridBackground = container.querySelector('.joint-paper-background');
-                        const cellsLayer = container.querySelector('.joint-cells-layer');
-
-                        console.log('Grid layer debug:', {
-                            gridLayer: gridLayer ? {
-                                x: gridLayer.getAttribute('x'),
-                                y: gridLayer.getAttribute('y'),
-                                width: gridLayer.getAttribute('width'),
-                                height: gridLayer.getAttribute('height'),
-                                viewBox: gridLayer.getAttribute('viewBox'),
-                                transform: gridLayer.getAttribute('transform'),
-                                // Add actual rendered size debugging
-                                boundingRect: gridLayer.getBoundingClientRect(),
-                                computedStyle: {
-                                    width: window.getComputedStyle(gridLayer).width,
-                                    height: window.getComputedStyle(gridLayer).height,
-                                    display: window.getComputedStyle(gridLayer).display,
-                                    position: window.getComputedStyle(gridLayer).position
-                                }
-                            } : 'not found',
-                            gridBackground: gridBackground ? gridBackground.getBoundingClientRect() : 'not found',
-                            pattern: (() => {
-                                const pattern = container.querySelector('pattern');
-                                return pattern ? {
-                                    x: pattern.getAttribute('x'),
-                                    y: pattern.getAttribute('y'),
-                                    width: pattern.getAttribute('width'),
-                                    height: pattern.getAttribute('height'),
-                                    patternUnits: pattern.getAttribute('patternUnits')
-                                } : 'not found';
-                            })(),
-                            cellsLayer: cellsLayer ? {
-                                transform: cellsLayer.getAttribute('transform'),
-                                style: cellsLayer.getAttribute('style')
-                            } : 'not found'
-                        });
-
-                        // Try to fix the grid positioning
-                        if (gridLayer) {
-                            console.log('Fixing grid layer positioning');
-
-                            // Get the current paper transform
-                            const currentMatrix = paper.viewport.getCTM();
-                            console.log('Current paper transform matrix:', currentMatrix);
-
-                            // The grid should always fill the entire paper, regardless of content position
-                            // Reset grid layer to fill the full paper dimensions
-                            const gridSvg = gridLayer as SVGSVGElement;
-                            gridSvg.setAttribute('x', '0');
-                            gridSvg.setAttribute('y', '0');
-                            gridSvg.setAttribute('width', width.toString());
-                            gridSvg.setAttribute('height', height.toString());
-                            gridSvg.style.position = 'absolute';
-                            gridSvg.style.top = '0';
-                            gridSvg.style.left = '0';
-                            gridSvg.style.width = `${width}px`;
-                            gridSvg.style.height = `${height}px`;
-
-                            // Ensure grid layer is behind content
-                            const gridParent = gridSvg.parentElement;
-                            if (gridParent) {
-                                gridParent.style.position = 'absolute';
-                                gridParent.style.top = '0';
-                                gridParent.style.left = '0';
-                                gridParent.style.width = `${width}px`;
-                                gridParent.style.height = `${height}px`;
-                                gridParent.style.zIndex = '0'; // Behind content
-                            }
-
-                            // Check if this fixed it
-                            setTimeout(() => {
-                                console.log('After grid fix - Grid position and size:', {
-                                    boundingRect: gridLayer.getBoundingClientRect(),
-                                    attributes: {
-                                        x: gridLayer.getAttribute('x'),
-                                        y: gridLayer.getAttribute('y'),
-                                        width: gridLayer.getAttribute('width'),
-                                        height: gridLayer.getAttribute('height')
-                                    }
-                                });
-                            }, 100);
-                        }
-
-                        // Also fix the pattern
-                        const pattern = container.querySelector('pattern');
-                        if (pattern) {
-                            // Pattern should tile from (0,0) to fill the entire grid
-                            pattern.setAttribute('x', '0');
-                            pattern.setAttribute('y', '0');
-                            pattern.setAttribute('width', '10');
-                            pattern.setAttribute('height', '10');
-                            pattern.setAttribute('patternUnits', 'userSpaceOnUse');
-                            console.log('Fixed pattern positioning for full coverage');
-                        }
-                    }, 100);
-                }
-            };
-            actionsContainer.appendChild(debugButton);
 
             // Make container relative for absolute positioning  
             container.style.position = 'relative';
