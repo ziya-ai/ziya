@@ -9,55 +9,14 @@ and compared regardless of the specific use case.
 import re
 import logging
 from typing import List, Dict, Any, Optional, Tuple
+from ..core.escape_utils import (
+    normalize_escape_sequences,
+    contains_escape_sequences,
+    handle_escape_sequences_in_hunk,
+    normalize_line_for_comparison
+)
 
 logger = logging.getLogger("ZIYA")
-
-# Common escape sequences in programming languages
-ESCAPE_SEQUENCES = {
-    '\\n': '\n',  # newline
-    '\\r': '\r',  # carriage return
-    '\\t': '\t',  # tab
-    '\\b': '\b',  # backspace
-    '\\f': '\f',  # form feed
-    '\\v': '\v',  # vertical tab
-    '\\"': '"',   # double quote
-    "\\'": "'",   # single quote
-    '\\\\': '\\', # backslash
-}
-
-def contains_escape_sequences(text: str) -> bool:
-    """
-    Check if the text contains escape sequences.
-    
-    Args:
-        text: The text to check
-        
-    Returns:
-        True if the text contains escape sequences, False otherwise
-    """
-    # Look for common escape sequences
-    for esc in ESCAPE_SEQUENCES.keys():
-        if esc in text:
-            return True
-    
-    # Also check for Unicode escape sequences like \u1234
-    if re.search(r'\\u[0-9a-fA-F]{4}', text):
-        return True
-    
-    # Check for hex escape sequences like \x12
-    if re.search(r'\\x[0-9a-fA-F]{2}', text):
-        return True
-    
-    return False
-
-def normalize_escape_sequences(text: str, preserve_literals: bool = True) -> str:
-    """
-    Normalize escape sequences in text for consistent comparison.
-    
-    Args:
-        text: The text to normalize
-        preserve_literals: If True, preserve escape sequences as literals
-                          If False, convert escape sequences to their actual characters
         
     Returns:
         The normalized text
