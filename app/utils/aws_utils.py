@@ -279,7 +279,7 @@ def _is_amazon_internal_environment(error_message=""):
         # OR AWS profile indicators combined with credential-related errors
         return any(definitive_indicators) or (any(aws_profile_indicators) and 
                                             any(term in error_message for term in ["ExpiredToken", "InvalidClientTokenId"]))
-    except:
+    except (AttributeError, TypeError):
         return False
 
 def debug_aws_credentials():

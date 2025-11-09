@@ -30,7 +30,7 @@ def is_amazon_internal_env(error_message=""):
             'AWS_CONFIG_FILE' in os.environ and 'midway' in os.environ.get('AWS_CONFIG_FILE', '').lower() or
             any(pattern in error_message.lower() for pattern in ["amazon.com", "corp.amazon", "midway", "isengard"])
         )
-    except:
+    except (AttributeError, TypeError):
         return False
 
 def _handle_aws_credential_error(error_message):

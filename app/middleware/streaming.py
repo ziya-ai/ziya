@@ -111,7 +111,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             logger.info("🔄 MIDDLEWARE: Detected continuation boundary, passing through atomically")
                             yield chunk_str
                             continue
-                except:
+                except (json.JSONDecodeError, KeyError, AttributeError):
                     pass  # Not JSON or doesn't have the flag, continue normal processing
                 
                 # Log chunk info for debugging
