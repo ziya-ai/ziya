@@ -1,7 +1,8 @@
 # Context overflow management
-from typing import Optional
+from typing import Optional, Dict, Any, List, Tuple, Union
 import asyncio
 from threading import Lock
+from contextlib import asynccontextmanager
 
 # Global state for managing context overflow
 _continuation_lock = Lock()
@@ -10,25 +11,19 @@ _active_continuations = {}
 import os
 import os.path
 import re
-import asyncio
 import signal
 import time
 import threading
 import json
 import hashlib
-import asyncio
 import uuid
 import traceback
-from typing import Dict, Any, List, Tuple, Optional, Union
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from starlette.background import BackgroundTask
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-import signal
 from starlette.requests import Request
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import tiktoken
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, APIRouter, routing
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -57,7 +52,6 @@ from app.agents.wrappers.nova_wrapper import NovaBedrock  # Import NovaBedrock f
 from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
 from botocore.exceptions import EventStreamError
 import botocore.errorfactory
-from starlette.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from langchain_core.outputs import Generation
 
@@ -90,7 +84,6 @@ from app.middleware.continuation import ContinuationMiddleware
 
 # WebSocket support for real-time feedback
 from fastapi.websockets import WebSocket, WebSocketDisconnect
-import json
  
 # Track active WebSocket connections for feedback
 active_feedback_connections = {}
@@ -160,6 +153,58 @@ class FileRequest(BaseModel):
 class FileContentRequest(BaseModel):
     file_path: str
     content: str
+
+# Define lifespan context manager before app creation
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    # Startup
+    # Check if MCP is enabled
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            await mcp_manager.initialize()
+            
+            # Log MCP initialization status
+            if mcp_manager.is_initialized:
+                status = mcp_manager.get_server_status()
+                connected_servers = sum(1 for s in status.values() if s["connected"])
+                total_tools = sum(s["tools"] for s in status.values())
+                logger.info(f"MCP initialized: {connected_servers} servers connected, {total_tools} tools available")
+                
+                # Initialize secure MCP tools
+                from app.mcp.connection_pool import get_connection_pool as get_secure_pool
+                secure_pool = get_secure_pool()
+                secure_pool.set_server_configs(mcp_manager.server_configs)
+                logger.info("Initialized secure MCP connection pool")
+                
+                # Force garbage collection to ensure clean state
+                import gc; gc.collect()
+                from app.agents.agent import create_agent_chain, create_agent_executor, model
+                agent = create_agent_chain(model.get_model())
+                agent_executor = create_agent_executor(agent)
+                
+                logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
+            else:
+                logger.warning("MCP initialization failed or no servers configured")
+            logger.info("MCP manager initialized successfully during startup")
+        except Exception as e:
+            logger.warning(f"MCP initialization failed during startup: {str(e)}")
+    else:
+        logger.info("MCP integration is disabled. Use --mcp flag to enable.")
+    
+    yield
+    
+    # Shutdown
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            await mcp_manager.shutdown()
+            logger.info("MCP manager shutdown completed")
+        except Exception as e:
+            logger.warning(f"MCP shutdown failed: {str(e)}")
 
 # Create the FastAPI app
 app = FastAPI(
@@ -442,7 +487,7 @@ from app.routes.mcp_registry_routes import router as mcp_registry_router
 app.include_router(mcp_registry_router)
 
 # Import and include AST routes
-from app.routes.ast_routes import router as ast_router
+# AST routes already imported and included above
 initialize_ast_if_enabled()
 
 # Dictionary to track active WebSocket connections
@@ -481,57 +526,6 @@ if os.path.exists(static_dir):
 
 # Global flag to prevent multiple LangServe initializations
 _langserve_initialized = False
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup and shutdown events."""
-    # Startup
-    # Check if MCP is enabled
-    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
-        try:
-            from app.mcp.manager import get_mcp_manager
-            mcp_manager = get_mcp_manager()
-            await mcp_manager.initialize()
-            
-            # Log MCP initialization status
-            if mcp_manager.is_initialized:
-                status = mcp_manager.get_server_status()
-                connected_servers = sum(1 for s in status.values() if s["connected"])
-                total_tools = sum(s["tools"] for s in status.values())
-                logger.info(f"MCP initialized: {connected_servers} servers connected, {total_tools} tools available")
-                
-                # Initialize secure MCP tools
-                from app.mcp.connection_pool import get_connection_pool as get_secure_pool
-                secure_pool = get_secure_pool()
-                secure_pool.set_server_configs(mcp_manager.server_configs)
-                logger.info("Initialized secure MCP connection pool")
-                
-                # Force garbage collection to ensure clean state
-                import gc; gc.collect()
-                from app.agents.agent import create_agent_chain, create_agent_executor, model
-                agent = create_agent_chain(model.get_model())
-                agent_executor = create_agent_executor(agent)
-                
-                logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
-            else:
-                logger.warning("MCP initialization failed or no servers configured")
-            logger.info("MCP manager initialized successfully during startup")
-        except Exception as e:
-            logger.warning(f"MCP initialization failed during startup: {str(e)}")
-    else:
-        logger.info("MCP integration is disabled. Use --mcp flag to enable.")
-    
-    yield
-    
-    # Shutdown
-    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
-        try:
-            from app.mcp.manager import get_mcp_manager
-            mcp_manager = get_mcp_manager()
-            await mcp_manager.shutdown()
-            logger.info("MCP manager shutdown completed")
-        except Exception as e:
-            logger.warning(f"MCP shutdown failed: {str(e)}")
 
 # SELECTIVELY REMOVE ONLY CONFLICTING LANGSERVE ROUTES
 logger.info("=== REMOVING CONFLICTING LANGSERVE ROUTES ===")
