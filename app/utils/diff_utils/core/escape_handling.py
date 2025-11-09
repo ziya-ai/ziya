@@ -1,6 +1,14 @@
 """
 Escape sequence handling utilities for diff application.
+Uses shared escape_utils for core functionality.
 """
+
+from .escape_utils import (
+    normalize_escape_sequences as _normalize_escape_sequences,
+    contains_escape_sequences,
+    handle_escape_sequences_in_hunk
+)
+
 
 def normalize_escape_sequences(text: str, preserve_literals: bool = True) -> str:
     """
@@ -21,69 +29,10 @@ def normalize_escape_sequences(text: str, preserve_literals: bool = True) -> str
         # When preserving literals, we don't convert escape sequences
         # This is important for code comparison where we want to compare the literal text
         return text
-        
-    # Common escape sequences to normalize when not preserving literals
-    escape_sequences = {
-        '\\n': '\n',
-        '\\r': '\r',
-        '\\t': '\t',
-        '\\"': '"',
-        "\\'": "'",
-        '\\\\': '\\',
-        '\\b': '\b',
-        '\\f': '\f',
-        '\\v': '\v',
-        '\\a': '\a',
-    }
     
-    # First handle literal backslash followed by escape character
-    # This is a special case for strings like "\\n" which should be treated as "\n"
-    result = text
-    for escaped, unescaped in escape_sequences.items():
-        # Only replace if the escape sequence is properly escaped
-        # (i.e., not already part of a larger escape sequence)
-        i = 0
-        while i < len(result):
-            if i + len(escaped) <= len(result) and result[i:i+len(escaped)] == escaped:
-                # Check if this is part of a larger escape sequence
-                if i > 0 and result[i-1] == '\\':
-                    i += 1
-                    continue
-                # Replace the escape sequence
-                result = result[:i] + unescaped + result[i+len(escaped):]
-                i += 1
-            else:
-                i += 1
-    
-    return result
+    # Use shared utility for normalization
+    return _normalize_escape_sequences(text)
 
-def handle_escape_sequences_in_hunk(lines: list[str], hunk: dict, pos: int) -> list[str]:
-    """
-    Handle escape sequences in a hunk.
-    This is a general-purpose handler that works for any file with escape sequences.
-    
-    Args:
-        lines: The lines to modify
-        hunk: The hunk to apply
-        pos: The position to apply the hunk
-        
-    Returns:
-        The modified lines
-    """
-    result = lines.copy()
-    
-    # Get the lines we need to modify
-    old_lines = result[pos:pos + hunk.get('old_count', 0)]
-    new_lines = hunk.get('new_lines', [])
-    
-    # Normalize escape sequences in both old and new lines
-    normalized_old = [normalize_escape_sequences(line) for line in old_lines]
-    normalized_new = [normalize_escape_sequences(line) for line in new_lines]
-    
-    # Replace the old lines with the new ones
-    result[pos:pos + len(old_lines)] = normalized_new
-    
-    return result
 
 def handle_escape_sequences(original_content: str, git_diff: str) -> str:
     """
