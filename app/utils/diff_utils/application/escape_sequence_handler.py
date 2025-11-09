@@ -9,45 +9,13 @@ diff application.
 import re
 import logging
 from typing import List, Dict, Any, Optional, Tuple
+from ..core.escape_utils import (
+    normalize_escape_sequences,
+    contains_escape_sequences,
+    handle_json_escape_sequences
+)
 
 logger = logging.getLogger(__name__)
-
-def normalize_escape_sequences(text: str, preserve_literals: bool = False) -> str:
-    """
-    Normalize escape sequences in text.
-    
-    Args:
-        text: The text to normalize
-        preserve_literals: Whether to preserve literal escape sequences
-        
-    Returns:
-        The normalized text
-    """
-    if not text:
-        return ""
-    
-    # Handle common escape sequences
-    result = text
-    
-    # If we're not preserving literals, interpret escape sequences
-    if not preserve_literals:
-        # Replace common escape sequences with their interpreted values
-        replacements = {
-            r'\\n': '\n',  # Escaped newline
-            r'\\r': '\r',  # Escaped carriage return
-            r'\\t': '\t',  # Escaped tab
-            r'\\\\': '\\',  # Escaped backslash
-            r'\\"': '"',    # Escaped double quote
-            r"\\'": "'",    # Escaped single quote
-            r'\\b': '\b',   # Escaped backspace
-            r'\\f': '\f',   # Escaped form feed
-            r'\\v': '\v',   # Escaped vertical tab
-        }
-        
-        for pattern, replacement in replacements.items():
-            result = re.sub(pattern, replacement, result)
-    
-    return result
 
 def handle_escape_sequences(original_content: str, git_diff: str) -> Optional[str]:
     """
@@ -87,40 +55,6 @@ def handle_escape_sequences(original_content: str, git_diff: str) -> Optional[st
         logger.error(f"Error handling escape sequences: {str(e)}")
         # Fall back to standard handling
         return None
-
-def contains_escape_sequences(text: str) -> bool:
-    """
-    Check if text contains escape sequences.
-    
-    Args:
-        text: The text to check
-        
-    Returns:
-        True if the text contains escape sequences, False otherwise
-    """
-    if not text:
-        return False
-    
-    # Check for common escape sequences
-    patterns = [
-        r'\\n',  # Escaped newline
-        r'\\r',  # Escaped carriage return
-        r'\\t',  # Escaped tab
-        r'\\\\', # Escaped backslash
-        r'\\"',  # Escaped double quote
-        r"\\'",  # Escaped single quote
-        r'\\b',  # Escaped backspace
-        r'\\f',  # Escaped form feed
-        r'\\v',  # Escaped vertical tab
-        r'\\u[0-9a-fA-F]{4}',  # Unicode escape
-        r'\\x[0-9a-fA-F]{2}',  # Hex escape
-    ]
-    
-    for pattern in patterns:
-        if re.search(pattern, text):
-            return True
-    
-    return False
 
 def handle_json_escape_sequences(original_content: str, git_diff: str) -> Optional[str]:
     """
