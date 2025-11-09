@@ -366,7 +366,7 @@ def validate_pcap_file(file_path: str) -> bool:
             try:
                 rdpcap(file_path, count=1)
                 return True
-            except:
+            except (OSError, ValueError, ImportError):
                 return False
         
         return False

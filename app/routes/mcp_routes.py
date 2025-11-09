@@ -938,7 +938,7 @@ async def get_registry_services(
                 if dependencies_available:
                     try:
                         tool_names = [tool_class().name for tool_class in tool_classes]
-                    except:
+                    except (AttributeError, TypeError, ValueError):
                         tool_names = []
                 
                 builtin_service = {

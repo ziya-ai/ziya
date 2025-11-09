@@ -463,7 +463,7 @@ class MCPClient:
                             remaining_output_bytes = await self.process.stdout.read()
                             if remaining_output_bytes:
                                 logger.error(f"Remaining output: {remaining_output_bytes.decode('utf-8', errors='ignore')}")
-                        except:
+                        except (UnicodeDecodeError, AttributeError):
                             pass
                     return create_error_response("No response from MCP server (EOF)")
                 

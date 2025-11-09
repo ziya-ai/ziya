@@ -379,7 +379,7 @@ class ErrorHandlingMiddleware:
                                 "body": b"",
                                 "more_body": False
                             })
-                        except:
+                        except (RuntimeError, AttributeError):
                             pass
                 else:
                     # For non-streaming responses, use JSONResponse
@@ -412,7 +412,7 @@ class ErrorHandlingMiddleware:
                                 "type": "http.response.body",
                                 "more_body": False
                             })
-                        except:
+                        except (RuntimeError, AttributeError):
                             pass
                 return
             
