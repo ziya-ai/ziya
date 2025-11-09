@@ -28,6 +28,7 @@ from starlette.requests import Request
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import tiktoken
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, APIRouter, routing
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -165,6 +166,7 @@ app = FastAPI(
     title="Ziya API",
     description="API for Ziya, a code assistant powered by LLMs",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 @app.websocket("/ws/feedback/{conversation_id}")
@@ -480,69 +482,56 @@ if os.path.exists(static_dir):
 # Global flag to prevent multiple LangServe initializations
 _langserve_initialized = False
 
-# Initialize MCP manager on startup
-@app.on_event("startup")
-async def startup_event():
-    """Initialize MCP manager when the server starts."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    # Startup
     # Check if MCP is enabled
-    if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            await mcp_manager.initialize()
+            
+            # Log MCP initialization status
+            if mcp_manager.is_initialized:
+                status = mcp_manager.get_server_status()
+                connected_servers = sum(1 for s in status.values() if s["connected"])
+                total_tools = sum(s["tools"] for s in status.values())
+                logger.info(f"MCP initialized: {connected_servers} servers connected, {total_tools} tools available")
+                
+                # Initialize secure MCP tools
+                from app.mcp.connection_pool import get_connection_pool as get_secure_pool
+                secure_pool = get_secure_pool()
+                secure_pool.set_server_configs(mcp_manager.server_configs)
+                logger.info("Initialized secure MCP connection pool")
+                
+                # Force garbage collection to ensure clean state
+                import gc; gc.collect()
+                from app.agents.agent import create_agent_chain, create_agent_executor, model
+                agent = create_agent_chain(model.get_model())
+                agent_executor = create_agent_executor(agent)
+                
+                logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
+            else:
+                logger.warning("MCP initialization failed or no servers configured")
+            logger.info("MCP manager initialized successfully during startup")
+        except Exception as e:
+            logger.warning(f"MCP initialization failed during startup: {str(e)}")
+    else:
         logger.info("MCP integration is disabled. Use --mcp flag to enable.")
-        return
-        
-    try:
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        await mcp_manager.initialize()
-        
-        # Log MCP initialization status
-        if mcp_manager.is_initialized:
-            status = mcp_manager.get_server_status()
-            connected_servers = sum(1 for s in status.values() if s["connected"])
-            total_tools = sum(s["tools"] for s in status.values())
-            logger.info(f"MCP initialized: {connected_servers} servers connected, {total_tools} tools available")
-            
-            # Reinitialize the agent chain now that MCP is available
-            # Invalidate agent chain cache since MCP tools are now available
-            from app.agents.models import ModelManager
-            # ModelManager.invalidate_agent_chain_cache()  # Method doesn't exist
-            
-            # Initialize secure MCP tools
-            from app.mcp.connection_pool import get_connection_pool as get_secure_pool
-            secure_pool = get_secure_pool()
-            secure_pool.set_server_configs(mcp_manager.server_configs)
-            logger.info("Initialized secure MCP connection pool")
-            
-            # Force garbage collection to ensure clean state
-            import gc; gc.collect()
-            from app.agents.agent import create_agent_chain, create_agent_executor, model
-            agent = create_agent_chain(model.get_model())
-            agent_executor = create_agent_executor(agent)
-            
-            # COMPLETELY DISABLED: LangServe routes cause duplicate execution with /api/chat
-            # initialize_langserve(app, agent_executor)
-            # _langserve_initialized = True
-            logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
-        else:
-            logger.warning("MCP initialization failed or no servers configured")
-        logger.info("MCP manager initialized successfully during startup")
-    except Exception as e:
-        logger.warning(f"MCP initialization failed during startup: {str(e)}")
-
-# Cleanup MCP manager on shutdown
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup MCP manager when the server shuts down."""
-    # Only shutdown if MCP was enabled
-    if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
-        return
-        
-    try:
-        from app.mcp.manager import get_mcp_manager
-        mcp_manager = get_mcp_manager()
-        await mcp_manager.shutdown()
-        logger.info("MCP manager shutdown completed")
-    except Exception as e:
-        logger.warning(f"MCP shutdown failed: {str(e)}")
+    
+    yield
+    
+    # Shutdown
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            await mcp_manager.shutdown()
+            logger.info("MCP manager shutdown completed")
+        except Exception as e:
+            logger.warning(f"MCP shutdown failed: {str(e)}")
 
 # SELECTIVELY REMOVE ONLY CONFLICTING LANGSERVE ROUTES
 logger.info("=== REMOVING CONFLICTING LANGSERVE ROUTES ===")
@@ -3827,14 +3816,15 @@ class ApplyChangesRequest(BaseModel):
     filePath: str = Field(..., description="Path to the file being modified")
     requestId: Optional[str] = Field(None, description="Unique ID to track this specific diff application")
 
-    class Config:
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "diff": "diff --git a/file.txt b/file.txt\n...",
                 "filePath": "file.txt"
             }
-        }
-        max_str_length = 1000000  # Allow larger diffs
+        },
+        "str_max_length": 1000000  # Allow larger diffs
+    }
 
 class ModelSettingsRequest(BaseModel):
     temperature: float = Field(default=0.3, ge=0, le=1)

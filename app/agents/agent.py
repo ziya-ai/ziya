@@ -1654,7 +1654,7 @@ def log_codebase_wrapper_with_cache(x):
 class AgentInput(BaseModel):
     question: str
     config: dict = Field({})
-    chat_history: List[Tuple[str, str]] = Field(..., extra={"widget": {"type": "chat"}})
+    chat_history: List[Tuple[str, str]] = Field(..., json_schema_extra={"widget": {"type": "chat"}})
     conversation_id: str = Field(default="default", description="Unique identifier for the conversation")
 
 def extract_codebase(x):
