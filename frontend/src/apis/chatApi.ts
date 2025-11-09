@@ -468,7 +468,6 @@ export const sendPayload = async (
     let eventSource: any = null;
     let currentContent = '';
     let containsDiff = false;
-    let currentThinkingContent = '';
     let errorOccurred = false;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
     let originalRequestParams = { messages, question, checkedItems, conversationId }; // Store for retry
@@ -1282,9 +1281,10 @@ export const sendPayload = async (
                     }
 
                     currentContent += newContent;
+                    const contentSnapshot = currentContent;
                     setStreamedContentMap((prev: Map<string, string>) => {
                         const next = new Map(prev);
-                        next.set(conversationId, currentContent);
+                        next.set(conversationId, contentSnapshot);
                         return next;
                     });
                 } else if (op.op === 'add' && op.path.includes('/streamed_output/-')) {
@@ -1717,6 +1717,7 @@ export const sendPayload = async (
 return !errorOccurred && currentContent ? currentContent : '';
 };
 
+/* Unused helper functions - kept for future use
 // Helper functions for sequential thinking tool
 function handleSequentialThinkingStart(
     jsonData: any,
@@ -1771,7 +1772,7 @@ function handleSequentialThinkingDisplay(
 
         if (thinkingContent) {
             // Replace the "Running" indicator with the actual thinking content
-            const toolStartPrefix = `\cp_sequentialthinking\n⏳ Running:`;
+            const toolStartPrefix = `\\cp_sequentialthinking\n⏳ Running:`;
             const toolStartSuffix = `\n\`\`\`\n\n`;
             const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
 
@@ -1804,6 +1805,7 @@ function handleSequentialThinkingDisplay(
         console.error('Error handling sequential thinking display:', e);
     }
 }
+*/
 
 async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal) {
     const messageTuples: string[][] = [];
