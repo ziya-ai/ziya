@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useLayoutEffect, Suspense } from 'r
 import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
-import { Button, Tooltip, ConfigProvider, message } from "antd";
+import { Button, Tooltip, ConfigProvider } from "antd";
 import {
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -94,8 +94,8 @@ const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
 
 export const App: React.FC = () => {
     const {
-        streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom, setStreamedContentMap,
-        streamingConversations, currentConversationId, isStreaming, userHasScrolled, setUserHasScrolled, recordManualScroll
+        streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom,
+        streamingConversations, currentConversationId, userHasScrolled, setUserHasScrolled, recordManualScroll
     } = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const [astEnabled, setAstEnabled] = useState(false);
