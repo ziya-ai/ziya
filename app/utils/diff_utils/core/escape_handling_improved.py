@@ -9,25 +9,15 @@ issues with diff application.
 import re
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Set
+from .escape_utils import (
+    normalize_escape_sequences as _normalize_escape_sequences,
+    contains_escape_sequences,
+    handle_escape_sequence_line,
+    clean_escape_sequences_in_diff
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# Common escape sequences in programming languages
-COMMON_ESCAPE_SEQUENCES = [
-    r'\\n',   # Newline escape
-    r'\\r',   # Carriage return escape
-    r'\\t',   # Tab escape
-    r'\\"',   # Double quote escape
-    r"\\'",   # Single quote escape
-    r'\\\\',  # Backslash escape
-    r'\\b',   # Backspace escape
-    r'\\f',   # Form feed escape
-    r'\\v',   # Vertical tab escape
-    r'\\0',   # Null character escape
-    r'\\x[0-9a-fA-F]{2}',  # Hex escape (e.g., \x41)
-    r'\\u[0-9a-fA-F]{4}',  # Unicode escape (e.g., \u00A9)
-]
 
 # Regular expression patterns for detecting escape sequences in various contexts
 ESCAPE_SEQUENCE_PATTERNS = [
