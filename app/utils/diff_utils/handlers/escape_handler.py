@@ -9,15 +9,15 @@ import re
 import logging
 import json
 from typing import List, Dict, Any, Optional, Tuple, Union
+from ..core.escape_utils import (
+    normalize_escape_sequences,
+    contains_escape_sequences,
+    handle_escape_sequences_in_hunk,
+    normalize_line_for_comparison,
+    handle_json_escape_sequences
+)
 
 logger = logging.getLogger("ZIYA")
-
-# Common escape sequences in programming languages
-ESCAPE_SEQUENCES = {
-    '\\n': '\n',  # newline
-    '\\r': '\r',  # carriage return
-    '\\t': '\t',  # tab
-    '\\b': '\b',  # backspace
     '\\f': '\f',  # form feed
     '\\v': '\v',  # vertical tab
     '\\"': '"',   # double quote
