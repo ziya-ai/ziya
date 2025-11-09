@@ -43,7 +43,7 @@ def _get_conversation_id() -> str:
     try:
         import app.utils.custom_bedrock as custom_bedrock_module
         return getattr(custom_bedrock_module, '_current_conversation_id', 'default')
-    except:
+    except (ImportError, AttributeError):
         return 'default'
 
 async def _reset_counter_async():

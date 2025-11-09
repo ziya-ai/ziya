@@ -153,7 +153,7 @@ class ContinuationMiddleware(BaseHTTPMiddleware):
                 if data_part.startswith("{"):
                     data = json.loads(data_part)
                     return data.get("conversation_id")
-        except:
+        except (json.JSONDecodeError, KeyError, AttributeError):
             pass
         return None
     
@@ -170,7 +170,7 @@ class ContinuationMiddleware(BaseHTTPMiddleware):
                         if op.get("path") == "/streamed_output_str/-":
                             content += op.get("value", "")
                     return content
-        except:
+        except (json.JSONDecodeError, KeyError, AttributeError):
             pass
         return ""
     

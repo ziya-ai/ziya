@@ -45,7 +45,7 @@ def extract_text_from_json(content):
                         inner_content = parsed['output']['output']
                         # Try to parse inner content
                         return extract_text_from_json(inner_content)
-            except:
+            except (json.JSONDecodeError, KeyError, IndexError, AttributeError):
                 # Try regex approach if JSON parsing fails
                 ai_message_match = re.search(r"AIMessage\(content=[\"'](\[\{.*?\}\])[\"']", content)
                 if ai_message_match:
@@ -56,9 +56,9 @@ def extract_text_from_json(content):
                         parsed = json.loads(inner_json)
                         if isinstance(parsed, list) and parsed and 'text' in parsed[0]:
                             return parsed[0]['text']
-                    except:
+                    except (json.JSONDecodeError, KeyError, IndexError):
                         pass
-    except:
+    except (json.JSONDecodeError, KeyError, IndexError, AttributeError):
         pass
         
     return content

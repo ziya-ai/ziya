@@ -18,7 +18,7 @@ def _cleanup_temp_dir():
     try:
         if os.path.exists(_TEMP_DIR):
             shutil.rmtree(_TEMP_DIR)
-    except:
+    except (OSError, PermissionError):
         pass
 
 atexit.register(_cleanup_temp_dir)
