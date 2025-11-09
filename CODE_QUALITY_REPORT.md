@@ -7,9 +7,9 @@
 This document tracks code quality issues, technical debt, and cleanup tasks for the Ziya project.
 
 ### Status Overview
-- ✅ **Completed:** 39 items
-- 🔄 **In Progress:** 4 items (refactoring to use new utilities)
-- 📋 **Pending:** 44 items
+- ✅ **Completed:** 43 items
+- 🔄 **In Progress:** 3 items (frontend D3 plugin refactoring)
+- 📋 **Pending:** 29 items
 
 ---
 
@@ -48,6 +48,8 @@ This document tracks code quality issues, technical debt, and cleanup tasks for 
 - [x] Created frontend/src/utils/zoomUtils.ts (eliminates 12 duplicates)
 - [x] Created frontend/src/utils/svgUtils.ts (eliminates 4 duplicates)
 - [x] Created app/utils/diff_utils/core/escape_utils.py (eliminates 15+ duplicates)
+- [x] Refactored 5 diff_utils files to use escape_utils (~300 lines removed)
+- [x] All 108 diff regression tests pass (101/108 baseline maintained)
 
 ---
 
@@ -57,7 +59,6 @@ This document tracks code quality issues, technical debt, and cleanup tasks for 
 1. Update D3 plugins to use colorUtils.ts (graphviz, mermaid, vega)
 2. Update D3 plugins to use zoomUtils.ts (graphviz, mermaid, vega, D3Renderer)
 3. Update D3 plugins to use svgUtils.ts (graphviz, mermaid, vega, D3Renderer)
-4. Update diff_utils modules to use escape_utils.py (5+ files)
 
 ---
 
@@ -262,10 +263,11 @@ Recommendation: Create base extension class:
 - Unused dependencies removed: 19
 - Build warnings addressed: 278 → 0 errors
 - **Shared utilities created: 4 modules**
-- **Duplicate functions eliminated: 41+ (26 TS + 15 Python)**
+- **Duplicate functions eliminated: 56+ (26 TS + 30 Python)**
+- **Lines of duplicate code removed: ~500**
 
 ### Remaining Technical Debt
-- Duplicate functions: 44 (down from 85+)
+- Duplicate functions: 29 (down from 85+, 66% reduction)
 - Print statements: 169
 - TODO comments: 6
 - Magic numbers: 10+
