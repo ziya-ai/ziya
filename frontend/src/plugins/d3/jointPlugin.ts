@@ -1827,7 +1827,7 @@ export const jointPlugin: D3RenderPlugin = {
             // Store observer for cleanup
             (container as any)._resizeObserver = resizeObserver;
 
-            // CRITICAL FIX: Force the paper container to use full width
+            // Force the paper container to use full width
             const paperEl = container.querySelector('.joint-paper') as HTMLElement;
             if (paperEl) {
                 paperEl.style.width = '100%';

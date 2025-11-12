@@ -731,7 +731,7 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
         logger.error(f"Error parsing diff: {str(e)}")
         return {"status": "error", "details": {"error": f"Error parsing diff: {str(e)}"}}
     
-    # CRITICAL FIX: Check for malformed hunks first
+    # Check for malformed hunks first
     malformed_hunks = []
     for i, hunk in enumerate(hunks, 1):
         hunk_id = hunk.get('number', i)

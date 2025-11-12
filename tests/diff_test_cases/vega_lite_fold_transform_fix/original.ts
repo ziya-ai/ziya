@@ -591,7 +591,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
       
-      // CRITICAL FIX: Handle shape encoding that causes "Cannot read properties of null (reading 'slice')" error
+      // Handle shape encoding that causes "Cannot read properties of null (reading 'slice')" error
 
       // Apply this fix EARLY in the preprocessing pipeline
     // Additional post-preprocessing validations and fixes

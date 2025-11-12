@@ -174,7 +174,7 @@ export const graphvizPlugin: D3RenderPlugin = {
             console.log('Graphviz render called with spec:', typeof spec, spec);
             
             if (typeof spec === 'object' && spec !== null && spec.definition) {
-                // CRITICAL FIX: Use the definition directly if it exists in the spec object
+                // Use the definition directly if it exists in the spec object
                 let def = spec.definition;
                 
                 // Handle double-wrapped JSON definitions

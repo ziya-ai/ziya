@@ -1627,7 +1627,7 @@ export function initMermaidEnhancer(): void {
     // Also fix classDef with subgraph prefix
     finalDef = finalDef.replace(/classDef\s+subgraph-(\w+)/g, 'classDef style_$1');
 
-    // CRITICAL FIX: Quote subgraph names that contain spaces or parentheses
+    // Quote subgraph names that contain spaces or parentheses
     finalDef = finalDef.replace(/^(\s*subgraph\s+)([^{\n]+?)(\s*)$/gm, (match, subgraphKeyword, name, ending) => {
       const trimmedName = name.trim();
       
@@ -1664,7 +1664,7 @@ export function initMermaidEnhancer(): void {
 
     console.log('Mixed node shapes - processing:', finalDef.substring(0, 200));
 
-    // CRITICAL FIX: Handle stadium shapes ([...]) separately before processing other shapes
+    // Handle stadium shapes ([...]) separately before processing other shapes
     // Stadium shapes have TWO opening chars and TWO closing chars
     finalDef = finalDef.replace(/(\w+)\(\[([\s\S]*?)\]\)/g, (match, nodeId, content) => {
       // Skip if already properly quoted
@@ -1903,7 +1903,7 @@ export function initMermaidEnhancer(): void {
 
       let processedDef = def;
 
-      // CRITICAL FIX: Mermaid's gantt parser expects very specific task format
+      // Mermaid's gantt parser expects very specific task format
       // The error "Cannot read properties of undefined (reading 'type')" happens when
       // the task object structure is malformed. Let's ensure proper task format.
 
@@ -1920,7 +1920,7 @@ export function initMermaidEnhancer(): void {
         processedDef = lines.join('\n');
       }
 
-      // CRITICAL FIX: Replace dateFormat X with a standard date format
+      // Replace dateFormat X with a standard date format
       // But handle different types of data appropriately
       if (processedDef.includes('dateFormat X') || processedDef.includes('dateFormat  X')) {
 
@@ -3197,7 +3197,7 @@ export function enhanceMermaid(mermaid: any): void {
         const beforeCount = (result.match(/\|\|--\|\|/g) || []).length;
         console.log(`🔍 CLASS-RELATIONSHIP-FIX: Found ${beforeCount} instances of ||--||`);
   
-        // CRITICAL FIX: Replace all invalid double-pipe relationships
+        // Replace all invalid double-pipe relationships
         // Use global replacement with explicit escaping
         result = result.replace(/\|\|--\|\|/g, '-->');
   
@@ -3263,7 +3263,7 @@ export function enhanceMermaid(mermaid: any): void {
 
         let result = definition;
 
-        // CRITICAL FIX: Replace invalid ||--|| syntax FIRST
+        // Replace invalid ||--|| syntax FIRST
         result = result.replace(/\|\|--\|\|/g, '-->');
         result = result.replace(/\|\|\s*--\s*\|\|/g, '-->');
 
@@ -3288,7 +3288,7 @@ export function enhanceMermaid(mermaid: any): void {
 
         console.log('🔍 CLASS-RELATIONSHIP-FIX: Running class diagram relationship fixer (priority 85)');
 
-        // CRITICAL FIX: Replace invalid ||--|| syntax FIRST
+        // Replace invalid ||--|| syntax FIRST
         let result = definition;
 
         // Log before changes for debugging

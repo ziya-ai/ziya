@@ -197,7 +197,7 @@ export const App: React.FC = () => {
                 const currentStreamedContent = streamedContentMap.get(currentConversationId);
                 const hasActualContent = currentStreamedContent && currentStreamedContent.trim().length > 0;
 
-                // CRITICAL FIX: Don't re-enable auto-scroll when there's no active streaming
+                // Don't re-enable auto-scroll when there's no active streaming
                 // A retry button means the stream has ENDED with an error - no more content will arrive
                 const isActivelyStreaming = streamingConversations.has(currentConversationId);
                 
