@@ -635,6 +635,35 @@ class MCPManager:
         Returns:
             Tool execution result or None if not found
         """
+        # Check tool permissions before execution
+        from app.mcp.permissions import get_permissions_manager
+        permissions_manager = get_permissions_manager()
+        permissions = permissions_manager.get_permissions()
+        
+        # Remove mcp_ prefix for internal lookup
+        internal_tool_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+        
+        # Find which server this tool belongs to
+        tool_server = None
+        for srv_name, client in self.clients.items():
+            if client.is_connected and any(tool.name == internal_tool_name for tool in client.tools):
+                tool_server = srv_name
+                break
+        
+        # Check permissions if we found the server
+        if tool_server:
+            server_perms = permissions.get('servers', {}).get(tool_server, {})
+            tool_perms = server_perms.get('tools', {}).get(internal_tool_name, {})
+            tool_permission = tool_perms.get('permission', permissions.get('defaults', {}).get('tool', 'enabled'))
+            
+            if tool_permission == 'disabled':
+                logger.warning(f"Tool {internal_tool_name} is disabled by permissions")
+                return {
+                    "error": True,
+                    "message": f"Tool '{internal_tool_name}' is disabled. Enable it in MCP Server Settings to use this tool.",
+                    "code": -32001
+                }
+        
         # Check for repetitive calls (conversation-aware)
         conversation_id = arguments.get('conversation_id') if isinstance(arguments, dict) else None
         if self._is_repetitive_call(tool_name, arguments, conversation_id):

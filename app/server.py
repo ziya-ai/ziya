@@ -486,6 +486,18 @@ app.include_router(conversation_router)
 from app.routes.mcp_registry_routes import router as mcp_registry_router
 app.include_router(mcp_registry_router)
 
+# Import and include model routes
+from app.routes.model_routes import router as model_router
+app.include_router(model_router)
+
+# Import and include folder routes
+from app.routes.folder_routes import router as folder_router
+app.include_router(folder_router)
+
+# Import and include token routes
+from app.routes.token_routes import router as token_router
+app.include_router(token_router)
+
 # Import and include AST routes
 # AST routes already imported and included above
 initialize_ast_if_enabled()
@@ -1101,7 +1113,17 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'stream_end':
                         break
                     elif chunk.get('type') == 'error':
-                        yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error')})}\n\n"
+                        # Send error with all available details
+                        error_data = {
+                            'error': chunk.get('error', 'error'),
+                            'content': chunk.get('content', 'Unknown error'),
+                            'detail': chunk.get('detail'),
+                            'can_retry': chunk.get('can_retry', False),
+                            'retry_message': chunk.get('retry_message')
+                        }
+                        # Remove None values
+                        error_data = {k: v for k, v in error_data.items() if v is not None}
+                        yield f"data: {json.dumps(error_data)}\n\n"
                     elif chunk.get('type') == 'heartbeat':
                         # Pass through heartbeat messages
                         yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\\n\\n"
