@@ -127,25 +127,6 @@ def handle_escape_sequence_line(line: str, in_hunk: bool = False) -> str:
     return normalize_escape_sequences(line)
 
 
-def normalize_line_for_comparison(line: str) -> str:
-    """
-    Normalize a line for comparison by handling escape sequences and whitespace.
-    
-    Consolidated from 3 duplicate implementations.
-    """
-    # Remove diff marker if present
-    if line and line[0] in ('+', '-', ' '):
-        line = line[1:]
-    
-    # Normalize escape sequences
-    line = normalize_escape_sequences(line)
-    
-    # Normalize whitespace
-    line = ' '.join(line.split())
-    
-    return line.strip()
-
-
 def handle_json_escape_sequences(json_text: str) -> str:
     """
     Handle escape sequences specifically in JSON content.
