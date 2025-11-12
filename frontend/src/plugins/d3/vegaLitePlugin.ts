@@ -1,8 +1,8 @@
+import type { EmbedOptions } from 'vega-embed';
+
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
-
-import vegaEmbed, { EmbedOptions } from 'vega-embed';
 
 export interface VegaLiteSpec {
   type: 'vega-lite';
@@ -128,6 +128,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
   render: async (container: HTMLElement, d3: any, spec: VegaLiteSpec, isDarkMode: boolean): Promise<void> => {
     console.log('Vega-Lite plugin render called with spec:', spec);
+    
+    // Lazy load vega-embed
+    const vegaEmbedModule = await import('vega-embed');
+    const vegaEmbed = vegaEmbedModule.default;
     console.log('Vega-Lite streaming state:', {
       isStreaming: spec.isStreaming,
       isMarkdownBlockClosed: spec.isMarkdownBlockClosed,
