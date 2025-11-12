@@ -826,6 +826,26 @@ const getEnhancedElectricalMarkup = (elementType: string) => {
             { tagName: 'path', selector: 'triangle' },
             { tagName: 'line', selector: 'cathode' },
             { tagName: 'text', selector: 'label' }
+        ],
+        voltage_source: [
+            { tagName: 'circle', selector: 'body' },
+            { tagName: 'text', selector: 'polarityPos' },
+            { tagName: 'text', selector: 'polarityNeg' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        current_source: [
+            { tagName: 'circle', selector: 'body' },
+            { tagName: 'path', selector: 'arrow' },
+            { tagName: 'text', selector: 'label' }
+        ],
+        transistor: [
+            { tagName: 'circle', selector: 'body' },
+            { tagName: 'line', selector: 'baseLead' },
+            { tagName: 'line', selector: 'base' },
+            { tagName: 'line', selector: 'collector' },
+            { tagName: 'line', selector: 'emitter' },
+            { tagName: 'path', selector: 'arrow' },
+            { tagName: 'text', selector: 'label' }
         ]
     };
 
@@ -942,6 +962,117 @@ const getEnhancedElectricalAttrs = (elementType: string, theme: 'light' | 'dark'
                 strokeWidth: 2
             },
             label: commonLabel
+        },
+        inductor: {
+            coil: {
+                d: `M 0,${size.height / 2} L ${size.width * 0.15},${size.height / 2} ` +
+                   `Q ${size.width * 0.2},${size.height * 0.1} ${size.width * 0.25},${size.height / 2} ` +
+                   `Q ${size.width * 0.3},${size.height * 0.9} ${size.width * 0.35},${size.height / 2} ` +
+                   `Q ${size.width * 0.4},${size.height * 0.1} ${size.width * 0.45},${size.height / 2} ` +
+                   `Q ${size.width * 0.5},${size.height * 0.9} ${size.width * 0.55},${size.height / 2} ` +
+                   `Q ${size.width * 0.6},${size.height * 0.1} ${size.width * 0.65},${size.height / 2} ` +
+                   `Q ${size.width * 0.7},${size.height * 0.9} ${size.width * 0.75},${size.height / 2} ` +
+                   `L ${size.width},${size.height / 2}`,
+                fill: 'none',
+                stroke: strokeColor,
+                strokeWidth: 2
+            },
+            label: commonLabel
+        },
+        voltage_source: {
+            body: {
+                cx: size.width / 2,
+                cy: size.height / 2,
+                r: Math.min(size.width, size.height) / 2 - 2,
+                fill: 'transparent',
+                stroke: strokeColor,
+                strokeWidth: 2
+            },
+            polarityPos: {
+                text: '+',
+                fill: textColor,
+                fontSize: 16,
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                x: size.width / 2 - size.width * 0.15,
+                y: size.height / 2 + 5
+            },
+            polarityNeg: {
+                text: '−',
+                fill: textColor,
+                fontSize: 16,
+                fontWeight: 'bold',
+                textAnchor: 'middle',
+                x: size.width / 2 + size.width * 0.15,
+                y: size.height / 2 + 5
+            },
+            label: commonLabel
+        },
+        current_source: {
+            body: {
+                cx: size.width / 2,
+                cy: size.height / 2,
+                r: Math.min(size.width, size.height) / 2 - 2,
+                fill: 'transparent',
+                stroke: strokeColor,
+                strokeWidth: 2
+            },
+            arrow: {
+                d: `M ${size.width / 2},${size.height * 0.3} L ${size.width / 2},${size.height * 0.7} M ${size.width / 2},${size.height * 0.7} L ${size.width * 0.4},${size.height * 0.6} M ${size.width / 2},${size.height * 0.7} L ${size.width * 0.6},${size.height * 0.6}`,
+                fill: 'none',
+                stroke: strokeColor,
+                strokeWidth: 2
+            },
+            label: commonLabel
+        },
+        transistor: {
+            body: {
+                cx: size.width / 2,
+                cy: size.height / 2,
+                r: Math.min(size.width, size.height) / 2.5,
+                fill: 'transparent',
+                stroke: strokeColor,
+                strokeWidth: 1.5
+            },
+            baseLead: {
+                x1: 0,
+                y1: size.height / 2,
+                x2: size.width * 0.35,
+                y2: size.height / 2,
+                stroke: strokeColor,
+                strokeWidth: 2
+            },
+            base: {
+                x1: size.width * 0.35,
+                y1: size.height * 0.3,
+                x2: size.width * 0.35,
+                y2: size.height * 0.7,
+                stroke: strokeColor,
+                strokeWidth: 3
+            },
+            collector: {
+                x1: size.width * 0.35,
+                y1: size.height * 0.35,
+                x2: size.width,
+                y2: size.height * 0.15,
+                stroke: strokeColor,
+                strokeWidth: 2
+            },
+            emitter: {
+                x1: size.width * 0.35,
+                y1: size.height * 0.65,
+                x2: size.width,
+                y2: size.height * 0.85,
+                stroke: strokeColor,
+                strokeWidth: 2
+            },
+            arrow: {
+                d: `M ${size.width * 0.55},${size.height * 0.72} L ${size.width * 0.65},${size.height * 0.8} L ${size.width * 0.6},${size.height * 0.68} Z`,
+                fill: strokeColor,
+                stroke: strokeColor,
+                strokeWidth: 1
+            },
+            label: commonLabel
         }
     };
 
@@ -949,7 +1080,9 @@ const getEnhancedElectricalAttrs = (elementType: string, theme: 'light' | 'dark'
         body: {
             fill: 'transparent',
             stroke: strokeColor,
-            strokeWidth: 2
+            strokeWidth: 2,
+            width: size.width,
+            height: size.height
         },
         label: commonLabel
     };
