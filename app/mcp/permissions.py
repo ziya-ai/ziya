@@ -49,6 +49,13 @@ class MCPPermissionsManager:
         with open(self.config_path, 'w') as f:
             json.dump(permissions, f, indent=2)
         self.permissions = permissions
+        
+        # Invalidate the secure tools cache to force rebuild with new permissions
+        try:
+            from app.mcp.enhanced_tools import invalidate_secure_tools_cache
+            invalidate_secure_tools_cache()
+        except ImportError:
+            logger.debug("Could not invalidate secure tools cache - module not available")
 
     def update_server_permission(self, server_name: str, permission: PermissionLevel):
         """Update permission for a specific server."""

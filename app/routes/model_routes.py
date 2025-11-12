@@ -5,8 +5,6 @@ from fastapi import APIRouter, Request
 from typing import Dict, Any
 import logging
 
-from app.config.models_config import get_available_models, get_model_capabilities
-
 logger = logging.getLogger("ZIYA")
 router = APIRouter()
 
@@ -14,6 +12,7 @@ router = APIRouter()
 @router.get('/api/available-models')
 async def available_models():
     """Get list of available models."""
+    from app.server import get_available_models
     return get_available_models()
 
 
@@ -63,8 +62,9 @@ async def set_model(request: Request):
 @router.get('/api/model-capabilities')
 async def model_capabilities(request: Request):
     """Get capabilities of current model."""
+    from app.server import get_model_capabilities
     model_manager = request.app.state.model_manager
-    capabilities = get_model_capabilities(model_manager.endpoint, model_manager.model_name)
+    capabilities = get_model_capabilities(model_manager.model_name)
     return capabilities
 
 

@@ -129,6 +129,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
     useEffect(() => {
         if (visible) {
             fetchMCPStatus();
+            fetchPermissions(); // Load permissions on modal open
 
             // Listen for MCP status changes from other components
             const handleMCPStatusChange = () => {
@@ -458,6 +459,13 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                         <Col span={12}>
                             {status.token_costs && (() => {
                                 const { total_tool_tokens, enabled_tool_tokens, instructions } = status.token_costs;
+                                
+                                // Calculate token savings from disabled servers/tools
+                                const disabledTokens = total_tool_tokens - enabled_tool_tokens;
+                                const savingsPercent = total_tool_tokens > 0 
+                                    ? Math.round((disabledTokens / total_tool_tokens) * 100)
+                                    : 0;
+                                
                                 const grandTotal = total_tool_tokens + instructions.per_model_cost;
                                 
                                 return (
@@ -471,6 +479,14 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 <div style={{ fontSize: '12px', opacity: 0.7 }}>
                                                     <div>🔧 MCP Tools: <strong>{formatTokenCount(total_tool_tokens)}</strong> tokens (from {Object.keys(status.token_costs.servers).length} servers)</div>
                                                     <div>📋 Instructions: <strong>{formatTokenCount(instructions.per_model_cost)}</strong> tokens (for current model)</div>
+                                                    {disabledTokens > 0 && (
+                                                        <div style={{ color: '#52c41a', marginTop: '4px' }}>
+                                                            💾 Saving: <strong>{formatTokenCount(disabledTokens)}</strong> tokens 
+                                                            <span style={{ opacity: 0.8 }}>
+                                                                {' '}({savingsPercent}% of tools disabled)
+                                                            </span>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
                                         }
@@ -509,6 +525,18 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                             </Space>
                         </Divider>
                         <div style={{ marginBottom: 16 }}>
+                            <Alert
+                                type="success"
+                                message="Context Optimization"
+                                description={
+                                    <div>
+                                        Disabled tools are <strong>completely removed from the AI's context window</strong>, saving tokens and improving response quality. 
+                                        Only enabled tools appear in the system prompt.
+                                    </div>
+                                }
+                                showIcon
+                                style={{ marginBottom: 12 }}
+                            />
                             <Alert
                                 type="info"
                                 description="Optional tools that run directly within Ziya without external servers."
@@ -720,6 +748,16 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                     size="small"
                                                 />
                                                 <span style={{ marginLeft: 8 }}>{isEnabled ? 'Enabled' : 'Disabled'}</span>
+                                                {isEnabled && server.tools > 0 && (() => {
+                                                    const enabledTools = Object.keys(permissions?.servers?.[name]?.tools || {})
+                                                        .filter(toolName => permissions?.servers?.[name]?.tools?.[toolName]?.permission === 'enabled').length;
+                                                    const totalTools = server.tools;
+                                                    return (
+                                                        <span style={{ marginLeft: 8, fontSize: '11px', color: '#999' }}>
+                                                            ({enabledTools || totalTools} / {totalTools} tools enabled)
+                                                        </span>
+                                                    );
+                                                })()}
                                             </Descriptions.Item>
                                             <Descriptions.Item label="Server Permissions">
                                                 <Select value={serverPermission} style={{ width: 120 }} onChange={(value) => updateServerPermission(name, value)}>
@@ -755,12 +793,21 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 <TabPane tab={`Tools (${serverDetails[name].tools.length})`} key="tools">
                                                     <List
                                                         dataSource={serverDetails[name].tools}
-                                                        renderItem={(tool: MCPTool) => {
+                                                        renderItem={( MCPTool) => {
                                                             const toolPermission = permissions?.servers?.[name]?.tools?.[tool.name]?.permission || permissions?.defaults?.tool || 'ask';
+                                                            const isToolEnabled = toolPermission === 'enabled';
+                                                            
                                                             return (
-                                                                <List.Item>
+                                                                <List.Item style={{ 
+                                                                    opacity: isToolEnabled ? 1 : 0.5,
+                                                                    backgroundColor: isToolEnabled ? 'transparent' : (isDarkMode ? '#1a1a1a' : '#f5f5f5')
+                                                                }}>
                                                                     <List.Item.Meta
-                                                                        title={tool.name}
+                                                                        title={
+                                                                            <span style={{ textDecoration: isToolEnabled ? 'none' : 'line-through' }}>
+                                                                                {tool.name}
+                                                                            </span>
+                                                                        }
                                                                         description={
                                                                             tool.description ? (
                                                                                 <div style={{ fontSize: '13px' }}>
@@ -772,11 +819,16 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                                             ) : null
                                                                         }
                                                                     />
-                                                                    <Select value={toolPermission} style={{ width: 120 }} onChange={(value) => updateToolPermission(name, tool.name, value)}>
-                                                                        <Option value="enabled">Enabled</Option>
-                                                                        <Option value="disabled">Disabled</Option>
-                                                                        <Option value="ask">Ask</Option>
-                                                                    </Select>
+                                                                    <Space>
+                                                                        <Switch
+                                                                            checked={isToolEnabled}
+                                                                            onChange={(checked) => updateToolPermission(name, tool.name, checked ? 'enabled' : 'disabled')}
+                                                                            size="small"
+                                                                        />
+                                                                        <span style={{ fontSize: '12px', color: isToolEnabled ? '#52c41a' : '#999' }}>
+                                                                            {isToolEnabled ? 'Enabled' : 'Disabled'}
+                                                                        </span>
+                                                                    </Space>
                                                                 </List.Item>
                                                             );
                                                         }}

@@ -322,6 +322,18 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                     continue;
                 }
 
+                // Check for authentication errors (these may not have status_code)
+                if (data.error === 'authentication_error' || 
+                    (data.error && data.content && typeof data.content === 'string' && 
+                     (data.content.includes('mwinit') || data.content.includes('credentials') || 
+                      data.content.includes('Authentication failed')))) {
+                    return {
+                        error: data.error || 'authentication_error',
+                        detail: data.content || data.detail || 'Authentication failed',
+                        status_code: 401
+                    };
+                }
+
                 // Only treat as error if it has error AND status_code (actual error response structure)
                 // This prevents false positives when model discusses errors in tool output
                 if ((data.error || data.detail) && data.status_code) {

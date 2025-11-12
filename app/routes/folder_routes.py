@@ -60,7 +60,7 @@ async def cancel_folder_scan():
 @router.post("/api/clear-folder-cache")
 async def clear_folder_cache():
     """Clear folder cache."""
-    from app.utils.folder_util import invalidate_folder_cache
+    from app.server import invalidate_folder_cache
     invalidate_folder_cache()
     return {"success": True}
 
