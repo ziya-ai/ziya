@@ -686,6 +686,14 @@ _tool_cache_timestamp: float = 0
 TOOL_CACHE_TTL = 300  # 5 minutes
 
 
+def invalidate_secure_tools_cache():
+    """Invalidate the secure tools cache to force rebuild on next access."""
+    global _secure_tool_cache, _tool_cache_timestamp
+    _secure_tool_cache = None
+    _tool_cache_timestamp = 0
+    logger.info("🔐 Secure tools cache invalidated - will rebuild with current permissions on next request")
+
+
 def create_secure_mcp_tools() -> List[BaseTool]:
     """
     Create secure MCP tools from available MCP tools.
@@ -712,7 +720,11 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     try:
         # Import MCP manager
         from app.mcp.manager import get_mcp_manager
+        from app.mcp.permissions import get_permissions_manager
+        
         mcp_manager = get_mcp_manager()
+        permissions_manager = get_permissions_manager()
+        permissions = permissions_manager.get_permissions()
         
         if not mcp_manager.is_initialized:
             logger.warning("MCP manager not initialized, cannot create secure tools")
@@ -720,6 +732,8 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         
         # Get all MCP tools
         mcp_tools = mcp_manager.get_all_tools()
+        
+        logger.info(f"🔐 Filtering {len(mcp_tools)} MCP tools by permissions")
         
         # Configure connection pool
         # Import here to avoid circular import
@@ -729,6 +743,33 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         
         # Create secure tools
         for tool in mcp_tools:
+            # Get server name for this tool
+            tool_server_name = getattr(tool, "_server_name", None)
+            
+            # Check if server is enabled in config
+            if tool_server_name:
+                server_config = mcp_manager.server_configs.get(tool_server_name, {})
+                if not server_config.get("enabled", True):
+                    logger.debug(f"🔐 Skipping tool {tool.name} from disabled server {tool_server_name}")
+                    continue
+            
+            # Check tool permissions - filter out disabled tools
+            if tool_server_name:
+                server_perms = permissions.get('servers', {}).get(tool_server_name, {})
+                tool_perms = server_perms.get('tools', {}).get(tool.name, {})
+                tool_permission = tool_perms.get('permission', permissions.get('defaults', {}).get('tool', 'enabled'))
+                
+                # Skip disabled tools - they won't be added to context at all
+                if tool_permission == 'disabled':
+                    logger.info(f"🔐  from server {tool_server_name}")
+                    continue
+                
+                # For 'ask' permission, include the tool but add a warning in description
+                if tool_permission == 'ask':
+                    original_description = tool.description or ""
+                    tool.description = f"[REQUIRES CONFIRMATION] {original_description}\n\nNote: This tool requires user confirmation before execution."
+                    logger.debug(f"🔐 Tool {tool.name} requires confirmation (ask permission)")
+            
             # Ensure tool name has mcp_ prefix
             secure_name = tool.name
             if not secure_name.startswith("mcp_"):
@@ -774,6 +815,9 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         logger.warning(f"Failed to create secure MCP tools: {str(e)}")
         return []
     
+    logger.info(f"🔐 Created {len(secure_tools)} secure MCP tools (filtered by permissions)")
+    logger.debug(f"🔐 Enabled tools: {[tool.name for tool in secure_tools]}")
+    
     # Conversation management tools disabled - requires server-side conversation state implementation
     logger.debug("Conversation management tools disabled (not yet integrated with client-side state)")
     
@@ -783,3 +827,11 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     
     logger.info(f"🔐 Created {len(secure_tools)} secure MCP tools")
     return secure_tools
+
+
+__all__ = [
+    'create_secure_mcp_tools',
+    'invalidate_secure_tools_cache',
+    'SecureMCPTool',
+    'DirectMCPTool'
+]

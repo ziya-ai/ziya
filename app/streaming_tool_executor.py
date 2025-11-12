@@ -1195,6 +1195,19 @@ class StreamingToolExecutor:
                     "rate limit"
                 ])
                 
+                # Check if this is a credential/authentication error
+                is_auth_error = any(indicator in error_str for indicator in [
+                    "CredentialRetrievalError",
+                    "Error when retrieving credentials",
+                    "mwinit",
+                    "midway-auth",
+                    "Status code: 401",
+                    "UnauthorizedOperation",
+                    "InvalidClientTokenId",
+                    "SignatureDoesNotMatch",
+                    "ExpiredToken"
+                ])
+                
                 if is_throttling:
                     # Extract suggested wait time if available
                     suggested_wait = 60  # Default 60 seconds
@@ -1224,10 +1237,30 @@ class StreamingToolExecutor:
                     }
                     logger.info(f"🔄 THROTTLING: Yielded throttling error chunk after {len(tool_results)} tools")
                     return
+                elif is_auth_error:
+                    # For authentication errors, yield a detailed error with helpful message
+                    logger.error(f"Authentication error in iteration {iteration}: {error_str}")
+                    
+                    # Extract the most relevant part of the error message
+                    error_message = error_str
+                    if "You may need to authenticate by running mwinit" in error_str:
+                        error_message = "AWS credentials have expired. Please run 'mwinit' to refresh your credentials and try again."
+                    elif "Status code: 401" in error_str:
+                        error_message = "Authentication failed (401 Unauthorized). Please check your AWS credentials and try again."
+                    
+                    yield {
+                        'type': 'error',
+                        'error': 'authentication_error',
+                        'content': error_message,
+                        'detail': error_str,
+                        'can_retry': True,
+                        'retry_message': 'Please refresh your credentials and try again.'
+                    }
+                    return
                 else:
                     # For non-throttling errors, yield generic error
                     logger.error(f"Non-throttling error in iteration {iteration}: {error_str}")
-                    yield {'type': 'error', 'content': f'Error: {e}'}
+                    yield {'type': 'error', 'content': f'Error: {error_str}'}
                     return
 
     def _update_code_block_tracker(self, text: str, tracker: Dict[str, Any]) -> None:
