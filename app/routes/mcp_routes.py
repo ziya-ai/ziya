@@ -195,6 +195,10 @@ async def get_mcp_status():
         server_configs = mcp_manager.server_configs
         
         # Calculate token costs for each server (including disabled ones)
+        from app.mcp.permissions import get_permissions_manager
+        permissions_manager = get_permissions_manager()
+        permissions = permissions_manager.get_permissions()
+        
         server_token_costs = {}
         total_tool_tokens = 0
         enabled_tool_tokens = 0
@@ -214,8 +218,29 @@ async def get_mcp_status():
                 token_count = count_server_tool_tokens(tools_dict)
                 server_token_costs[server_name] = token_count
                 total_tool_tokens += token_count
+                
+                # Calculate enabled tool tokens by filtering out disabled tools
                 if is_enabled:
-                    enabled_tool_tokens += token_count
+                    server_perms = permissions.get('servers', {}).get(server_name, {})
+                    enabled_tools_dict = []
+                    
+                    for tool in client.tools:
+                        tool_perms = server_perms.get('tools', {}).get(tool.name, {})
+                        tool_permission = tool_perms.get('permission', permissions.get('defaults', {}).get('tool', 'enabled'))
+                        
+                        # Only count enabled tools
+                        if tool_permission != 'disabled':
+                            enabled_tools_dict.append({
+                                'name': tool.name,
+                                'description': tool.description or '',
+                                'inputSchema': tool.inputSchema
+                            })
+                    
+                    # Count tokens only for enabled tools
+                    enabled_token_count = count_server_tool_tokens(enabled_tools_dict)
+                    enabled_tool_tokens += enabled_token_count
+                    
+                    logger.debug(f"Server {server_name}: {len(enabled_tools_dict)}/{len(tools_dict)} tools enabled, {enabled_token_count}/{token_count} tokens")
         
         # Calculate instruction token costs
         instruction_costs = calculate_model_instruction_tokens()
