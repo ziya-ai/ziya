@@ -3,6 +3,7 @@ import initMermaidSupport from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { getZoomScript } from '../../utils/popupScriptUtils';
+import { hexToRgb } from '../../utils/colorUtils';
 
 // Add mermaid to window for TypeScript
 declare global {
@@ -1534,16 +1535,6 @@ ${svgData}`;
  * @returns - A contrasting color for text
  */
 function getTextContrastColor(backgroundColor: string): string {
-    // Convert hex to RGB
-    const hexToRgb = (hex: string) => {
-        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return result ? {
-            r: parseInt(result[1], 16),
-            g: parseInt(result[2], 16),
-            b: parseInt(result[3], 16)
-        } : null;
-    };
-
     const rgb = hexToRgb(backgroundColor);
     if (!rgb) return '#000000';
 
@@ -1571,16 +1562,6 @@ function getTextContrastColor(backgroundColor: string): string {
  * @returns - The best contrasting text color
  */
 function getOptimalTextColor(backgroundColor: string): string {
-    // Convert hex to RGB
-    const hexToRgb = (hex: string) => {
-        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return result ? {
-            r: parseInt(result[1], 16),
-            g: parseInt(result[2], 16),
-            b: parseInt(result[3], 16)
-        } : null;
-    };
-
     const rgb = hexToRgb(backgroundColor);
     if (!rgb) return '#000000';
 
