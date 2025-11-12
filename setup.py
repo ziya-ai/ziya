@@ -39,7 +39,7 @@ def run_post_build():
 # We're just adding our custom command class
 setup(
     name="ziya",
-    version="0.3.7.2",
+    version="0.3.8",
     packages=find_packages(include=["app", "app.*", "mcp_servers", "app.mcp_servers.*"]),
     include_package_data=True,
     zip_safe=False,
