@@ -1,4 +1,3 @@
-import mermaid from 'mermaid';
 import { D3RenderPlugin } from '../../types/d3';
 import initMermaidSupport from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
@@ -7,7 +6,9 @@ import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 // Add mermaid to window for TypeScript
 declare global {
     interface Window {
-        mermaid: typeof mermaid;
+        mermaid: any;
+        __mermaidLoaded?: boolean;
+        __mermaidLoading?: Promise<any>;
     }
 }
 
@@ -89,12 +90,29 @@ class MermaidRenderQueue {
 
 const renderQueue = new MermaidRenderQueue();
 
-// Initialize Mermaid support with preprocessing and error handling
-initMermaidSupport(mermaid);
-
-// Also ensure window.mermaid is enhanced if it exists
-if (typeof window !== 'undefined' && window.mermaid) {
-    initMermaidSupport(window.mermaid);
+/**
+ * Lazy load mermaid library
+ */
+async function loadMermaid(): Promise<any> {
+  if (typeof window !== 'undefined' && window.__mermaidLoaded && window.mermaid) {
+    return window.mermaid;
+  }
+  
+  // If already loading, wait for it
+  if (window.__mermaidLoading) {
+    return await window.__mermaidLoading;
+  }
+  
+  // Start loading
+  window.__mermaidLoading = import('mermaid').then(module => {
+    const mermaid = module.default;
+    initMermaidSupport(mermaid);
+    window.mermaid = mermaid;
+    window.__mermaidLoaded = true;
+    return mermaid;
+  });
+  
+  return await window.__mermaidLoading;
 }
 
 export const mermaidPlugin: D3RenderPlugin = {
@@ -157,25 +175,31 @@ export const mermaidPlugin: D3RenderPlugin = {
 
 
     render: async (container: HTMLElement, d3: any, spec: MermaidSpec, isDarkMode: boolean): Promise<void> => {
+        // Lazy load mermaid library
+        const mermaid = await loadMermaid();
+        if (!mermaid) {
+            throw new Error('Failed to load mermaid library');
+        }
+        
         // Skip queue for Safari to avoid delays - Mermaid can handle concurrent renders
         const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
         if (isSafari) {
             // Add Safari warning to Mermaid diagrams specifically
             console.warn('🍎 SAFARI-MERMAID: Rendering Mermaid diagram on Safari - compatibility issues expected');
-            const result = await renderSingleDiagram(container, d3, spec, isDarkMode);
+            const result = await renderSingleDiagram(container, d3, spec, isDarkMode, mermaid);
             // Add a small notice that rendering may be degraded
             console.warn('🍎 SAFARI-MERMAID: Mermaid diagram rendered on Safari. Visual artifacts or performance issues may occur.');
             return result;
         } else {
             // Use render queue for other browsers to prevent conflicts
             return renderQueue.enqueue(async () => {
-                return await renderSingleDiagram(container, d3, spec, isDarkMode);
+                return await renderSingleDiagram(container, d3, spec, isDarkMode, mermaid);
             });
         }
     }
 };
 
-async function renderSingleDiagram(container: HTMLElement, d3: any, spec: MermaidSpec, isDarkMode: boolean): Promise<void> {
+async function renderSingleDiagram(container: HTMLElement, d3: any, spec: MermaidSpec, isDarkMode: boolean, mermaid: any): Promise<void> {
     console.log(`🎯 MERMAID SINGLE RENDER with spec:`, spec);
     console.log(`Mermaid plugin render called with spec type: ${spec.type}, definition length: ${spec.definition.length}`);
     console.log('📊 DIAGRAM PREVIEW:', spec.definition.substring(0, 100).replace(/\n/g, '\\n'));
@@ -1537,9 +1561,9 @@ function getTextContrastColor(backgroundColor: string): string {
     const rgb = hexToRgb(backgroundColor);
     if (!rgb) return '#000000';
 
-    // Special handling for yellow and yellow-ish colors
-    // Yellow has high luminance but white text on yellow is terrible
-    if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+    // Special handling for yellow, peach, wheat, and yellow-ish colors
+    // These colors have high luminance but white text on them is terrible
+    if (rgb.r > 200 && rgb.g > 200 && rgb.b < 220) {
         return '#000000'; // Always use black on yellow/yellow-ish
     }
 
@@ -1583,8 +1607,9 @@ function getOptimalTextColor(backgroundColor: string): string {
         return '#000000'; // Always use black on these very light backgrounds
     }
 
-    // Handle yellow and yellow-ish colors
-    if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
+    // Handle yellow, peach, wheat, and yellow-ish colors
+    // These have high luminance but require black text for readability
+    if (rgb.r > 200 && rgb.g > 200 && rgb.b < 220) {
         return '#000000'; // Always use black on yellow/yellow-ish
     }
 
