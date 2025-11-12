@@ -292,12 +292,4 @@ def _get_example_value_for_property(prop_info: dict, prop_name: str, tool_name: 
 # Removed _get_fallback_tool_formats() function as it was hardcoding shell tool examples
 # even when shell server was disabled. Now we only show formats for actually enabled tools.
 
-def register_extensions(manager):
-    """
-    Register all extensions in this module with the extension manager.
-    
-    Args:
-        manager: The PromptExtensionManager instance
-    """
-    # Extensions are registered via decorators
-    pass
+

@@ -4,6 +4,7 @@ import logging
 import difflib
 from ..core.exceptions import PatchApplicationError
 from ..core.config import get_max_offset, get_confidence_threshold
+from ..core.utils import clamp
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from ..validation.validators import normalize_line_for_comparison
 from ..validation.duplicate_detector import verify_no_duplicates
@@ -82,10 +83,6 @@ def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], posi
     result_lines[position:position + len(new_section)] = new_section
     return result_lines
 
-
-def clamp(value, min_val, max_val):
-    """Clamp a value between min and max values."""
-    return max(min_val, min(max_val, value))
 
 def is_whitespace_only_change(old_lines: List[str], new_lines: List[str]) -> bool:
     """

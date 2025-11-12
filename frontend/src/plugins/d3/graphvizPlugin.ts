@@ -1,6 +1,16 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
+import { 
+    hexToRgb, 
+    getLuminanceComponent, 
+    luminance, 
+    isLightBackground, 
+    getOptimalTextColor 
+} from '../../utils/colorUtils';
+import { zoomIn, zoomOut, resetZoom, storeOriginalViewBox } from '../../utils/zoomUtils';
+import { downloadSvg } from '../../utils/svgUtils';
+import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 
 export interface GraphvizSpec {
     type: 'graphviz';
@@ -28,87 +38,6 @@ const isGraphvizSpec = (spec: any): spec is GraphvizSpec => {
 
 // Store the current theme for each container to detect changes
 const containerThemes = new WeakMap<HTMLElement, boolean>();
-
-// Move helper functions to the top to avoid reference errors
-// Helper function to calculate luminance component (sRGB)
-const getLuminanceComponent = (colorValue: number) => {
-    const normalized = colorValue / 255;
-    return normalized <= 0.03928 
-        ? normalized / 12.92 
-        : Math.pow((normalized + 0.055) / 1.055, 2.4);
-};
-
-// Enhanced background detection with proper sRGB luminance calculation
-const isLightBackground = (color: string): boolean => {
-    if (!color || color === 'transparent' || color === 'none') {
-        return false;
-    }
-    
-    // Parse color to RGB values
-    let r = 0, g = 0, b = 0;
-    
-    // Handle hex format
-    const hexMatch = color.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
-    if (hexMatch) {
-        r = parseInt(hexMatch[1], 16);
-        g = parseInt(hexMatch[2], 16);
-        b = parseInt(hexMatch[3], 16);
-    }
-    // Handle rgb() format
-    else if (color.startsWith('rgb')) {
-        const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-        if (rgbMatch) {
-            r = parseInt(rgbMatch[1]);
-            g = parseInt(rgbMatch[2]);
-            b = parseInt(rgbMatch[3]);
-        } else {
-            return false;
-        }
-    }
-    // Handle named colors
-    else {
-        const lightNamedColors = [
-            'white', 'lightblue', 'lightgreen', 'lightyellow', 'lightgrey', 'lightgray', 'pink',
-            'yellow', '#aed6f1', '#d4e6f1', '#d5f5e3', '#f5f5f5', '#e6e6e6', '#f0f0f0',
-            '#ffffff', '#f8f9fa', '#e9ecef', '#dee2e6', '#ced4da', '#adb5bd'
-        ];
-        return lightNamedColors.some(c => c.toLowerCase() === color.toLowerCase());
-    }
-    
-    // Calculate proper sRGB luminance
-    const rLum = getLuminanceComponent(r);
-    const gLum = getLuminanceComponent(g);
-    const bLum = getLuminanceComponent(b);
-    
-    const luminance = 0.2126 * rLum + 0.7152 * gLum + 0.0722 * bLum;
-    
-    // Use threshold where anything above 0.4 luminance is considered light
-    return luminance > 0.4;
-};
-
-// Get optimal text color (borrowed from Vega-Lite)
-const getOptimalTextColor = (backgroundColor: string): string => {
-    const hexToRgb = (hex: string) => {
-        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return result ? {
-            r: parseInt(result[1], 16),
-            g: parseInt(result[2], 16),
-            b: parseInt(result[3], 16)
-        } : null;
-    };
-    
-    const rgb = hexToRgb(backgroundColor);
-    if (!rgb) return '#000000';
-    
-    // Special handling for yellow and yellow-ish colors
-    if (rgb.r > 200 && rgb.g > 200 && rgb.b < 100) {
-        return '#000000'; // Always use black on yellow
-    }
-    
-    // Calculate luminance and use conservative threshold
-    const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-    return luminance > 0.4 ? '#000000' : '#ffffff';
-};
 
 // Enhanced text visibility function
 const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
@@ -728,36 +657,7 @@ export const graphvizPlugin: D3RenderPlugin = {
                         svg.style.maxWidth = '100%';
                         svg.style.maxHeight = '100%';
                         svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                        
-                        function zoomIn() {
-                            currentScale *= 1.2;
-                            svg.style.transform = \`scale(\${currentScale})\`;
-                        }
-                        
-                        function zoomOut() {
-                            currentScale /= 1.2;
-                            svg.style.transform = \`scale(\${currentScale})\`;
-                        }
-                        
-                        function resetZoom() {
-                            currentScale = 1;
-                            svg.style.transform = 'scale(1)';
-                        }
-                        
-                        function downloadSvg() {
-                            const svgData = new XMLSerializer().serializeToString(svg);
-                            const svgBlob = new Blob([svgData], {type: 'image/svg+xml'});
-                            const url = URL.createObjectURL(svgBlob);
-                            
-                            const link = document.createElement('a');
-                            link.href = url;
-                            link.download = 'graphviz-diagram.svg';
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-                            
-                            setTimeout(() => URL.revokeObjectURL(url), 1000);
-                        }
+                        ${getZoomScript()}${getDownloadSvgScript('graphviz-diagram.svg')}
                     </script>
                 </body>
                 </html>

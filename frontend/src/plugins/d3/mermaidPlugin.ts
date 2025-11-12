@@ -2,6 +2,7 @@ import { D3RenderPlugin } from '../../types/d3';
 import initMermaidSupport from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
+import { getZoomScript } from '../../utils/popupScriptUtils';
 
 // Add mermaid to window for TypeScript
 declare global {
@@ -1156,25 +1157,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                         // Make sure SVG is responsive
                         svg.setAttribute('width', '100%');
                         svg.setAttribute('height', '100%');
-                        svg.style.maxWidth = '100%';
+                        svg.style.maxWidth = '100%');
                         svg.style.maxHeight = '100%';
                         svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                        
-                        function zoomIn() {
-                            currentScale *= 1.2;
-                            svg.style.transform = \`scale(\${currentScale})\`;
-                        }
-                        
-                        function zoomOut() {
-                            currentScale /= 1.2;
-                            svg.style.transform = \`scale(\${currentScale})\`;
-                        }
-                        
-                        function resetZoom() {
-                            currentScale = 1;
-                            svg.style.transform = 'scale(1)';
-                        }
-                        
+                        ${getZoomScript()}
                         function toggleTheme() {
                             isDarkMode = !isDarkMode;
                             const body = document.body;
