@@ -162,14 +162,6 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
     // Clear error states when conversation changes
     useEffect(() => {
-        const handleThrottlingError = (event: CustomEvent) => {
-            console.log('Throttling error received:', event.detail);
-            setThrottlingError(event.detail);
-        };
-    }, []);
-
-    // Clear error states when conversation changes
-    useEffect(() => {
         setThrottlingError(null);
     }, [currentConversationId]);
 

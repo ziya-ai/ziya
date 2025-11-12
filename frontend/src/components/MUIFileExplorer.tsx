@@ -532,17 +532,6 @@ export const MUIFileExplorer = () => {
       const data: Folders = await response.json();
 
       // Sort the tree data recursively
-      const sortTreeData = (nodes) => {
-        return nodes.sort((a, b) =>
-          String(a.title).toLowerCase()
-            .localeCompare(String(b.title).toLowerCase())
-        )
-          .map(node => ({
-            ...node,
-            children: node.children ? sortTreeData(node.children) : undefined
-          }));
-      };
-
       // Convert and sort data
       const sortedData = sortTreeData(convertToTreeData(data));
       setTreeData(sortedData);
