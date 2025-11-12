@@ -254,17 +254,6 @@ def initialize_ast_context(codebase_path: str, exclude_patterns: list, max_depth
         }
 
 
-def get_ast_indexing_status() -> Dict[str, Any]:
-    """
-    Get the current status of AST indexing.
-    
-    Returns:
-        Dictionary with indexing status information
-    """
-    status_copy = _ast_indexing_status.copy()
-    status_copy['enabled'] = is_ast_enabled()
-    return status_copy
-
 def enhance_query_context(query: str, file_context: Optional[str] = None) -> Dict[str, Any]:
     """
     Enhance the context for a query with AST information.

@@ -438,68 +438,6 @@ def correct_git_diff(git_diff: str, file_path: str) -> str:
         logger.error(f"Error correcting diff: {str(e)}")
         raise
 
-def handle_embedded_diff_markers(diff_content: str) -> str:
-    """
-    Handle diffs that contain embedded diff markers (lines starting with '---' or '+++')
-    that could confuse the parser.
-    
-    Args:
-        diff_content: The diff content to process
-        
-    Returns:
-        The processed diff content
-    """
-    lines = diff_content.splitlines()
-    result = []
-    
-    # Track if we're in a hunk
-    in_hunk = False
-    in_header = True
-    
-    for i, line in enumerate(lines):
-        # Always keep diff headers
-        if line.startswith(('diff --git', 'index')):
-            result.append(line)
-            in_header = True
-            in_hunk = False
-            continue
-            
-        # File path headers
-        if line.startswith(('--- ', '+++ ')):
-            result.append(line)
-            in_header = True
-            in_hunk = False
-            continue
-            
-        # Hunk headers
-        if line.startswith('@@'):
-            result.append(line)
-            in_header = False
-            in_hunk = True
-            continue
-            
-        # Handle content lines
-        if in_hunk:
-            # Only include lines that start with proper diff markers
-            if line.startswith((' ', '+', '-')):
-                result.append(line)
-            elif line.startswith('\\'):  # No newline marker
-                result.append(line)
-            else:
-                # We've reached the end of the hunk
-                in_hunk = False
-                # If this is a new header, process it in the next iteration
-                if line.startswith(('diff --git', '--- ', '+++ ', '@@')):
-                    i -= 1  # Back up to reprocess this line
-                    continue
-        elif not in_header:
-            # We're outside a hunk and not in a header
-            if line.startswith(('diff --git', '--- ', '+++ ', '@@')):
-                i -= 1  # Back up to reprocess this line as a header
-                continue
-    
-    return '\n'.join(result)
-
 def create_diff_from_hunk(hunk: Dict[str, Any], file_path: str) -> str:
     """
     Create a unified diff from a single hunk.
