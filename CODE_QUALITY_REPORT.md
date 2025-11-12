@@ -1,15 +1,15 @@
 # Code Quality Report - Ziya
 
-**Last Updated:** 2025-11-09
+**Last Updated:** 2025-11-12
 
 ## Summary
 
 This document tracks code quality issues, technical debt, and cleanup tasks for the Ziya project.
 
 ### Status Overview
-- ✅ **Completed:** 43 items
-- 🔄 **In Progress:** 3 items (frontend D3 plugin refactoring)
-- 📋 **Pending:** 29 items
+- ✅ **Completed:** 47 items
+- 🔄 **In Progress:** 0 items
+- 📋 **Pending:** 26 items
 
 ---
 
@@ -47,18 +47,11 @@ This document tracks code quality issues, technical debt, and cleanup tasks for 
 - [x] Created frontend/src/utils/colorUtils.ts (eliminates 10 duplicates)
 - [x] Created frontend/src/utils/zoomUtils.ts (eliminates 12 duplicates)
 - [x] Created frontend/src/utils/svgUtils.ts (eliminates 4 duplicates)
+- [x] Created frontend/src/utils/popupScriptUtils.ts (eliminates 9 inline duplicates)
 - [x] Created app/utils/diff_utils/core/escape_utils.py (eliminates 15+ duplicates)
 - [x] Refactored 5 diff_utils files to use escape_utils (~300 lines removed)
+- [x] Refactored 3 D3 plugins to use popupScriptUtils (~60 lines removed)
 - [x] All 108 diff regression tests pass (101/108 baseline maintained)
-
----
-
-## 🔄 In Progress
-
-### Refactoring to Use Shared Utilities
-1. Update D3 plugins to use colorUtils.ts (graphviz, mermaid, vega)
-2. Update D3 plugins to use zoomUtils.ts (graphviz, mermaid, vega, D3Renderer)
-3. Update D3 plugins to use svgUtils.ts (graphviz, mermaid, vega, D3Renderer)
 
 ---
 
