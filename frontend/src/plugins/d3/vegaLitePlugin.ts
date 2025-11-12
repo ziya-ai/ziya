@@ -1100,7 +1100,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           }
         }
 
-        // CRITICAL FIX: Handle case where window transform creates cumulative field but we need better field detection
+        // Handle case where window transform creates cumulative field but we need better field detection
         if (!spec.encoding.y && windowTransform?.window) {
           // Find any calculated field from the window transform
           const windowOp = windowTransform.window.find((w: any) => w.as);
@@ -1199,7 +1199,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           }
         };
 
-        // CRITICAL FIX: For nominal x-axis with log y-axis, ensure proper positioning
+        // For nominal x-axis with log y-axis, ensure proper positioning
         if (spec.layer.some(layer => layer.encoding?.x?.type === 'nominal' && layer.encoding?.y?.scale?.type === 'log')) {
           console.log('🔧 DUAL-AXIS-FIX: Converting nominal x-axis to ordinal for better log scale compatibility');
           spec.layer.forEach(layer => {
@@ -1609,7 +1609,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
 
-      // CRITICAL FIX: Handle shape encoding that causes "Cannot read properties of null (reading 'slice')" error
+      // Handle shape encoding that causes "Cannot read properties of null (reading 'slice')" error
 
       // Apply this fix EARLY in the preprocessing pipeline
       // Additional post-preprocessing validations and fixes
@@ -1639,7 +1639,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
         console.log('🔧 VEGA-POST-PROCESS: Fixing layered chart scales and legends');
 
-        // CRITICAL FIX: Handle layers accessing fields from before fold transform
+        // Handle layers accessing fields from before fold transform
         // Check if we have a fold transform at the top level
         const hasFoldTransform = vegaSpec.transform && vegaSpec.transform.some((t: any) => t.fold);
 

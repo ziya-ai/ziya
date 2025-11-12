@@ -567,7 +567,7 @@ class MCPManager:
             if current_time - last_call_time > 10:  # Allow retry after 10 seconds
                 identical_calls = 0
         
-        # CRITICAL FIX: Only add call if we're NOT blocking it
+        # Only add call if we're NOT blocking it
         if identical_calls < 5:
             self._recent_tool_calls[conv_id].append((tool_name, json.dumps(arguments, sort_keys=True), current_time))
             

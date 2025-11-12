@@ -1539,7 +1539,7 @@ export const jointPlugin: D3RenderPlugin = {
             // Store paper reference for cleanup
             (container as any)._jointPaper = paper;
 
-            // CRITICAL FIX: Override problematic parent container styles that are constraining the Joint.js paper
+            // Override problematic parent container styles that are constraining the Joint.js paper
             const jointRendererContainer = container.closest('.joint-renderer-container');
             if (jointRendererContainer) {
                 const containerEl = jointRendererContainer as HTMLElement;
@@ -1561,7 +1561,7 @@ export const jointPlugin: D3RenderPlugin = {
                 container.removeChild(loadingSpinner);
             }
 
-            // CRITICAL FIX: Ensure SVG uses full interactive area
+            // Ensure SVG uses full interactive area
             setTimeout(() => {
                 const paperSvg = container.querySelector('svg[joint-selector="svg"]');
                 if (paperSvg) {

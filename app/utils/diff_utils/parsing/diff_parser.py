@@ -356,7 +356,7 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
     # Sort hunks by old_start to ensure they're processed in the correct order
     hunks.sort(key=lambda h: h['old_start'])
     
-    # CRITICAL FIX: Trim trailing empty lines that are parser artifacts
+    # Trim trailing empty lines that are parser artifacts
     # Only trim when:
     # 1. old_count == new_count (no net change in line count)
     # 2. Both have exactly 1 excess line

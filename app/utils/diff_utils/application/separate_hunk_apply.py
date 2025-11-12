@@ -52,10 +52,10 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
     # Track which hunks have actually been applied successfully
     successfully_applied_hunks = set()
     
-    # CRITICAL FIX: Calculate line adjustment based on the order of hunk processing
+    # Calculate line adjustment based on the order of hunk processing
     # For each hunk we're about to process, check if earlier hunks in the diff failed
     
-    # CRITICAL FIX: Be more selective about which hunks to try separately
+    # Be more selective about which hunks to try separately
     # If we have specific hunks marked as could_apply_separately, prioritize those
     # Otherwise, only add sequential pending hunks that don't require fuzz/offset
     if not separate_hunks:
@@ -91,7 +91,7 @@ def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[in
             
         hunk = hunks[hunk_index]
         
-        # CRITICAL FIX: Calculate line adjustment for this specific hunk
+        # Calculate line adjustment for this specific hunk
         # based on which earlier hunks have failed to apply
         current_line_adjustment = 0
         for i in range(hunk_index):
@@ -177,7 +177,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
     """
     # Create a temporary file for the diff
     try:
-        # CRITICAL FIX: Read file content before patch to compare after
+        # Read file content before patch to compare after
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content_before_patch = f.read()
@@ -192,7 +192,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         
         # 1. Run Dry Run
         patch_command_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', 
-                             '--reject-file=-', '--batch', '--fuzz=0',  # CRITICAL FIX: Disable fuzzy matching
+                             '--reject-file=-', '--batch', '--fuzz=0',  # Disable fuzzy matching
                              '--verbose', '--dry-run', '-i', temp_path]
         
         logger.debug(f"Running patch command (dry-run): {' '.join(patch_command_dry)}")
@@ -228,7 +228,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
             logger.warning(f"Dry run failed for hunk in {file_path}. Status: {dry_run_status}")
             return False, False  # Failed
         elif dry_run_status == "already_applied":
-            # CRITICAL FIX: Check if this is a false "already applied" message
+            # Check if this is a false "already applied" message
             # If the dry run says "already applied" but the return code is 0,
             # it's likely a clean application that patch is misinterpreting
             if dry_run_result.returncode == 0:
@@ -250,7 +250,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
             pass  # Proceed to actual patch command
         else:
             # Unknown status from dry run or parsing failed but exit code was 0
-            # CRITICAL FIX: Handle needs_verification status properly
+            # Handle needs_verification status properly
             if dry_run_result.returncode == 0 and dry_run_status == "needs_verification":
                 logger.info(f"Dry run succeeded with needs_verification status for hunk in {file_path}. Proceeding to actual patch.")
                 pass  # Continue to actual patch command
@@ -282,7 +282,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
         actual_patch_hunk_info = actual_patch_status_map.get(1, {})
         actual_patch_status = actual_patch_hunk_info.get("status", "unknown")
         
-        # CRITICAL FIX: Check the actual patch result, not just the dry run
+        # Check the actual patch result, not just the dry run
         if patch_result.returncode == 0:
             logger.info(f"Actual patch succeeded for hunk in {file_path}")
             
@@ -290,7 +290,7 @@ def apply_single_hunk(hunk_diff: str, user_codebase_dir: str, file_path: str, hu
             logger.debug(f"Patch stdout for analysis: {repr(patch_result.stdout)}")
             logger.debug(f"Patch stderr for analysis: {repr(patch_result.stderr)}")
             
-            # CRITICAL FIX: Better detection of truly applied vs already applied
+            # Better detection of truly applied vs already applied
             # Check for explicit "already applied" or "skipping" indicators
             explicit_skip_indicators = [
                 "Skipping patch",
@@ -396,7 +396,7 @@ def extract_hunk_from_diff(diff_content: str, hunk_id: int, line_adjustment: int
             target_hunk['old_start'] += line_adjustment
             target_hunk['new_start'] += line_adjustment
             
-            # CRITICAL FIX: Also update the header to reflect the adjustment
+            # Also update the header to reflect the adjustment
             old_count = target_hunk.get('old_count', len(target_hunk.get('old_block', [])))
             new_count = len(target_hunk.get('new_lines', []))
             adjusted_header = f"@@ -{target_hunk['old_start']},{old_count} +{target_hunk['new_start']},{new_count} @@"
@@ -426,7 +426,7 @@ def extract_hunk_from_diff(diff_content: str, hunk_id: int, line_adjustment: int
             content_lines = target_hunk['lines']
             logger.debug(f"Using preserved lines field with {len(content_lines)} lines")
         else:
-            # CRITICAL FIX: Proper reconstruction from hunk data
+            # Proper reconstruction from hunk data
             logger.warning(f"Hunk #{hunk_id} missing 'lines' field, attempting reconstruction")
             
             # Reconstruct proper diff format from old_block and new_lines

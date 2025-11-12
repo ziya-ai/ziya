@@ -217,7 +217,7 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
         old_content_exists_normalized = removed_content_normalized in file_content_normalized
         new_content_exists_normalized = added_content_normalized in file_content_normalized
         
-        # CRITICAL FIX: Only flag as malformed if both old and new content exist IN PROXIMITY
+        # Only flag as malformed if both old and new content exist IN PROXIMITY
         # If they exist far apart in the file, this is likely a case of incorrect line numbers
         # in the diff, not actual duplication/corruption
         if (old_content_exists_exact and new_content_exists_exact) or \

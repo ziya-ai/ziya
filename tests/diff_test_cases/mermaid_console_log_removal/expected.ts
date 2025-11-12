@@ -817,7 +817,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                                 const fill = shape.getAttribute('fill');
                                 const computedFill = window.getComputedStyle(shape).fill;
 
-                                // CRITICAL FIX: Use computed style instead of fill attribute for custom colors
+                                // Use computed style instead of fill attribute for custom colors
                                 if (computedFill && computedFill !== 'none' && computedFill !== 'transparent' && computedFill !== 'rgb(0, 0, 0)') {
                                     backgroundColor = computedFill;
                                     break;

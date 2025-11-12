@@ -3579,7 +3579,7 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
 
-        // CRITICAL FIX: Check for visualization types BEFORE tool types
+        // Check for visualization types BEFORE tool types
         // This prevents Vega-Lite blocks from being misidentified
         if (lang === 'vega-lite' || lang === 'vegalite') {
             return 'vega-lite';
@@ -4284,7 +4284,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         return <span key={index} dangerouslySetInnerHTML={{ __html: mathWithNamespace }} />;
                     }
 
-                    // CRITICAL FIX: Detect throttling/rate limit messages and render them directly
+                    // Detect throttling/rate limit messages and render them directly
                     // These contain interactive retry buttons that must not be escaped
                     const isThrottlingMessage = htmlContent.includes('throttle-retry-button') ||
                                                (htmlContent.includes('Rate Limit') && htmlContent.includes('<button'));
@@ -4670,7 +4670,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Pre-process indented diff blocks before any other processing
             processedMarkdown = normalizeIndentedDiffs(processedMarkdown);
 
-            // CRITICAL FIX: Ensure blank line before code fences in all problematic cases
+            // Ensure blank line before code fences in all problematic cases
             // Marked.js requires blank lines before code blocks for proper parsing
 
             // Fix 1: Code fence on same line as heading (e.g., "### Title ```vega-lite")
