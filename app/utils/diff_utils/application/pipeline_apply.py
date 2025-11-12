@@ -91,7 +91,7 @@ def apply_diff_with_pipeline_approach(
     """
     logger.info(f"Applying diff to {file_path} using pipeline approach (in-memory)")
     
-    # CRITICAL FIX: Validate hunks first
+    # Validate hunks first
     validate_diff_hunks(diff_content, file_path)
     
     # Create a temporary directory to work in

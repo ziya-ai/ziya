@@ -605,7 +605,7 @@ export const sendPayload = async (
                     let dataContent = sseMessage.slice(5).trim();
                     console.log('📊 SSE data extracted, length:', dataContent.length, 'content:', dataContent.substring(0, 100));
 
-                    // CRITICAL FIX: Handle multiple data: messages concatenated in the extracted content
+                    // Handle multiple data: messages concatenated in the extracted content
                     // This happens when heartbeat messages get bundled with content messages
                     if (dataContent.includes('\n\ndata:') || dataContent.includes('\ndata:')) {
                         console.log('🔧 MULTI-DATA-FIX: Found concatenated data messages, splitting them');
@@ -830,7 +830,7 @@ export const sendPayload = async (
                 } else if (jsonData.tool_result) {
                     console.log('🔧 Processing wrapped tool_result - this is legitimate tool data, not an error');
 
-                    // CRITICAL FIX: Tool results should never be processed by error detection
+                    // Tool results should never be processed by error detection
                     // even if they contain error-related keywords in their content.
                     // This prevents legitimate tool output (source code, command output, etc.)
                     // from being misinterpreted as actual API errors.

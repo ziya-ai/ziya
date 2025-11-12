@@ -418,7 +418,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         return () => observer.disconnect();
     }, [isTopToBottom, currentMessages.length]);
 
-    // CRITICAL FIX: Detect when OTHER conversations complete streaming
+    // Detect when OTHER conversations complete streaming
     useEffect(() => {
         // Track which conversations just stopped streaming
         const previousSet = previousStreamingStateRef.current ? new Set([currentConversationId]) : new Set();

@@ -154,7 +154,7 @@ def merge_overlapping_hunks(hunks: List[Dict[str, Any]], overlap_indices: List[i
     merged_old_end = last_hunk['old_start'] + last_hunk['old_count'] - 1
     merged_old_count = merged_old_end - merged_old_start + 1
     
-    # CRITICAL FIX: Reconstruct the old_block from the original file content
+    # Reconstruct the old_block from the original file content
     # This ensures the merged hunk's old_block exactly matches what's in the file
     if original_file_content:
         logger.debug(f"Reconstructing old_block from original file content (length: {len(original_file_content)})")

@@ -680,7 +680,7 @@ class ConversationDB implements DB {
                 importedConversations = parsedData;
                 console.log('Importing legacy format:', data.length, 'conversations');
                 
-                // CRITICAL FIX: Validate all conversations before importing
+                // Validate all conversations before importing
                 importedConversations = importedConversations.filter(c => {
                     const valid = this.validateImportedConversation(c);
                     if (!valid) console.warn('⚠️ Skipping invalid conversation:', c.id?.substring(0, 8) || 'no-id');
@@ -699,7 +699,7 @@ class ConversationDB implements DB {
                     folders: importedFolders.length
                 });
                 
-                // CRITICAL FIX: Validate all conversations
+                // Validate all conversations
                 const invalidCount = importedConversations.length;
                 importedConversations = importedConversations.filter(c => {
                     const valid = this.validateImportedConversation(c);
@@ -718,7 +718,7 @@ class ConversationDB implements DB {
             const existingConversations = await this.getConversations();
             const existingIds = new Set(existingConversations.map(c => c.id));
             
-            // CRITICAL FIX: Only import conversations that don't already exist
+            // Only import conversations that don't already exist
             const newConversations = importedConversations.filter(c => !existingIds.has(c.id));
             const duplicateCount = importedConversations.length - newConversations.length;
             

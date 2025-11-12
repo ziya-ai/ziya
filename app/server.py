@@ -2268,7 +2268,7 @@ async def stream_chunks(body):
                     full_response = current_response
                     logger.debug(f"🔍 AGENT: Updated full_response from current_response: {len(full_response)} chars")
 
-                # CRITICAL FIX: Only do ONE iteration unless tools were executed
+                # Only do ONE iteration unless tools were executed
                 if iteration == 1 and not tool_executed:
                     logger.debug("🔍 AGENT: First iteration complete with no tools - STOPPING HERE")
                     break

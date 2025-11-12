@@ -80,7 +80,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
     const [currentConversationId, setCurrentConversationId] = useState<string>(() => {
-        // CRITICAL FIX: Try to restore the last active conversation ID before creating a new one
+        // Try to restore the last active conversation ID before creating a new one
         try {
             const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
             if (savedCurrentId) {
@@ -327,7 +327,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Enhanced backup system with corruption detection
     const createBackup = useCallback(async (conversations: Conversation[]) => {
         try {
-            // CRITICAL FIX: More robust filtering to prevent data loss
+            // More robust filtering to prevent data loss
             // The original logic c.isActive !== false was losing conversations with undefined isActive
             const activeConversations = conversations.filter(c => {
                 // Explicitly exclude only conversations marked as false
@@ -406,7 +406,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const savedConversations = await db.getConversations();
                     const savedActiveCount = savedConversations.filter(c => c.isActive).length;
                     
-                    // CRITICAL FIX: Only trigger healing if mismatch is significant (>1 conversation difference)
+                    // Only trigger healing if mismatch is significant (>1 conversation difference)
                     // and we haven't exceeded max retries
                     const countDifference = Math.abs(savedActiveCount - activeCount);
                     
@@ -440,7 +440,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             console.error(`🚨 HEALING FAILED: After ${maxRetries} attempts, disabling validation to prevent app failure`);
                             console.warn('🏥 EMERGENCY MODE: Trusting database state over memory to prevent corruption');
                             
-                            // CRITICAL FIX: When healing fails, trust the database state, not memory
+                            // When healing fails, trust the database state, not memory
                             // This prevents phantom conversations from corrupting the database
                             const trustedConversations = savedConversations.map(c => ({
                                 ...c,
@@ -483,7 +483,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         expected.forEach(expectedConv => {
             const actualConv = merged.get(expectedConv.id);
             
-            // CRITICAL FIX: Validate conversation has essential data before adding
+            // Validate conversation has essential data before adding
             const isValidConversation = (
                 expectedConv.id &&
                 expectedConv.messages &&
@@ -540,7 +540,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const conversationId = targetConversationId || currentConversationId;
         if (!conversationId) return;
         
-        // CRITICAL FIX: If adding message to non-current conversation, don't trigger any scroll
+        // If adding message to non-current conversation, don't trigger any scroll
         if (conversationId !== currentConversationId) {
             console.log('📝 Adding message to non-current conversation - scroll preservation mode');
         }
@@ -584,7 +584,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             title: isFirstMessage && message.role === 'human' ? message.content.slice(0, dynamicTitleLength) + (message.content.length > dynamicTitleLength ? '...' : '') : conv.title
                         };
                     }
-                    // CRITICAL FIX: Ensure isActive is explicitly set for all conversations
+                    // Ensure isActive is explicitly set for all conversations
                     return { ...conv, isActive: conv.isActive !== false ? true : false };
                 })
                 : [...prevConversations, {
@@ -684,7 +684,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const startNewChat = useCallback(async (specificFolderId?: string | null) => {
         return new Promise<void>(async (resolve, reject) => {
-            // CRITICAL FIX: Only attempt recovery if not in cooldown period
+            // Only attempt recovery if not in cooldown period
             const now = Date.now();
             const timeSinceLastRecovery = now - lastRecoveryAttempt.current;
             
@@ -814,7 +814,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const memoryActive = memoryConversations.filter(c => c.isActive !== false).length;
             const dbActive = dbConversations.filter(c => c.isActive !== false).length;
             
-            // CRITICAL FIX: Only recover if there's a significant difference AND we can identify the cause
+            // Only recover if there's a significant difference AND we can identify the cause
             // Don't recover for minor differences (1-2 conversations) as they may be transient
             const difference = Math.abs(memoryActive - dbActive);
             
@@ -823,7 +823,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return;
             }
             
-            // CRITICAL FIX: Don't blindly trust memory when it has significantly more conversations
+            // Don't blindly trust memory when it has significantly more conversations
             // This can happen due to phantom conversations from failed saves
             if (memoryActive > dbActive) {
                 // If the difference is HUGE (>50%), memory is likely corrupted
@@ -870,7 +870,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
         
-        // CRITICAL FIX: Only scroll if we're actually switching conversations
+        // Only scroll if we're actually switching conversations
         const isActualSwitch = conversationId !== currentConversationId;
         
         try {
@@ -925,7 +925,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             
             setIsLoadingConversation(false);
             
-            // CRITICAL FIX: Only scroll if we actually switched conversations
+            // Only scroll if we actually switched conversations
             if (isActualSwitch) {
                 // Scroll to appropriate position after conversation loads with multiple attempts
                 const scrollToPosition = () => {
@@ -1085,7 +1085,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     useEffect(() => {
         // Load current messages immediately when conversation changes, regardless of folder state
-        // CRITICAL FIX: Only update if messages actually changed to prevent scroll jumps
+        // Only update if messages actually changed to prevent scroll jumps
         if (currentConversationId && conversations.length > 0) {
             const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
             

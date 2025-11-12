@@ -220,14 +220,14 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # Try applying hunks separately that matched but weren't applied due to all-or-nothing behavior
     from ..application.separate_hunk_apply import try_separate_hunks
     
-    # CRITICAL FIX: Skip separate hunk application - it's interfering with normal system patch
+    # Skip separate hunk application - it's interfering with normal system patch
     logger.info("Skipping separate hunk application to allow normal system patch behavior")
     
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
         pipeline.result.status = "success"
-        # CRITICAL FIX: Only mark changes as written if system patch actually succeeded
+        # Only mark changes as written if system patch actually succeeded
         # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
         if system_patch_result:
             pipeline.result.changes_written = True
@@ -302,7 +302,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
         pipeline.result.status = "success"
-        # CRITICAL FIX: Only mark changes as written if git apply actually succeeded
+        # Only mark changes as written if git apply actually succeeded
         if git_apply_result:
             pipeline.result.changes_written = True
         pipeline.complete()
@@ -311,7 +311,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # Stage 3: Difflib (for hunks that failed in git apply)
     pipeline.update_stage(PipelineStage.DIFFLIB)
     
-    # CRITICAL FIX: Reset all failed hunks to pending so they can be processed by difflib
+    # Reset all failed hunks to pending so they can be processed by difflib
     # This ensures that hunks that failed in git_apply are still attempted with difflib
     reset_count = pipeline.reset_failed_hunks_to_pending()
     if reset_count > 0:
@@ -1002,12 +1002,12 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
                 )
                 all_hunks_succeeded = False
         
-        # CRITICAL FIX: Only mark changes as written if ALL hunks succeeded
+        # Only mark changes as written if ALL hunks succeeded
         # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
         # UPDATED: Also consider partial success when any hunks succeeded
         changes_written = any_hunk_succeeded and patch_result.returncode == 0
         
-        # CRITICAL FIX: If any hunks succeeded, recognize that success
+        # If any hunks succeeded, recognize that success
         if any_hunk_succeeded and not all_hunks_succeeded:
             logger.info(f"System patch applied {successful_count}/{total_count} hunks successfully")
             logger.info("Remaining hunks will be processed in later stages.")
@@ -1319,7 +1319,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             logger.info("Applied hunk line number corrections")
             hunks = corrected_hunks
         
-        # CRITICAL FIX: Check for malformed hunks first
+        # Check for malformed hunks first
         malformed_hunks = []
         for i, hunk in enumerate(hunks, 1):
             hunk_id = hunk.get('number', i)
@@ -1496,7 +1496,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             logger.debug(f"Optimized already-applied check: searching {len(search_positions)} positions instead of {len(original_lines) + 1}")
             
             for pos in search_positions:
-                # CRITICAL FIX: First check if the target state (new_lines) is already present in the file
+                # First check if the target state (new_lines) is already present in the file
                 # This is the most important check - if the target state is already there, we can mark it as already applied
                 if 'new_lines' in hunk and pos + len(hunk.get('new_lines', [])) <= len(original_lines):
                     # Extract the expected content after applying the hunk
@@ -1509,7 +1509,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     
                     # If the file already contains the target state, mark it as already applied
                     if normalized_file_slice == normalized_new_lines:
-                        # CRITICAL FIX: For deletion hunks, we need to check if the content to be deleted
+                        # For deletion hunks, we need to check if the content to be deleted
                         # still exists in the file. If it does, the hunk is NOT already applied.
                         if 'removed_lines' in hunk:
                             removed_lines = hunk.get('removed_lines', [])
@@ -1526,7 +1526,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                     logger.debug(f"Deletion hunk not applied - content to be deleted still exists in file at pos {pos}")
                                     continue
                         
-                        # CRITICAL FIX: Also check if the old_block matches what's in the file
+                        # Also check if the old_block matches what's in the file
                         # This prevents marking a hunk as "already applied" when the file has content
                         # that doesn't match what we're trying to remove
                         if 'old_block' in hunk:
@@ -1554,7 +1554,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                         logger.debug(f"Skipping position {pos} - file content doesn't match what we're trying to remove")
                                         continue
                         
-                        # CRITICAL FIX: For pure additions (like import statements), check if the exact content exists
+                        # For pure additions (like import statements), check if the exact content exists
                         # in the file before marking as already applied
                         if 'old_block' in hunk:
                             # Count the number of removed lines
@@ -1798,7 +1798,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             try:
                 logger.info("Attempting to apply diff with hybrid forced mode")
                 
-                # CRITICAL FIX: Use the merged hunks directly instead of re-parsing the original diff
+                # Use the merged hunks directly instead of re-parsing the original diff
                 if merged_hunk_mapping:
                     logger.info("Using merged hunks for difflib application")
                     modified_lines = apply_diff_with_difflib_hybrid_forced_hunks(
@@ -1897,7 +1897,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 if len(lines) > 22:
                     logger.info(f"DEBUG: Line 23 before write: {repr(lines[22])}")
                 
-                # CRITICAL FIX: Detect and remove duplicated content
+                # Detect and remove duplicated content
                 # Sometimes fuzzy matching creates duplicates when it can't distinguish locations
                 modified_lines = modified_content.splitlines(keepends=True)
                 original_line_count = len(original_lines)
@@ -1934,7 +1934,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 
                 pipeline.result.changes_written = True
                 
-                # CRITICAL FIX: Only update hunks that were actually processed by difflib
+                # Only update hunks that were actually processed by difflib
                 # Don't override hunks that were already handled in earlier stages
                 for hunk_id, tracker in pipeline.result.hunks.items():
                     if tracker.status == HunkStatus.PENDING:

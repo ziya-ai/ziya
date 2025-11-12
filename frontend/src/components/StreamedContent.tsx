@@ -498,7 +498,7 @@ export const StreamedContent: React.FC<{}> = () => {
             const ACTIVE_END_THRESHOLD = 100; // Increased threshold to be more forgiving
             const REQUIRED_CONSECUTIVE_CHECKS = 2;
             
-            // CRITICAL FIX: Only monitor for active streaming, not for static failed content
+            // Only monitor for active streaming, not for static failed content
             const isActivelyStreaming = streamingConversations.has(currentConversationId);
             
             // Only monitor for return to active end if user has scrolled away AND we have content

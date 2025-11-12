@@ -458,7 +458,7 @@ def apply_diff_with_difflib_hybrid_forced(
                 else:
                     logger.warning(f"Hunk #{hunk_idx}: Context mismatch at corrected position, falling back to normal processing")
         
-        # CRITICAL FIX: Use exact matching when added content is mostly whitespace/short tokens
+        # Use exact matching when added content is mostly whitespace/short tokens
         exact_match_applied = False
         old_block = h.get('old_block', [])
         added_lines = h.get('added_lines', [])
@@ -521,7 +521,7 @@ def apply_diff_with_difflib_hybrid_forced(
             initial_pos = clamp(old_start_0based + offset, 0, len(final_lines_with_endings))
             logger.debug(f"Hunk #{hunk_idx}: Adjusted initial_pos={initial_pos} (original={old_start_0based}, offset={offset})")
         
-        # CRITICAL FIX: For pure additions, if the hunk header line number doesn't match the context,
+        # For pure additions, if the hunk header line number doesn't match the context,
         # search for where the context lines actually are in the file
         is_pure_addition = len(h.get('removed_lines', [])) == 0 and len(h.get('added_lines', [])) > 0
         if is_pure_addition and h.get('old_block'):
@@ -601,7 +601,7 @@ def apply_diff_with_difflib_hybrid_forced(
             
             logger.debug(f"Hunk #{hunk_idx}: fuzzy_best_pos={fuzzy_best_pos}, fuzzy_initial_pos_search={fuzzy_initial_pos_search}, ratio={fuzzy_best_ratio:.3f}")
             
-            # CRITICAL FIX: Validate fuzzy match doesn't delete wrong context
+            # Validate fuzzy match doesn't delete wrong context
             # Check for duplicate blocks that could cause ambiguous matching
             should_be_conservative = False
             if fuzzy_best_pos is not None and abs(fuzzy_best_pos - fuzzy_initial_pos_search) >= 3:
@@ -762,7 +762,7 @@ def apply_diff_with_difflib_hybrid_forced(
                                 confidence_threshold = 0.7
                             
                             if fuzzy_best_ratio > confidence_threshold:
-                                # CRITICAL FIX: Special handling for pure additions with perfect fuzzy match at position 0
+                                # Special handling for pure additions with perfect fuzzy match at position 0
                                 # This often indicates the fuzzy matching found the entire file content, but we only want to insert
                                 is_pure_addition = len(h.get('removed_lines', [])) == 0 and len(h.get('added_lines', [])) > 0
                                 if is_pure_addition and fuzzy_best_pos == 0 and fuzzy_best_ratio >= 0.99:
@@ -813,7 +813,7 @@ def apply_diff_with_difflib_hybrid_forced(
                                             end_remove_pos = insertion_point
                                             insert_pos = insertion_point
                                         
-                                        # CRITICAL FIX: Only insert the added lines, not the entire context
+                                        # Only insert the added lines, not the entire context
                                         new_lines_content = h.get('added_lines', [])
                                         new_lines_with_endings = []
                                         for line in new_lines_content:
@@ -942,7 +942,7 @@ def apply_diff_with_difflib_hybrid_forced(
             
             logger.debug(f"Hunk #{hunk_idx}: Pure addition with malformed line numbers - inserting at end of file")
         elif len(h['removed_lines']) == 0 and len(h['added_lines']) > 0:
-            # CRITICAL FIX: For pure additions where context is found, only insert the added lines
+            # For pure additions where context is found, only insert the added lines
             # Don't remove/replace the context lines
             added_lines_only = h['added_lines']
             
@@ -1509,7 +1509,7 @@ def apply_diff_with_difflib_hybrid_forced(
 
     logger.info(f"Successfully applied {len(hunks)} hunks using difflib for {file_path}")
     
-    # CRITICAL FIX: Remove duplicate consecutive lines that may have been created by fuzzy matching
+    # Remove duplicate consecutive lines that may have been created by fuzzy matching
     # This handles cases where context lines get duplicated during application
     deduplicated_lines = []
     i = 0
@@ -1580,7 +1580,7 @@ def apply_diff_with_difflib(file_path: str, diff_content: str, skip_hunks: List[
                 all_already_applied = False
                 break
     
-    # CRITICAL FIX: For pure additions (like import statements), check if the exact content exists
+    # For pure additions (like import statements), check if the exact content exists
     # in the file before marking as already applied
     if all_already_applied:
         for hunk in hunks:
