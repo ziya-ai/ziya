@@ -107,3 +107,52 @@ async def clear_cache() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error clearing cache: {e}")
         raise HTTPException(status_code=500, detail=f"Error clearing cache: {str(e)}")
+
+
+@router.get('/api/cache-stats')
+async def get_cache_stats():
+    """Get context caching statistics and effectiveness metrics."""
+    try:
+        from app.utils.context_cache import get_context_cache_manager
+        cache_manager = get_context_cache_manager()
+        
+        stats = cache_manager.get_cache_stats()
+        
+        # Calculate effectiveness metrics
+        total_operations = stats["hits"] + stats["misses"]
+        hit_rate = (stats["hits"] / total_operations * 100) if total_operations > 0 else 0
+        
+        return {
+            "cache_enabled": True,
+            "statistics": {
+                "cache_hits": stats["hits"],
+                "cache_misses": stats["misses"],
+                "context_splits": stats["splits"],
+                "hit_rate_percent": round(hit_rate, 1),
+                "active_cache_entries": stats["cache_entries"],
+            }
+        }
+    except Exception as e:
+        return {"cache_enabled": False, "error": str(e)}
+
+
+@router.get('/api/cache-test')
+async def test_cache():
+    """Test cache functionality."""
+    try:
+        from app.utils.context_cache import get_context_cache_manager
+        cache_manager = get_context_cache_manager()
+        
+        # Test cache operations
+        test_key = "test_cache_key"
+        test_value = {"test": "data"}
+        
+        cache_manager.set(test_key, test_value)
+        retrieved = cache_manager.get(test_key)
+        
+        return {
+            "success": retrieved == test_value,
+            "message": "Cache test completed"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
