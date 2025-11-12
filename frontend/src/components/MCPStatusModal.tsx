@@ -511,8 +511,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                         <div style={{ marginBottom: 16 }}>
                             <Alert
                                 type="info"
-                                message="Builtin Tool Categories"
-                                description="Optional tools that run directly within Ziya without external servers. Perfect for enterprise architects and network engineers."
+                                description="Optional tools that run directly within Ziya without external servers."
                                 showIcon
                             />
                         </div>
@@ -643,7 +642,8 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                             </div>
                         ))}
                         
-                        {Object.keys(builtinTools).length === 0 && (
+                        {Object.keys(builtinTools).length === 0 && 
+                         (!status.servers || Object.values(status.servers).filter((s: any) => s.builtin).length === 0) && (
                             <Empty 
                                 description="No builtin tools available" 
                                 image={Empty.PRESENTED_IMAGE_SIMPLE}
