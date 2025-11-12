@@ -244,12 +244,11 @@ class PromptExtensionManager:
                 sys.modules[module_name] = module
                 spec.loader.exec_module(module)
                 
-                # Check if the module has a register_extensions function
+                # Check if the module has a register_extensions function (optional)
                 if hasattr(module, "register_extensions"):
                     module.register_extensions(cls)
-                    logger.debug(f"Loaded extensions from {file_path}")
-                else:
-                    logger.warning(f"Extension file {file_path} does not have a register_extensions function")
+                
+                logger.debug(f"Loaded extensions from {file_path}")
             except Exception as e:
                 logger.error(f"Error loading extension file {file_path}: {e}")
 

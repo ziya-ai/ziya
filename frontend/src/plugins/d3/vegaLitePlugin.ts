@@ -3,6 +3,7 @@ import type { EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
+import { getZoomScript } from '../../utils/popupScriptUtils';
 
 export interface VegaLiteSpec {
   type: 'vega-lite';
@@ -3778,22 +3779,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 svg.style.maxWidth = '100%';
                 svg.style.maxHeight = '100%';
                 svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                
-                function zoomIn() {
-                    currentScale *= 1.2;
-                    svg.style.transform = \`scale(\${currentScale})\`;
-                }
-                
-                function zoomOut() {
-                    currentScale /= 1.2;
-                    svg.style.transform = \`scale(\${currentScale})\`;
-                }
-                
-                function resetZoom() {
-                    currentScale = 1;
-                    svg.style.transform = 'scale(1)';
-                }
-                
+                ${getZoomScript()}
                 function toggleTheme() {
                     isDarkMode = !isDarkMode;
                     const body = document.body;

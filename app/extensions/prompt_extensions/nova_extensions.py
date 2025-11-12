@@ -145,12 +145,4 @@ NOVA FAMILY INSTRUCTIONS:
         # Just add to the beginning
         return nova_instructions + "\n\n" + prompt
 
-def register_extensions(manager):
-    """
-    Register all extensions in this module with the extension manager.
-    
-    Args:
-        manager: The PromptExtensionManager instance
-    """
-    # Extensions are registered via decorators, but we can add any manual registrations here
-    pass
+

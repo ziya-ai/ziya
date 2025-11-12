@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from app.utils.diff_utils.pipeline import apply_diff_pipeline
 from app.utils.diff_utils.application.git_diff import use_git_to_apply_code_diff
 from app.utils.diff_utils.parsing.diff_parser import parse_unified_diff
+from app.utils.sanitizer_util import clean_backtick_sequences
 # Import only what's needed, not everything
 
 # For backward compatibility
@@ -22,40 +23,6 @@ from app.utils.diff_utils.pipeline import apply_diff_pipeline, DiffPipeline, Pip
 
 # Define HunkData class for backward compatibility
 
-def clean_backtick_sequences(text):
-    """
-    Clean backtick sequences from text.
-    This is used by the parse_output function to clean code blocks.
-    """
-    if not text:
-        return ""
-    
-    # If the text starts with ```diff, it's a diff block
-    if "```diff" in text:
-        return text
-    
-    # If the text contains backtick code blocks, extract the content
-    if "```" in text:
-        # Simple extraction of code blocks
-        lines = text.split("\n")
-        in_code_block = False
-        cleaned_lines = []
-        
-        for line in lines:
-            if line.startswith("```") and not in_code_block:
-                in_code_block = True
-                # Skip the opening backticks line
-                continue
-            elif line.startswith("```") and in_code_block:
-                in_code_block = False
-                # Skip the closing backticks line
-                continue
-            else:
-                cleaned_lines.append(line)
-        
-        return "\n".join(cleaned_lines)
-    
-    return text
 class HunkData:
     """
     Stores data for a single hunk in the unified diff: header, start_line, old_lines, new_lines, etc.
