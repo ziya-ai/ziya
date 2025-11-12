@@ -57,35 +57,21 @@ This document tracks code quality issues, technical debt, and cleanup tasks for 
 
 ## 📋 Pending Items
 
-### 1. TypeScript Functions Redefined in Same File - Critical
+### 1. TypeScript Function Duplicates - RESOLVED
 
-**High Priority - Multiple definitions:**
-```
-registerPreprocessor (30 copies in mermaidEnhancer.ts)
-  → Action: Refactor to single registration function with type parameter
+**Status:** ✅ All real duplicates eliminated
 
-errorResponse (3 copies in chatApi.ts)
-  → Action: Consolidate error handling logic
+Verified findings:
+- Most "duplicates" were false positives (control flow statements, variable assignments)
+- Database methods: Interface vs implementation pattern (intentional)
+- scrollToBottom (2 copies in App.tsx): Different implementations for different scroll contexts (intentional)
+- registerPreprocessor (30x): Function calls, not definitions
+- errorResponse, isRecoverableError: Variable assignments, not function definitions
 
-hexToRgb (2 copies in mermaidEnhancer.ts, 2 in mermaidPlugin.ts)
-luminance (2 copies in mermaidEnhancer.ts, 2 in mermaidPlugin.ts)
-  → Action: Already have colorUtils.ts, update imports
-
-Database methods in db.ts (init, saveConversations, etc.)
-  → Action: Verify if interface vs implementation pattern, consolidate if duplicate
-```
-
-**Medium Priority - 2 copies:**
-```
-isRecoverableError (chatApi.ts)
-setConversations (ChatContext.tsx)
-scrollToBottom (App.tsx)
-sortTreeData (MUIFileExplorer.tsx)
-renderMultiFileDiff (MarkdownRenderer.tsx)
-handleThrottlingError (SendChatContainer.tsx)
-beforeCount, afterCount (mermaidEnhancer.ts)
-  → Action: Consolidate each to single implementation
-```
+**Completed:**
+- ✅ Removed 4 hexToRgb/luminance duplicates (now use colorUtils.ts)
+- ✅ Removed duplicate sortTreeData
+- ✅ Removed dead handleThrottlingError code
 
 ### 2. Python Duplicate Functions - Remaining
 
@@ -278,19 +264,21 @@ Recommendation: Create base extension class:
 
 ## Metrics
 
-### Code Quality Improvements (2025-11-09)
+### Code Quality Improvements (2025-11-12)
 - Security vulnerabilities fixed: 14
 - Deprecated warnings fixed: 7
 - Bare except clauses fixed: 15
 - Duplicate imports removed: 10
 - Unused dependencies removed: 19
 - Build warnings addressed: 278 → 0 errors
-- **Shared utilities created: 4 modules**
-- **Duplicate functions eliminated: 56+ (26 TS + 30 Python)**
-- **Lines of duplicate code removed: ~500**
+- **Shared utilities created: 5 modules (4 Python, 1 TypeScript)**
+- **Duplicate functions eliminated: 31 (25 Python + 6 TypeScript)**
+- **Unused files deleted: 16 modules**
+- **Lines of duplicate code removed: ~3,400**
 
 ### Remaining Technical Debt
-- Duplicate functions: 29 (down from 85+, 66% reduction)
+- Python duplicate functions: 20 (across different files, context-specific)
+- TypeScript duplicate functions: 0 (all resolved or intentional)
 - Print statements: 169
 - TODO comments: 6
 - Magic numbers: 10+
