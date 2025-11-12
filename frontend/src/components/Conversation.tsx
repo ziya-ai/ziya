@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, Suspense, memo, useCallback, useMemo } from "react";
-import { FixedSizeList as List } from 'react-window';
+import { VariableSizeList as List } from 'react-window';
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip } from 'antd';
@@ -55,25 +55,74 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
     // Use memoized state instead of direct context access
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
     
-    // Virtualized rendering for large conversations (300k+ tokens)
+    // Virtualized rendering for large conversations to improve performance
     const VIRTUAL_THRESHOLD = 100; // Start virtualizing after 100 messages
     const shouldVirtualize = currentMessages.length > VIRTUAL_THRESHOLD;
     
-    // Function to determine if we need to show the retry button
+    // Refs for virtualization
+    const listRef = useRef<List>(null);
+    const rowHeightsRef = useRef<{ [index: number]: number }>({});
+    
+    // Reset height cache when messages change significantly
+    useEffect(() => {
+        rowHeightsRef.current = {};
+        listRef.current?.resetAfterIndex(0);
+    }, [currentMessages.length]);
+    
+    // Function to get estimated/measured item size
+    const getItemSize = useCallback((index: number): number => {
+        // Return cached height if available
+        if (rowHeightsRef.current[index]) {
+            return rowHeightsRef.current[index];
+        }
+        
+        // Estimate based on message type and content length
+        const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
+        const msg = currentMessages[actualIndex];
+        
+        if (!msg) return 100;
+        
+        const contentLength = msg.content?.length || 0;
+        
+        // Estimate height based on content characteristics
+        if (msg.role === 'system') return 60;
+        
+        if (msg.content?.includes('```')) {
+            // Code blocks: estimate 20px per 80 chars + 100px base
+            return Math.min(2000, 150 + Math.floor(contentLength / 80) * 20);
+        }
+        
+        if (msg.content?.includes('diff --git')) {
+            // Diffs: estimate 18px per line
+            const lines = msg.content.split('\n').length;
+            return Math.min(3000, 100 + lines * 18);
+        }
+        
+        // Regular text: estimate 20px per 100 chars + 80px base
+        return Math.min(1500, 80 + Math.floor(contentLength / 100) * 20);
+    }, [currentMessages, isTopToBottom]);
+    
+    // Set measured height after render
+    const setItemHeight = useCallback((index: number, size: number) => {
+        if (rowHeightsRef.current[index] !== size) {
+            rowHeightsRef.current[index] = size;
+            listRef.current?.resetAfterIndex(index);
+        }
+    }, []);
+    
+    // Check if we should show retry button for a message
     const shouldShowRetry = useCallback((index: number) => {
         const message = currentMessages[index];
-        const isLastMessage = index === currentMessages.length - 1;
+        if (!message || message.role !== 'human') return false;
+        
         const nextIndex = index + 1;
         const hasNextMessage = nextIndex < currentMessages.length;
         const nextMessage = hasNextMessage ? currentMessages[nextIndex] : null;
-
-        return message?.role === 'human' &&
-            !isCurrentlyStreaming &&
-            !hasStreamedContent &&
-            (isLastMessage ||
-                (hasNextMessage && nextMessage?.role !== 'assistant'));
-    }, [currentMessages, isCurrentlyStreaming, hasStreamedContent]);
-
+        
+        // Show retry if this human message doesn't have an assistant response following it
+        return !hasNextMessage || nextMessage?.role !== 'assistant';
+    }, [currentMessages]);
+    
     // Render retry button with explanation
     const renderRetryButton = useCallback((index: number) => {
         if (!shouldShowRetry(index)) return null;
@@ -230,7 +279,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         );
     }, [editingMessageIndex, currentMessages, shouldShowRetry, isCurrentlyStreaming, setStreamedContentMap, setConversations, currentConversationId, addStreamingConversation, checkedKeys, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, streamingConversations, updateProcessingState, setQuestion]);
     
-    // Properly implemented renderMessage callback for virtualization
+    // Render message for both virtualized and non-virtualized views
+    // Measure height after render for virtualization
+    const measuredRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+    
+    useEffect(() => {
+        measuredRefs.current.forEach((el, index) => {
+            if (el) {
+                const height = el.getBoundingClientRect().height;
+                if (height > 0) setItemHeight(index, height);
+            }
+        });
+    });
+    
     const renderMessage = useCallback(({ index, style }: { index: number; style: React.CSSProperties }) => {
         const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
         const msg = currentMessages[actualIndex];
@@ -252,7 +313,10 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
         
         return (
             <div 
-                style={style} 
+                ref={(el) => {
+                    if (el) measuredRefs.current.set(index, el);
+                }}
+                style={{ ...style, overflow: 'visible' }}
                 key={`message-${msg.id || actualIndex}`}
                 className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${needsResponse ? ' needs-response' : ''}`}
             >
@@ -311,8 +375,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
             </div>
         );
     }, [currentMessages, isTopToBottom, isCurrentlyStreaming, hasStreamedContent, editingMessageIndex, 
-        renderMuteButton, renderResubmitButton, renderRetryButton, enableCodeApply, isStreaming, 
-        streamingConversations, currentConversationId]);
+        renderMuteButton, renderResubmitButton, renderRetryButton, enableCodeApply, isStreaming,
+        streamingConversations, currentConversationId, setItemHeight]);
     
     const displayMessages = shouldVirtualize ? null : (isTopToBottom ? currentMessages : [...currentMessages].reverse());
 
@@ -580,12 +644,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                         )}
                     </div>;
                 }) || (shouldVirtualize ? (
-                    <div style={{ height: '400px', width: '100%' }}>
+                    <div style={{ height: '100%', width: '100%' }}>
                         <List
+                            ref={listRef}
                             height={window.innerHeight - 200}
                             itemCount={currentMessages.length}
-                            itemSize={150}
+                            itemSize={getItemSize}
+                            estimatedItemSize={200}
                             width="100%"
+                            overscanCount={5}
                         >
                             {renderMessage}
                         </List>
