@@ -4437,7 +4437,8 @@ async def apply_changes(request: ApplyChangesRequest):
             logger.info("Single diff found")
             target_diff = individual_diffs[0]
 
-        result = apply_diff_pipeline(request.diff, file_path, request_id)
+        # Run in thread pool to avoid blocking the event loop and allow parallel processing
+        result = await run_in_threadpool(apply_diff_pipeline, request.diff, file_path, request_id)
         
         # Check the result status and return appropriate response
         status_code = 200 # Default to OK
